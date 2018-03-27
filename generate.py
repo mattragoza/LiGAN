@@ -246,14 +246,12 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
     xyz_init = []
     xyz_max = []
     p_max = -np.inf
-    n_atoms = int(raw_input('how many atoms? '))
     while True:
         xyz, p = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
                                                  noise_mean_init, noise_cov_init, max_iter)
         print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
               .format(channel_name, density_sum, len(xyz), p))
-        #if p > p_max:
-        if len(xyz) <= n_atoms:
+        if p > p_max:
             xyz_max, p_max = xyz, p
             try:
                 xyz_init.append(next(get_xyz_init))
