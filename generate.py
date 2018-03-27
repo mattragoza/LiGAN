@@ -265,7 +265,7 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
 
 def fit_atoms_to_grids(grids, center, resolution, max_iter, parallel=False):
     grid_channels = get_grid_channels(grids)
-    grid_channels = combine_element_grid_channels(grid_channels)
+    #grid_channels = combine_element_grid_channels(grid_channels)
     map_ = Pool(processes=len(grid_channels)).map if parallel else map
     f = partial(fit_atoms_to_grid, center=center, resolution=resolution, max_iter=max_iter)
     return sum(map_(f, grid_channels), [])
