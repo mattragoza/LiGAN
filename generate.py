@@ -172,15 +172,13 @@ def combine_element_grid_channels(grid_channels):
 
 
 def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius,
-                                    noise_mean_init, noise_cov_init, max_iter, eps=1e-6):
+                                    noise_level_init, max_iter, eps=1e-6):
     # initialize predicted atom parameters
     n_points, n_dims = len(points), 3
     n_atoms = len(atom_mean_init)
     atom_mean = np.array(atom_mean_init)
     atom_cov = np.full(n_atoms, (0.5*atom_radius)**2)
-    noise_mean = noise_mean_init
-    noise_cov = noise_cov_init
-
+    noise_level = noise_level_init
     p = -np.inf
     for iter_ in range(max_iter+1):
 
@@ -188,7 +186,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
         P = np.zeros((n_points, 1+n_atoms))
         for j in range(n_atoms):
             P[:,1+j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov[j])
-        P[:,0] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
+        P[:,0] = noise_level
 
         # compute responsiblity of points from each atom/noise (E-step)
         if n_atoms > 0:
@@ -208,8 +206,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
             atom_mean[j] = np.sum(g_d * points.T, axis=1) / np.sum(g_d)
 
         # estimate noise parameters
-        noise_mean = np.sum(gamma[:,0] * density) / np.sum(gamma[:,0])
-        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0])
+        noise_level = noise_level
 
     return atom_mean, p
 
@@ -238,8 +235,7 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
         return []
     channel_name, element, atom_radius = channel
     points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_mean_init = np.mean(density)
-    noise_cov_init = np.cov(density)
+    noise_level_init = 1./len(points)
     #points = points[density > 0,:] TODO
     #density = density[density > 0]
     get_xyz_init = get_max_density_points(points, density, atom_radius)
@@ -248,7 +244,7 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
     p_max = -np.inf
     while True:
         xyz, p = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
-                                                 noise_mean_init, noise_cov_init, max_iter)
+                                                 noise_level_init, max_iter)
         print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
               .format(channel_name, density_sum, len(xyz), p))
         if p > p_max:
@@ -265,7 +261,7 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
 
 def fit_atoms_to_grids(grids, center, resolution, max_iter, parallel=False):
     grid_channels = get_grid_channels(grids)
-    grid_channels = combine_element_grid_channels(grid_channels)
+    #grid_channels = combine_element_grid_channels(grid_channels)
     map_ = Pool(processes=len(grid_channels)).map if parallel else map
     f = partial(fit_atoms_to_grid, center=center, resolution=resolution, max_iter=max_iter)
     return sum(map_(f, grid_channels), [])
