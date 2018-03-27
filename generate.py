@@ -172,46 +172,47 @@ def combine_element_grid_channels(grid_channels):
 
 
 def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius,
-                                    noise_mean_init, noise_cov_init, max_iter, eps=1e-6):
-    # initialize predicted atom parameters
-    n_points, n_dims = len(points), 3
+                                    noise_level_init, max_iter, eps=1e-3):
+    n_points = len(points)
     n_atoms = len(atom_mean_init)
+
+    # initialize component parameters
     atom_mean = np.array(atom_mean_init)
     atom_cov = np.full(n_atoms, (0.5*atom_radius)**2)
-    noise_mean = noise_mean_init
-    noise_cov = noise_cov_init
+    noise_level = noise_level_init
 
-    p = -np.inf
+    # initialize prior over components
+    P_comp = np.full(1+n_atoms, 1./(1+n_atoms))
+
+    # maximize expected log likelihood
+    Q = -np.inf
     for iter_ in range(max_iter+1):
 
-        # compute likelihood of points for noise and for each atom
-        P = np.zeros((n_points, 1+n_atoms))
+        # compute likelihood of points for each component
+        L_point = np.zeros((n_points, 1+n_atoms))
         for j in range(n_atoms):
-            P[:,1+j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov[j])
-        P[:,0] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
+            L_point[:,1+j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov[j])
+        L_point[:,0] = noise_level
 
-        # compute responsiblity of points from each atom/noise (E-step)
-        if n_atoms > 0:
-            gamma = P / np.sum(P, axis=1, keepdims=True)
-        else:
-            gamma = np.ones_like(P)
+        # compute joint probability of points and components
+        P = P_comp * L_point
 
-        # overall log likelihood of points
-        prev_p = p
-        p = np.sum(density * np.log(np.max(P * 1/(1+n_atoms), axis=1)))
-        if p - prev_p < eps or iter_ == max_iter:
+        # compute expected log likelihood
+        prev_Q = Q
+        Q = np.sum(density * np.log(np.sum(P, axis=1)))
+        if Q - prev_Q < eps or iter_ == max_iter:
             break
 
-        # estimate atom parameters that maximize likelihood of points (M-step)
+        # compute responsiblity of points from each component (E-step)
+        gamma = P / np.sum(P, axis=1, keepdims=True)
+
+        # estimate parameters that maximize expected log likelihood (M-step)
         for j in range(n_atoms):
-            g_d = gamma[:,1+j] * density
-            atom_mean[j] = np.sum(g_d * points.T, axis=1) / np.sum(g_d)
+            atom_mean[j] = np.sum(density * gamma[:,1+j] * points.T, axis=1) \
+                            / np.sum(density * gamma[:,1+j])
+        P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
 
-        # estimate noise parameters
-        noise_mean = np.sum(gamma[:,0] * density) / np.sum(gamma[:,0])
-        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0])
-
-    return atom_mean, p
+    return atom_mean, Q
 
 
 def get_max_density_points(points, density, radius):
@@ -238,17 +239,16 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
         return []
     channel_name, element, atom_radius = channel
     points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_mean_init = np.mean(density)
-    noise_cov_init = np.cov(density)
-    #points = points[density > 0,:] TODO
-    #density = density[density > 0]
+    noise_level_init = 1./len(points)
+    points = points[density > 0,:]
+    density = density[density > 0]
     get_xyz_init = get_max_density_points(points, density, atom_radius)
     xyz_init = []
     xyz_max = []
     p_max = -np.inf
     while True:
         xyz, p = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
-                                                 noise_mean_init, noise_cov_init, max_iter)
+                                                 noise_level_init, max_iter)
         print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
               .format(channel_name, density_sum, len(xyz), p))
         if p > p_max:
