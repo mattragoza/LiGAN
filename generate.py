@@ -215,7 +215,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
             atom_mean[j] = np.sum(density * gamma[:,1+j] * points.T, axis=1) \
                             / np.sum(density * gamma[:,1+j])
         noise_mean = np.sum(gamma[:,0] * density) / np.sum(gamma[:,0])
-        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0])
+        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0]) + 1e-16
         P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
 
         print(gamma)
