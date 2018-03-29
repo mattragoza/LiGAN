@@ -183,48 +183,38 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
     noise_cov = noise_cov_init
 
     # initialize prior over components
-    P_comp = np.full(1+n_atoms, 1./(1+n_atoms))
+    P_comp = np.full(1+n_atoms, 1./(1+n_atoms)) # P(comp_j)
 
     # maximize expected log likelihood
-    Q = -np.inf
-    for iter_ in range(max_iter+1):
+    ll = -np.inf
+    for i in range(max_iter+1):
 
-        # compute likelihood of points for each component
-        L_point = np.zeros((n_points, 1+n_atoms))
+        L_point = np.zeros((n_points, 1+n_atoms)) # P(point_i|comp_j)
         for j in range(n_atoms):
             L_point[:,1+j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov[j])
         L_point[:,0] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
 
-        # compute joint probability of points and components
-        P = P_comp * L_point
+        P_joint = P_comp * L_point          # P(point_i, comp_j)
+        P_point = np.sum(P_joint, axis=1)   # P(point_i)
+        gamma = (P_joint.T / P_point).T     # P(comp_j|point_i) (E-step)
 
         # compute expected log likelihood
-        prev_Q = Q
-        Q = np.sum(density * np.log(np.sum(P, axis=1)))
-        if Q - prev_Q < eps or iter_ == max_iter:
+        ll_prev, ll = ll, np.sum(density * np.log(P_point))
+        if ll - ll_prev < eps or i == max_iter:
             break
-
-        # compute responsiblity of points from each component (E-step)
-        if n_atoms > 0:
-            gamma = P / np.sum(P, axis=1, keepdims=True)
-        else:
-            gamma = np.ones((n_points, 1))
 
         # estimate parameters that maximize expected log likelihood (M-step)
         for j in range(n_atoms):
             atom_mean[j] = np.sum(density * gamma[:,1+j] * points.T, axis=1) \
                             / np.sum(density * gamma[:,1+j])
         noise_mean = np.sum(gamma[:,0] * density) / np.sum(gamma[:,0])
-        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0]) + 1e-16
+        noise_cov = np.sum(gamma[:,0] * (density - noise_mean)**2) / np.sum(gamma[:,0])
+        if noise_cov == 0.0 or np.isnan(noise_cov): # reset noise
+            noise_mean = noise_mean_init
+            noise_cov = noise_cov_init
         P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
 
-        print(gamma)
-        print(noise_mean)
-        print(noise_cov)
-        print()
-
-
-    return atom_mean, Q
+    return atom_mean, ll
 
 
 def get_max_density_points(points, density, radius):
@@ -259,14 +249,14 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
     get_xyz_init = get_max_density_points(points, density, atom_radius)
     xyz_init = []
     xyz_max = []
-    p_max = -np.inf
+    ll_max = -np.inf
     while True:
-        xyz, p = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
+        xyz, ll = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
                                                  noise_mean_init, noise_cov_init, max_iter)
-        print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
-              .format(channel_name, density_sum, len(xyz), p))
-        if p > p_max:
-            xyz_max, p_max = xyz, p
+        print('{:36}density_sum = {:.5f}\tn_atoms = {}\tll = {:.20f}' \
+              .format(channel_name, density_sum, len(xyz), ll))
+        if ll > ll_max:
+            xyz_max, ll_max = xyz, ll
             try:
                 xyz_init.append(next(get_xyz_init))
             except StopIteration:
