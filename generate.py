@@ -209,7 +209,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
         # estimate parameters that maximize expected log likelihood (M-step)
         for j in range(n_atoms):
             atom_mean[j] = np.sum(density * gamma[:,1+j] * points.T, axis=1) \
-                            / np.sum(density * gamma[:,1+j])
+                         / np.sum(density * gamma[:,1+j])
         P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
 
     return atom_mean, Q
@@ -232,16 +232,19 @@ def grid_to_points_and_density(grid, center, resolution):
     return origin + resolution*indices, grid.flatten()
 
 
-def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
+def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     grid, channel = grid_channel
     density_sum = np.sum(grid)
-    if density_sum == 0:
+    density_threshold = 0.0 #np.e**-2
+    if np.max(grid) <= density_threshold:
         return []
     channel_name, element, atom_radius = channel
+    if print_:
+        print('\nfitting {}'.format(channel_name))
     points, density = grid_to_points_and_density(grid, center, resolution)
     noise_level_init = 1./len(points)
-    points = points[density > 0,:]
-    density = density[density > 0]
+    points = points[density > density_threshold,:]
+    density = density[density > density_threshold]
     get_xyz_init = get_max_density_points(points, density, atom_radius)
     xyz_init = []
     xyz_max = []
@@ -249,8 +252,9 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
     while True:
         xyz, p = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
                                                  noise_level_init, max_iter)
-        print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
-              .format(channel_name, density_sum, len(xyz), p))
+        if print_:
+            print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
+                  .format(channel_name, density_sum, len(xyz), p))
         if p > p_max:
             xyz_max, p_max = xyz, p
             try:
@@ -259,7 +263,6 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter):
                 break
         else:
             break
-    print()
     return [(channel,x,y,z) for x,y,z in xyz_max]
 
 
