@@ -200,8 +200,6 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
     ll = -np.inf
     for i in range(max_iter+1):
 
-        print(P_comp)
-
         L_point = np.zeros((n_points, n_comps)) # P(point_i|comp_j)
         for j in range(n_atoms):
             L_point[:,j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov)
@@ -262,14 +260,16 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     if print_:
         print('\nfitting {}'.format(channel_name))
     points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_type = 'p'
+    noise_type = 'd'
     noise_params_init = dict(mean=np.mean(density), cov=np.cov(density),
                              prob=1.0/len(points))
-    points = points[density > density_threshold,:]
-    density = density[density > density_threshold]
+    #points = points[density > density_threshold,:] TODO this breaks d noise model
+    #density = density[density > density_threshold]
     density_sum = np.sum(density)
     max_density_points = get_max_density_points(points, density, atom_radius)
     xyz_init = []
+    if not noise_type:
+        xyz_init.append(next(max_density_points))
     xyz_max, ll_max = [], -np.inf
     while True:
         xyz, ll = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
