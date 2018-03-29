@@ -172,7 +172,7 @@ def combine_element_grid_channels(grid_channels):
 
 
 def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius,
-                                    noise_mean_init, noise_cov_init, max_iter, eps=1e-3):
+                                    noise_mean_init, noise_cov_init, max_iter):
     n_points = len(points)
     n_atoms = len(atom_mean_init)
 
@@ -184,6 +184,9 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
 
     # initialize prior over components
     P_comp = np.full(1+n_atoms, 1./(1+n_atoms)) # P(comp_j)
+
+    # number of free parameters
+    n_params = 3*n_atoms + 2 + n_atoms
 
     # maximize expected log likelihood
     ll = -np.inf
@@ -200,7 +203,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
 
         # compute expected log likelihood
         ll_prev, ll = ll, np.sum(density * np.log(P_point))
-        if ll - ll_prev < eps or i == max_iter:
+        if ll - ll_prev < 1e-8 or i == max_iter:
             break
 
         # estimate parameters that maximize expected log likelihood (M-step)
@@ -214,7 +217,7 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
             noise_cov = noise_cov_init
         P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
 
-    return atom_mean, ll
+    return atom_mean, 2*ll - 2*n_params
 
 
 def get_max_density_points(points, density, radius):
