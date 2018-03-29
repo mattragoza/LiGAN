@@ -178,31 +178,33 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
 
     # initialize component parameters
     atom_mean = np.array(atom_mean_init)
-    atom_cov = np.full(n_atoms, (0.5*atom_radius)**2)
+    atom_cov = (0.5*atom_radius)**2
+    n_params = atom_mean.size
     if noise_type == 'd':
         noise_mean = noise_params_init['mean']
         noise_cov = noise_params_init['cov']
+        n_params += 2
     elif noise_type == 'p':
         noise_prob = noise_params_init['prob']
+        n_params += 1
     elif noise_type:
-        raise TypeError("noise_type must be 'd' or 'p'")
+        raise TypeError("noise_type must be 'd' or 'p', or None")
     n_comps = n_atoms + bool(noise_type)
+    assert n_comps > 0
 
     # initialize prior over components
-    P_comp = np.full(n_comps, 1./n_comps) # P(comp_j)
-
-    # number of free parameters
-    n_atom_params = 3*n_atoms
-    n_noise_params = dict(d=2, p=1).get(noise_type, 0)
-    n_params = n_atom_params + n_noise_params + n_comps - 1
+    P_comp = np.full(n_comps, 1.0/n_comps) # P(comp_j)
+    n_params += n_comps - 1
 
     # maximize expected log likelihood
     ll = -np.inf
     for i in range(max_iter+1):
 
+        print(P_comp)
+
         L_point = np.zeros((n_points, n_comps)) # P(point_i|comp_j)
         for j in range(n_atoms):
-            L_point[:,j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov[j])
+            L_point[:,j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov)
         if noise_type == 'd':
             L_point[:,-1] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
         elif noise_type == 'p':
@@ -225,8 +227,8 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
             noise_mean = np.sum(gamma[:,-1] * density) / np.sum(gamma[:,-1])
             noise_cov = np.sum(gamma[:,-1] * (density - noise_mean)**2) / np.sum(gamma[:,-1])
             if noise_cov == 0.0 or np.isnan(noise_cov): # reset noise
-                noise_mean = noise_mean_init
-                noise_cov = noise_cov_init
+                noise_mean = noise_params_init['mean']
+                noise_cov = noise_params_init['cov']
         elif noise_type == 'p':
             noise_prob = noise_prob
         P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
@@ -253,33 +255,32 @@ def grid_to_points_and_density(grid, center, resolution):
 
 def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     grid, channel = grid_channel
-    density_sum = np.sum(grid)
     density_threshold = 0.0
     if np.max(grid) <= density_threshold:
         return []
     channel_name, element, atom_radius = channel
-    print('fitting', channel_name)
-    points, density = grid_to_points_and_density(grid, center, resolution)
     if print_:
         print('\nfitting {}'.format(channel_name))
     points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_params_init = dict(prob=1./len(points))
+    noise_type = 'p'
+    noise_params_init = dict(mean=np.mean(density), cov=np.cov(density),
+                             prob=1.0/len(points))
     points = points[density > density_threshold,:]
     density = density[density > density_threshold]
-    get_xyz_init = get_max_density_points(points, density, atom_radius)
+    density_sum = np.sum(density)
+    max_density_points = get_max_density_points(points, density, atom_radius)
     xyz_init = []
-    xyz_max = []
-    ll_max = -np.inf
+    xyz_max, ll_max = [], -np.inf
     while True:
         xyz, ll = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
-                                                  'p', noise_params_init, max_iter)
+                                                  noise_type, noise_params_init, max_iter)
         if print_:
-            print('{:36}density_sum = {:.5f}\tn_atoms = {}\tp = {:.5f}' \
+            print('{:36}density_sum = {:.5f}\tn_atoms = {}\tll = {:f}' \
                   .format(channel_name, density_sum, len(xyz), ll))
         if ll > ll_max:
             xyz_max, ll_max = xyz, ll
             try:
-                xyz_init.append(next(get_xyz_init))
+                xyz_init.append(next(max_density_points))
             except StopIteration:
                 break
         else:
