@@ -265,8 +265,9 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     noise_type = 'd'
     noise_params_init = dict(mean=np.mean(density), cov=np.cov(density),
                              prob=1.0/len(points))
-    #points = points[density > density_threshold,:] TODO this breaks d noise model
-    #density = density[density > density_threshold]
+    if noise_type != 'd': # TODO this breaks d noise model
+        points = points[density > density_threshold,:]
+        density = density[density > density_threshold]
     density_sum = np.sum(density)
     max_density_points = get_max_density_points(points, density, atom_radius)
     xyz_init = []
