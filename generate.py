@@ -103,6 +103,9 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
+import cgenerate
+import time
+
 
 class GaussianMixtureGridLayer(caffe.Layer):
     
@@ -187,8 +190,8 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
     elif noise_type == 'p':
         noise_prob = noise_params_init['prob']
         n_params += 1
-    elif noise_type:
-        raise TypeError("noise_type must be 'd' or 'p', or None")
+    elif len(noise_type) > 0:
+        raise TypeError("noise_type must be 'd' or 'p', or '', got {}".format(repr(noise_type)))
     n_comps = n_atoms + bool(noise_type)
     assert n_comps > 0
 
@@ -250,10 +253,12 @@ def grid_to_points_and_density(grid, center, resolution):
     dims = np.array(grid.shape)
     origin = np.array(center) - resolution*(dims-1)/2.
     indices = np.array(list(np.ndindex(*dims)))
-    return origin + resolution*indices, grid.flatten()
+    points = (origin + resolution*indices)
+    density = grid.flatten()
+    return points, density
 
 
-def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
+def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, noise_type, cython, print_=True):
     grid, channel = grid_channel
     density_threshold = 0.0
     if np.max(grid) <= density_threshold:
@@ -262,7 +267,6 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     if print_:
         print('\nfitting {}'.format(channel_name))
     points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_type = 'd'
     noise_params_init = dict(mean=np.mean(density), cov=np.cov(density),
                              prob=1.0/len(points))
     if noise_type != 'd': # TODO this breaks d noise model
@@ -270,20 +274,24 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
         density = density[density > density_threshold]
     density_sum = np.sum(density)
     max_density_points = get_max_density_points(points, density, atom_radius)
-    xyz_init = []
+    xyz_init = np.ndarray((0, 3))
     if not noise_type:
-        xyz_init.append(next(max_density_points))
+        xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
     xyz_max, ll_max = [], -np.inf
+    if cython:
+        fit_atoms = cgenerate.fit_atoms_to_points_and_density
+    else:
+        fit_atoms = fit_atoms_to_points_and_density
     while True:
-        xyz, ll = fit_atoms_to_points_and_density(points, density, xyz_init, atom_radius,
-                                                  noise_type, noise_params_init, max_iter)
+        xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
+                            noise_type, noise_params_init, max_iter)
         if print_:
             print('{:36}density_sum = {:.5f}\tn_atoms = {}\tll = {:f}' \
                   .format(channel_name, density_sum, len(xyz), ll))
         if ll > ll_max:
             xyz_max, ll_max = xyz, ll
             try:
-                xyz_init.append(next(max_density_points))
+                xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
             except StopIteration:
                 break
         else:
@@ -291,11 +299,14 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, print_=True):
     return [(channel,x,y,z) for x,y,z in xyz_max]
 
 
-def fit_atoms_to_grids(grids, center, resolution, max_iter, parallel=False):
+def fit_atoms_to_grids(grids, center, resolution, max_iter, noise_type, 
+                       combine=False, parallel=True, cython=False):
     grid_channels = get_grid_channels(grids)
-    #grid_channels = combine_element_grid_channels(grid_channels)
+    if combine:
+        grid_channels = combine_element_grid_channels(grid_channels)
     map_ = Pool(processes=len(grid_channels)).map if parallel else map
-    f = partial(fit_atoms_to_grid, center=center, resolution=resolution, max_iter=max_iter)
+    f = partial(fit_atoms_to_grid, center=center, resolution=resolution,
+                max_iter=max_iter, noise_type=noise_type, cython=cython)
     return sum(map_(f, grid_channels), [])
 
 
@@ -495,13 +506,16 @@ def parse_args(argv=None):
     parser.add_argument('-l', '--lig_file', default='')
     parser.add_argument('-d', '--data_root', default='')
     parser.add_argument('-o', '--out_prefix', default=None)
+    parser.add_argument('-c', '--cython', action='store_true')
+    parser.add_argument('-n', '--noise_type', default='')
     parser.add_argument('--output_dx', action='store_true')
+    parser.add_argument('--output_fit_dx', action='store_true')
     parser.add_argument('--output_sdf', action='store_true')
     return parser.parse_args(argv)
 
 
-if __name__ == '__main__':
-    args = parse_args()
+def main(argv):
+    args = parse_args(argv)
 
     rec_file = os.path.join(args.data_root, args.rec_file)
     lig_file = os.path.join(args.data_root, args.lig_file)
@@ -511,16 +525,30 @@ if __name__ == '__main__':
 
     grids = generate_grids(args.model_file, args.weights_file, args.blob_name,
                            args.rec_file, args.lig_file, args.data_root)
+
     dx_files = []
     if args.output_dx:
         dx_files += write_grids_to_dx_files(args.out_prefix, grids, center, resolution)
 
+    if args.output_fit_dx:
+        fit_grids = fit_grids_to_grids(grids, resolution, max_iter=20)
+        dx_files += write_grids_to_dx_files(args.out_prefix + '_fit', fit_grids, center, resolution)
+
     extra_files = [rec_file, lig_file]
     if args.output_sdf:
-        atoms = fit_atoms_to_grids(grids, center, resolution, max_iter=20)
+        t_i = time.time()
+        atoms = fit_atoms_to_grids(grids, center, resolution, max_iter=20,
+                                   noise_type=args.noise_type, cython=args.cython)
+        t_f = time.time()
+        print(len(atoms), t_f - t_i)
         pred_file = '{}.sdf'.format(args.out_prefix)
         write_atoms_to_sdf_file(pred_file, atoms)
         extra_files.append(pred_file)
 
     pymol_file = '{}.pymol'.format(args.out_prefix)
     write_pymol_script(pymol_file, dx_files, *extra_files)
+
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
