@@ -229,7 +229,9 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
                 noise_cov = noise_params_init['cov']
         elif noise_type == 'p':
             noise_prob = noise_prob
-        P_comp = np.sum(density * gamma.T, axis=1) / np.sum(density)
+        if noise_type and n_atoms > 0:
+            P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
+            P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
 
     return atom_mean, 2*ll - 2*n_params
 
