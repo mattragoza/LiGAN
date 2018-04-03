@@ -1,42 +1,17 @@
 from __future__ import print_function
-import sys
-import os
-import re
-import argparse
+import sys, os, re, argparse, ast
 import numpy as np
 from rdkit import Chem
-
-try:
-    from pymol import cmd, stored
-
-    def set_atom_level(level, selection_keyword=''):
-        channel_names = [x[0] for x in rec_channels + lig_channels]
-        pattern = re.compile('^(.+)_({})_map$'.format('|'.join(channel_names)))
-        map_objects = {}
-        for object in cmd.get_names('objects'):
-            match = pattern.match(object)
-            if match:
-                prefix = match.group(1)
-                if prefix not in map_objects:
-                    map_objects[prefix] = []
-                map_objects[prefix].append(object)
-        for prefix in map_objects:
-            surface_objects = []
-            for map_object in map_objects[prefix]:
-                match = pattern.match(map_object)
-                channel_name = match.group(2)
-                surface_object = '{}_{}_surface'.format(prefix, channel_name)
-                if selection_keyword in map_object:
-                    cmd.isosurface(surface_object, map_object, level=level)
-                    cmd.color(get_color_for_channel(channel_name), surface_object)
-                surface_objects.append(surface_object)
-            surface_group = '{}_surfaces'.format(prefix)
-            cmd.group(surface_group, ' '.join(surface_objects))
-
-    cmd.extend('set_atom_level', set_atom_level)
-
-except ImportError:
-    pass
+from contextlib import contextmanager
+from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
+from functools import partial
+from scipy.stats import multivariate_normal
+import caffe
+caffe.set_mode_gpu()
+caffe.set_device(0)
+import cgenerate
+import time
 
 
 # channel name, element, atom radius
@@ -91,20 +66,6 @@ def get_color_for_channel(channel_name):
         return 'yellow'
     else:
         return 'green'
-
-
-import ast
-from contextlib import contextmanager
-from multiprocessing import Pool
-from multiprocessing.pool import ThreadPool
-from functools import partial
-from scipy.stats import multivariate_normal
-import caffe
-caffe.set_mode_gpu()
-caffe.set_device(0)
-
-import cgenerate
-import time
 
 
 class GaussianMixtureGridLayer(caffe.Layer):
@@ -409,7 +370,7 @@ def instantiate_data(rec_file, lig_file):
 
 def write_pymol_script(pymol_file, dx_files, *extra_files):
     out = open(pymol_file, 'w')
-    out.write('run {}\n'.format(__file__))
+    out.write('run set_atom_level.py\n')
     map_objects = []
     for dx_file in dx_files:
         map_object = dx_file.replace('.dx', '_map')
