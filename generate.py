@@ -316,13 +316,14 @@ def rec_and_lig_at_index_in_data_file(file, index):
     return cols[2], cols[3]
 
 
-def best_loss_batch_index_from_net(net, loss_name, n_batches, best=min):
+def best_loss_batch_index_from_net(net, loss_name, n_batches, best):
     loss = net.blobs[loss_name]
-    best_index, best_loss = -1, np.inf
+    best_index, best_loss = -1, None
     for i in range(n_batches):
         net.forward()
-        if best(loss.data, best_loss) == loss.data:
-            best_loss = float(loss.data)
+        l = float(np.max(loss.data))
+        if i == 0 or best(l, best_loss) == l:
+            best_loss = l
             best_index = i
             print('{} ({} / {})'.format(best_loss, i, n_batches))
     return best_index
@@ -333,11 +334,11 @@ def n_lines_in_file(file):
         return sum(1 for line in f)
 
 
-def best_loss_rec_and_lig(model_file, weights_file, data_file, data_root, loss_name):
+def best_loss_rec_and_lig(model_file, weights_file, data_file, data_root, loss_name, best=max):
     n_batches = n_lines_in_file(data_file)
     with instantiate_model(model_file, data_file, data_file, data_root, 1) as model_file:
         net = caffe.Net(model_file, weights_file, caffe.TEST)
-        index = best_loss_batch_index_from_net(net, loss_name, n_batches)
+        index = best_loss_batch_index_from_net(net, loss_name, n_batches, best)
     return rec_and_lig_at_index_in_data_file(data_file, index)
 
 
