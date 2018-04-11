@@ -1,6 +1,59 @@
 import re
 from pymol import cmd, stored
-from generate import rec_channels, lig_channels, get_color_for_channel
+
+
+# channel name, element, atom radius
+rec_channels = [("rec_AliphaticCarbonXSHydrophobe", "C", 1.90),
+                ("rec_AliphaticCarbonXSNonHydrophobe", "C", 1.90),
+                ("rec_AromaticCarbonXSHydrophobe", "C", 1.90),
+                ("rec_AromaticCarbonXSNonHydrophobe", "C", 1.90),
+                ("rec_Calcium", "Ca", 1.20),
+                ("rec_Iron", "Fe", 1.20),
+                ("rec_Magnesium", "Mg", 1.20),
+                ("rec_Nitrogen", "N", 1.80),
+                ("rec_NitrogenXSAcceptor", "N", 1.80),
+                ("rec_NitrogenXSDonor", "N", 1.80),
+                ("rec_NitrogenXSDonorAcceptor", "N", 1.80),
+                ("rec_OxygenXSAcceptor", "O", 1.70),
+                ("rec_OxygenXSDonorAcceptor", "O", 1.70),
+                ("rec_Phosphorus", "P", 2.10),
+                ("rec_Sulfur", "S", 2.00),
+                ("rec_Zinc", "Zn", 1.20)]
+
+lig_channels = [("lig_AliphaticCarbonXSHydrophobe", "C", 1.90),
+                ("lig_AliphaticCarbonXSNonHydrophobe", "C", 1.90),
+                ("lig_AromaticCarbonXSHydrophobe", "C", 1.90),
+                ("lig_AromaticCarbonXSNonHydrophobe", "C", 1.90),
+                ("lig_Bromine", "Br", 2.00),
+                ("lig_Chlorine", "Cl", 1.80),
+                ("lig_Fluorine", "F", 1.50),
+                ("lig_Nitrogen", "N", 1.80),
+                ("lig_NitrogenXSAcceptor", "N", 1.80),
+                ("lig_NitrogenXSDonor", "N", 1.80),
+                ("lig_NitrogenXSDonorAcceptor", "N", 1.80),
+                ("lig_Oxygen", "O", 1.70),
+                ("lig_OxygenXSAcceptor", "O", 1.70),
+                ("lig_OxygenXSDonorAcceptor", "O", 1.70),
+                ("lig_Phosphorus", "P", 2.10),
+                ("lig_Sulfur", "S", 2.00),
+                ("lig_SulfurAcceptor", "S", 2.00),
+                ("lig_Iodine", "I", 2.20),
+                ("lig_Boron", "B", 1.92)]
+
+
+def get_color_for_channel(channel_name):
+    if 'Carbon' in channel_name:
+        return 'grey'
+    elif 'Oxygen' in channel_name:
+        return 'red'
+    elif 'Nitrogen' in channel_name:
+        return 'blue'
+    elif 'Phosphorus' in channel_name:
+        return 'orange'
+    elif 'Sulfur' in channel_name:
+        return 'yellow'
+    else:
+        return 'green'
 
 
 def set_atom_level(level, selection_keyword=''):
