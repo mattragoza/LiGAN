@@ -85,21 +85,22 @@ def gen_step(data_solver, gen_solver, disc_solver, n_iter, lambda_l2, lambda_adv
 
 
 def train_gan_model(data_solver, gen_solver, disc_solver, max_iter, snapshot_iter,
-                    gen_iter_mult, disc_iter_mult):
-
-    lambda_l2  = 1
-    lambda_adv = 1e3
+                    gen_iter_mult, disc_iter_mult, lambda_l2, lambda_adv):
 
     times = []
     for i in range(max_iter):
 
         start = time.time()
 
+        if i%snapshot_iter == 0:
+            disc_solver.snapshot()
+            gen_solver.snapshot()
+
         disc_loss = disc_step(data_solver, gen_solver, disc_solver, disc_iter_mult)
 
         gen_l2_loss, gen_adv_loss = gen_step(data_solver, gen_solver, disc_solver,
                                              gen_iter_mult, lambda_l2, lambda_adv)
-        
+
         times.append(timedelta(seconds=time.time() - start))
         time_elapsed = np.sum(times)
         time_mean = time_elapsed // len(times)
@@ -113,15 +114,11 @@ def train_gan_model(data_solver, gen_solver, disc_solver, max_iter, snapshot_ite
         print('  Discriminator iteration {}'.format((i+1)*disc_iter_mult))
         print('    disc_loss = {}'.format(disc_loss))
         print('  Generator iteration {}'.format((i+1)*gen_iter_mult))
-        print('    gen_adv_loss = {}'.format(gen_adv_loss))
-        print('    gen_l2_loss = {}'.format(gen_l2_loss))
+        print('    gen_adv_loss = {} (x{})'.format(gen_adv_loss, lambda_adv))
+        print('    gen_l2_loss = {} (x{})'.format(gen_l2_loss, lambda_l2))
 
         disc_solver.increment_iter()
         gen_solver.increment_iter()
-
-        if (i+1)%snapshot_iter == 0:
-            disc_solver.snapshot()
-            gen_solver.snapshot()
 
 
 def get_train_and_test_files(data_prefix, fold_nums):
@@ -150,6 +147,8 @@ def parse_args(argv):
     parser.add_argument('--disc_iter_mult', default=2, type=int)
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
+    parser.add_argument('--lambda_l2', type=float, default=1.0)
+    parser.add_argument('--lambda_adv', type=float, default=1.0)
     return parser.parse_args(argv)
 
 
@@ -185,8 +184,12 @@ def main(argv):
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
-        train_gan_model(data_solver, gen_solver, disc_solver, args.max_iter, args.snapshot_iter,
-                        args.gen_iter_mult, args.disc_iter_mult)
+        try:
+            train_gan_model(data_solver, gen_solver, disc_solver, args.max_iter, args.snapshot_iter,
+                            args.gen_iter_mult, args.disc_iter_mult, args.lambda_l2, args.lambda_adv)
+        finally:
+            disc_solver.snapshot()
+            gen_solver.snapshot()
 
 
 if __name__ == '__main__':
