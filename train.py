@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import print_function, division
 import sys
 import os
 import argparse
@@ -13,77 +13,96 @@ caffe.set_device(0)
 import caffe_util
 
 
+def disc_step(data_solver, gen_solver, disc_solver, n_iter):
+
+    data_net = data_solver.net
+    gen_net  = gen_solver.net
+    disc_net = disc_solver.net
+
+    batch_size = data_net.blobs['lig'].shape[0]
+    half1 = np.arange(batch_size) < batch_size//2
+    half2 = ~half1
+
+    disc_loss = np.float32(0)
+    for i in range(n_iter//2):
+
+        data_net.forward()
+        rec_real = data_net.blobs['rec'].data
+        lig_real = data_net.blobs['lig'].data
+
+        gen_net.forward(rec=rec_real, lig=lig_real)
+        lig_gen = gen_net.blobs['lig_gen'].data
+
+        lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
+        disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
+        disc_loss += disc_net.blobs['loss'].data
+        disc_net.clear_param_diffs()
+        disc_net.backward()
+        disc_solver.apply_update()
+
+        lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
+        disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
+        disc_loss += disc_net.blobs['loss'].data
+        disc_net.clear_param_diffs()
+        disc_net.backward()
+        disc_solver.apply_update()
+
+    return disc_loss/n_iter
+
+
+def gen_step(data_solver, gen_solver, disc_solver, n_iter, lambda_l2, lambda_adv):
+
+    data_net = data_solver.net
+    gen_net  = gen_solver.net
+    disc_net = disc_solver.net
+
+    batch_size = data_net.blobs['lig'].shape[0]
+
+    gen_l2_loss = np.float32(0)
+    gen_adv_loss = np.float32(0)
+    for i in range(n_iter):
+
+        data_net.forward()
+        rec_real = data_net.blobs['rec'].data
+        lig_real = data_net.blobs['lig'].data
+
+        gen_net.forward(rec=rec_real, lig=lig_real)
+        gen_l2_loss += gen_net.blobs['loss'].data
+        lig_gen = gen_net.blobs['lig_gen'].data
+
+        disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
+        gen_adv_loss += disc_net.blobs['loss'].data
+        disc_net.clear_param_diffs()
+        disc_net.backward()
+
+        gen_net.blobs['loss'].diff[...] = lambda_l2
+        gen_net.blobs['lig_gen'].diff[...] += lambda_adv*disc_net.blobs['lig'].diff
+        gen_net.clear_param_diffs()
+        gen_net.backward()
+        gen_solver.apply_update()
+
+    return gen_l2_loss/n_iter, gen_adv_loss/n_iter
+
+
 def train_gan_model(data_solver, gen_solver, disc_solver, max_iter, snapshot_iter,
                     gen_iter_mult, disc_iter_mult):
 
-    data_net = data_solver.net
-    gen_net = gen_solver.net
-    disc_net = disc_solver.net
-
-    batch_size = data_net.blobs['data'].shape[0]
-    half1 = np.arange(batch_size) < batch_size//2
-    half2 = ~half1
+    lambda_l2  = 1
+    lambda_adv = 1e3
 
     times = []
     for i in range(max_iter):
 
         start = time.time()
 
-        disc_loss = np.float32(0)
-        for j_disc in range(disc_iter_mult//2):
+        disc_loss = disc_step(data_solver, gen_solver, disc_solver, disc_iter_mult)
 
-            # train discriminator on two balanced batches of real and generated ligands
-            data_net.forward()
-            rec_real = data_net.blobs['rec'].data
-            lig_real = data_net.blobs['lig'].data
-
-            gen_net.forward(rec=rec_real, lig=lig_real)
-            lig_gen = gen_net.blobs['lig_gen'].data
-
-            lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
-            disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
-            disc_loss += disc_net.blobs['loss'].data
-            disc_net.clear_param_diffs()
-            disc_net.backward()
-            disc_solver.apply_update()
-
-            lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
-            disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
-            disc_loss += disc_net.blobs['loss'].data
-            disc_net.clear_param_diffs()
-            disc_net.backward()
-            disc_solver.apply_update()
-
-        disc_loss /= disc_iter_mult
-
-        gen_adv_loss = np.float32(0)
-        gen_l2_loss = np.float32(0)
-        for j_gen in range(gen_iter_mult):
-
-            # train generator to fool discriminator
-            data_net.forward()
-            rec_real = data_net.blobs['rec'].data
-            lig_real = data_net.blobs['lig'].data
-
-            gen_net.forward(rec=rec_real, lig=lig_real)
-            gen_l2_loss += gen_net.blobs['loss'].data
-            lig_gen = gen_net.blobs['lig_gen'].data
-
-            disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
-            gen_adv_loss += disc_net.blobs['loss'].data
-            disc_net.clear_param_diffs()
-            disc_net.backward()
-            gen_net.blobs['lig_gen'].diff[...] += disc_net.blobs['lig'].diff
-            gen_net.clear_param_diffs()
-            gen_net.backward()
-            gen_solver.apply_update()
-
-        gen_adv_loss /= gen_iter_mult
-        gen_l2_loss /= gen_iter_mult
+        gen_l2_loss, gen_adv_loss = gen_step(data_solver, gen_solver, disc_solver,
+                                             gen_iter_mult, lambda_l2, lambda_adv)
         
         times.append(timedelta(seconds=time.time() - start))
         time_elapsed = np.sum(times)
-        time_mean = time_elapsed / len(times)
+        time_mean = time_elapsed // len(times)
         iters_left = max_iter - i - 1
         time_left = time_mean*iters_left
 
