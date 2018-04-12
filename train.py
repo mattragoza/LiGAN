@@ -6,6 +6,7 @@ import time
 from datetime import timedelta
 from operator import itemgetter
 import numpy as np
+import pandas as pd
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
@@ -76,7 +77,7 @@ def gen_step(data_solver, gen_solver, disc_solver, n_iter, lambda_l2, lambda_adv
         disc_net.backward()
 
         gen_net.blobs['loss'].diff[...] = lambda_l2
-        gen_net.blobs['lig_gen'].diff[...] += lambda_adv*disc_net.blobs['lig'].diff
+        gen_net.blobs['lig_gen'].diff[...] = lambda_adv*disc_net.blobs['lig'].diff
         gen_net.clear_param_diffs()
         gen_net.backward()
         gen_solver.apply_update()
@@ -85,7 +86,10 @@ def gen_step(data_solver, gen_solver, disc_solver, n_iter, lambda_l2, lambda_adv
 
 
 def train_gan_model(data_solver, gen_solver, disc_solver, max_iter, snapshot_iter,
-                    gen_iter_mult, disc_iter_mult, lambda_l2, lambda_adv):
+                    gen_iter_mult, disc_iter_mult, lambda_l2, lambda_adv, loss_out):
+
+    loss_df = pd.DataFrame(index=pd.RangeIndex(1, max_iter+1, name='iter'),
+                           columns=('disc_loss', 'gen_l2_loss', 'gen_adv_loss'))
 
     times = []
     for i in range(max_iter):
@@ -100,25 +104,32 @@ def train_gan_model(data_solver, gen_solver, disc_solver, max_iter, snapshot_ite
 
         gen_l2_loss, gen_adv_loss = gen_step(data_solver, gen_solver, disc_solver,
                                              gen_iter_mult, lambda_l2, lambda_adv)
+        it = i+1
+
+        loss_df.loc[it] = (disc_loss, gen_l2_loss, gen_adv_loss)
+        loss_df.loc[it:it].to_csv(loss_out, header=(it==1), sep=' ')
+        loss_out.flush()
 
         times.append(timedelta(seconds=time.time() - start))
         time_elapsed = np.sum(times)
         time_mean = time_elapsed // len(times)
-        iters_left = max_iter - i - 1
+        iters_left = max_iter - it
         time_left = time_mean*iters_left
 
-        print('Iteration {}'.format(i+1))
+        print('Iteration {}'.format(it))
         print('  {} elapsed'.format(time_elapsed))
         print('  {} mean'.format(time_mean))
         print('  {} left'.format(time_left))
-        print('  Discriminator iteration {}'.format((i+1)*disc_iter_mult))
+        print('  Discriminator iteration {}'.format(it*disc_iter_mult))
         print('    disc_loss = {}'.format(disc_loss))
-        print('  Generator iteration {}'.format((i+1)*gen_iter_mult))
+        print('  Generator iteration {}'.format(it*gen_iter_mult))
         print('    gen_adv_loss = {} (x{})'.format(gen_adv_loss, lambda_adv))
         print('    gen_l2_loss = {} (x{})'.format(gen_l2_loss, lambda_l2))
 
         disc_solver.increment_iter()
         gen_solver.increment_iter()
+
+    return loss_df
 
 
 def get_train_and_test_files(data_prefix, fold_nums):
@@ -128,7 +139,7 @@ def get_train_and_test_files(data_prefix, fold_nums):
         else:
             train_file = '{}train{}.types'.format(data_prefix, fold)
             test_file = '{}test{}.types'.format(data_prefix, fold)
-        yield train_file, test_file
+        yield fold, train_file, test_file
 
 
 def parse_args(argv):
@@ -154,7 +165,7 @@ def parse_args(argv):
 
 def main(argv):
     args = parse_args(argv)
-    for train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
+    for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
 
         solver_param = caffe_util.SolverParameter.from_prototxt(args.solver_file)
         solver_param.max_iter = args.max_iter
@@ -184,12 +195,18 @@ def main(argv):
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
+        loss_file = '{}_{}_loss.csv'.format(args.out_prefix, fold)
+        loss_out = open(loss_file, 'w')
+
         try:
-            train_gan_model(data_solver, gen_solver, disc_solver, args.max_iter, args.snapshot_iter,
-                            args.gen_iter_mult, args.disc_iter_mult, args.lambda_l2, args.lambda_adv)
+            loss_df = train_gan_model(data_solver, gen_solver, disc_solver,
+                            args.max_iter, args.snapshot_iter,
+                            args.gen_iter_mult, args.disc_iter_mult,
+                            args.lambda_l2, args.lambda_adv, loss_out)
         finally:
             disc_solver.snapshot()
             gen_solver.snapshot()
+            loss_out.close()
 
 
 if __name__ == '__main__':
