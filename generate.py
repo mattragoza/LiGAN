@@ -88,55 +88,57 @@ class GaussianMixtureGridLayer(caffe.Layer):
         pass
 
 
-def get_atom_density_value(atom_pos, atom_radius, grid_point):
-    dist = np.sum((grid_point-atom_pos)**2)**0.5
+def get_atom_density(atom_pos, atom_radius, grid_point):
+    diff = grid_point - atom_pos
+    dist2 = np.sum(diff**2)
+    dist = np.sqrt(dist2)
     if dist >= 1.5 * atom_radius:
         return 0.0
     elif dist <= atom_radius:
         h = 0.5 * atom_radius
-        ex = -dist*dist / (2*h*h)
+        ex = -dist2 / (2*h*h)
         return np.exp(ex)
     else:
         h = 0.5 * atom_radius
-        ev = np.exp(-2)
-        q = dist * dist * ev / (h * h) - 6 * ev * dist / h + 9 * ev
+        inv_e2 = np.exp(-2)
+        q = dist2*inv_e2/(h**2) - 6*dist*inv_e2/h + 9*inv_e2
         return q
 
 
-def add_atoms_to_grid(grid, atoms, center, resolution):
+def get_atom_gradient(atom_pos, atom_radius, point):
+    diff = point - atom_pos
+    dist2 = np.sum(diff**2)
+    dist = np.sqrt(dist2)
+    if dist >= 1.5 * atom_radius or np.isclose(dist, 0):
+        return 0.0
+    elif dist <= atom_radius:
+        h = 0.5 * atom_radius
+        ex = -dist2 / (2*h*h)
+        coef = -dist / (h*h)
+        d_density = coef * np.exp(ex)
+    else:
+        h = 0.5 * atom_radius
+        inv_e2 = np.exp(-2)
+        d_density = 2*dist*inv_e2/(h**2) - 6*inv_e2/h
+
+    return -(diff / dist) * d_density
+
+
+def add_atoms_to_grid(grid, atoms, center, resolution, atom_radius):
     dims = np.array(grid.shape)
     origin = np.array(center) - resolution*(dims-1)/2.
-    for channel,x,y,z in atoms:
-        channel_name, element, atom_radius = channel
-        atom_pos = np.array([x,y,z])
+    for atom_pos in atoms:
         for i in range(dims[0]):
             for j in range(dims[1]):
                 for k in range(dims[2]):
                     grid_point = origin + resolution*np.array([i,j,k])
-                    density = get_atom_density_value(atom_pos, atom_radius, grid_point)
+                    density = get_atom_density(atom_pos, atom_radius, grid_point)
                     grid[i][j][k] += density
     return grid
 
 
-def combine_element_grid_channels(grid_channels):
-    elem_grids = []
-    elem_channels = []
-    for elem in ['Carbon', 'Oxygen', 'Nitrogen']:
-        elem_grid = np.zeros_like(grid_channels[0][0])
-        elem_channel = None
-        for grid, channel in grid_channels:
-            channel_name, element, atom_radius = channel
-            if elem in channel_name:
-                elem_grid += grid
-                if elem_channel is None:
-                    elem_channel = (elem, element, atom_radius)
-        elem_grids.append(elem_grid)
-        elem_channels.append(elem_channel)
-    return zip(np.array(elem_grids), elem_channels)
-
-
-def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius,
-                                    noise_type, noise_params_init, max_iter):
+def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
+                  noise_type, noise_params_init, max_iter):
     n_points = len(points)
     n_atoms = len(atom_mean_init)
 
@@ -197,8 +199,36 @@ def fit_atoms_to_points_and_density(points, density, atom_mean_init, atom_radius
             P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
             P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
 
-
     return atom_mean, 2*ll - 2*n_params
+
+
+def fit_atoms_l2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01):
+
+    # initialize component parameters
+    n_atoms = len(atom_mean_init)
+    atom_mean = np.array(atom_mean_init)
+    d_atom_mean = np.zeros_like(atom_mean)
+
+    # minimize L2 loss by gradient descent
+    l2 = np.inf
+    for i in range(max_iter+1):
+
+        grid_pred = add_atoms_to_grid(np.zeros_like(grid), atom_mean, center, resolution, atom_radius)
+        d_grid_pred = grid_pred - grid
+        l2_prev, l2 = l2, np.sum(d_grid_pred**2)/2
+
+        if i == max_iter:
+            break
+
+        # dl2/datom = sum_grid dl2/dgrid * dgrid/datom
+        points, d_density = grid_to_points_and_values(d_grid_pred, center, resolution)
+        d_atom_mean[...] = 0.0
+        for j in range(n_atoms):
+            for p, d in zip(points, d_density):
+                d_atom_mean[j] += d * get_atom_gradient(atom_mean[j], atom_radius, p)
+        atom_mean[...] -= lr*d_atom_mean
+
+    return atom_mean, l2
 
 
 def get_max_density_points(points, density, radius):
@@ -211,55 +241,63 @@ def get_max_density_points(points, density, radius):
             yield max_points[-1]
 
 
-def grid_to_points_and_density(grid, center, resolution):
+def grid_to_points_and_values(grid, center, resolution):
     dims = np.array(grid.shape)
     origin = np.array(center) - resolution*(dims-1)/2.
     indices = np.array(list(np.ndindex(*dims)))
-    points = (origin + resolution*indices)
-    density = grid.flatten()
-    return points, density
+    return origin + resolution*indices, grid.flatten()
 
 
-def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, noise_type, cython, n_atoms, print_=True):
-    grid, channel = grid_channel
-    density_threshold = 0.0
+def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_l2, 
+                      cython, density_threshold=0.0, verbose=True):
+    grid, (channel_name, element, atom_radius), n_atoms = grid_args
+    # nothing to fit if the whole grid is sub threshold
     if np.max(grid) <= density_threshold:
         return []
-    channel_name, element, atom_radius = channel
-    if print_:
+    if verbose:
         print('\nfitting {}'.format(channel_name))
-    points, density = grid_to_points_and_density(grid, center, resolution)
-    noise_params_init = dict(mean=np.mean(density), cov=np.cov(density),
-                             prob=1.0/len(points))
-    if noise_type != 'd': # TODO this breaks d noise model
-        points = points[density > density_threshold,:]
-        density = density[density > density_threshold]
+    # convert grid to arrays of xyz points and density values
+    points, density = grid_to_points_and_values(grid, center, resolution)
+    if not by_l2: # initialize noise model params
+        noise_params_init = dict(mean=np.mean(density),
+                                 cov=np.cov(density),
+                                 prob=1.0/len(points))
+        if noise_type != 'd': # TODO this breaks d noise model
+            # speed up GMM by only fitting points above threshold
+            points = points[density > density_threshold,:]
+            density = density[density > density_threshold]
+    elif noise_type:
+        raise NotImplementedError('TODO implement by_l2 noise model')
     density_sum = np.sum(density)
+    # generator for inital atom positions
     max_density_points = get_max_density_points(points, density, atom_radius)
     xyz_init = np.ndarray((0, 3))
     if cython:
-        fit_atoms = cgenerate.fit_atoms_to_points_and_density
+        if by_l2:
+            raise NotImplementedError('TODO implement by_l2 cython')
+        else:
+            fit_atoms = cgenerate.fit_atoms_gmm
     else:
-        fit_atoms = fit_atoms_to_points_and_density
-    by_rmse = True
+        if by_l2:
+            fit_atoms = fit_atoms_l2
+        else:
+            fit_atoms = fit_atoms_gmm
     xyz_best, loss_best = [], np.inf
-    if n_atoms is None:
-        if not noise_type:
+    if n_atoms is None: # iteratively add atoms and assess fit
+        if not by_l2 and not noise_type:
+            # can't fit GMM with 0 atoms and no noise model
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
         while True:
-            xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
-                                noise_type, noise_params_init, max_iter)
-            if by_rmse:
-                pred_atoms = [(channel,x,y,z) for x,y,z in xyz]
-                pred_grid = add_atoms_to_grid(np.zeros_like(grid), pred_atoms, center, resolution)
-                loss = np.mean((grid - pred_grid)**2)
+            if by_l2:
+                xyz, l2 = fit_atoms(grid, center, resolution, xyz_init, atom_radius, max_iter)
+                loss = l2
             else:
+                xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
+                                    noise_type, noise_params_init, max_iter)
                 loss = -ll
-
-            if print_:
+            if verbose:
                 print('{:36}density_sum = {:.5f}\tn_atoms = {}\tloss = {:f}' \
                       .format(channel_name, density_sum, len(xyz), loss))
-
             if loss < loss_best:
                 xyz_best, loss_best = xyz, loss
                 try:
@@ -268,49 +306,47 @@ def fit_atoms_to_grid(grid_channel, center, resolution, max_iter, noise_type, cy
                     break
             else:
                 break
-    else:
-        n_atoms = n_atoms[element]
-        print('exactly {} atoms to fit'.format(n_atoms))
-        while len(xyz_init) < int(n_atoms):
+    else: # fit exactly n_atoms
+        while len(xyz_init) < n_atoms:
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
-        xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
-                            noise_type, noise_params_init, max_iter)
-        if by_rmse:
-            pred_atoms = [(channel,x,y,z) for x,y,z in xyz]
-            pred_grid = add_atoms_to_grid(np.zeros_like(grid), pred_atoms, center, resolution)
-            loss = np.mean((grid - pred_grid)**2)
+        if by_l2:
+            xyz, l2 = fit_atoms(grid, center, resolution, xyz_init, atom_radius, max_iter)
+            loss = l2
         else:
+            xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
+                                noise_type, noise_params_init, max_iter)
             loss = -ll
-        if print_:
+        if verbose:
             print('{:36}density_sum = {:.5f}\tn_atoms = {}\tloss = {:f}' \
                   .format(channel_name, density_sum, len(xyz), loss))
         xyz_best, loss_best = xyz, loss
-
-    return [(channel,x,y,z) for x,y,z in xyz_best]
-
-
-def fit_atoms_to_grids(grids, center, resolution, max_iter, noise_type, 
-                       combine=False, parallel=False, cython=False, n_atoms=None):
-    grid_channels = get_grid_channels(grids)
-    if combine:
-        grid_channels = combine_element_grid_channels(grid_channels)
-    map_ = Pool(processes=len(grid_channels)).map if parallel else map
-    f = partial(fit_atoms_to_grid, center=center, resolution=resolution, max_iter=max_iter,
-                noise_type=noise_type, cython=cython, n_atoms=n_atoms)
-    return sum(map_(f, grid_channels), [])
+    return xyz_best
 
 
-def fit_grid_to_grid(grid_channel, resolution, max_iter):
-    grid, channel = grid_channel
-    center = np.array([0.,0.,0.])
-    atoms = fit_atoms_to_grid(grid_channel, center, resolution, max_iter)
-    return add_atoms_to_grid(np.zeros_like(grid), atoms, center, resolution)
+def fit_atoms_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
+    grid_args = zip(grids, channels, n_atoms)
+    if parallel:
+        fmap = Pool(processes=len(grid_args)).map
+    else:
+        fmap = map
+    f = partial(fit_atoms_to_grid, *args, **kwargs)
+    return fmap(f, grid_args)
 
 
-def fit_grids_to_grids(grids, resolution, max_iter):
-    pool = Pool(processes=grids.shape[0])
-    f = partial(fit_grid_to_grid, resolution=resolution, max_iter=max_iter)
-    return np.array(pool.map(f, get_grid_channels(grids)))
+def fit_grid_to_grid(grid_args, center, resolution, *args, **kwargs):
+    atom_radius = grid_args[1][2]
+    xyz = fit_atoms_to_grid(grid_args, center, resolution, *args, **kwargs)
+    return add_atoms_to_grid(np.zeros_like(grid), xyz, center, resolution, atom_radius)
+
+
+def fit_grids_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
+    grid_args = zip(grids, channels, n_atoms)
+    if parallel:
+        fmap = Pool(processes=len(grid_args)).map
+    else:
+        fmap = map
+    f = partial(fit_grid_to_grid, *args, **kwargs)
+    return np.array(fmap(f, grid_args))
 
 
 def rec_and_lig_at_index_in_data_file(file, index):
@@ -371,6 +407,19 @@ def generate_grids(model_file, weights_file, blob_pattern, rec_file, lig_file, d
             return generate_grids_from_net(net, blob_pattern, index=0)
 
 
+def combine_element_grids_and_channels(grids, channels):
+    elem_map = dict()
+    elem_grids = []
+    elem_channels = []
+    for grid, (channel_name, element, atom_radius) in zip(grids, channels):
+        if element not in elem_map:
+            elem_map[element] = len(elem_map)
+            elem_grids.append(np.zeros_like(grid))
+            elem_channels.append((element, element, atom_radius))
+        elem_grids[elem_map[element]] += grid
+    return np.array(elem_grids), elem_channels
+
+
 @contextmanager
 def instantiate_model(model_file, train_file, test_file, data_root, batch_size=None):
     with open(model_file, 'r') as f:
@@ -400,6 +449,7 @@ def instantiate_data(rec_file, lig_file):
 def write_pymol_script(pymol_file, dx_files, *extra_files):
     out = open(pymol_file, 'w')
     out.write('run set_atom_level.py\n')
+    out.write('run isoslider.py\n')
     map_objects = []
     for dx_file in dx_files:
         map_object = dx_file.replace('.dx', '_map')
@@ -412,19 +462,20 @@ def write_pymol_script(pymol_file, dx_files, *extra_files):
     out.close()
 
 
-def write_atoms_to_sdf_file(sdf_file, atoms):
+def write_atoms_to_sdf_file(sdf_file, xyzs, channels):
     out = open(sdf_file, 'w')
     out.write('\n\n\n')
-    out.write('{:3d}'.format(len(atoms)))
+    n_atoms = sum(len(xyz) for xyz in xyzs)
+    out.write('{:3d}'.format(n_atoms))
     out.write('  0  0  0  0  0  0  0  0  0')
     out.write('999 V2000\n')
-    for channel,x,y,z in atoms:
-        channel_name, element, atom_radius = channel
-        out.write('{:10.4f}'.format(x))
-        out.write('{:10.4f}'.format(y))
-        out.write('{:10.4f}'.format(z))
-        out.write(' {:3}'.format(element))
-        out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
+    for xyz, (_, element, _) in zip(xyzs, channels):
+        for x,y,z in xyz:
+            out.write('{:10.4f}'.format(x))
+            out.write('{:10.4f}'.format(y))
+            out.write('{:10.4f}'.format(z))
+            out.write(' {:3}'.format(element))
+            out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
     out.write('M  END\n')
     out.write('$$$$')
     out.close()
@@ -453,17 +504,16 @@ def write_grid_to_dx_file(dx_file, grid, center, resolution):
                         f.write(' ')
 
 
-def write_grids_to_dx_files(out_prefix, grids, center, resolution):
+def write_grids_to_dx_files(out_prefix, grids, channels, center, resolution):
     dx_files = []
-    for grid, channel in get_grid_channels(grids):
-        channel_name, _, _ = channel
+    for grid, (channel_name, _, _) in zip(grids, channels):
         dx_file = '{}_{}.dx'.format(out_prefix, channel_name)
         write_grid_to_dx_file(dx_file, grid, center, resolution)
         dx_files.append(dx_file)
     return dx_files
 
 
-def get_grid_channels(grids):
+def get_channel_info_for_grids(grids):
     n_channels = grids.shape[0]
     if n_channels == len(rec_channels):
         channels = rec_channels
@@ -471,7 +521,9 @@ def get_grid_channels(grids):
         channels = lig_channels
     elif n_channels == len(rec_channels) + len(lig_channels):
         channels = rec_channels + lig_channels
-    return zip(grids, channels)
+    else:
+        raise ValueError('could not infer channel info for grids with {} channels'.format(n_channels))
+    return channels
 
 
 def get_resolution_from_model_file(model_file):
@@ -503,10 +555,13 @@ def parse_args(argv=None):
     parser.add_argument('-o', '--out_prefix', default=None)
     parser.add_argument('-c', '--cython', action='store_true')
     parser.add_argument('-n', '--noise_type', default='')
+    parser.add_argument('--max_iter', type=int, default=10)
+    parser.add_argument('--combine_channels', action='store_true')
     parser.add_argument('--read_n_atoms', action='store_true')
     parser.add_argument('--output_dx', action='store_true')
-    parser.add_argument('--output_fit_dx', action='store_true')
     parser.add_argument('--output_sdf', action='store_true')
+    parser.add_argument('--channel_info', default=None)
+    parser.add_argument('--by_l2', action='store_true')
     return parser.parse_args(argv)
 
 
@@ -519,32 +574,41 @@ def main(argv):
     center = get_center_from_sdf_file(lig_file)
     resolution = get_resolution_from_model_file(args.model_file)
 
-    if args.read_n_atoms:
-        n_atoms = get_n_atoms_from_sdf_file(lig_file)
-    else:
-        n_atoms = None
-
     grids = generate_grids(args.model_file, args.weights_file, args.blob_name,
                            args.rec_file, args.lig_file, args.data_root)
 
+    if args.channel_info is None:
+        channels = get_channel_info_for_grids(grids)
+    elif args.channel_info == 'data':
+        channels = rec_channels + lig_channels
+    elif args.channel_info == 'rec':
+        channels = rec_channels
+    elif args.channel_info == 'lig':
+        channels = lig_channels
+    else:
+        raise ValueError('--channel_info must be data, rec, or lig')
+
     dx_files = []
     if args.output_dx:
-        dx_files += write_grids_to_dx_files(args.out_prefix, grids, center, resolution)
-
-    if args.output_fit_dx:
-        fit_grids = fit_grids_to_grids(grids, resolution, max_iter=20)
-        dx_files += write_grids_to_dx_files(args.out_prefix + '_fit', fit_grids, center, resolution)
+        dx_files += write_grids_to_dx_files(args.out_prefix, grids, channels, center, resolution)
 
     extra_files = [rec_file, lig_file]
     if args.output_sdf:
-        t_i = time.time()
-        atoms = fit_atoms_to_grids(grids, center, resolution, max_iter=20,
-                                   noise_type=args.noise_type, cython=args.cython,
-                                   combine=args.read_n_atoms, n_atoms=n_atoms)
-        t_f = time.time()
-        print(len(atoms), t_f - t_i)
-        pred_file = '{}.sdf'.format(args.out_prefix)
-        write_atoms_to_sdf_file(pred_file, atoms)
+
+        if args.combine_channels:
+            grids, channels = combine_element_grids_and_channels(grids, channels)
+
+        if args.read_n_atoms:
+            n_atoms = get_n_atoms_from_sdf_file(lig_file)
+        else:
+            n_atoms = [None for _ in grids]
+
+        xyzs = fit_atoms_to_grids(grids, channels, n_atoms, center=center, resolution=resolution,
+                                  max_iter=args.max_iter, noise_type=args.noise_type,
+                                  by_l2=args.by_l2, cython=args.cython)
+
+        pred_file = '{}_fit.sdf'.format(args.out_prefix)
+        write_atoms_to_sdf_file(pred_file, xyzs, channels)
         extra_files.append(pred_file)
 
     pymol_file = '{}.pymol'.format(args.out_prefix)
