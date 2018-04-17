@@ -6,9 +6,9 @@ layer {
     shape {
       dim: 50
       dim: 16
-      dim: 12
-      dim: 12
-      dim: 12
+      dim: 24
+      dim: 24
+      dim: 24
     }
   }
 }
@@ -20,9 +20,9 @@ layer {
     shape {
       dim: 50
       dim: 19
-      dim: 12
-      dim: 12
-      dim: 12
+      dim: 24
+      dim: 24
+      dim: 24
     }
   }
 }
