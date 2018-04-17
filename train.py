@@ -1,4 +1,6 @@
 from __future__ import print_function, division
+import matplotlib
+matplotlib.use('Agg')
 import sys
 import os
 import argparse
@@ -7,11 +9,37 @@ from datetime import timedelta
 from operator import itemgetter
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
 import caffe_util
+
+
+def training_plot(plot_file, loss_df, binsize=100):
+
+    colors = ['r','g','b']
+    loss_df = loss_df.groupby(np.arange(len(loss_df))//binsize).mean()
+    loss_df.index = binsize*(loss_df.index + 1)
+
+    fig, ax1 = plt.subplots()
+    ax1.set_xlabel('iteration')
+    ax1.set_ylabel('cross entropy loss')
+    for column in ['disc_loss', 'gen_adv_loss']:
+        ax1.plot(loss_df.index, loss_df[column], label=column,
+                 color=colors.pop(0), linewidth=1)
+    ax1.legend(loc='upper left')
+
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('l2 loss')
+    for column in ['gen_l2_loss']:
+        ax2.plot(loss_df.index, loss_df[column], label=column,
+                 color=colors.pop(0), linewidth=1)
+    ax2.legend(loc='upper right')
+
+    fig.tight_layout()
+    fig.savefig(plot_file)
 
 
 def disc_step(data_solver, gen_solver, disc_solver, n_iter):
@@ -200,13 +228,16 @@ def main(argv):
 
         try:
             loss_df = train_gan_model(data_solver, gen_solver, disc_solver,
-                            args.max_iter, args.snapshot_iter,
-                            args.gen_iter_mult, args.disc_iter_mult,
-                            args.lambda_l2, args.lambda_adv, loss_out)
+                                      args.max_iter, args.snapshot_iter,
+                                      args.gen_iter_mult, args.disc_iter_mult,
+                                      args.lambda_l2, args.lambda_adv, loss_out)
         finally:
             disc_solver.snapshot()
             gen_solver.snapshot()
             loss_out.close()
+
+            plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
+            training_plot(plot_file, loss_df)
 
 
 if __name__ == '__main__':
