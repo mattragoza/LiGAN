@@ -31,42 +31,42 @@ def temp_prototxt(param):
     os.remove(prototxt_file)
 
 
-def update_param(param, *args, **kwargs):
+def update_param(param_, *args, **kwargs):
     for key, value in kwargs.items():
         if isinstance(value, list):
-            update_param(getattr(param, key), *value)
+            update_param(getattr(param_, key), *value)
         elif isinstance(value, dict):
-            update_param(getattr(param, key), **value)
+            update_param(getattr(param_, key), **value)
         elif isinstance(value, message.Message):
-            getattr(param, key).CopyFrom(value)
+            getattr(param_, key).CopyFrom(value)
         else:
-            setattr(param, key, value)
+            setattr(param_, key, value)
     for i, value in enumerate(args):
-        if i == len(param):
+        if i == len(param_):
             try:
-                param.add()
+                param_.add()
             except AttributeError:
-                param.append(value)
+                param_.append(value)
                 continue
         if isinstance(value, list):
-            update_param(param[i], *value)
+            update_param(param_[i], *value)
         elif isinstance(value, dict):
-            update_param(param[i], **value)
+            update_param(param_[i], **value)
         elif isinstance(value, message.Message):
-            param[i].CopyFrom(value)
+            param_[i].CopyFrom(value)
         else:
-            param[i] = value
+            param_[i] = value
 
 
 # can't inherit from protobuf message, so just add methods to the generated classes
-for key in caffe_pb2.__dict__:
-    if key.endswith('Parameter'):
-        getattr(caffe_pb2, key).from_prototxt = classmethod(from_prototxt)
-        getattr(caffe_pb2, key).to_prototxt = write_prototxt
-        getattr(caffe_pb2, key).temp_prototxt = temp_prototxt
-        getattr(caffe_pb2, key).update = update_param
-        getattr(caffe_pb2, key).__init__ = update_param
-        globals()[key] = getattr(caffe_pb2, key)
+for name, cls in caffe_pb2.__dict__.iteritems():
+    if isinstance(cls, type) and issubclass(cls, message.Message):
+        cls.from_prototxt = classmethod(from_prototxt)
+        cls.to_prototxt = write_prototxt
+        cls.temp_prototxt = temp_prototxt
+        cls.update = update_param
+        cls.__init__ = update_param
+        globals()[name] = cls
 
 
 class Net(caffe.Net):
