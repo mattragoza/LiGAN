@@ -3,8 +3,9 @@ import caffe_util
 from caffe import TRAIN, TEST, params
 
 
-def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_filters, growth_factor, loss_types='',
-               molgrid_data=True, batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
+def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
+               n_filters, growth_factor, loss_types='', molgrid_data=True,
+               batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
 
     assert encode_type in ['a', 'c']
     assert pool_type in ['c', 'm', 'a']
@@ -270,7 +271,7 @@ if __name__ == '__main__':
     model_grid = make_model_grid(name_format,
                                  encode_type=['c', 'a'],
                                  data_dim=[24],
-                                 resolution=[0.5],
+                                 resolution=[0.5, 1.0],
                                  n_levels=[2, 3],
                                  conv_per_level=[2, 3],
                                  n_filters=[16, 32, 64],
