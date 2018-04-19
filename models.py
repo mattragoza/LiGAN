@@ -1,3 +1,4 @@
+import itertools
 import caffe_util
 from caffe import TRAIN, TEST, params
 
@@ -162,9 +163,6 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
     next_dim = first_depool_dim
 
-    print(batch_size, curr_n_filters, curr_dim, curr_dim, curr_dim)
-    print(curr_n_filters*curr_dim**3)
-
     # decoder
     for i in reversed(range(n_levels)):
 
@@ -254,5 +252,30 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
     return net
 
 
+def keyword_product(**kwargs):
+    for values in itertools.product(*kwargs.itervalues()):
+        yield dict(itertools.izip(kwargs.iterkeys(), values))
+
+
+def make_model_grid(name_format, **grid_kwargs):
+    for kwargs in keyword_product(**grid_kwargs):
+        yield name_format.format(**kwargs), make_model(**kwargs)
+
+
 if __name__ == '__main__':
-    net_param = make_model('c', 24, 0.5, 2, 3, 64, 2, 'e')
+
+    name_format = '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
+                + '_{n_filters}_{growth_factor}_{loss_types}'
+
+    model_grid = make_model_grid(name_format,
+                                 encode_type=['c', 'a'],
+                                 data_dim=[24],
+                                 resolution=[0.5],
+                                 n_levels=[2, 3],
+                                 conv_per_level=[2, 3],
+                                 n_filters=[16, 32, 64],
+                                 growth_factor=[1, 2],
+                                 loss_types=['e'])
+
+    for model_name, net_param in model_grid:
+        net_param.to_prototxt(model_name + '.model')
