@@ -236,8 +236,8 @@ def main(argv):
             gen_solver.snapshot()
             loss_out.close()
 
-            plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
-            training_plot(plot_file, loss_df)
+        plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
+        training_plot(plot_file, loss_df)
 
 
 if __name__ == '__main__':
