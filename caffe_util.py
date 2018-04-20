@@ -78,6 +78,14 @@ class Net(caffe.Net):
         with net_param.temp_prototxt() as model_file:
             return cls(model_file, phase)
 
+    def print_params(self):
+        n = 0
+        for key, params in self.params.iteritems():
+            for param in params:
+                print('{} {} {}'.format(key, param.data.shape, param.data.size))
+                n += param.data.size
+        print('{} params'.format(n))
+
 
 class Solver(caffe._caffe.Solver):
 
