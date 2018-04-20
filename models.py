@@ -4,7 +4,7 @@ from caffe import TRAIN, TEST, params
 
 
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
-               n_filters, width_factor, loss_types='', molgrid_data=True,
+               n_filters, width_factor, n_latent=None, loss_types='', molgrid_data=True,
                batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
 
     assert encode_type in ['a', 'c']
@@ -97,6 +97,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
 
         if i > 0: # pool before convolution
 
+            assert curr_dim > 1, 'nothing to pool at level {}'.format(i)
+
             pool_name = 'level{}_pool'.format(i)
             pool_layer = net.layer.add()
             pool_layer.update(name=pool_name,
@@ -160,7 +162,40 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             curr_top = conv_name
             curr_n_filters = next_n_filters
 
-    print(pool_factors)
+    if n_latent is not None:
+
+        fc_name = 'latent_fc0'
+        fc_layer = net.layer.add()
+        fc_layer.update(name=fc_name,
+                        type='InnerProduct',
+                        bottom=[curr_top],
+                        top=[fc_name])
+        fc_param = fc_layer.inner_product_param
+        fc_param.update(num_output=n_latent,
+                        weight_filler=dict(type='xavier'))
+        curr_top = fc_name
+
+        fc_name = 'latent_fc1'
+        fc_layer = net.layer.add()
+        fc_layer.update(name=fc_name,
+                        type='InnerProduct',
+                        bottom=[curr_top],
+                        top=[fc_name])
+        fc_param = fc_layer.inner_product_param
+        fc_param.update(num_output=curr_n_filters*curr_dim**3,
+                        weight_filler=dict(type='xavier'))
+        curr_top = fc_name
+
+        reshape_name = 'latent_reshape'
+        reshape_layer = net.layer.add()
+        reshape_layer.update(name=reshape_name,
+                             type='Reshape',
+                             bottom=[curr_top],
+                             top=[reshape_name])
+        reshape_param = reshape_layer.reshape_param
+        reshape_param.shape.update(dim=[batch_size, curr_n_filters,
+                                        curr_dim, curr_dim, curr_dim])
+        curr_top = reshape_name
 
     # decoder
     for i in reversed(range(n_levels)):
@@ -276,7 +311,7 @@ if __name__ == '__main__':
         for model_name, net_param in model_grid:
             net_param.to_prototxt(model_name + '.model')
 
-    net_param = make_model('c', 24, 1.0, 5, 1, 16, 2, 'e')
+    net_param = make_model('c', 24, 1.0, 2, 1, 64, 2, 1024, 'e')
     net = caffe_util.Net.from_param(net_param, phase=TRAIN)
     net.print_params()
 
