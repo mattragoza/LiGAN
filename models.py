@@ -8,6 +8,13 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
                n_filters, width_factor, n_latent=None, loss_types='', molgrid_data=True,
                batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
 
+    if encode_type[0] == 'v':
+        encode_type = encode_type[1:]
+        variational = True
+        assert n_latent
+    else:
+        variational = False
+
     assert encode_type in ['a', 'c']
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
@@ -166,18 +173,73 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
     # latent
     if n_latent is not None:
 
-        fc_name = 'latent_fc0'
-        fc_layer = net.layer.add()
-        fc_layer.update(name=fc_name,
-                        type='InnerProduct',
-                        bottom=[curr_top],
-                        top=[fc_name])
-        fc_param = fc_layer.inner_product_param
-        fc_param.update(num_output=n_latent,
-                        weight_filler=dict(type='xavier'))
-        curr_top = fc_name
+        if variational:
+            fc_name = 'latent_mean'
+            fc_layer = net.layer.add()
+            fc_layer.update(name=fc_name,
+                            type='InnerProduct',
+                            bottom=[curr_top],
+                            top=[fc_name])
+            fc_param = fc_layer.inner_product_param
+            fc_param.update(num_output=n_latent,
+                            weight_filler=dict(type='xavier'))
 
-        fc_name = 'latent_fc1'
+            fc_name = 'latent_log_std'
+            fc_layer = net.layer.add()
+            fc_layer.update(name=fc_name,
+                            type='InnerProduct',
+                            bottom=[curr_top],
+                            top=[fc_name])
+            fc_param = fc_layer.inner_product_param
+            fc_param.update(num_output=n_latent,
+                            weight_filler=dict(type='xavier'))
+
+            exp_name = 'latent_std'
+            exp_layer = net.layer.add()
+            exp_layer.update(name=exp_name,
+                             type='Exp',
+                             bottom=['latent_log_std'],
+                             top=[exp_name])
+
+            noise_name = 'latent_noise'
+            noise_layer = net.layer.add()
+            noise_layer.update(name=noise_name,
+                               type='DummyData',
+                               top=[noise_name])
+            noise_param = noise_layer.dummy_data_param
+            noise_param.update(data_filler=[dict(type='gaussian')],
+                               shape=[dict(dim=[batch_size, n_latent])])
+
+            mult_name = 'latent_std_noise'
+            mult_layer = net.layer.add()
+            mult_layer.update(name=mult_name,
+                              type='Eltwise',
+                              bottom=[noise_name, 'latent_std'],
+                              top=[mult_name])
+            mult_layer.eltwise_param.operation = params.Eltwise.PROD
+
+            add_name = 'latent_sample'
+            add_layer = net.layer.add()
+            add_layer.update(name=add_name,
+                             type='Eltwise',
+                             bottom=[mult_name, 'latent_mean'],
+                             top=[add_name])
+            add_layer.eltwise_param.operation = params.Eltwise.SUM
+            curr_top = add_name
+
+        else:
+            fc_name = 'latent_fc'
+            fc_layer = net.layer.add()
+            fc_layer.update(name=fc_name,
+                            type='InnerProduct',
+                            bottom=[curr_top],
+                            top=[fc_name])
+            fc_param = fc_layer.inner_product_param
+            fc_param.update(num_output=n_latent,
+                            weight_filler=dict(type='xavier'))
+            curr_top = fc_name
+
+        fc_name = 'latent_defc'
         fc_layer = net.layer.add()
         fc_layer.update(name=fc_name,
                         type='InnerProduct',
@@ -186,6 +248,14 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
         fc_param = fc_layer.inner_product_param
         fc_param.update(num_output=curr_n_filters*curr_dim**3,
                         weight_filler=dict(type='xavier'))
+
+        relu_name = 'latent_derelu'
+        relu_layer = net.layer.add()
+        relu_layer.update(name=relu_name,
+                          type='ReLU',
+                          bottom=[fc_name],
+                          top=[fc_name])
+        relu_layer.relu_param.negative_slope = 0.0
         curr_top = fc_name
 
         reshape_name = 'latent_reshape'
@@ -295,7 +365,7 @@ def make_model_grid(name_format, **grid_kwargs):
 
 if __name__ == '__main__':
 
-    version = (1, 2)
+    version = (1, 3)
 
     if version == (1, 1):
         name_format = '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
@@ -336,25 +406,27 @@ if __name__ == '__main__':
             net_param.to_prototxt(model_name + '.model')
 
     elif version == (1, 3):
+        param_bounds = (1e6, 15e6)
         name_format = '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
                     + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
         data = []
         model_grid = make_model_grid(name_format,
-                                     encode_type=['c', 'a'],
+                                     encode_type=['c', 'a', 'vc', 'va'],
                                      data_dim=[24],
                                      resolution=[1.0],
-                                     n_levels=[4, 5],
-                                     conv_per_level=[2, 3],
-                                     n_filters=[32, 64, 128],
-                                     width_factor=[1],
+                                     n_levels=[3, 4, 5],
+                                     conv_per_level=[1, 2, 3],
+                                     n_filters=[16, 32, 64],
+                                     width_factor=[1, 2],
                                      n_latent=[512, 1024],
                                      loss_types=['e'])
 
         for model_name, net_param in model_grid:
             n_params = caffe_util.Net.from_param(net_param, phase=TRAIN).count_params()
-            data.append((model_name, n_params))
-            net_param.to_prototxt(model_name + '.model')
+            if param_bounds[0] < n_params < param_bounds[1]:
+                data.append((model_name, n_params))
+                net_param.to_prototxt(model_name + '.model')
 
         for model_name, n_params in data:
-            print('{}\t{:8}'.format(model_name, n_params))
+            print('{}\t{:10}'.format(model_name, n_params))
         print(len(data))
