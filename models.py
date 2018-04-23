@@ -272,7 +272,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
     # loss
     if 'e' in loss_types:
 
-        loss_name = 'l2_loss'
+        loss_name = 'loss'
         loss_layer = net.layer.add()
         loss_layer.update(name=loss_name,
                           type='EuclideanLoss',
@@ -295,7 +295,7 @@ def make_model_grid(name_format, **grid_kwargs):
 
 if __name__ == '__main__':
 
-    version = (1, 3)
+    version = (1, 2)
 
     if version == (1, 1):
         name_format = '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
@@ -308,7 +308,7 @@ if __name__ == '__main__':
                                      conv_per_level=[1, 2, 3],
                                      n_filters=[16, 32, 64, 128],
                                      width_factor=[1],
-                                     n_latent=None,
+                                     n_latent=[None],
                                      loss_types=['e'],
                                      pool_type=['c', 'm', 'a'],
                                      depool_type=['c', 'n'])
@@ -327,7 +327,7 @@ if __name__ == '__main__':
                                      conv_per_level=[2, 3],
                                      n_filters=[16, 32, 64],
                                      width_factor=[1, 2],
-                                     n_latent=None,
+                                     n_latent=[None],
                                      loss_types=['e'],
                                      pool_type=['a'],
                                      depool_type=['n'])
