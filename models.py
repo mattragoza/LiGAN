@@ -1,3 +1,4 @@
+from __future__ import print_function, division
 import itertools
 import caffe_util
 from caffe import TRAIN, TEST, params
@@ -132,8 +133,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             pool_param.update(kernel_size=[pool_factor], stride=[pool_factor], pad=[0])
 
             curr_top = pool_name
-            curr_dim /= pool_factor
-            next_n_filters *= width_factor
+            curr_dim //= pool_factor
+            next_n_filters = int(width_factor*next_n_filters)
         
         for j in range(conv_per_level): # convolutions
 
@@ -162,6 +163,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             curr_top = conv_name
             curr_n_filters = next_n_filters
 
+    # latent
     if n_latent is not None:
 
         fc_name = 'latent_fc0'
@@ -230,9 +232,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             
             pool_factor = pool_factors.pop(-1)
             depool_param.update(kernel_size=[pool_factor], stride=[pool_factor], pad=[0])
-            curr_dim *= pool_factor
-
-            next_n_filters /= width_factor
+            curr_dim = int(pool_factor*curr_dim)
+            next_n_filters = int(next_n_filters//width_factor)
 
         for j in range(conv_per_level): # convolutions
 
@@ -294,10 +295,30 @@ def make_model_grid(name_format, **grid_kwargs):
 
 if __name__ == '__main__':
 
-    if False:
+    version = (1, 3)
+
+    if version == (1, 1):
+        name_format = '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
+                    + '_{n_filters}_{pool_type}_{depool_type}'
+        model_grid = make_model_grid(name_format,
+                                     encode_type=['c', 'a'],
+                                     data_dim=[24],
+                                     resolution=[0.5],
+                                     n_levels=[1, 2, 3, 4, 5],
+                                     conv_per_level=[1, 2, 3],
+                                     n_filters=[16, 32, 64, 128],
+                                     width_factor=[1],
+                                     n_latent=None,
+                                     loss_types=['e'],
+                                     pool_type=['c', 'm', 'a'],
+                                     depool_type=['c', 'n'])
+
+        for model_name, net_param in model_grid:
+            net_param.to_prototxt(model_name + '.model')
+
+    elif version == (1, 2):
         name_format = '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
                     + '_{n_filters}_{width_factor}_{loss_types}'
-
         model_grid = make_model_grid(name_format,
                                      encode_type=['c', 'a'],
                                      data_dim=[24],
@@ -306,13 +327,34 @@ if __name__ == '__main__':
                                      conv_per_level=[2, 3],
                                      n_filters=[16, 32, 64],
                                      width_factor=[1, 2],
-                                     loss_types=['e'])
+                                     n_latent=None,
+                                     loss_types=['e'],
+                                     pool_type=['a'],
+                                     depool_type=['n'])
 
         for model_name, net_param in model_grid:
             net_param.to_prototxt(model_name + '.model')
 
-    net_param = make_model('c', 24, 1.0, 2, 1, 64, 2, 1024, 'e')
-    net = caffe_util.Net.from_param(net_param, phase=TRAIN)
-    net.print_params()
+    elif version == (1, 3):
+        name_format = '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
+                    + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
+        data = []
+        model_grid = make_model_grid(name_format,
+                                     encode_type=['c', 'a'],
+                                     data_dim=[24],
+                                     resolution=[1.0],
+                                     n_levels=[4, 5],
+                                     conv_per_level=[2, 3],
+                                     n_filters=[32, 64, 128],
+                                     width_factor=[1],
+                                     n_latent=[512, 1024],
+                                     loss_types=['e'])
 
+        for model_name, net_param in model_grid:
+            n_params = caffe_util.Net.from_param(net_param, phase=TRAIN).count_params()
+            data.append((model_name, n_params))
+            net_param.to_prototxt(model_name + '.model')
 
+        for model_name, n_params in data:
+            print('{}\t{:8}'.format(model_name, n_params))
+        print(len(data))
