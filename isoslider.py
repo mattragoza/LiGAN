@@ -119,6 +119,8 @@ def isoslider(mm_min=0.0, mm_max=1.5):
         mmf.columnconfigure(1, weight=1)
         names = []
         for i, (name, level) in enumerate(get_isoobjects(), 1):
+            names.append(name)
+            continue
             v = LevelVar(master, name, ffmt % level)
             Tkinter.Label(master, text=name).grid(row=i+2, column=0, sticky="w")
             e = Tkinter.Scale(master, orient=Tkinter.HORIZONTAL,
@@ -130,7 +132,6 @@ def isoslider(mm_min=0.0, mm_max=1.5):
             e.grid(row=i+2, column=2, sticky="e")
             v.bindscrollwheel(e)
             master.columnconfigure(1, weight=1)
-            names.append(name)
         v = GroupLevelVar(master, names, ffmt % mm_min)
         Tkinter.Label(master, text='all').grid(row=1, column=0, sticky="w")
         e = Tkinter.Scale(master, orient=Tkinter.HORIZONTAL,
