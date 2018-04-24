@@ -199,14 +199,8 @@ def main(argv):
         solver_param.max_iter = args.max_iter
 
         data_net_param = caffe_util.NetParameter.from_prototxt(args.data_model_file)
-        for layer_param in data_net_param.layer:
-            if layer_param.type == 'MolGridData':
-                data_param = layer_param.molgrid_data_param
-                if layer_param.include[0].phase == caffe.TRAIN:
-                    data_param.source = train_file
-                elif layer_param.include[0].phase == caffe.TEST:
-                    data_param.source = test_file
-                data_param.root_folder = args.data_root
+        data_net_param.set_molgrid_data_source(train_file, args.data_root, caffe.TRAIN)
+        data_net_param.set_molgrid_data_source(test_file, args.data_root, caffe.TEST)
         data_solver = caffe_util.Solver.from_param(solver_param, net_param=data_net_param)
 
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)

@@ -1,17 +1,19 @@
 from __future__ import print_function
-import sys, os, re, argparse, ast
+import sys, os, re, argparse, ast, time
 import numpy as np
 from rdkit import Chem
 from collections import Counter
-from contextlib import contextmanager
+import contextlib
+import tempfile
 from multiprocessing.pool import Pool, ThreadPool
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
+
+import caffe_util
 import cgenerate
-import time
 
 
 # channel name, element, atom radius
@@ -390,7 +392,7 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index):
+def generate_grids_from_net(net, blob_pattern, index=0):
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
     net.forward()
@@ -398,13 +400,6 @@ def generate_grids_from_net(net, blob_pattern, index):
         net.forward()
         index -= batch_size
     return blob.data[index]
-
-
-def generate_grids(model_file, weights_file, blob_pattern, rec_file, lig_file, data_root):
-    with instantiate_data(rec_file, lig_file) as data_file:
-        with instantiate_model(model_file, data_file, data_file, data_root) as model_file:
-            net = caffe.Net(model_file, weights_file, caffe.TEST)
-            return generate_grids_from_net(net, blob_pattern, index=0)
 
 
 def combine_element_grids_and_channels(grids, channels):
@@ -420,28 +415,11 @@ def combine_element_grids_and_channels(grids, channels):
     return np.array(elem_grids), elem_channels
 
 
-@contextmanager
-def instantiate_model(model_file, train_file, test_file, data_root, batch_size=None):
-    with open(model_file, 'r') as f:
-        model = f.read()
-    model = model.replace('TRAINFILE', train_file)
-    model = model.replace('TESTFILE', test_file)
-    model = model.replace('DATA_ROOT', data_root)
-    if batch_size is not None:
-        model = re.sub('batch_size: (\d+)', 'batch_size: {}'.format(batch_size), model)
-    model_file = 'temp{}.model'.format(os.getpid())
-    with open(model_file, 'w') as f:
-        f.write(model)
-    yield model_file
-    os.remove(model_file)
-
-
-@contextmanager
-def instantiate_data(rec_file, lig_file):
-    data = '0 0 {} {}'.format(rec_file, lig_file)
-    data_file = 'temp{}.types'.format(os.getpid())
+@contextlib.contextmanager
+def temp_data_file(rec_file, lig_file):
+    _, data_file = tempfile.mkstemp()
     with open(data_file, 'w') as f:
-        f.write(data)
+        f.write('0 0 {} {}'.format(rec_file, lig_file))
     yield data_file
     os.remove(data_file)
 
@@ -526,13 +504,6 @@ def get_channel_info_for_grids(grids):
     return channels
 
 
-def get_resolution_from_model_file(model_file):
-    with open(model_file, 'r') as f:
-        model = f.read()
-    m = re.search('    resolution: (.+)', model)
-    return float(m.group(1))
-
-
 def get_center_from_sdf_file(sdf_file):
     mol = Chem.MolFromMolFile(sdf_file)
     xyz = Chem.RemoveHs(mol).GetConformer().GetPositions()
@@ -570,12 +541,14 @@ def main(argv):
 
     rec_file = os.path.join(args.data_root, args.rec_file)
     lig_file = os.path.join(args.data_root, args.lig_file)
-
     center = get_center_from_sdf_file(lig_file)
-    resolution = get_resolution_from_model_file(args.model_file)
 
-    grids = generate_grids(args.model_file, args.weights_file, args.blob_name,
-                           args.rec_file, args.lig_file, args.data_root)
+    net_param = caffe_util.NetParameter.from_prototxt(args.model_file)
+    resolution = net_param.get_molgrid_data_resolution(caffe.TEST)
+    with temp_data_file(args.rec_file, args.lig_file) as data_file:
+        net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
+        net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
+    grids = generate_grids_from_net(net, args.blob_name)
 
     if args.channel_info is None:
         channels = get_channel_info_for_grids(grids)

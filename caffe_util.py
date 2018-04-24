@@ -4,7 +4,6 @@ import tempfile
 from caffe.proto import caffe_pb2
 from google.protobuf import text_format, message
 import caffe
-from caffe import TRAIN, TEST
 
 
 def read_prototxt(param, prototxt_file):
@@ -58,6 +57,28 @@ def update_param(param_, *args, **kwargs):
             param_[i] = value
 
 
+def set_molgrid_data_source(net_param, data_file, data_root, phase=None):
+    for layer_param in net_param.layer:
+        if layer_param.type == 'MolGridData':
+            data_param = layer_param.molgrid_data_param
+            if phase is None:
+                data_param.source = data_file
+                data_param.root_folder = data_root
+            elif layer_param.include[0].phase == phase:
+                data_param.source = data_file
+                data_param.root_folder = data_root
+
+
+def get_molgrid_data_resolution(net_param, phase=None):
+    for layer_param in net_param.layer:
+        if layer_param.type == 'MolGridData':
+            data_param = layer_param.molgrid_data_param
+            if phase is None:
+                return data_param.resolution
+            elif layer_param.include[0].phase == phase:
+                return data_param.resolution    
+
+
 # can't inherit from protobuf message, so just add methods to the generated classes
 for name, cls in caffe_pb2.__dict__.iteritems():
     if isinstance(cls, type) and issubclass(cls, message.Message):
@@ -67,25 +88,26 @@ for name, cls in caffe_pb2.__dict__.iteritems():
         cls.update = update_param
         cls.__init__ = update_param
         globals()[name] = cls
+        if issubclass(cls, caffe_pb2.NetParameter):
+            cls.set_molgrid_data_source = set_molgrid_data_source
+            cls.get_molgrid_data_resolution = get_molgrid_data_resolution
 
 
 class Net(caffe.Net):
 
     @classmethod
-    def from_param(cls, net_param=None, phase=None, **kwargs):
+    def from_param(cls, net_param=None, weights_file=None, phase=-1, **kwargs):
         net_param = net_param or NetParameter()
         net_param.update(**kwargs)
         with net_param.temp_prototxt() as model_file:
-            return cls(model_file, phase)
+            return cls(network_file=model_file, weights=weights_file, phase=phase)
 
     def count_params(self):
-        n = 0
-        for key, params in self.params.iteritems():
-            for param in params:
-                #print('{} {} {}'.format(key, param.data.shape, param.data.size))
-                n += param.data.size
-        #print('{} params'.format(n))
-        return n
+        n_params = 0
+        for key, param_blobs in self.params.iteritems():
+            for param_blob in param_blobs:
+                n_params += param_blob.data.size
+        return n_params
 
 
 class Solver(caffe._caffe.Solver):
