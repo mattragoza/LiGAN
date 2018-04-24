@@ -1,7 +1,10 @@
 from __future__ import print_function, division
 import itertools
+import caffe
+caffe.set_mode_gpu()
+caffe.set_device(0)
+
 import caffe_util
-from caffe import TRAIN, TEST, params
 
 
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
@@ -33,7 +36,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             data_layer.update(name='data',
                               type='MolGridData',
                               top=['data', 'label', 'aff'],
-                              include=[dict(phase=TRAIN if training else TEST)])
+                              include=[dict(phase=caffe.TRAIN if training else caffe.TEST)])
 
             data_param = data_layer.molgrid_data_param
             data_param.update(source='TRAINFILE' if training else 'TESTFILE',
@@ -125,13 +128,13 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
 
                 pool_layer.type = 'Pooling'
                 pool_param = pool_layer.pooling_param
-                pool_param.pool = params.Pooling.MAX
+                pool_param.pool = caffe.params.Pooling.MAX
 
             elif pool_type == 'a': # average pooling
 
                 pool_layer.type = 'Pooling'
                 pool_param = pool_layer.pooling_param
-                pool_param.pool = params.Pooling.AVE
+                pool_param.pool = caffe.params.Pooling.AVE
 
             for pool_factor in [2, 3, 5, curr_dim]:
                 if curr_dim % pool_factor == 0:
@@ -140,8 +143,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             pool_param.update(kernel_size=[pool_factor], stride=[pool_factor], pad=[0])
 
             curr_top = pool_name
-            curr_dim //= pool_factor
-            next_n_filters = int(width_factor*next_n_filters)
+            curr_dim = int(curr_dim//pool_factor)
+            next_n_filters = int(width_factor*curr_n_filters)
         
         for j in range(conv_per_level): # convolutions
 
@@ -216,7 +219,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
                               type='Eltwise',
                               bottom=[noise_name, 'latent_std'],
                               top=[mult_name])
-            mult_layer.eltwise_param.operation = params.Eltwise.PROD
+            mult_layer.eltwise_param.operation = caffe.params.Eltwise.PROD
 
             add_name = 'latent_sample'
             add_layer = net.layer.add()
@@ -224,7 +227,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
                              type='Eltwise',
                              bottom=[mult_name, 'latent_mean'],
                              top=[add_name])
-            add_layer.eltwise_param.operation = params.Eltwise.SUM
+            add_layer.eltwise_param.operation = caffe.params.Eltwise.SUM
             curr_top = add_name
 
         else:
@@ -303,7 +306,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             pool_factor = pool_factors.pop(-1)
             depool_param.update(kernel_size=[pool_factor], stride=[pool_factor], pad=[0])
             curr_dim = int(pool_factor*curr_dim)
-            next_n_filters = int(next_n_filters//width_factor)
+            next_n_filters = int(curr_n_filters//width_factor)
 
         for j in range(conv_per_level): # convolutions
 
@@ -383,9 +386,6 @@ if __name__ == '__main__':
                                      pool_type=['c', 'm', 'a'],
                                      depool_type=['c', 'n'])
 
-        for model_name, net_param in model_grid:
-            net_param.to_prototxt(model_name + '.model')
-
     elif version == (1, 2):
         name_format = '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
                     + '_{n_filters}_{width_factor}_{loss_types}'
@@ -395,25 +395,20 @@ if __name__ == '__main__':
                                      resolution=[0.5, 1.0],
                                      n_levels=[2, 3],
                                      conv_per_level=[2, 3],
-                                     n_filters=[16, 32, 64],
+                                     n_filters=[16, 32, 64, 128],
                                      width_factor=[1, 2],
                                      n_latent=[None],
                                      loss_types=['e'],
                                      pool_type=['a'],
                                      depool_type=['n'])
 
-        for model_name, net_param in model_grid:
-            net_param.to_prototxt(model_name + '.model')
-
     elif version == (1, 3):
-        param_bounds = (1e6, 15e6)
         name_format = '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
                     + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
-        data = []
         model_grid = make_model_grid(name_format,
-                                     encode_type=['c', 'a', 'vc', 'va'],
+                                     encode_type=['c', 'a'],
                                      data_dim=[24],
-                                     resolution=[1.0],
+                                     resolution=[0.5, 1.0],
                                      n_levels=[3, 4, 5],
                                      conv_per_level=[1, 2, 3],
                                      n_filters=[16, 32, 64],
@@ -421,12 +416,12 @@ if __name__ == '__main__':
                                      n_latent=[512, 1024],
                                      loss_types=['e'])
 
-        for model_name, net_param in model_grid:
-            n_params = caffe_util.Net.from_param(net_param, phase=TRAIN).count_params()
-            if param_bounds[0] < n_params < param_bounds[1]:
-                data.append((model_name, n_params))
-                net_param.to_prototxt(model_name + '.model')
+    model_data = []
+    for model_name, net_param in model_grid:
+        net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
+        model_data.append((model_name, net.get_n_params(), net.get_size()))
+        net_param.to_prototxt(model_name + '.model')
 
-        for model_name, n_params in data:
-            print('{}\t{:10}'.format(model_name, n_params))
-        print(len(data))
+    print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
+    for model_name, n_params, size in model_data:
+        print('{:30}{:12d}{:10.2f} MiB'.format(model_name, n_params, size/2**20))

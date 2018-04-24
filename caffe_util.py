@@ -102,12 +102,22 @@ class Net(caffe.Net):
         with net_param.temp_prototxt() as model_file:
             return cls(network_file=model_file, weights=weights_file, phase=phase)
 
-    def count_params(self):
+    def get_n_params(self):
         n_params = 0
         for key, param_blobs in self.params.iteritems():
             for param_blob in param_blobs:
                 n_params += param_blob.data.size
         return n_params
+
+    def get_n_data(self):
+        n_data = 0
+        for key, data_blob in self.blobs.iteritems():
+            n_data += data_blob.data.size
+        return n_data
+
+    def get_size(self):
+        return 2*(self.get_n_params() + self.get_n_data())*4
+
 
 
 class Solver(caffe._caffe.Solver):
