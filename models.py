@@ -1,10 +1,60 @@
 from __future__ import print_function, division
+import os
 import itertools
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
 import caffe_util
+
+
+NAME_FORMATS = {
+    (1, 1): '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
+            + '_{n_filters}_{pool_type}_{depool_type}',
+
+    (1, 2): '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
+            + '_{n_filters}_{width_factor}_{loss_types}',
+
+    (1, 3): '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
+            + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
+}
+
+
+SEARCH_SPACES = {
+    (1, 1): dict(encode_type=['c', 'a'],
+                 data_dim=[24],
+                 resolution=[0.5],
+                 n_levels=[1, 2, 3, 4, 5],
+                 conv_per_level=[1, 2, 3],
+                 n_filters=[16, 32, 64, 128],
+                 width_factor=[1],
+                 n_latent=[None],
+                 loss_types=['e'],
+                 pool_type=['c', 'm', 'a'],
+                 depool_type=['c', 'n']),
+
+    (1, 2): dict(encode_type=['c', 'a'],
+                 data_dim=[24],
+                 resolution=[0.5, 1.0],
+                 n_levels=[2, 3],
+                 conv_per_level=[2, 3],
+                 n_filters=[16, 32, 64, 128],
+                 width_factor=[1, 2, 3],
+                 n_latent=[None],
+                 loss_types=['e'],
+                 pool_type=['a'],
+                 depool_type=['n']),
+
+    (1, 3): dict(encode_type=['c', 'a'],
+                 data_dim=[24],
+                 resolution=[0.5, 1.0],
+                 n_levels=[3, 4, 5],
+                 conv_per_level=[1, 2, 3],
+                 n_filters=[16, 32, 64],
+                 width_factor=[1, 2],
+                 n_latent=[512, 1024],
+                 loss_types=['e'])
+}
 
 
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
@@ -361,66 +411,17 @@ def keyword_product(**kwargs):
         yield dict(itertools.izip(kwargs.iterkeys(), values))
 
 
-def make_model_grid(name_format, **grid_kwargs):
-    for kwargs in keyword_product(**grid_kwargs):
-        yield name_format.format(**kwargs), make_model(**kwargs)
-
-
 if __name__ == '__main__':
 
     version = (1, 3)
-
-    if version == (1, 1):
-        name_format = '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
-                    + '_{n_filters}_{pool_type}_{depool_type}'
-        model_grid = make_model_grid(name_format,
-                                     encode_type=['c', 'a'],
-                                     data_dim=[24],
-                                     resolution=[0.5],
-                                     n_levels=[1, 2, 3, 4, 5],
-                                     conv_per_level=[1, 2, 3],
-                                     n_filters=[16, 32, 64, 128],
-                                     width_factor=[1],
-                                     n_latent=[None],
-                                     loss_types=['e'],
-                                     pool_type=['c', 'm', 'a'],
-                                     depool_type=['c', 'n'])
-
-    elif version == (1, 2):
-        name_format = '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
-                    + '_{n_filters}_{width_factor}_{loss_types}'
-        model_grid = make_model_grid(name_format,
-                                     encode_type=['c', 'a'],
-                                     data_dim=[24],
-                                     resolution=[0.5, 1.0],
-                                     n_levels=[2, 3],
-                                     conv_per_level=[2, 3],
-                                     n_filters=[16, 32, 64, 128],
-                                     width_factor=[1, 2],
-                                     n_latent=[None],
-                                     loss_types=['e'],
-                                     pool_type=['a'],
-                                     depool_type=['n'])
-
-    elif version == (1, 3):
-        name_format = '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
-                    + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
-        model_grid = make_model_grid(name_format,
-                                     encode_type=['c', 'a'],
-                                     data_dim=[24],
-                                     resolution=[0.5, 1.0],
-                                     n_levels=[3, 4, 5],
-                                     conv_per_level=[1, 2, 3],
-                                     n_filters=[16, 32, 64],
-                                     width_factor=[1, 2],
-                                     n_latent=[512, 1024],
-                                     loss_types=['e'])
-
     model_data = []
-    for model_name, net_param in model_grid:
+    for kwargs in keyword_product(**SEARCH_SPACES[version]):
+        model_name = NAME_FORMATS[version].format(**kwargs)
+        model_file = os.path.join('models', model_name + '.model')
+        net_param = make_model(**kwargs)
+        net_param.to_prototxt(model_file)
         net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
         model_data.append((model_name, net.get_n_params(), net.get_size()))
-        net_param.to_prototxt(model_name + '.model')
 
     print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
     for model_name, n_params, size in model_data:
