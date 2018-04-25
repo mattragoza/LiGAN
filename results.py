@@ -6,236 +6,135 @@ import os
 import re
 import glob
 import argparse
+import parse
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 sns.set_context('talk')
 
+import models
 import generate
 
 
-def plot_lines(plot_file, mean_data, models, colors, ylim=None, sem_data=None):
-    # data should be indexed by model, iteration
-    fig, axes = plt.subplots(1,2, figsize=(12,9))
-    for i, loss in enumerate(['recon']):
-        for j, part in enumerate(['train', 'test']):
-            column = '%s_%s_loss / data_size' % (part, loss)
-            ax = axes[j] #axes[i][j]
-            ax.set_xlabel('iteration')
-            ax.set_ylabel(column)
-            if ylim:
-                ax.set_ylim(*ylim)
-            for model, color in zip(models, colors):
-                color = np.array(color)
-                light_color = (1. + color)/2.
-                mean_series = mean_data.loc[model][column]
-                if sem_data:
-                    sem_series = sem_data.loc[model][column]
-                if len(mean_series.dropna()) > 0:
-                    if sem_data:
-                        ax.fill_between(mean_series.index, mean_series-sem_series, mean_series+sem_series, color=light_color, alpha=0.5)
-                    ax.plot(mean_series.index, mean_series, label=model, color=color, linewidth=1.0)
+def plot_lines(plot_file, df, x, y, hue, ylim=None):
+    df = df.reset_index().set_index([hue, x])
+    fig, ax = plt.subplots(figsize=(6,6))
+    ax.set_xlabel('iteration')
+    ax.set_ylabel(y)
+    if ylim:
+        ax.set_ylim(*ylim)
+    for i, _ in df.groupby(level=0):
+        s = df.loc[i, y]
+        ax.plot(s.index, s, label=i, linewidth=1.0)
     fig.tight_layout()
-    fig.subplots_adjust(top=0.95)
-    #lgd = axes[0].legend(loc='upper left', bbox_to_anchor=(-0.1, -0.1), ncol=5)
-    #fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
-    fig.savefig(plot_file, bbox_inches='tight')
+    lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=2)
+    fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
 
 
-def rename_column(c):
-    return c.replace('y_loss', 'recon_loss') \
-            .replace('rmsd_loss', 'spatial_loss') \
-            .replace('aff_loss', 'kldiv_loss')
+def plot_strips(plot_file, df, xs, y, hue, ylim=None, n_cols=4):
+    df = df.reset_index()
+    n_x = len(xs)
+    n_rows = (n_x + n_cols-1)//n_cols
+    n_cols = min(n_x, n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows), sharey=True)
+    if ylim:
+        axes[0][0].set_ylim(*ylim)
+    axes = axes.flatten()
+    for i, x in enumerate(xs):
+        ax = axes[i]
+        sns.stripplot(data=df, x=x, y=y, hue=hue, jitter=True, ax=ax)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles, labels, ncol=1)
+    for i in range(i+1, len(axes)):
+        axes[i].axis('off')
+    fig.tight_layout()
+    fig.savefig(plot_file)
 
 
-def column_key(c):
-    return 'kldiv' in c, 'spatial' in c, 'recon' in c, 'test' in c
-
-
-def read_training_output_files(model_names, data_name, seeds, folds):
-
+def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
     all_model_dfs = []
-    for model_name in model_names:
-        try:
-            model_dfs = []
-            model_prefix = os.path.join(model_name, model_name)
-            for seed in seeds:
-                for fold in folds:
-                    train_out_file = '{}.{}.{}.{}.training_output' \
-                                     .format(model_prefix, data_name, seed, fold)
-                    train_out_df = pd.read_csv(train_out_file, sep=' ', index_col=0)
-                    train_out_df['model_name'] = model_name
-                    train_out_df['data_name'] = data_name
-                    train_out_df['seed'] = seed
-                    train_out_df['fold'] = fold
-                    model_dfs.append(train_out_df)
-            dfs.extend(model_dfs)
-        except (IOError, pd.io.common.EmptyDataError, IndexError) as e:
-            print(e, file=sys.stderr)
-
+    for model_dir in model_dirs:
+        model_dfs = []
+        model_name = model_dir.rstrip('/\\')
+        model_prefix = os.path.join(model_dir, model_name)
+        model_errors = dict()
+        for seed in seeds:
+            for fold in folds:
+                try:
+                    file_ = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
+                    file_df = pd.read_csv(file_, sep=' ')
+                    file_df['model_name'] = model_name
+                    #file_df['data_name'] = data_name #TODO allow multiple data sets
+                    file_df['seed'] = seed
+                    file_df['fold'] = fold
+                    file_df['iteration'] = file_df['iteration'].astype(int)
+                    del file_df['base_lr']
+                    max_iter = file_df['iteration'].max()
+                    assert iteration in file_df['iteration'].unique(), \
+                        'No training output for iteration {} ({})'.format(iteration, max_iter)
+                    model_dfs.append(file_df)
+                except (IOError, pd.io.common.EmptyDataError, AssertionError) as e:
+                    model_errors[file_] = e
+        if not model_errors:
+            all_model_dfs.extend(model_dfs)
+        else:
+            for f, e in model_errors.items():
+                print('{}: {}'.format(f, e))
     return pd.concat(all_model_dfs)
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('dir_pattern')
+    parser.add_argument('-m', '--dir_pattern', required=True)
+    parser.add_argument('-d', '--data_name', default='lowrmsd')
     parser.add_argument('-o', '--out_prefix', default='')
     parser.add_argument('-s', '--seeds', default='0')
-    parser.add_argument('-n', '--folds', default='0,1,2')
+    parser.add_argument('-f', '--folds', default='0,1,2')
     parser.add_argument('-i', '--iteration', default=20000, type=int)
     parser.add_argument('--plot_ext', default='png')
-    parser.add_argument('--n_channels', type=int)
-    parser.add_argument('--data_dim', type=int)
+    parser.add_argument('-r', '--rename_col', default=[], action='append')
     return parser.parse_args(argv)
 
 
-def main(argv):
+if __name__ == '__main__':
+    argv = sys.argv[1:]
     args = parse_args(argv)
 
-    model_names = [d.rstrip('/\\') for d in glob.glob(args.dir_pattern)]
+    model_dirs = sorted(d for d in glob.glob(args.dir_pattern) if os.path.isdir(d))
     seeds = map(int, args.seeds.split(','))
     folds = map(int, args.folds.split(','))
 
-    # output file names
-    plot_ext = 'png'
-    bar_plot_file   = '{}_bars.{}'.format(args.out_prefix, args.plot_ext)
-    line_plot_file  = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
-    strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-    agg_pymol_file = '{}.pymol'.format(args.out_prefix)
+    model_version = tuple(int(c) for c in re.match(r'^.+e(\d+)_', args.dir_pattern).group(1))
+    name_format = models.NAME_FORMATS[model_version]
 
-    # autoencoder predicts rec and lig
-    if dir_pattern[:2] == 'ae':
-        ylim = [0.0, 0.0022] #[0.0, 0.005]
+    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration)
 
-    # context encoder predicts lig only
-    elif dir_pattern[:2] == 'ce':
-        ylim = [0.0016, 0.0022]
-        ylim = [0.00024, 0.00028]
+    col_name_map = dict(r.split(':') for r in args.rename_col)
+    df.rename(columns=col_name_map, inplace=True)
 
-    data_size = args.n_channels*args.data_dim**3
+    index_cols = ['model_name', 'iteration']
+    f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
+            for col in df if col not in index_cols}
+    agg_df = df.groupby(index_cols).agg(f)
+    assert np.all(agg_df['seed'] == len(seeds))
+    assert np.all(agg_df['fold'] == len(folds))
 
-    data = read_training_output_files(model_names, seeds, folds, args.iteration)
+    for model_name, model_df in agg_df.groupby(level=0):
+        name_parse = parse.parse(name_format, model_name)
+        name_fields = sorted(name_parse.named, key=name_parse.spans.get)
+        for field in name_fields:
+            agg_df.loc[model_name, field] = name_parse.named[field]
 
-    # format data and edit columns
-    data.columns = data.columns.map(rename_column)
-    data['test_recon_loss / data_size'] = data['test_recon_loss'] / data_size
-    data['train_recon_loss / data_size'] = data['train_recon_loss'] / data_size
-    data = data.groupby(['model', 'iteration']).mean().reset_index() # average across seeds and folds
+    col = col_name_map.get('test_y_loss', 'test_y_loss')
 
-    if False:
-        data['n_levels']       = data['model'].apply(lambda x: int(x.split('_')[2]))
-        data['conv_per_level'] = data['model'].apply(lambda x: int(x.split('_')[3]))
-        data['n_filters']      = data['model'].apply(lambda x: int(x.split('_')[4]))
-        data['pool_type']      = data['model'].apply(lambda x: x.split('_')[5])
-        data['depool_type']    = data['model'].apply(lambda x: x.split('_')[6])
-        data['n_conv']         = 2 * data['n_levels'] * data['conv_per_level']
-    else: #TODO ce12_24_0.5_3_3_32_1_cf
-        n_levels_idx = 3
-        data['resolution']     = data['model'].apply(lambda x: float(x.split('_')[2]))
-        data['n_levels']       = data['model'].apply(lambda x: int(x.split('_')[n_levels_idx]))
-        data['conv_per_level'] = data['model'].apply(lambda x: int(x.split('_')[4]))
-        data['n_filters']      = data['model'].apply(lambda x: int(x.split('_')[5]))
-        data['growth_factor']  = data['model'].apply(lambda x: int(x.split('_')[6]))
-        data['loss_types']     = data['model'].apply(lambda x: x.split('_')[7])
-    data = data.set_index(['model', 'iteration'])
+    # plot training progress
+    line_plot_file = '{}_{}_lines.{}'.format(args.out_prefix, col, args.plot_ext)
+    plot_lines(line_plot_file, agg_df, x='iteration', y=col, hue='model_name')
 
-    # group models by n_levels or whether their baselines
-    baseline_models = []
-    models_by_n_levels = [[], [], [], [], []]
-    for model in models:
-        parts = model.split('_')
-        if '0' in parts:
-            baseline_models.append(model)
-        else:
-            n_levels = int(parts[n_levels_idx])
-            models_by_n_levels[n_levels-1].append(model)
-    model_groups = models_by_n_levels + [baseline_models]
-    color_groups = ['Blues', 'Greens', 'Reds', 'Purples', 'YlOrBr', 'Greys']
-
-    # sort each name group by n_levels and final test_recon_loss and construct color palette
-    models = []
-    colors = []
-    for model_group, color_group in zip(model_groups, color_groups):
-        models.extend(sorted(model_group, key=lambda m: (m.split('_')[2], data['test_recon_loss'][m][iteration])))
-        colors.extend(sns.color_palette(color_group + '_r', len(model_group)))
-    color_dict = dict(zip(models, colors))
-
-    # plot reconstruction loss during training
-    plot_lines(line_plot_file, data, models, colors)#, ylim=ylim)
-
-    # look at final iteration only
-    data = data.reorder_levels(['iteration', 'model']).loc[iteration]
-    data = data.drop(baseline_models)
-    print data
-
-    fig, axes = plt.subplots(3,2, figsize=(8, 12), sharey=True)
-    if ylim: axes[0][0].set_ylim(*ylim)
-    kwargs = dict(hue='n_filters')
-    xs = ['resolution', 'n_levels', 'conv_per_level', 'n_filters', 'growth_factor', 'loss_types']
-    for x, ax in zip(xs, axes.flatten()):
-        sns.barplot(data=data, x=x, y='test_recon_loss / data_size', ax=ax, **kwargs)
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles, labels, loc='upper center', ncol=3)
-    #axes[2][1].axis('off')
-    fig.tight_layout()
-    fig.savefig(bar_plot_file)
-
-    fig, axes = plt.subplots(3,2, figsize=(8, 12), sharey=True)
-    if ylim: axes[0][0].set_ylim(*ylim)
-    kwargs = dict(jitter=True, hue='n_filters')
-    xs = ['resolution', 'n_levels', 'conv_per_level', 'n_filters', 'growth_factor', 'loss_types']
-    for x, ax in zip(xs, axes.flatten()):
-        sns.stripplot(data=data, x=x, y='test_recon_loss / data_size', ax=ax, **kwargs)
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles, labels, loc='upper center', ncol=3)
-    #axes[2][1].axis('off')
-    fig.tight_layout()
-    fig.savefig(strip_plot_file)
-
-    # identify best model(s)
-    best_models = data['test_recon_loss'].nsmallest(1)
-    print best_models
-
-    pymol_files = []
-    for model in best_models.index:
-
-        model_file = '{}.model'.format(model)
-        weights_file = os.path.join(model, '{}.{}.0.1_iter_{}.caffemodel'.format(model, data_name, 20000))
-        data_file = 'data/lowrmsdtest0.types'
-        data_root = '/home/mtr22/PDBbind/refined-set/'
-        out_prefix = model
-        loss_name = 'loss'
-
-        #rec_file, lig_file = generate.best_loss_rec_and_lig(model_file, weights_file, data_file, \
-        #                                                    data_root, loss_name)
-        rec_file = '2v3u/2v3u_rec.pdb'
-        lig_file = '2v3u/2v3u_min.sdf'
-
-        rec_file = os.path.join(data_root, re.sub('.gninatypes', '.pdb', rec_file))
-        lig_file = os.path.join(data_root, re.sub('.gninatypes', '.sdf', lig_file))
-        print(model, lig_file)
-
-        center = generate.get_center_from_sdf_file(lig_file)
-        resolution = generate.get_resolution_from_model_file(model_file)
-
-        grids = generate.generate_grids(model_file, weights_file, 'level0_deconv(\d+)', rec_file, lig_file, '')
-
-        dx_files = generate.write_grids_to_dx_files(out_prefix, grids, center, resolution)
-
-        atoms = generate.fit_atoms_to_grids(grids, center, resolution, max_iter=0)
-        pred_file = '{}.sdf'.format(out_prefix)
-        generate.write_atoms_to_sdf_file(pred_file, atoms)
-        extra_files = [rec_file, lig_file, pred_file]
-
-        pymol_file = '{}.pymol'.format(out_prefix)
-        generate.write_pymol_script(pymol_file, dx_files, *extra_files)
-        pymol_files.append(pymol_file)
-
-    with open(agg_pymol_file, 'w') as f:
-        f.write('\n'.join('@' + p for p in pymol_files))
-
-
-if __name__ == '__main__':
-    main(sys.argv[1:])
+    # plot final loss distributions
+    agg_df.reset_index('model_name', inplace=True)
+    strip_plot_file = '{}_{}_strips.{}'.format(args.out_prefix, col, args.plot_ext)
+    plot_strips(strip_plot_file, agg_df.loc[args.iteration], xs=name_fields, y=col, hue='n_filters')
