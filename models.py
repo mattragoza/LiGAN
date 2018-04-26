@@ -236,6 +236,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             fc_param = fc_layer.inner_product_param
             fc_param.update(num_output=n_latent,
                             weight_filler=dict(type='xavier'))
+            latent_mean = fc_name
 
             fc_name = 'latent_log_std'
             fc_layer = net.layer.add()
@@ -246,13 +247,15 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             fc_param = fc_layer.inner_product_param
             fc_param.update(num_output=n_latent,
                             weight_filler=dict(type='xavier'))
+            latent_log_std = fc_name
 
             exp_name = 'latent_std'
             exp_layer = net.layer.add()
             exp_layer.update(name=exp_name,
                              type='Exp',
-                             bottom=['latent_log_std'],
+                             bottom=[latent_log_std],
                              top=[exp_name])
+            latent_std = exp_name
 
             noise_name = 'latent_noise'
             noise_layer = net.layer.add()
@@ -262,23 +265,74 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             noise_param = noise_layer.dummy_data_param
             noise_param.update(data_filler=[dict(type='gaussian')],
                                shape=[dict(dim=[batch_size, n_latent])])
+            latent_noise = noise_name
 
             mult_name = 'latent_std_noise'
             mult_layer = net.layer.add()
             mult_layer.update(name=mult_name,
                               type='Eltwise',
-                              bottom=[noise_name, 'latent_std'],
+                              bottom=[latent_noise, latent_std],
                               top=[mult_name])
             mult_layer.eltwise_param.operation = caffe.params.Eltwise.PROD
+            latent_std_noise = mult_name
 
             add_name = 'latent_sample'
             add_layer = net.layer.add()
             add_layer.update(name=add_name,
                              type='Eltwise',
-                             bottom=[mult_name, 'latent_mean'],
+                             bottom=[latent_std_noise, latent_mean],
                              top=[add_name])
             add_layer.eltwise_param.operation = caffe.params.Eltwise.SUM
             curr_top = add_name
+
+            # KL-divergence
+            mult_name = 'latent_mean2'
+            mult_layer = net.layer.add()
+            mult_layer.update(name=mult_name,
+                              type='Eltwise',
+                              bottom=[latent_mean, latent_mean],
+                              top=[mult_name])
+            mult_layer.eltwise_param.operation = caffe.params.Eltwise.PROD
+            latent_mean2 = mult_name
+
+            mult_name = 'latent_var'
+            mult_layer = net.layer.add()
+            mult_layer.update(name=mult_name,
+                              type='Eltwise',
+                              bottom=[latent_std, latent_std],
+                              top=[mult_name])
+            mult_layer.eltwise_param.operation = caffe.params.Eltwise.PROD
+            latent_var = mult_name
+
+            const_name = 'latent_one'
+            const_layer = net.layer.add()
+            const_layer.update(name=const_name,
+                               type='DummyData',
+                               top=[const_name])
+            const_param = const_layer.dummy_data_param
+            const_param.update(data_filler=[dict(type='constant', value=1.0)],
+                               shape=[dict(dim=[batch_size, n_latent])])
+            latent_one = const_name
+
+            add_name = 'latent_kldiv'
+            add_layer = net.layer.add()
+            add_layer.update(name=add_name,
+                             type='Eltwise',
+                             bottom=[latent_mean2, latent_var, latent_log_std, latent_one],
+                             top=[add_name])
+            add_param = add_layer.eltwise_param
+            add_param.update(operation=caffe.params.Eltwise.SUM,
+                             coeff=[0.5, 0.5, -1.0, -0.5])
+            latent_kldiv = add_name
+
+            sum_name = 'aff_loss'
+            sum_layer = net.layer.add()
+            sum_layer.update(name=sum_name,
+                             type='Reduction',
+                             bottom=[latent_kldiv],
+                             top=[sum_name],
+                             loss_weight=[1.0/batch_size])
+            sum_layer.reduction_param.operation = caffe.params.Reduction.SUM
 
         else:
             fc_name = 'latent_fc'
