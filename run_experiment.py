@@ -3,7 +3,7 @@ import shlex
 import subprocess as sp
 import multiprocessing as mp
 
-from parse_qstat import *
+from parse_qstat import parse_qstat
 
 
 def write_pbs_file(pbs_file, pbs_template_file, model_name, data_name, root_name, iterations):
@@ -47,6 +47,7 @@ def run_queue_job(args):
         orig_dir = os.getcwd()
         os.chdir(work_dir)
     job_id = submit_job(pbs_file, array_idx)
+    time.sleep(5)
     while get_job_state(job_id) != 'C':
         time.sleep(5)
     if work_dir:
@@ -57,15 +58,15 @@ if __name__ == '__main__':
     pbs_template = 'train2.pbs'
     #model_files = [line.rstrip() for line in open('memory_error_models')]
     #model_files = glob.glob('models/*e13*.model')
-    #df = parse_qstat.parse_qstat(open('qjobs').read())
-    #model_files = ['models/' + m + '.model' for m in df[df['job_state'] == 'Q']['Job_Name']]
-    model_files = ['models/ce13_24_1.0_3_3_16_1_512_e.model']
+    df = parse_qstat(open('qjobs').read())
+    model_names = df[(df['euser'] == 'mtr22') & (df['job_state'] == 'Q')]['Job_Name']
+    model_files = ['models/' + m + '.model' for m in model_names]
     for model_file in model_files:
         assert os.path.isfile(model_file), 'file {} does not exist'.format(model_file)
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    iterations = 0
+    iterations = 20000
     seeds = [0]
     folds = [0, 1, 2, 3]
     n_processes = 20
