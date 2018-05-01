@@ -465,6 +465,16 @@ def keyword_product(**kwargs):
         yield dict(itertools.izip(kwargs.iterkeys(), values))
 
 
+def percent_index(lst, pct):
+    return lst[int(pct*len(lst))]
+
+
+def orthogonal_samples(n, **kwargs):
+    for sample in pyDOE.lhs(len(kwargs), n):
+        values = map(percent_index, zip(kwargs, sample))
+        yield dict(zip(kwargs, values))
+
+
 if __name__ == '__main__':
 
     version = (1, 3)
