@@ -9,14 +9,14 @@ import caffe_util
 
 
 NAME_FORMATS = {
-    (1, 1): '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}' \
-            + '_{n_filters}_{pool_type}_{depool_type}',
+    (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
+            + '_{n_filters:d}_{pool_type}_{depool_type}',
 
-    (1, 2): '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
-            + '_{n_filters}_{width_factor}_{loss_types}',
+    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
+            + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
-    (1, 3): '{encode_type}e13_{data_dim}_{resolution}_{n_levels}_{conv_per_level}' \
-            + '_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
+    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
+            + '_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
 }
 
 
