@@ -53,7 +53,7 @@ SEARCH_SPACES = {
                  n_filters=[16, 32, 64],
                  width_factor=[1, 2],
                  n_latent=[512, 1024],
-                 loss_types=['e'])
+                 loss_types=['e', 'em'])
 }
 
 
@@ -456,6 +456,32 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
                           bottom=[pred_top, label_top],
                           top=[loss_name],
                           loss_weight=[1.0])
+
+    if 'c' in loss_types:
+
+        loss_name = 'aff_loss'
+        loss_layer = net.layer.add()
+        loss_layer.update(name=loss_name,
+                          type='Python',
+                          bottom=[pred_top, label_top],
+                          top=[loss_name],
+                          loss_weight=[1.0])
+        loss_param = loss_layer.python_param
+        loss_param.update(module='channel_euclidean_loss_layer',
+                          layer='ChannelEuclideanLossLayer')
+
+    if 'm' in loss_types:
+
+        loss_name = 'aff_loss'
+        loss_layer = net.layer.add()
+        loss_layer.update(name=loss_name,
+                          type='Python',
+                          bottom=[pred_top, label_top],
+                          top=[loss_name],
+                          loss_weight=[0.0])
+        loss_param = loss_layer.python_param
+        loss_param.update(module='masked_euclidean_loss_layer',
+                          layer='MaskedEuclideanLossLayer')
 
     return net
 
