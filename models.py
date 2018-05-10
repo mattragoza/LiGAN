@@ -45,7 +45,7 @@ SEARCH_SPACES = {
                  pool_type=['a'],
                  depool_type=['n']),
 
-    (1, 3): dict(encode_type=['c', 'a'],
+    (1, 3): dict(encode_type=['c', 'a', 'vc', 'va', '_c', '_a', '_vc', '_va'],
                  data_dim=[24],
                  resolution=[0.5, 1.0],
                  n_levels=[3, 4, 5],
@@ -53,15 +53,21 @@ SEARCH_SPACES = {
                  n_filters=[16, 32, 64],
                  width_factor=[1, 2],
                  n_latent=[512, 1024],
-                 loss_types=['e', 'em'])
+                 loss_types=['', 'e', 'em'])
 }
 
 
-def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
-               n_filters, width_factor, n_latent=None, loss_types='', molgrid_data=True,
-               batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
+def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_filters,
+               width_factor, n_latent=None, loss_types='', batch_size=50,
+               conv_kernel_size=3, pool_type='a', depool_type='n'):
 
-    if encode_type[0] == 'v':
+    if encode_type[0] == '_': # input blobs instead of molgrid_data (for GAN)
+        encode_type = encode_type[1:]
+        molgrid_data = False
+    else:
+        molgrid_data = True
+
+    if encode_type[0] == 'v': # variational latent space
         encode_type = encode_type[1:]
         variational = True
         assert n_latent
@@ -72,7 +78,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
 
-    n_rec_channels = 16
+    n_rec_channels = 16 #TODO read these from map files
     n_lig_channels = 19
     n_channels = n_rec_channels + n_lig_channels
 
@@ -103,7 +109,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
         net.layer.add().update(name='no_label', type='Silence', bottom=['label'])
         net.layer.add().update(name='no_aff', type='Silence', bottom=['aff'])
 
-        if encode_type == 'c':
+        if encode_type == 'c': # split rec and lig grids
 
             slice_layer = net.layer.add()
             slice_layer.update(name='slice_rec_lig',
@@ -118,8 +124,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             data_layer.update(name='data',
                               type='Input',
                               top=['data'])
-            data_layer.input_param.shape.update(dim=[batch_size, n_channels,
-                                                     data_dim, data_dim, data_dim])
+            data_layer.input_param.shape.add(dim=[batch_size, n_channels,
+                                                  data_dim, data_dim, data_dim])
 
         elif encode_type == 'c':
 
@@ -127,23 +133,23 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level,
             rec_layer.update(name='rec',
                              type='Input',
                              top=['rec'])
-            rec_layer.input_param.shape.update(dim=[batch_size, n_rec_channels,
-                                                    data_dim, data_dim, data_dim])
+            rec_layer.input_param.shape.add(dim=[batch_size, n_rec_channels,
+                                                 data_dim, data_dim, data_dim])
 
             lig_layer = net.layer.add()
             lig_layer.update(name='lig',
                              type='Input',
                              top=['lig'])
-            lig_layer.input_param.shape.update(dim=[batch_size, n_lig_channels,
-                                                    data_dim, data_dim, data_dim])
+            lig_layer.input_param.shape.add(dim=[batch_size, n_lig_channels,
+                                                 data_dim, data_dim, data_dim])
 
-    if encode_type == 'a':
+    if encode_type == 'a': # autoencoder
         curr_top = 'data'
         curr_n_filters = n_channels
         label_top = 'data'
         label_n_filters = n_channels
 
-    elif encode_type == 'c':
+    elif encode_type == 'c': # context encoder
         curr_top = 'rec'
         curr_n_filters = n_rec_channels
         label_top = 'lig'
