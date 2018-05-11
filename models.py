@@ -1,4 +1,5 @@
 from __future__ import print_function, division
+import sys
 import os
 import itertools
 import caffe
@@ -518,15 +519,22 @@ def orthogonal_samples(n, **kwargs):
 if __name__ == '__main__':
 
     version = (1, 3)
+    do_scaffold = False
+
     model_data = []
     for kwargs in keyword_product(**SEARCH_SPACES[version]):
         model_name = NAME_FORMATS[version].format(**kwargs)
         model_file = os.path.join('models', model_name + '.model')
         net_param = make_model(**kwargs)
         net_param.to_prototxt(model_file)
-        net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
-        model_data.append((model_name, net.get_n_params(), net.get_size()))
 
-    print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
-    for model_name, n_params, size in model_data:
-        print('{:30}{:12d}{:10.2f} MiB'.format(model_name, n_params, size/2**20))
+        if do_scaffold:
+            net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
+            model_data.append((model_name, net.get_n_params(), net.get_size()))
+        else:
+            print(model_file)
+
+    if do_scaffold:
+        print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
+        for model_name, n_params, size in model_data:
+            print('{:30}{:12d}{:10.2f} MiB'.format(model_name, n_params, size/2**20))
