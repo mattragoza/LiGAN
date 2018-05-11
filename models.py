@@ -452,6 +452,14 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
     pred_top = curr_top
 
+    # output
+    id_name = label_top + '_gen'
+    id_layer = net.layer.add()
+    id_layer.update(name=id_name,
+                    type='Power',
+                    bottom=[pred_top],
+                    top=[id_name])
+
     # loss
     if 'e' in loss_types:
 
