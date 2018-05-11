@@ -465,7 +465,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
     if 'c' in loss_types:
 
-        loss_name = 'aff_loss'
+        loss_name = 'rmsd_loss'
         loss_layer = net.layer.add()
         loss_layer.update(name=loss_name,
                           type='Python',
@@ -478,7 +478,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
     if 'm' in loss_types:
 
-        loss_name = 'aff_loss'
+        loss_name = 'rmsd_loss'
         loss_layer = net.layer.add()
         loss_layer.update(name=loss_name,
                           type='Python',
