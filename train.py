@@ -51,81 +51,93 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train):
     half1 = np.arange(batch_size) < batch_size//2
     half2 = ~half1
 
-    disc_loss = np.float64(0)
-    n_forward = 0
-    for it in range(n_iter):
+    disc_loss_names = [n for n in disc_net.blobs if n.endswith('loss')]
+    disc_loss_dict = {n: np.zeros(n_iter) for n in disc_loss_names}
 
-        if it%2 == 0:
-            data_net.forward()
-            rec_real = data_net.blobs['rec'].data
-            lig_real = data_net.blobs['lig'].data
+    for i in range(n_iter):
 
-            gen_net.forward(rec=rec_real, lig=lig_real)
-            lig_gen = gen_net.blobs['lig_gen'].data
+        if i%2 == 0: # first half real, second half gen
+
+            data_out = data_net.forward()
+            rec_real = data_out['rec']
+            lig_real = data_out['lig']
+
+            gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
+            lig_gen = gen_out['lig_gen']
 
             lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
-            disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
-            disc_loss += disc_net.blobs['loss'].data
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
+
+            for n in disc_loss_names:
+                disc_loss_dict[n][i] = disc_out[n]
 
             if train:
                 disc_net.clear_param_diffs()
                 disc_net.backward()
                 disc_solver.apply_update()
-        else:
+
+        else: # first half gen, second half real
+
             lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
-            disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
-            disc_loss += disc_net.blobs['loss'].data
-            n_forward += 1
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
+
+            for n in disc_loss_names:
+                disc_loss_dict[n][i] = disc_out[n]
 
             if train:
                 disc_net.clear_param_diffs()
                 disc_net.backward()
                 disc_solver.apply_update()
 
-    return dict(disc_loss=disc_loss/n_iter)
+    return {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
-def gen_step(data_net, gen_solver, disc_solver, n_iter, train, lambda_L2, lambda_adv):
+def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
 
     gen_net  = gen_solver.net
     disc_net = disc_solver.net
 
     batch_size = data_net.blobs['lig'].shape[0]
 
-    gen_L2_loss = np.float64(0)
-    gen_adv_loss = np.float64(0)
+    gen_loss_names = [n for n in gen_net.blobs if n.endswith('loss')]
+    gen_loss_dict = {n: np.zeros(n_iter) for n in gen_loss_names}
+
+    disc_loss_names = [n for n in disc_net.blobs if n.endswith('loss')]
+    disc_loss_dict = {n: np.zeros(n_iter) for n in disc_loss_names}
+
     for i in range(n_iter):
 
-        data_net.forward()
-        rec_real = data_net.blobs['rec'].data
-        lig_real = data_net.blobs['lig'].data
+        data_out = data_net.forward()
+        rec_real = data_out['rec']
+        lig_real = data_out['lig']
 
-        gen_net.forward(rec=rec_real, lig=lig_real)
-        gen_L2_loss += gen_net.blobs['loss'].data
-        lig_gen = gen_net.blobs['lig_gen'].data
+        gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
+        lig_gen = gen_out['lig_gen']
 
-        disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
-        gen_adv_loss += disc_net.blobs['loss'].data
+        for n in gen_loss_names:
+            gen_loss_dict[n][i] = gen_out[n]
+
+        disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
+
+        for n in disc_loss_names:
+            disc_loss_dict[n][i] = disc_out[n]
 
         if train:
             disc_net.clear_param_diffs()
             disc_net.backward()
-
-            gen_net.blobs['loss'].diff[...] = lambda_L2
-            gen_net.blobs['lig_gen'].diff[...] = lambda_adv*disc_net.blobs['lig'].diff
+            gen_net.blobs['lig_gen'].diff[...] = disc_net.blobs['lig'].diff
             gen_net.clear_param_diffs()
             gen_net.backward()
             gen_solver.apply_update()
 
-    return dict(gen_L2_loss=gen_L2_loss/n_iter,
-                gen_adv_loss=gen_adv_loss/n_iter)
+    return {n: l.mean() for n,l in gen_loss_dict.items()}, \
+           {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
 def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, solver_param,
-                    gen_iter_mult, disc_iter_mult, lambda_L2, lambda_adv, loss_out):
+                    gen_train_iter, disc_train_iter, loss_out):
 
-    loss_df = pd.DataFrame(columns=['iteration', 'fold', 'disc_loss',
-                                    'gen_L2_loss', 'gen_adv_loss'])
+    loss_df = pd.DataFrame(columns=['iteration', 'fold'])
     loss_df.set_index(['iteration', 'fold'], inplace=True)
 
     max_iter = solver_param.max_iter
@@ -134,25 +146,32 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, sol
     test_iter = solver_param.test_iter[0]
 
     times = []
-    for it in range(max_iter+1):
+    for i in range(max_iter+1):
 
         start = time.time()
 
-        if it%snapshot == 0:
+        if i%snapshot == 0:
             disc_solver.snapshot()
             gen_solver.snapshot()
 
-        if it%test_interval == 0:
+        if i%test_interval == 0: # test
 
             for fold, test_data_net in test_data_nets.items():
 
-                loss = dict()
-                loss.update(disc_step(test_data_net, gen_solver, disc_solver,
-                                      test_iter, False))
-                loss.update(gen_step(test_data_net, gen_solver, disc_solver,
-                                     test_iter, False, lambda_L2, lambda_adv))
-                for name in loss:
-                    loss_df.loc[(it, fold), name] = loss[name]
+                disc_loss_dict = \
+                    disc_step(test_data_net, gen_solver, disc_solver, test_iter, False)
+
+                gen_loss_dict, gen_adv_loss_dict = \
+                    gen_step(test_data_net, gen_solver, disc_solver, test_iter, False)
+
+                for name, loss in disc_loss_dict.items():
+                    loss_df.loc[(i, fold), 'disc_'+name] = loss
+
+                for name, loss in gen_loss_dict.items():
+                    loss_df.loc[(i, fold), 'gen_'+name] = loss
+
+                for name, loss in gen_adv_loss_dict.items():
+                    loss_df.loc[(i, fold), 'gen_adv_'+name] = loss
 
                 #TODO write to loss_out
                 #loss_df.loc[it:it].to_csv(loss_out, header=(it==1), sep=' ')
@@ -161,25 +180,23 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, sol
             times.append(timedelta(seconds=time.time() - start))
             time_elapsed = np.sum(times)
             time_mean = time_elapsed // len(times)
-            iters_left = max_iter - it
+            iters_left = max_iter - i
             time_left = time_mean*iters_left
 
-            print('Iteration {}'.format(it))
+            print('Iteration {}'.format(i))
             print('  {} elapsed'.format(time_elapsed))
             print('  {} mean'.format(time_mean))
             print('  {} left'.format(time_left))
-            for fold in test_data_nets:
-                for name in loss:
-                    print('  {}_{} = {}'.format(fold, name, loss_df.loc[(it, fold), name]))
+            print(loss_df.tail())
 
-        if it == max_iter:
+        if i == max_iter:
             break
 
-        disc_step(train_data_net, gen_solver, disc_solver,
-                  disc_iter_mult, True)
-        gen_step(train_data_net, gen_solver, disc_solver,
-                 gen_iter_mult, True, lambda_L2, lambda_adv)
-        it += 1
+        # train
+        disc_step(train_data_net, gen_solver, disc_solver, disc_train_iter, True)
+        gen_step(train_data_net, gen_solver, disc_solver, gen_train_iter, True)
+
+        i += 1
         disc_solver.increment_iter()
         gen_solver.increment_iter()
 
@@ -215,8 +232,6 @@ def parse_args(argv):
     parser.add_argument('--disc_iter_mult', default=2, type=int)
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
-    parser.add_argument('--lambda_L2', type=float, default=1.0)
-    parser.add_argument('--lambda_adv', type=float, default=1.0)
     return parser.parse_args(argv)
 
 
@@ -263,7 +278,7 @@ def main(argv):
         try:
             loss_df = train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver,
                                       solver_param, args.gen_iter_mult, args.disc_iter_mult,
-                                      args.lambda_L2, args.lambda_adv, loss_out)
+                                      loss_out)
         except:
             disc_solver.snapshot()
             gen_solver.snapshot()
