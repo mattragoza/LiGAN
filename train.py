@@ -159,15 +159,14 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             loss_df.tail(1).to_csv(loss_out, header=(i==0), sep=' ')
             loss_out.flush()
 
-            times.append(dt.timedelta(seconds=time.time() - start))
             time_elapsed = np.sum(times)
             time_mean = time_elapsed // len(times)
             iters_left = args.max_iter - i
             time_left = time_mean*iters_left
 
-            print('Iteration {}'.format(i))
+            print('Iteration {} / {}'.format(i, args.max_iter))
             print('  {} elapsed'.format(time_elapsed))
-            print('  {} mean'.format(time_mean))
+            print('  {} per iter'.format(time_mean))
             print('  {} left'.format(time_left))
             for loss_name in loss_df:
                 loss = loss_df.loc[i, loss_name]
@@ -179,9 +178,10 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         # train
         disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, True)
         gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, True)
-
+ 
         disc_solver.increment_iter()
         gen_solver.increment_iter()
+        times.append(dt.timedelta(seconds=time.time() - start))
 
     return loss_df
 
@@ -236,6 +236,7 @@ def main(argv):
 
         solver_param = caffe_util.SolverParameter.from_prototxt(args.solver_file)
         solver_param.max_iter = args.max_iter
+        solver_param.test_interval = args.max_iter+1
         solver_param.random_seed = args.random_seed
 
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
