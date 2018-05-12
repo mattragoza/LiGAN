@@ -125,8 +125,8 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
 
 def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
 
-    loss_df = pd.DataFrame(columns=['iteration'])
-    loss_df.set_index(['iteration'], inplace=True)
+    loss_df = pd.DataFrame(index=range(args.max_iter+1))
+    loss_df.index.name = 'iteration'
 
     times = []
     for i in range(args.max_iter+1):
@@ -242,18 +242,18 @@ def main(argv):
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
         gen_net_param.force_backward = True
         gen_solver = caffe_util.Solver.from_param(solver_param, net_param=gen_net_param,
-                                                  snapshot_prefix=args.out_prefix+'_gen')
+                                                  snapshot_prefix=args.out_prefix+'_gen'+'.'+fold)
         if args.gen_weights_file:
             gen_solver.net.copy_from(args.gen_weights_file)
 
         disc_net_param = caffe_util.NetParameter.from_prototxt(args.disc_model_file)
         disc_net_param.force_backward = True
         disc_solver = caffe_util.Solver.from_param(solver_param, net_param=disc_net_param,
-                                                   snapshot_prefix=args.out_prefix+'_disc')
+                                                   snapshot_prefix=args.out_prefix+'_disc'+'.'+fold)
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
-        loss_file = '{}_{}_loss.csv'.format(args.out_prefix, fold)
+        loss_file = '{}.{}.training_output'.format(args.out_prefix, fold)
         loss_out = open(loss_file, 'w')
 
         try:
@@ -264,7 +264,7 @@ def main(argv):
             gen_solver.snapshot()
             raise
 
-        plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
+        plot_file = '{}.{}.pdf'.format(args.out_prefix, fold)
         training_plot(plot_file, loss_df)
 
 

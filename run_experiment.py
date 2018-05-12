@@ -7,11 +7,12 @@ import multiprocessing as mp
 
 from parse_qstat import parse_qstat
 
+MIN_GPUS_FREE = 4
+
 
 def write_pbs_file(pbs_file, pbs_template_file, job_name, **kwargs):
     with open(pbs_template_file) as f:
         buf = f.read()
-    defs = []
     buf = re.sub(r'#PBS -N JOB_NAME', '#PBS -N {}'.format(job_name), buf)
     for key, val in kwargs.items():
         var = key.upper()
@@ -85,7 +86,7 @@ def wait_for_free_gpus_and_submit_job(args):
     if work_dir:
         orig_dir = os.getcwd()
         os.chdir(work_dir)
-    while get_n_gpus_free(queue='dept_gpu') < 5:
+    while get_n_gpus_free(queue='dept_gpu') <= MIN_GPUS_FREE:
         time.sleep(5)
     job_id = submit_job(pbs_file, array_idx)
     print(job_id)
@@ -95,9 +96,9 @@ def wait_for_free_gpus_and_submit_job(args):
 
 
 if __name__ == '__main__':
-    pbs_template = 'train2.pbs'
+    pbs_template = 'gan.pbs'
     #model_files = [line.rstrip() for line in open('memory_error_models')]
-    model_files = glob.glob('models/vce13_*_e.model')[:1]
+    model_files = glob.glob('models/_vce13_*_e.model')[:1]
     #df = parse_qstat(open('qjobs').read())
     #model_names = df[(df['euser'] == 'mtr22') & (df['job_state'] == 'Q')]['Job_Name']
     #model_names = [m for m in model_names if not len(glob.glob(m + '/' + m + '_iter_20000.caffemodel')) == 4]
@@ -119,15 +120,23 @@ if __name__ == '__main__':
     #    seed = int(m.group(4))
     #    fold = 3 if m.group(5) == 'all' else int(m.group(5))
     for model_file, seed, fold in itertools.product(model_files, seeds, folds):
-        model_name = os.path.splitext(os.path.split(model_file)[1])[0]
-        print(model_name)
-        if not os.path.isdir(model_name):
-            os.makedirs(model_name)
-        pbs_file = os.path.join(model_name, pbs_template)
-        write_pbs_file(pbs_file, pbs_template, model_name,
-                       model_name=model_name,
+        gen_model_name = os.path.splitext(os.path.split(model_file)[1])[0]
+        resolution = gen_model_name.split('_')[3]
+        data_model_name = 'data_24_{}'.format(resolution)
+        disc_model_name = 'disc'
+        solver_name = 'adam0'
+        gan_name = 'gan{}_{}'.format(gen_model_name, disc_model_name)
+        if not os.path.isdir(gan_name):
+            os.makedirs(gan_name)
+        pbs_file = os.path.join(gan_name, pbs_template)
+        write_pbs_file(pbs_file, pbs_template, gan_name,
+                       gan_name=gan_name,
+                       data_model_name=data_model_name,
+                       gen_model_name=gen_model_name,
+                       disc_model_name=disc_model_name,
                        data_name=data_name,
                        data_root=data_root,
+                       solver_name=solver_name,
                        max_iter=max_iter)
         args.append((pbs_file, 4*seed+fold))
 
