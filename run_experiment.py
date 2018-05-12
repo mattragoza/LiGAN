@@ -1,4 +1,5 @@
-import sys, os, glob, time
+import sys, os, glob, time, re
+import itertools
 import numpy as np
 import shlex
 import subprocess as sp
@@ -7,14 +8,14 @@ import multiprocessing as mp
 from parse_qstat import parse_qstat
 
 
-def write_pbs_file(pbs_file, pbs_template_file, model_name, data_name, root_name, iterations):
+def write_pbs_file(pbs_file, pbs_template_file, job_name, **kwargs):
     with open(pbs_template_file) as f:
         buf = f.read()
-    buf = buf.replace('JOB_NAME', model_name)
-    buf = buf.replace('MODEL_NAME', model_name)
-    buf = buf.replace('DATA_NAME', data_name)
-    buf = buf.replace('ROOT_NAME', root_name)
-    buf = buf.replace('ITERATIONS', str(iterations))
+    defs = []
+    buf = re.sub(r'#PBS -N JOB_NAME', '#PBS -N {}'.format(job_name), buf)
+    for key, val in kwargs.items():
+        var = key.upper()
+        buf = re.sub(r'{}=.*'.format(var), '{}="{}"'.format(var, val), buf)
     with open(pbs_file, 'w') as f:
         f.write(buf)
 
@@ -26,7 +27,7 @@ def run_subprocess(cmd, stdin=None):
 
 
 def submit_job(pbs_file, array_idx):
-    cmd = 'qsub -t {} {}'.format(array_idx, pbs_file)
+    cmd = 'qsub {} -t {}'.format(pbs_file, array_idx)
     stdout, stderr = run_subprocess(cmd)
     if stderr:
         raise Exception(stderr)
@@ -84,7 +85,7 @@ def wait_for_free_gpus_and_submit_job(args):
     if work_dir:
         orig_dir = os.getcwd()
         os.chdir(work_dir)
-    while get_n_gpus_free(queue='dept_gpu') < 4:
+    while get_n_gpus_free(queue='dept_gpu') < 5:
         time.sleep(5)
     job_id = submit_job(pbs_file, array_idx)
     print(job_id)
@@ -94,9 +95,9 @@ def wait_for_free_gpus_and_submit_job(args):
 
 
 if __name__ == '__main__':
-    pbs_template = 'masked.pbs'
+    pbs_template = 'train2.pbs'
     #model_files = [line.rstrip() for line in open('memory_error_models')]
-    model_files = glob.glob('models/*e13*_e.model')
+    model_files = glob.glob('models/vce13_*_e.model')[:1]
     #df = parse_qstat(open('qjobs').read())
     #model_names = df[(df['euser'] == 'mtr22') & (df['job_state'] == 'Q')]['Job_Name']
     #model_names = [m for m in model_names if not len(glob.glob(m + '/' + m + '_iter_20000.caffemodel')) == 4]
@@ -106,20 +107,29 @@ if __name__ == '__main__':
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    iterations = 20000
+    max_iter = 20000
     seeds = [0]
     folds = [0, 1, 2, 3]
 
     args = []
-    for model_file in model_files:
-        for seed in seeds:
-            for fold in folds:
-                model_name = os.path.splitext(os.path.split(model_file)[1])[0]
-                if not os.path.isdir(model_name):
-                    os.makedirs(model_name)
-                pbs_file = os.path.join(model_name, pbs_template)
-                write_pbs_file(pbs_file, pbs_template, model_name, data_name, data_root, iterations)
-                args.append((pbs_file, 4*seed + fold))
+    #for line in open('v13_cuda_errors').readlines()[:1]:
+    #    m = re.match(r'(.+)/(.+)\.(.+)\.(\d+)\.(\d+|all)_iter_20000.caffemodel', line)
+    #    model_name = m.group(1)
+    #    print(model_name)
+    #    seed = int(m.group(4))
+    #    fold = 3 if m.group(5) == 'all' else int(m.group(5))
+    for model_file, seed, fold in itertools.product(model_files, seeds, folds):
+        model_name = os.path.splitext(os.path.split(model_file)[1])[0]
+        print(model_name)
+        if not os.path.isdir(model_name):
+            os.makedirs(model_name)
+        pbs_file = os.path.join(model_name, pbs_template)
+        write_pbs_file(pbs_file, pbs_template, model_name,
+                       model_name=model_name,
+                       data_name=data_name,
+                       data_root=data_root,
+                       max_iter=max_iter)
+        args.append((pbs_file, 4*seed+fold))
 
     map(wait_for_free_gpus_and_submit_job, args)
 
