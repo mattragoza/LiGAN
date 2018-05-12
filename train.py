@@ -1,15 +1,13 @@
 from __future__ import print_function, division
 import matplotlib
 matplotlib.use('Agg')
-import sys
-import os
-import argparse
-import time
-from datetime import timedelta
-from operator import itemgetter
+import sys, os, argparse, time
+import datetime as dt
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_style('white')
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
@@ -17,26 +15,17 @@ caffe.set_device(0)
 import caffe_util
 
 
-def training_plot(plot_file, loss_df, binsize=100):
+def training_plot(plot_file, loss_df, binsize=1):
 
-    colors = ['r','g','b']
     loss_df = loss_df.groupby(np.arange(len(loss_df))//binsize).mean()
     loss_df.index = binsize*(loss_df.index + 1)
 
-    fig, ax1 = plt.subplots()
-    ax1.set_xlabel('iteration')
-    ax1.set_ylabel('cross entropy loss')
-    for column in ['disc_loss', 'gen_adv_loss']:
-        ax1.plot(loss_df.index, loss_df[column], label=column,
-                 color=colors.pop(0), linewidth=1)
-    ax1.legend(loc='upper left')
-
-    ax2 = ax1.twinx()
-    ax2.set_ylabel('L2 loss')
-    for column in ['gen_L2_loss']:
-        ax2.plot(loss_df.index, loss_df[column], label=column,
-                 color=colors.pop(0), linewidth=1)
-    ax2.legend(loc='upper right')
+    fig, ax = plt.subplots()
+    ax.set_xlabel('iteration')
+    ax.set_ylabel('loss')
+    for column in loss_df:
+        ax.plot(loss_df.index, loss_df[column], label=column, linewidth=2)
+    ax.legend()
 
     fig.tight_layout()
     fig.savefig(plot_file)
@@ -134,69 +123,63 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
            {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
-def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, solver_param,
-                    gen_train_iter, disc_train_iter, loss_out):
+def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
 
-    loss_df = pd.DataFrame(columns=['iteration', 'fold'])
-    loss_df.set_index(['iteration', 'fold'], inplace=True)
-
-    max_iter = solver_param.max_iter
-    snapshot = solver_param.snapshot
-    test_interval = solver_param.test_interval
-    test_iter = solver_param.test_iter[0]
+    loss_df = pd.DataFrame(columns=['iteration'])
+    loss_df.set_index(['iteration'], inplace=True)
 
     times = []
-    for i in range(max_iter+1):
+    for i in range(args.max_iter+1):
 
         start = time.time()
 
-        if i%snapshot == 0:
+        if i%args.snapshot == 0:
             disc_solver.snapshot()
             gen_solver.snapshot()
 
-        if i%test_interval == 0: # test
+        if i%args.test_interval == 0: # test
 
             for fold, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
-                    disc_step(test_data_net, gen_solver, disc_solver, test_iter, False)
+                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False)
 
                 gen_loss_dict, gen_adv_loss_dict = \
-                    gen_step(test_data_net, gen_solver, disc_solver, test_iter, False)
+                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False)
 
                 for name, loss in disc_loss_dict.items():
-                    loss_df.loc[(i, fold), 'disc_'+name] = loss
+                    loss_df.loc[i, fold+'_disc_'+name] = loss
 
                 for name, loss in gen_loss_dict.items():
-                    loss_df.loc[(i, fold), 'gen_'+name] = loss
+                    loss_df.loc[i, fold+'_gen_'+name] = loss
 
                 for name, loss in gen_adv_loss_dict.items():
-                    loss_df.loc[(i, fold), 'gen_adv_'+name] = loss
+                    loss_df.loc[i, fold+'_gen_adv_'+name] = loss
 
-                #TODO write to loss_out
-                #loss_df.loc[it:it].to_csv(loss_out, header=(it==1), sep=' ')
-                #loss_out.flush()
+            loss_df.tail(1).to_csv(loss_out, header=(i==0), sep=' ')
+            loss_out.flush()
 
-            times.append(timedelta(seconds=time.time() - start))
+            times.append(dt.timedelta(seconds=time.time() - start))
             time_elapsed = np.sum(times)
             time_mean = time_elapsed // len(times)
-            iters_left = max_iter - i
+            iters_left = args.max_iter - i
             time_left = time_mean*iters_left
 
             print('Iteration {}'.format(i))
             print('  {} elapsed'.format(time_elapsed))
             print('  {} mean'.format(time_mean))
             print('  {} left'.format(time_left))
-            print(loss_df.tail())
+            for loss_name in loss_df:
+                loss = loss_df.loc[i, loss_name]
+                print('  {} = {}'.format(loss_name, loss))
 
-        if i == max_iter:
+        if i == args.max_iter:
             break
 
         # train
-        disc_step(train_data_net, gen_solver, disc_solver, disc_train_iter, True)
-        gen_step(train_data_net, gen_solver, disc_solver, gen_train_iter, True)
+        disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, True)
+        gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, True)
 
-        i += 1
         disc_solver.increment_iter()
         gen_solver.increment_iter()
 
@@ -228,8 +211,8 @@ def parse_args(argv):
     parser.add_argument('--random_seed', default=0, type=int)
     parser.add_argument('--test_iter', default=10, type=int)
     parser.add_argument('--test_interval', default=100, type=int)
-    parser.add_argument('--gen_iter_mult', default=1, type=int)
-    parser.add_argument('--disc_iter_mult', default=2, type=int)
+    parser.add_argument('--gen_train_iter', default=1, type=int)
+    parser.add_argument('--disc_train_iter', default=2, type=int)
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
     return parser.parse_args(argv)
@@ -254,21 +237,18 @@ def main(argv):
         solver_param = caffe_util.SolverParameter.from_prototxt(args.solver_file)
         solver_param.max_iter = args.max_iter
         solver_param.random_seed = args.random_seed
-        solver_param.snapshot = args.snapshot
-        solver_param.test_iter.append(args.test_iter)
-        solver_param.test_interval = args.test_interval
 
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
         gen_net_param.force_backward = True
         gen_solver = caffe_util.Solver.from_param(solver_param, net_param=gen_net_param,
-                                                  snapshot_prefix=args.out_prefix + '_gen')
+                                                  snapshot_prefix=args.out_prefix+'_gen')
         if args.gen_weights_file:
             gen_solver.net.copy_from(args.gen_weights_file)
 
         disc_net_param = caffe_util.NetParameter.from_prototxt(args.disc_model_file)
         disc_net_param.force_backward = True
         disc_solver = caffe_util.Solver.from_param(solver_param, net_param=disc_net_param,
-                                                   snapshot_prefix=args.out_prefix + '_disc')
+                                                   snapshot_prefix=args.out_prefix+'_disc')
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
@@ -277,17 +257,14 @@ def main(argv):
 
         try:
             loss_df = train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver,
-                                      solver_param, args.gen_iter_mult, args.disc_iter_mult,
-                                      loss_out)
+                                      loss_out, args)
         except:
             disc_solver.snapshot()
             gen_solver.snapshot()
             raise
 
-        print(loss_df)
-
-       # plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
-       # training_plot(plot_file, loss_df)
+        plot_file = '{}_{}_loss.pdf'.format(args.out_prefix, fold)
+        training_plot(plot_file, loss_df)
 
 
 if __name__ == '__main__':
