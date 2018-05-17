@@ -125,7 +125,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
 
 def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
 
-    loss_df = pd.DataFrame(index=range(args.max_iter+1))
+    loss_df = pd.DataFrame(index=range(0, args.max_iter+1, args.test_interval))
     loss_df.index.name = 'iteration'
 
     times = []
@@ -139,6 +139,7 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
 
         if i%args.test_interval == 0: # test
 
+            first_test = i == 0
             for fold, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
@@ -156,7 +157,7 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
                 for name, loss in gen_adv_loss_dict.items():
                     loss_df.loc[i, fold+'_gen_adv_'+name] = loss
 
-            loss_df.tail(1).to_csv(loss_out, header=(i==0), sep=' ')
+            loss_df.loc[i:i+1].to_csv(loss_out, header=first_test, sep=' ')
             loss_out.flush()
 
             time_elapsed = np.sum(times)
@@ -171,6 +172,7 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             for loss_name in loss_df:
                 loss = loss_df.loc[i, loss_name]
                 print('  {} = {}'.format(loss_name, loss))
+            sys.stdout.flush()
 
         if i == args.max_iter:
             break
