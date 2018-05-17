@@ -13,7 +13,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
-sns.set_context('talk')
+sns.set_context('talk', rc={'lines.linewidth': 1.0})
+sns.set_palette('deep')
 
 import models
 
@@ -21,15 +22,19 @@ import models
 def plot_lines(plot_file, df, x, y, hue, ylim=None):
     df = df.reset_index().set_index([hue, x])
     fig, ax = plt.subplots(figsize=(6,6))
-    ax.set_xlabel('iteration')
+    ax.set_xlabel(x)
     ax.set_ylabel(y)
     if ylim:
         ax.set_ylim(*ylim)
     for i, _ in df.groupby(level=0):
-        s = df.loc[i, y]
-        ax.plot(s.index, s, label=i, linewidth=1.0)
+        mean = df.loc[i][y].groupby(level=0).mean()
+        sem = df.loc[i][y].groupby(level=0).sem()
+        ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5/df.index.get_level_values(hue).nunique())
+    for i, _ in df.groupby(level=0):
+        mean = df.loc[i][y].groupby(level=0).mean()
+        ax.plot(mean.index, mean, label=i)
     fig.tight_layout()
-    lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=2)
+    lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
     lgd.set_title(hue, prop=dict(size='small'))
     fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
 
@@ -50,14 +55,16 @@ def plot_strips(plot_file, df, x, y, hue, ylim=None, n_cols=None):
     for i, y_ in enumerate(y):
         for j, x_ in enumerate(x):
             ax = next(axes)
-            sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, ax=ax)
+            sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=0.5, ax=ax)
             handles, labels = ax.get_legend_handles_labels()
-            lgd = ax.legend(handles, labels, ncol=1)
-            lgd.set_title(hue, prop=dict(size='small'))
+            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, markers='', capsize=0.1, ax=ax)
+            ax.legend_.remove()
+    fig.tight_layout()
+    lgd = ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
+    lgd.set_title(hue, prop=dict(size='small'))
     for ax in axes:
         ax.axis('off')
-    fig.tight_layout()
-    fig.savefig(plot_file)
+    fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
 
 
 def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
@@ -163,16 +170,19 @@ def main(argv):
         agg_df['loss_types'] = agg_df['loss_types'].fillna('e')
         agg_df = agg_df[agg_df['loss_types'] == 'e']
 
+    name_fields = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
+
     # plot training progress
-    line_plot_file = '{}_{}_lines.{}'.format(args.out_prefix, test_loss, args.plot_ext)
-    plot_lines(line_plot_file, agg_df, x='iteration', y=test_loss, hue='model_name')
+    line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
+    plot_lines(line_plot_file, agg_df, x='iteration', y=test_loss, hue=args.hue)
 
     # plot final loss distributions
-    agg_df.reset_index('model_name', inplace=True)
+    final_df = agg_df.reset_index('model_name').loc[args.iteration]
     strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-    plot_strips(strip_plot_file, agg_df.loc[args.iteration], x=args.x or name_fields,
-                y=args.y or [test_loss], hue=args.hue, n_cols=4)
+    plot_strips(strip_plot_file, final_df, x=args.x or name_fields,
+                y=args.y or [test_loss], hue=args.hue,  n_cols=4)
 
+    print(final_df.sort_values(test_loss).head(5).loc[:, ('model_name', test_loss)])
 
 if __name__ == '__main__':
     main(sys.argv[1:])
