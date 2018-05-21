@@ -19,38 +19,58 @@ sns.set_palette('deep')
 import models
 
 
-def plot_lines(plot_file, df, x, y, hue, ylim=None):
-    df = df.reset_index().set_index([hue, x])
-    fig, ax = plt.subplots(figsize=(6,6))
-    ax.set_xlabel(x)
-    ax.set_ylabel(y)
-    if ylim:
-        ax.set_ylim(*ylim)
-    for i, _ in df.groupby(level=0):
-        mean = df.loc[i][y].groupby(level=0).mean()
-        sem = df.loc[i][y].groupby(level=0).sem()
-        ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5/df.index.get_level_values(hue).nunique())
-    for i, _ in df.groupby(level=0):
-        mean = df.loc[i][y].groupby(level=0).mean()
-        ax.plot(mean.index, mean, label=i)
+def plot_lines(plot_file, df, x, y, hue, n_cols=None):
+    if hue:
+        df = df.reset_index().set_index([hue, x])
+    else:
+        df = df.reset_index().set_index(x)
+    if n_cols is None:
+        n_cols = len(y)
+    n_axes = len(y)
+    n_rows = (n_axes + n_cols-1)//n_cols
+    n_cols = min(n_axes, n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows),
+                             sharex=True, sharey=True, squeeze=False)
+    axes = axes.reshape(n_rows, n_cols)
+    axes = iter(axes.flatten())
+    for i, y_ in enumerate(y):
+        ax = next(axes)
+        ax.set_xlabel(x)
+        ax.set_ylabel(y_)
+        if hue:
+            for j, _ in df.groupby(level=0):
+                mean = df.loc[j][y_].groupby(level=0).mean()
+                sem = df.loc[j][y_].groupby(level=0).sem()
+                ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5/df.index.get_level_values(hue).nunique())
+            for j, _ in df.groupby(level=0):
+                mean = df.loc[j][y_].groupby(level=0).mean()
+                ax.plot(mean.index, mean, label=j)
+        else:
+            mean = df[y_].groupby(level=0).mean()
+            sem = df[y_].groupby(level=0).sem()
+            ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5)
+            ax.plot(mean.index, mean)
     fig.tight_layout()
-    lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
-    lgd.set_title(hue, prop=dict(size='small'))
-    fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
+    extra = []
+    if hue:
+        lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
+        lgd.set_title(hue, prop=dict(size='small'))
+        extra.append(lgd)
+    for ax in axes:
+        ax.axis('off')
+    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
 
 
-def plot_strips(plot_file, df, x, y, hue, ylim=None, n_cols=None):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None):
     df = df.reset_index()
     if n_cols is None:
         n_cols = len(x)
-    n_ax = len(x)*len(y)
-    n_rows = (n_ax + n_cols-1)//n_cols
-    n_cols = min(n_ax, n_cols)
+    n_axes = len(x)*len(y)
+    n_rows = (n_axes + n_cols-1)//n_cols
+    n_cols = min(n_axes, n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows),
-                             sharey=len(y) == 1, squeeze=False)
+                             sharex=len(x) == 1, sharey=len(y) == 1, squeeze=False)
     axes = axes.reshape(n_rows, n_cols)
-    if ylim:
-        axes[0][0].set_ylim(*ylim)
     axes = iter(axes.flatten())
     for i, y_ in enumerate(y):
         for j, x_ in enumerate(x):
@@ -118,6 +138,8 @@ def parse_args(argv=None):
     parser.add_argument('--hue', default=None)
     parser.add_argument('--n_cols', default=4, type=int)
     parser.add_argument('--masked', default=False, action='store_true')
+    parser.add_argument('--plot_lines', default=False, action='store_true')
+    parser.add_argument('--plot_strips', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -193,16 +215,17 @@ def main(argv):
     if not args.x:
         args.x = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
 
-    # plot training progress
-    line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
-    plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y[0],
-               hue=args.hue or col_name_map['model_name'])
+    if args.plot_lines: # plot training progress
+        line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
+        plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
+                   n_cols=args.n_cols)
 
-    # plot final loss distributions
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
-    strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-    plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
-                n_cols=args.n_cols)
+    
+    if args.plot_strips: # plot final loss distributions
+        strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
+        plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
+                    n_cols=args.n_cols)
 
     # display names of best models
     for y in args.y:
