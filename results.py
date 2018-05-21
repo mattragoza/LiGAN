@@ -58,13 +58,17 @@ def plot_strips(plot_file, df, x, y, hue, ylim=None, n_cols=None):
             sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=0.5, ax=ax)
             handles, labels = ax.get_legend_handles_labels()
             sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, markers='', capsize=0.1, ax=ax)
-            ax.legend_.remove()
+            if hue:
+                ax.legend_.remove()
     fig.tight_layout()
-    lgd = ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
-    lgd.set_title(hue, prop=dict(size='small'))
+    extra = []
+    if hue:
+        lgd = ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
+        lgd.set_title(hue, prop=dict(size='small'))
+        extra.append(lgd)
     for ax in axes:
         ax.axis('off')
-    fig.savefig(plot_file, bbox_extra_artists=(lgd,), bbox_inches='tight')
+    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
 
 
 def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
@@ -101,7 +105,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--dir_pattern', required=True)
+    parser.add_argument('-m', '--dir_pattern', default=[], action='append', required=True)
     parser.add_argument('-d', '--data_name', default='lowrmsd')
     parser.add_argument('-o', '--out_prefix', default='')
     parser.add_argument('-s', '--seeds', default='0')
@@ -112,21 +116,21 @@ def parse_args(argv=None):
     parser.add_argument('-x', '--x', default=[], action='append')
     parser.add_argument('-y', '--y', default=[], action='append')
     parser.add_argument('--hue', default=None)
+    parser.add_argument('--n_cols', default=4, type=int)
+    parser.add_argument('--masked', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    model_dirs = sorted(d for d in glob.glob(args.dir_pattern) if os.path.isdir(d))
+    # read training output files from found model directories
+    model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
     seeds = map(int, args.seeds.split(','))
     folds = map(int, args.folds.split(','))
-
     df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration)
 
-    col_name_map = dict(r.split(':') for r in args.rename_col)
-    df.rename(columns=col_name_map, inplace=True)
-
+    # aggregate output values for each model across seeds and folds
     index_cols = ['model_name', 'iteration']
     f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
             for col in df if col not in index_cols}
@@ -134,6 +138,7 @@ def main(argv):
     assert np.all(agg_df['seed'] == len(seeds))
     assert np.all(agg_df['fold'] == len(folds))
 
+    # add columns from parsing model name fields
     for model_name, model_df in agg_df.groupby(level=0):
         model_version = tuple(int(c) for c in re.match(r'^.+e(\d+)_', model_name).group(1))
         agg_df.loc[model_name, 'model_version'] = str(model_version)
@@ -143,18 +148,11 @@ def main(argv):
         for field in name_fields:
             value = name_parse.named[field]
             agg_df.loc[model_name, field] = value
-
     name_fields.insert(0, 'model_version')
 
-    test_loss = col_name_map.get('test_y_loss', 'test_y_loss')
-    train_loss = col_name_map.get('train_y_loss', 'train_y_loss')
-
+    # fill in default values so that different model versions may be compared
     if 'resolution' in agg_df:
         agg_df['resolution'] = agg_df['resolution'].fillna(0.5)
-        test_loss_res = test_loss + '*resolution^3'
-        train_loss_res = train_loss + '*resolution^3'
-        agg_df[test_loss_res] = agg_df[test_loss]*agg_df['resolution']**3
-        agg_df[train_loss_res] = agg_df[train_loss]*agg_df['resolution']**3
 
     if 'conv_per_level' in agg_df:
         agg_df = agg_df[agg_df['conv_per_level'] > 0]
@@ -168,21 +166,48 @@ def main(argv):
 
     if 'loss_types' in agg_df:
         agg_df['loss_types'] = agg_df['loss_types'].fillna('e')
-        agg_df = agg_df[agg_df['loss_types'] == 'e']
+        agg_df = agg_df[(agg_df['loss_types'] == 'e') | (agg_df['loss_types'] == 'em')]
 
-    name_fields = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
+    if args.masked: # treat aff_loss as masked y_loss; adjust for resolution
+
+        no_aff = agg_df['test_aff_loss'].isnull()
+        agg_df.loc[no_aff, 'test_aff_loss'] = agg_df[no_aff]['test_y_loss']
+        agg_df['test_aff_loss'] *= agg_df['resolution']**3
+
+        no_aff = agg_df['train_aff_loss'].isnull()
+        agg_df.loc[no_aff, 'train_aff_loss'] = agg_df[no_aff]['train_y_loss']
+        agg_df['train_aff_loss'] *= agg_df['resolution']**3
+
+    # rename columns if necessary
+    agg_df.reset_index(inplace=True)
+    col_name_map = {col: col for col in agg_df}
+    col_name_map.update(dict(r.split(':') for r in args.rename_col))
+    agg_df.rename(columns=col_name_map, inplace=True)
+    name_fields = [col_name_map[n] for n in name_fields]
+
+    # by default, plot the test_y_loss on the y-axis
+    if not args.y:
+        args.y.append(col_name_map['test_y_loss'])
+
+    # by default, don't make separate plots for the hue variable or variables with 1 unique value
+    if not args.x:
+        args.x = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
 
     # plot training progress
     line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
-    plot_lines(line_plot_file, agg_df, x='iteration', y=test_loss, hue=args.hue)
+    plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y[0],
+               hue=args.hue or col_name_map['model_name'])
 
     # plot final loss distributions
-    final_df = agg_df.reset_index('model_name').loc[args.iteration]
+    final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
     strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-    plot_strips(strip_plot_file, final_df, x=args.x or name_fields,
-                y=args.y or [test_loss], hue=args.hue,  n_cols=4)
+    plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
+                n_cols=args.n_cols)
 
-    print(final_df.sort_values(test_loss).head(5).loc[:, ('model_name', test_loss)])
+    # display names of best models
+    for y in args.y:
+        print(final_df.sort_values(y).head(5).loc[:, (col_name_map['model_name'], y)])
+
 
 if __name__ == '__main__':
     main(sys.argv[1:])
