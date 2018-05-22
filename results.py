@@ -30,7 +30,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows),
-                             sharex=True, sharey=True, squeeze=False)
+                             sharex=True, sharey=False, squeeze=False)
     axes = axes.reshape(n_rows, n_cols)
     axes = iter(axes.flatten())
     for i, y_ in enumerate(y):
@@ -108,7 +108,8 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
                     file_df['seed'] = seed
                     file_df['fold'] = fold
                     file_df['iteration'] = file_df['iteration'].astype(int)
-                    del file_df['base_lr']
+                    if 'base_lr' in file_df:
+                        del file_df['base_lr']
                     max_iter = file_df['iteration'].max()
                     assert iteration in file_df['iteration'].unique(), \
                         'No training output for iteration {} ({})'.format(iteration, max_iter)
@@ -127,11 +128,10 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--dir_pattern', default=[], action='append', required=True)
     parser.add_argument('-d', '--data_name', default='lowrmsd')
-    parser.add_argument('-o', '--out_prefix', default='')
     parser.add_argument('-s', '--seeds', default='0')
     parser.add_argument('-f', '--folds', default='0,1,2')
     parser.add_argument('-i', '--iteration', default=20000, type=int)
-    parser.add_argument('--plot_ext', default='png')
+    parser.add_argument('-o', '--out_prefix', default='')
     parser.add_argument('-r', '--rename_col', default=[], action='append')
     parser.add_argument('-x', '--x', default=[], action='append')
     parser.add_argument('-y', '--y', default=[], action='append')
@@ -140,6 +140,7 @@ def parse_args(argv=None):
     parser.add_argument('--masked', default=False, action='store_true')
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
+    parser.add_argument('--plot_ext', default='png')
     return parser.parse_args(argv)
 
 
@@ -148,8 +149,8 @@ def main(argv):
 
     # read training output files from found model directories
     model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
-    seeds = map(int, args.seeds.split(','))
-    folds = map(int, args.folds.split(','))
+    seeds = [int(s) for s in args.seeds.split(',')]
+    folds = [int(f) for f in args.folds.split(',')]
     df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration)
 
     # aggregate output values for each model across seeds and folds
@@ -188,17 +189,15 @@ def main(argv):
 
     if 'loss_types' in agg_df:
         agg_df['loss_types'] = agg_df['loss_types'].fillna('e')
-        agg_df = agg_df[(agg_df['loss_types'] == 'e') | (agg_df['loss_types'] == 'em')]
 
-    if args.masked: # treat aff_loss as masked y_loss; adjust for resolution
+    if args.masked: # treat rmsd_loss as masked loss; adjust for resolution
 
-        no_aff = agg_df['test_aff_loss'].isnull()
-        agg_df.loc[no_aff, 'test_aff_loss'] = agg_df[no_aff]['test_y_loss']
-        agg_df['test_aff_loss'] *= agg_df['resolution']**3
+        rmsd_losses = [l for l in agg_df if 'rmsd_loss' in l]
+        for rmsd_loss in rmsd_losses:
 
-        no_aff = agg_df['train_aff_loss'].isnull()
-        agg_df.loc[no_aff, 'train_aff_loss'] = agg_df[no_aff]['train_y_loss']
-        agg_df['train_aff_loss'] *= agg_df['resolution']**3
+            no_rmsd = agg_df[rmsd_loss].isnull()
+            agg_df.loc[no_rmsd, rmsd_loss] = agg_df[no_rmsd][rmsd_loss.replace('rmsd_loss', 'loss')]
+            agg_df[rmsd_loss] *= agg_df['resolution']**3
 
     # rename columns if necessary
     agg_df.reset_index(inplace=True)
@@ -206,10 +205,6 @@ def main(argv):
     col_name_map.update(dict(r.split(':') for r in args.rename_col))
     agg_df.rename(columns=col_name_map, inplace=True)
     name_fields = [col_name_map[n] for n in name_fields]
-
-    # by default, plot the test_y_loss on the y-axis
-    if not args.y:
-        args.y.append(col_name_map['test_y_loss'])
 
     # by default, don't make separate plots for the hue variable or variables with 1 unique value
     if not args.x:

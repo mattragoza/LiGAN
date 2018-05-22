@@ -244,14 +244,14 @@ def main(argv):
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
         gen_net_param.force_backward = True
         gen_solver = caffe_util.Solver.from_param(solver_param, net_param=gen_net_param,
-                                                  snapshot_prefix=args.out_prefix+'_gen'+'.'+fold)
+                                                  snapshot_prefix=args.out_prefix+'.'+fold+'_gen')
         if args.gen_weights_file:
             gen_solver.net.copy_from(args.gen_weights_file)
 
         disc_net_param = caffe_util.NetParameter.from_prototxt(args.disc_model_file)
         disc_net_param.force_backward = True
         disc_solver = caffe_util.Solver.from_param(solver_param, net_param=disc_net_param,
-                                                   snapshot_prefix=args.out_prefix+'_disc'+'.'+fold)
+                                                   snapshot_prefix=args.out_prefix+'.'+fold+'_disc')
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
