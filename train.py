@@ -125,11 +125,11 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
 
 def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
 
-    loss_df = pd.DataFrame(index=range(0, args.max_iter+1, args.test_interval))
+    loss_df = pd.DataFrame(index=range(args.cont_iter, args.max_iter+1, args.test_interval))
     loss_df.index.name = 'iteration'
 
     times = []
-    for i in range(args.max_iter+1):
+    for i in range(args.cont_iter, args.max_iter+1):
 
         start = time.time()
 
@@ -137,7 +137,7 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             disc_solver.snapshot()
             gen_solver.snapshot()
 
-        if i%args.test_interval == 0: # test
+        if i%args.test_interval == 0 and not (args.cont_iter and i == args.cont_iter): # test
 
             first_test = i == 0
             for fold, test_data_net in test_data_nets.items():
@@ -215,6 +215,7 @@ def parse_args(argv):
     parser.add_argument('--test_interval', default=100, type=int)
     parser.add_argument('--gen_train_iter', default=1, type=int)
     parser.add_argument('--disc_train_iter', default=2, type=int)
+    parser.add_argument('--cont_iter', default=0, type=int)
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
     return parser.parse_args(argv)
@@ -243,20 +244,29 @@ def main(argv):
 
         gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
         gen_net_param.force_backward = True
+        gen_prefix = args.out_prefix+'.'+fold+'_gen'
         gen_solver = caffe_util.Solver.from_param(solver_param, net_param=gen_net_param,
-                                                  snapshot_prefix=args.out_prefix+'.'+fold+'_gen')
+                                                  snapshot_prefix=gen_prefix)
         if args.gen_weights_file:
             gen_solver.net.copy_from(args.gen_weights_file)
 
         disc_net_param = caffe_util.NetParameter.from_prototxt(args.disc_model_file)
         disc_net_param.force_backward = True
+        disc_prefix = args.out_prefix+'.'+fold+'_disc'
         disc_solver = caffe_util.Solver.from_param(solver_param, net_param=disc_net_param,
-                                                   snapshot_prefix=args.out_prefix+'.'+fold+'_disc')
+                                                   snapshot_prefix=disc_prefix)
         if args.disc_weights_file:
             disc_solver.net.copy_from(args.disc_weights_file)
 
         loss_file = '{}.{}.training_output'.format(args.out_prefix, fold)
-        loss_out = open(loss_file, 'w')
+        if args.cont_iter:
+            gen_state_file = '{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter)
+            disc_state_file = '{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter)
+            gen_solver.restore(gen_state_file)
+            disc_solver.restore(disc_state_file)
+            loss_out = open(loss_file, 'a')
+        else:
+            loss_out = open(loss_file, 'w')
 
         try:
             loss_df = train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver,
