@@ -106,7 +106,8 @@ if __name__ == '__main__':
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    max_iter = 20000
+    max_iter = 50000
+    cont_iter = 20000
     seeds = [0]
     folds = [0, 1, 2, 3]
 
@@ -131,7 +132,8 @@ if __name__ == '__main__':
                            data_name=data_name,
                            data_root=data_root,
                            solver_name=solver_name,
-                           max_iter=max_iter)
+                           max_iter=max_iter,
+                           cont_iter=cont_iter)
         else:
             if not os.path.isdir(model_name):
                 os.makedirs(model_name)
