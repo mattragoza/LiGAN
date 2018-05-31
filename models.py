@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 import sys
 import os
+import re
 import itertools
 import caffe
 caffe.set_mode_gpu()
@@ -46,7 +47,7 @@ SEARCH_SPACES = {
                  pool_type=['a'],
                  depool_type=['n']),
 
-    (1, 3): dict(encode_type=['c', 'a', 'vc', 'va', '_c', '_a', '_vc', '_va'],
+    (1, 3): dict(encode_type=[''.join(x).replace(' ', '') for x in itertools.product(' _', ' n', ' v', 'ca')],
                  data_dim=[24],
                  resolution=[0.5, 1.0],
                  n_levels=[3, 4, 5],
@@ -58,24 +59,21 @@ SEARCH_SPACES = {
 }
 
 
+def parse_encode_type(encode_type):
+    m = re.match(r'(_)?(n)?(v)?(a|c)', encode_type)
+    molgrid_data = m.group(1) is None
+    concat_noise = m.group(2) is not None
+    variational = m.group(3) is not None
+    rec_to_lig = m.group(4) == 'c'
+    return molgrid_data, concat_noise, variational, rec_to_lig
+
+
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_filters,
                width_factor, n_latent=None, loss_types='', batch_size=50,
                conv_kernel_size=3, pool_type='a', depool_type='n'):
 
-    if encode_type[0] == '_': # input blobs instead of molgrid_data (for GAN)
-        encode_type = encode_type[1:]
-        molgrid_data = False
-    else:
-        molgrid_data = True
+    molgrid_data, concat_noise, variational, rec_to_lig = parse_encode_type(encode_type)
 
-    if encode_type[0] == 'v': # variational latent space
-        encode_type = encode_type[1:]
-        variational = True
-        assert n_latent
-    else:
-        variational = False
-
-    assert encode_type in ['a', 'c']
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
 
@@ -110,7 +108,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
         net.layer.add().update(name='no_label', type='Silence', bottom=['label'])
         net.layer.add().update(name='no_aff', type='Silence', bottom=['aff'])
 
-        if encode_type == 'c': # split rec and lig grids
+        if rec_to_lig: # split rec and lig grids
 
             slice_layer = net.layer.add()
             slice_layer.update(name='slice_rec_lig',
@@ -119,16 +117,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                top=['rec', 'lig'],
                                slice_param=dict(axis=1, slice_point=[n_rec_channels]))
     else:
-        if encode_type == 'a':
-
-            data_layer = net.layer.add()
-            data_layer.update(name='data',
-                              type='Input',
-                              top=['data'])
-            data_layer.input_param.shape.add(dim=[batch_size, n_channels,
-                                                  data_dim, data_dim, data_dim])
-
-        elif encode_type == 'c':
+        if rec_to_lig:
 
             rec_layer = net.layer.add()
             rec_layer.update(name='rec',
@@ -143,18 +132,26 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                              top=['lig'])
             lig_layer.input_param.shape.add(dim=[batch_size, n_lig_channels,
                                                  data_dim, data_dim, data_dim])
+        else:
 
-    if encode_type == 'a': # autoencoder
-        curr_top = 'data'
-        curr_n_filters = n_channels
-        label_top = 'data'
-        label_n_filters = n_channels
+            data_layer = net.layer.add()
+            data_layer.update(name='data',
+                              type='Input',
+                              top=['data'])
+            data_layer.input_param.shape.add(dim=[batch_size, n_channels,
+                                                  data_dim, data_dim, data_dim])
 
-    elif encode_type == 'c': # context encoder
+    if rec_to_lig: # context encoder
         curr_top = 'rec'
         curr_n_filters = n_rec_channels
         label_top = 'lig'
         label_n_filters = n_lig_channels
+
+    else: # autoencoder
+        curr_top = 'data'
+        curr_n_filters = n_channels
+        label_top = 'data'
+        label_n_filters = n_channels
 
     curr_dim = data_dim
     next_n_filters = n_filters
@@ -232,8 +229,9 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
     # latent
     if n_latent is not None:
-
+        
         if variational:
+
             fc_name = 'latent_mean'
             fc_layer = net.layer.add()
             fc_layer.update(name=fc_name,
@@ -342,6 +340,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
             sum_layer.reduction_param.operation = caffe.params.Reduction.SUM
 
         else:
+
             fc_name = 'latent_fc'
             fc_layer = net.layer.add()
             fc_layer.update(name=fc_name,
@@ -352,6 +351,27 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
             fc_param.update(num_output=n_latent,
                             weight_filler=dict(type='xavier'))
             curr_top = fc_name
+
+        if concat_noise:
+
+            noise_name = 'latent_concat_noise'
+            noise_layer = net.layer.add()
+            noise_layer.update(name=noise_name,
+                               type='DummyData',
+                               top=[noise_name])
+            noise_param = noise_layer.dummy_data_param
+            noise_param.update(data_filler=[dict(type='gaussian')],
+                               shape=[dict(dim=[batch_size, n_latent])])
+            latent_noise = noise_name
+
+            concat_name = 'latent_concat'
+            concat_layer = net.layer.add()
+            concat_layer.update(name=concat_name,
+                                type='Concat',
+                                bottom=[curr_top, latent_noise],
+                                top=[concat_name])
+            concat_layer.concat_param.axis = 1
+            curr_top = concat_name
 
         fc_name = 'latent_defc'
         fc_layer = net.layer.add()
