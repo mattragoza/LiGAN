@@ -99,7 +99,7 @@ if __name__ == '__main__':
 
     pbs_template = 'gan.pbs'
 
-    model_names = [line.rstrip() for line in open('gan_vce13_models')]
+    model_names = [line.rstrip() for line in open('wgan_vce13_models')]
     model_files = ['models/' + m + '.model' for m in model_names]
     for model_file in model_files:
         assert os.path.isfile(model_file), 'file {} does not exist'.format(model_file)
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
     max_iter = 50000
-    cont_iter = 20000
+    cont_iter = 0
     seeds = [0]
     folds = [0, 1, 2, 3]
 
@@ -120,7 +120,8 @@ if __name__ == '__main__':
             data_model_name = 'data_24_{}'.format(resolution)
             disc_model_name = 'disc'
             solver_name = 'adam0'
-            gan_name = 'gan{}_{}'.format(gen_model_name, disc_model_name)
+            gen_warmup_name = model_name.lstrip('_')
+            gan_name = 'wgan{}_{}'.format(gen_model_name, disc_model_name)
             if not os.path.isdir(gan_name):
                 os.makedirs(gan_name)
             pbs_file = os.path.join(gan_name, pbs_template)
@@ -133,7 +134,8 @@ if __name__ == '__main__':
                            data_root=data_root,
                            solver_name=solver_name,
                            max_iter=max_iter,
-                           cont_iter=cont_iter)
+                           cont_iter=cont_iter,
+                           gen_warmup_name=gen_warmup_name)
         else:
             if not os.path.isdir(model_name):
                 os.makedirs(model_name)
