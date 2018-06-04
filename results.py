@@ -37,6 +37,13 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
         ax = next(axes)
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
+        if 'L2_loss' in y_:
+            ax.set_ylim(55, 100)
+        if 'KLdiv_loss' in y_:
+            ax.set_ylim(-10, 1000)
+        if 'disc_loss' in y_:
+            ax.set_ylim(-0.1, 2)
+
         if hue:
             for j, _ in df.groupby(level=0):
                 mean = df.loc[j][y_].groupby(level=0).mean()
@@ -225,6 +232,9 @@ def main(argv):
     # display names of best models
     for y in args.y:
         print(final_df.sort_values(y).head(5).loc[:, (col_name_map['model_name'], y)])
+
+    print(final_df[col_name_map['model_name']].unique())
+    print(final_df.columns)
 
 
 if __name__ == '__main__':
