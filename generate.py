@@ -550,6 +550,8 @@ def main(argv):
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
     grids = generate_grids_from_net(net, args.blob_name)
 
+    print('density sum = {}'.format(np.sum(grids)))
+
     if args.channel_info is None:
         channels = get_channel_info_for_grids(grids)
     elif args.channel_info == 'data':

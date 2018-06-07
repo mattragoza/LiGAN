@@ -121,7 +121,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
                     assert iteration in file_df['iteration'].unique(), \
                         'No training output for iteration {} ({})'.format(iteration, max_iter)
                     model_dfs.append(file_df)
-                except (IOError, pd.io.common.EmptyDataError, AssertionError) as e:
+                except (IOError, pd.io.common.EmptyDataError, AssertionError, KeyError) as e:
                     model_errors[file_] = e
         if not model_errors:
             all_model_dfs.extend(model_dfs)
