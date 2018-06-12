@@ -76,6 +76,11 @@ def parse_encode_type(encode_type):
     return molgrid_data, encoders, decoders
 
 
+def format_encode_type(molgrid_data, encoders, decoders):
+    encode_str = ''.join(v+e for v,e in encoders)
+    decode_str = ''.join(decoders)
+    return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
+
 
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_filters,
                width_factor, n_latent=None, loss_types='', batch_size=50,
