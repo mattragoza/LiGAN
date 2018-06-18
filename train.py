@@ -31,7 +31,7 @@ def training_plot(plot_file, loss_df, binsize=1):
     fig.savefig(plot_file)
 
 
-def disc_step(data_net, gen_solver, disc_solver, n_iter, train):
+def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
 
     gen_net  = gen_solver.net
     disc_net = disc_solver.net
@@ -51,8 +51,15 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train):
             rec_real = data_out['rec']
             lig_real = data_out['lig']
 
-            gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
-            lig_gen = gen_out['lig_gen']
+            if alternate: # sample unit ligand latent space
+                gen_net.forward(start='rec', end='rec_latent_fc', rec=rec_real, lig=lig_real)
+                gen_net.blobs['lig_latent_mean'].data[...] = 0.0
+                gen_net.blobs['lig_latent_std'].data[...] = 1.0
+                gen_out = gen_net.forward(start='lig_latent_noise', end='lig_gen')
+                lig_gen = gen_out['lig_gen']
+            else:
+                gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
+                lig_gen = gen_out['lig_gen']
 
             lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
             disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
@@ -66,6 +73,10 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train):
                 disc_solver.apply_update()
 
         else: # first half gen, second half real
+
+            if alternate: # autoencode real ligand
+                gen_out = gen_net.forward(start='lig_level0_conv0', end='lig_gen')
+                lig_gen = gen_out['lig_gen']     
 
             lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
             disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
@@ -81,7 +92,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train):
     return {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
-def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
+def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
 
     gen_net  = gen_solver.net
     disc_net = disc_solver.net
@@ -89,10 +100,10 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
     batch_size = data_net.blobs['lig'].shape[0]
 
     gen_loss_names = [n for n in gen_net.blobs if n.endswith('loss')]
-    gen_loss_dict = {n: np.zeros(n_iter) for n in gen_loss_names}
+    gen_loss_dict = {n: np.full(n_iter, np.nan) for n in gen_loss_names}
 
     disc_loss_names = [n for n in disc_net.blobs if n.endswith('loss')]
-    disc_loss_dict = {n: np.zeros(n_iter) for n in disc_loss_names}
+    disc_loss_dict = {n: np.full(n_iter, np.nan) for n in disc_loss_names}
 
     for i in range(n_iter):
 
@@ -100,11 +111,18 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
         rec_real = data_out['rec']
         lig_real = data_out['lig']
 
-        gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
-        lig_gen = gen_out['lig_gen']
+        if alternate and i%2: # sample unit ligand latent space, no gen_loss
+            gen_net.forward(start='rec', end='rec_latent_fc', rec=rec_real, lig=lig_real)
+            gen_net.blobs['lig_latent_mean'].data[...] = 0.0
+            gen_net.blobs['lig_latent_std'].data[...] = 1.0
+            gen_out = gen_net.forward(start='lig_latent_noise', end='lig_gen')
+            lig_gen = gen_out['lig_gen']
+        else:
+            gen_out = gen_net.forward(rec=rec_real, lig=lig_real)
+            lig_gen = gen_out['lig_gen']
 
-        for n in gen_loss_names:
-            gen_loss_dict[n][i] = gen_out[n]
+            for n in gen_loss_names:
+                gen_loss_dict[n][i] = gen_out[n]
 
         disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
 
@@ -116,11 +134,17 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train):
             disc_net.backward()
             gen_net.blobs['lig_gen'].diff[...] = disc_net.blobs['lig'].diff
             gen_net.clear_param_diffs()
-            gen_net.backward()
+
+            if alternate and i%2: # skip gen_loss and lig encoder
+                gen_net.backward(start='lig_gen', end='lig_latent_noise')
+                gen_net.backward(start='rec_latent_fc', end='rec')
+            else:
+                gen_net.backward()
+
             gen_solver.apply_update()
 
-    return {n: l.mean() for n,l in gen_loss_dict.items()}, \
-           {n: l.mean() for n,l in disc_loss_dict.items()}
+    return {n: np.nanmean(l) for n,l in gen_loss_dict.items()}, \
+           {n: np.nanmean(l) for n,l in disc_loss_dict.items()}
 
 
 def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
@@ -143,10 +167,10 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             for fold, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
-                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False)
+                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args.alternate)
 
                 gen_loss_dict, gen_adv_loss_dict = \
-                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False)
+                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args.alternate)
 
                 for name, loss in disc_loss_dict.items():
                     loss_df.loc[i, fold+'_disc_'+name] = loss
@@ -178,8 +202,8 @@ def train_gan_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             break
 
         # train
-        disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, True)
-        gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, True)
+        disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, True, args.alternate)
+        gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, True, args.alternate)
  
         disc_solver.increment_iter()
         gen_solver.increment_iter()
@@ -216,6 +240,7 @@ def parse_args(argv):
     parser.add_argument('--gen_train_iter', default=1, type=int)
     parser.add_argument('--disc_train_iter', default=2, type=int)
     parser.add_argument('--cont_iter', default=0, type=int)
+    parser.add_argument('--alternate', default=False, action='store_true')
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
     return parser.parse_args(argv)
