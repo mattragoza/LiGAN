@@ -396,7 +396,7 @@ def generate_grids_from_net(net, blob_pattern, index=0, unit_latent=False):
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
     if unit_latent:
-        net.forward(end='rec_latent_fc')
+        net.forward(end='latent_concat')
         net.blobs['lig_latent_mean'].data[...] = 0.0
         net.blobs['lig_latent_std'].data[...] = 1.0
         net.forward(start='lig_latent_noise')
@@ -404,7 +404,7 @@ def generate_grids_from_net(net, blob_pattern, index=0, unit_latent=False):
         net.forward()
     while index >= batch_size:
         if unit_latent:
-            net.forward(end='rec_latent_fc')
+            net.forward(end='latent_concat')
             net.blobs['lig_latent_mean'].data[...] = 0.0
             net.blobs['lig_latent_std'].data[...] = 1.0
             net.forward(start='lig_latent_noise')
