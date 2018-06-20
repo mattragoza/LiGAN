@@ -250,7 +250,7 @@ def grid_to_points_and_values(grid, center, resolution):
     return origin + resolution*indices, grid.flatten()
 
 
-def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_l2, 
+def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_L2, 
                       cython, density_threshold=0.0, verbose=True):
     grid, (channel_name, element, atom_radius), n_atoms = grid_args
     # nothing to fit if the whole grid is sub threshold
@@ -260,7 +260,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_l2
         print('\nfitting {}'.format(channel_name))
     # convert grid to arrays of xyz points and density values
     points, density = grid_to_points_and_values(grid, center, resolution)
-    if not by_l2: # initialize noise model params
+    if not by_L2: # initialize noise model params
         noise_params_init = dict(mean=np.mean(density),
                                  cov=np.cov(density),
                                  prob=1.0/len(points))
@@ -269,28 +269,28 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_l2
             points = points[density > density_threshold,:]
             density = density[density > density_threshold]
     elif noise_type:
-        raise NotImplementedError('TODO implement by_l2 noise model')
+        raise NotImplementedError('TODO implement by_L2 noise model')
     density_sum = np.sum(density)
     # generator for inital atom positions
     max_density_points = get_max_density_points(points, density, atom_radius)
     xyz_init = np.ndarray((0, 3))
     if cython:
-        if by_l2:
-            raise NotImplementedError('TODO implement by_l2 cython')
+        if by_L2:
+            raise NotImplementedError('TODO implement by_L2 cython')
         else:
             fit_atoms = cgenerate.fit_atoms_gmm
     else:
-        if by_l2:
+        if by_L2:
             fit_atoms = fit_atoms_l2
         else:
             fit_atoms = fit_atoms_gmm
     xyz_best, loss_best = [], np.inf
     if n_atoms is None: # iteratively add atoms and assess fit
-        if not by_l2 and not noise_type:
+        if not by_L2 and not noise_type:
             # can't fit GMM with 0 atoms and no noise model
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
         while True:
-            if by_l2:
+            if by_L2:
                 xyz, l2 = fit_atoms(grid, center, resolution, xyz_init, atom_radius, max_iter)
                 loss = l2
             else:
@@ -311,7 +311,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_l2
     else: # fit exactly n_atoms
         while len(xyz_init) < n_atoms:
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
-        if by_l2:
+        if by_L2:
             xyz, l2 = fit_atoms(grid, center, resolution, xyz_init, atom_radius, max_iter)
             loss = l2
         else:
@@ -392,12 +392,24 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index=0):
+def generate_grids_from_net(net, blob_pattern, index=0, unit_latent=False):
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
-    net.forward()
-    while index >= batch_size:
+    if unit_latent:
+        net.forward(end='rec_latent_fc')
+        net.blobs['lig_latent_mean'].data[...] = 0.0
+        net.blobs['lig_latent_std'].data[...] = 1.0
+        net.forward(start='lig_latent_noise')
+    else:
         net.forward()
+    while index >= batch_size:
+        if unit_latent:
+            net.forward(end='rec_latent_fc')
+            net.blobs['lig_latent_mean'].data[...] = 0.0
+            net.blobs['lig_latent_std'].data[...] = 1.0
+            net.forward(start='lig_latent_noise')
+        else:
+            net.forward()
         index -= batch_size
     return blob.data[index]
 
@@ -532,7 +544,8 @@ def parse_args(argv=None):
     parser.add_argument('--output_dx', action='store_true')
     parser.add_argument('--output_sdf', action='store_true')
     parser.add_argument('--channel_info', default=None)
-    parser.add_argument('--by_l2', action='store_true')
+    parser.add_argument('--by_L2', action='store_true')
+    parser.add_argument('--unit_latent', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -548,9 +561,9 @@ def main(argv):
     with temp_data_file(args.rec_file, args.lig_file) as data_file:
         net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
-    grids = generate_grids_from_net(net, args.blob_name)
+    grids = generate_grids_from_net(net, args.blob_name, 0, args.unit_latent)
 
-    print('density sum = {}'.format(np.sum(grids)))
+    print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
 
     if args.channel_info is None:
         channels = get_channel_info_for_grids(grids)
@@ -580,7 +593,7 @@ def main(argv):
 
         xyzs = fit_atoms_to_grids(grids, channels, n_atoms, center=center, resolution=resolution,
                                   max_iter=args.max_iter, noise_type=args.noise_type,
-                                  by_l2=args.by_l2, cython=args.cython)
+                                  by_L2=args.by_L2, cython=args.cython)
 
         pred_file = '{}_fit.sdf'.format(args.out_prefix)
         write_atoms_to_sdf_file(pred_file, xyzs, channels)
