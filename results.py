@@ -38,7 +38,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
         if 'L2_loss' in y_:
-            ax.set_ylim(55, 100)
+            ax.set_ylim(40, 110)
         if 'KLdiv_loss' in y_:
             ax.set_ylim(-10, 1000)
         if 'disc_loss' in y_:
@@ -98,7 +98,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None):
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
 
 
-def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
+def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check):
     all_model_dfs = []
     for model_dir in model_dirs:
         model_dfs = []
@@ -123,7 +123,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration):
                     model_dfs.append(file_df)
                 except (IOError, pd.io.common.EmptyDataError, AssertionError, KeyError) as e:
                     model_errors[file_] = e
-        if not model_errors:
+        if not check or not model_errors:
             all_model_dfs.extend(model_dfs)
         else:
             for f, e in model_errors.items():
@@ -148,6 +148,7 @@ def parse_args(argv=None):
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
     parser.add_argument('--plot_ext', default='png')
+    parser.add_argument('--agg_data', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -158,15 +159,18 @@ def main(argv):
     model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
     seeds = [int(s) for s in args.seeds.split(',')]
     folds = [int(f) for f in args.folds.split(',')]
-    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration)
+    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, args.agg_data)
 
     # aggregate output values for each model across seeds and folds
     index_cols = ['model_name', 'iteration']
-    f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
-            for col in df if col not in index_cols}
-    agg_df = df.groupby(index_cols).agg(f)
-    assert np.all(agg_df['seed'] == len(seeds))
-    assert np.all(agg_df['fold'] == len(folds))
+    if args.agg_data:
+        f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
+                for col in df if col not in index_cols}
+        agg_df = df.groupby(index_cols).agg(f)
+        assert np.all(agg_df['seed'] == len(seeds))
+        assert np.all(agg_df['fold'] == len(folds))
+    else:
+        agg_df = df.set_index(index_cols)
 
     # add columns from parsing model name fields
     for model_name, model_df in agg_df.groupby(level=0):
@@ -235,7 +239,6 @@ def main(argv):
 
     print(final_df[col_name_map['model_name']].unique())
     print(final_df.columns)
-
 
 if __name__ == '__main__':
     main(sys.argv[1:])
