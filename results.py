@@ -27,6 +27,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
     if n_cols is None:
         n_cols = len(y)
     n_axes = len(y)
+    assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows),
@@ -43,7 +44,6 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
             ax.set_ylim(-10, 1000)
         if 'disc_loss' in y_:
             ax.set_ylim(-0.1, 2)
-
         if hue:
             for j, _ in df.groupby(level=0):
                 mean = df.loc[j][y_].groupby(level=0).mean()
@@ -73,6 +73,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None):
     if n_cols is None:
         n_cols = len(x)
     n_axes = len(x)*len(y)
+    assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows),

@@ -233,6 +233,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                   bottom=[conv_name],
                                   top=[conv_name])
                 relu_layer.relu_param.negative_slope = 0.0
+                relu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
 
                 curr_top = conv_name
                 curr_n_filters = next_n_filters
@@ -406,6 +407,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                           bottom=[fc_name],
                           top=[fc_name])
         relu_layer.relu_param.negative_slope = 0.0
+        relu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
         curr_top = fc_name
 
         reshape_name = '{}_latent_reshape'.format(decoder_type)
@@ -438,7 +440,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                     depool_param = depool_layer.convolution_param
                     depool_param.update(num_output=curr_n_filters,
                                         group=curr_n_filters,
-                                        weight_filler=dict(type='xavier'))
+                                        weight_filler=dict(type='xavier'),
+                                        engine=caffe.params.Convolution.CAFFE)
 
                 elif depool_type == 'n': # nearest-neighbor interpolation
 
@@ -448,7 +451,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                     depool_param.update(num_output=curr_n_filters,
                                         group=curr_n_filters,
                                         weight_filler=dict(type='constant', value=1.0),
-                                        bias_term=False)
+                                        bias_term=False,
+                                        engine=caffe.params.Convolution.CAFFE)
 
                 curr_top = depool_name
                 
@@ -476,7 +480,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                     kernel_size=[conv_kernel_size],
                                     stride=[1],
                                     pad=[conv_kernel_size//2],
-                                    weight_filler=dict(type='xavier'))
+                                    weight_filler=dict(type='xavier'),
+                                    engine=caffe.params.Convolution.CAFFE)
 
                 derelu_name = '{}_level{}_derelu{}'.format(decoder_type, i, j)
                 derelu_layer = net.layer.add()
@@ -485,6 +490,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                     bottom=[deconv_name],
                                     top=[deconv_name])
                 derelu_layer.relu_param.negative_slope = 0.0
+                derelu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
 
                 curr_top = deconv_name
                 curr_n_filters = next_n_filters
