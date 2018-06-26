@@ -392,22 +392,17 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index=0, rec_mode=None, lig_mode=None):
+def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None):
     blob = find_blobs_in_net(net, blob_pattern)[-1]
-    index = batch_size = blob.shape[0]
-    assert rec_mode in {None, 'zero', 'diff'}
+    batch_size = blob.shape[0]
+    index += batch_size
     assert lig_mode in {None, 'unit', 'mean'}
     while index >= batch_size:
-        net.forward(end='latent_concat')
-        if rec_mode == 'zero':
-            net.blobs['rec_latent_fc'].data[...] = 0.0
-        if rec_mode == 'diff':
-            net.forward(end='rec_latent_fc')
+        net.forward(end='latent_concat') # get rec latent and "init" var lig layers
         if lig_mode == 'unit':
             net.blobs['lig_latent_mean'].data[...] = 0.0
             net.blobs['lig_latent_std'].data[...] = 1.0
         elif lig_mode == 'mean':
-            net.forward(end='latent_concat')
             net.blobs['lig_latent_std'].data[...] = 0.0
         net.forward(start='lig_latent_noise') 
         index -= batch_size
@@ -545,7 +540,6 @@ def parse_args(argv=None):
     parser.add_argument('--output_sdf', action='store_true')
     parser.add_argument('--channel_info', default=None)
     parser.add_argument('--by_L2', action='store_true')
-    parser.add_argument('--rec_mode')
     parser.add_argument('--lig_mode')
     return parser.parse_args(argv)
 
@@ -562,7 +556,7 @@ def main(argv):
     with temp_data_file(args.rec_file, args.lig_file) as data_file:
         net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
-    grids = generate_grids_from_net(net, args.blob_name, 0, args.rec_mode, args.lig_mode)
+    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_mode)
 
     print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
 
