@@ -392,13 +392,19 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None):
+def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None, diff_rec=False):
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
+    print(batch_size)
     index += batch_size
     assert lig_mode in {None, 'unit', 'mean'}
     while index >= batch_size:
         net.forward(end='latent_concat') # get rec latent and "init" var lig layers
+        if diff_rec:
+            net.blobs['rec'].data[index%batch_size,...] = \
+                net.blobs['rec'].data[(index+1)%batch_size,...]
+            net.blobs['rec_latent_fc'].data[index%batch_size,...] = \
+                net.blobs['rec_latent_fc'].data[(index+1)%batch_size,...]
         if lig_mode == 'unit':
             net.blobs['lig_latent_mean'].data[...] = 0.0
             net.blobs['lig_latent_std'].data[...] = 1.0
@@ -423,10 +429,11 @@ def combine_element_grids_and_channels(grids, channels):
 
 
 @contextlib.contextmanager
-def temp_data_file(rec_file, lig_file):
+def temp_data_file(examples):
     _, data_file = tempfile.mkstemp()
     with open(data_file, 'w') as f:
-        f.write('0 0 {} {}'.format(rec_file, lig_file))
+        for rec_file, lig_file in examples:
+            f.write('0 0 {} {}\n'.format(rec_file, lig_file))
     yield data_file
     os.remove(data_file)
 
@@ -541,6 +548,8 @@ def parse_args(argv=None):
     parser.add_argument('--channel_info', default=None)
     parser.add_argument('--by_L2', action='store_true')
     parser.add_argument('--lig_mode')
+    parser.add_argument('-r2', '--rec_file2', default='')
+    parser.add_argument('-l2', '--lig_file2', default='')
     return parser.parse_args(argv)
 
 
@@ -550,13 +559,20 @@ def main(argv):
     rec_file = os.path.join(args.data_root, args.rec_file)
     lig_file = os.path.join(args.data_root, args.lig_file)
     center = get_center_from_sdf_file(lig_file)
+    examples = [[args.rec_file, args.lig_file]]
+
+    if args.rec_file2 and args.lig_file2:
+        rec_file2 = os.path.join(args.data_root, args.rec_file2)
+        lig_file2 = os.path.join(args.data_root, args.lig_file2)
+        center2 = get_center_from_sdf_file(lig_file2)
+        examples.append([args.rec_file2, args.lig_file2])
 
     net_param = caffe_util.NetParameter.from_prototxt(args.model_file)
     resolution = net_param.get_molgrid_data_resolution(caffe.TEST)
-    with temp_data_file(args.rec_file, args.lig_file) as data_file:
+    with temp_data_file(examples) as data_file:
         net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
-    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_mode)
+    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_mode, len(examples) == 2)
 
     print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
 
@@ -575,7 +591,7 @@ def main(argv):
     if args.output_dx:
         dx_files += write_grids_to_dx_files(args.out_prefix, grids, channels, center, resolution)
 
-    extra_files = [rec_file, lig_file]
+    extra_files = sum(examples, [])
     if args.output_sdf:
 
         if args.combine_channels:
