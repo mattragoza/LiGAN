@@ -76,9 +76,10 @@ def set_atom_level(level, selection_keyword=''):
             if selection_keyword in map_object:
                 cmd.isosurface(surface_object, map_object, level=level)
                 cmd.color(get_color_for_channel(channel_name), surface_object)
-            surface_objects.append(surface_object)
-        surface_group = '{}_surfaces'.format(prefix)
-        cmd.group(surface_group, ' '.join(surface_objects))
+                surface_objects.append(surface_object)
+        if surface_objects:
+            surface_group = '{}_surfaces'.format(prefix)
+            cmd.group(surface_group, ' '.join(surface_objects))
 
 
 cmd.extend('set_atom_level', set_atom_level)
