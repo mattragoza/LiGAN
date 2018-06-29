@@ -1,0 +1,201 @@
+layer {
+  name: "rec"
+  type: "Input"
+  top: "rec"
+  input_param {
+    shape {
+      dim: 50
+      dim: 16
+      dim: 24
+      dim: 24
+      dim: 24
+    }
+  }
+}
+layer {
+  name: "lig"
+  type: "Input"
+  top: "lig"
+  input_param {
+    shape {
+      dim: 50
+      dim: 19
+      dim: 24
+      dim: 24
+      dim: 24
+    }
+  }
+}
+layer {
+  name: "label"
+  type: "Input"
+  top: "label"
+  input_param {
+    shape {
+      dim: 50
+    }
+  }
+}
+layer {
+  name: "info_label"
+  type: "Input"
+  top: "info_label"
+  input_param {
+    shape {
+      dim: 50
+      dim: 2048
+    }
+  }
+}
+layer {
+  name: "concat_rec_lig"
+  type: "Concat"
+  bottom: "rec"
+  bottom: "lig"
+  top: "data"
+  concat_param {
+    axis: 1
+  }
+}
+layer {
+  name: "level0_conv0"
+  type: "Convolution"
+  bottom: "data"
+  top: "level0_conv0"
+  convolution_param {
+    num_output: 16
+    pad: 1
+    kernel_size: 3
+    stride: 1
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "level0_relu0"
+  type: "ReLU"
+  bottom: "level0_conv0"
+  top: "level0_conv0"
+  relu_param {
+    negative_slope: 0.0
+  }
+}
+layer {
+  name: "level1_pool"
+  type: "Pooling"
+  bottom: "level0_conv0"
+  top: "level1_pool"
+  pooling_param {
+    pool: AVE
+    pad: 0
+    kernel_size: 2
+    stride: 2
+  }
+}
+layer {
+  name: "level1_conv0"
+  type: "Convolution"
+  bottom: "level1_pool"
+  top: "level1_conv0"
+  convolution_param {
+    num_output: 32
+    pad: 1
+    kernel_size: 3
+    stride: 1
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "level1_relu0"
+  type: "ReLU"
+  bottom: "level1_conv0"
+  top: "level1_conv0"
+  relu_param {
+    negative_slope: 0.0
+  }
+}
+layer {
+  name: "level2_pool"
+  type: "Pooling"
+  bottom: "level1_conv0"
+  top: "level2_pool"
+  pooling_param {
+    pool: AVE
+    pad: 0
+    kernel_size: 2
+    stride: 2
+  }
+}
+layer {
+  name: "level2_conv0"
+  type: "Convolution"
+  bottom: "level2_pool"
+  top: "level2_conv0"
+  convolution_param {
+    num_output: 64
+    pad: 1
+    kernel_size: 3
+    stride: 1
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "level2_relu0"
+  type: "ReLU"
+  bottom: "level2_conv0"
+  top: "level2_conv0"
+  relu_param {
+    negative_slope: 0.0
+  }
+}
+layer {
+  name: "info_fc0"
+  type: "InnerProduct"
+  bottom: "level2_conv0"
+  top: "info_fc0"
+  inner_product_param {
+    num_output: 2048
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "info_loss"
+  type: "EuclideanLoss"
+  bottom: "info_fc0"
+  bottom: "info_label"
+  top: "loss"
+  loss_weight: 1.0
+}
+layer {
+  name: "fc0"
+  type: "InnerProduct"
+  bottom: "level2_conv0"
+  top: "fc0"
+  inner_product_param {
+    num_output: 1
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "fc0_sigmoid"
+  type: "Sigmoid"
+  bottom: "fc0"
+  top: "output"
+}
+layer {
+  name: "loss"
+  type: "SigmoidCrossEntropyLoss"
+  bottom: "fc0"
+  bottom: "label"
+  top: "loss"
+  loss_weight: 1.0
+}
