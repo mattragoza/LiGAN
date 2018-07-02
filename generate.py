@@ -186,7 +186,8 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
 
     # maximize expected log likelihood
     ll = -np.inf
-    for i in range(max_iter+1):
+    i = 0
+    while True:
 
         L_point = np.zeros((n_points, n_comps)) # P(point_i|comp_j)
         for j in range(n_atoms):
@@ -220,11 +221,13 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
         if noise_type and n_atoms > 0:
             P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
             P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
+        i += 1
+        print('ITERATION {} | log likelihood = {} ({})'.format(i, ll, ll - ll_prev))
 
     return atom_mean, 2*ll - 2*n_params
 
 
-def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01):
+def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01, mo=0.9):
     '''
     Fit atom positions to a grid by minimizing the L2 loss
     by gradient descent.
@@ -233,25 +236,30 @@ def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter
     n_atoms = len(atom_mean_init)
     atom_mean = np.array(atom_mean_init)
     d_atom_mean = np.zeros_like(atom_mean)
+    d_atom_mean_prev = np.zeros_like(atom_mean)
 
     # minimize L2 loss by gradient descent
     L2 = np.inf
-    for i in range(max_iter+1):
+    i = 0
+    while True:
 
         grid_pred = add_atoms_to_grid(np.zeros_like(grid), atom_mean, center, resolution, atom_radius)
         d_grid_pred = grid_pred - grid
         L2_prev, L2 = L2, np.sum(d_grid_pred**2)/2
 
-        if i == max_iter:
+        print('ITERATION {} | L2 loss = {} ({})'.format(i, L2, L2-L2_prev))
+        if L2 - L2_prev > -1e-3 or i == max_iter:
             break
 
         # dL2/datom = sum_grid dL2/dgrid * dgrid/datom
         points, d_density = grid_to_points_and_values(d_grid_pred, center, resolution)
+        d_atom_mean_prev[...] = d_atom_mean
         d_atom_mean[...] = 0.0
         for j in range(n_atoms):
             for p, d in zip(points, d_density):
                 d_atom_mean[j] += d * get_atom_gradient(atom_mean[j], atom_radius, p)
-        atom_mean[...] -= lr*d_atom_mean
+        atom_mean[...] -= lr*(mo*d_atom_mean_prev + (1-mo)*d_atom_mean)
+        i += 1
 
     return atom_mean, L2
 
@@ -288,6 +296,8 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_L2
     an optional noise model or gradient descent on the L2 loss.
     '''
     grid, (channel_name, element, atom_radius), n_atoms = grid_args
+    if max_iter is None:
+        max_iter = np.inf
     # nothing to fit if the whole grid is sub threshold
     if np.max(grid) <= density_threshold:
         return []
@@ -636,7 +646,7 @@ def parse_args(argv=None):
     parser.add_argument('-o', '--out_prefix', default=None, help='Common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='Output .dx files of atom density grids for each channel')
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file by fitting atoms to atom density grids')
-    parser.add_argument('--max_iter', type=int, default=10, help='Maximum number of iterations for atom fitting')
+    parser.add_argument('--max_iter', type=int, default=None, help='Maximum number of iterations for atom fitting')
     parser.add_argument('--noise_type', default='', help='Noise model for GMM atom fitting (None|d|p)')
     parser.add_argument('--cython', action='store_true', help='Use Cython for GMM atom fitting')
     parser.add_argument('--by_L2', action='store_true', help='Fit atoms by directly optimizing L2 loss instead of GMM')
