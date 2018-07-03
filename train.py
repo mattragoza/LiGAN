@@ -218,7 +218,7 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             loss_out.flush()
 
             time_elapsed = np.sum(times)
-            time_mean = np.mean(times)
+            time_mean = time_elapsed // len(times)
             iters_left = args.max_iter - i
             time_left = time_mean*iters_left
 
