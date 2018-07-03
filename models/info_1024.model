@@ -43,7 +43,7 @@ layer {
   input_param {
     shape {
       dim: 50
-      dim: 2048
+      dim: 1024
     }
   }
 }
@@ -159,7 +159,7 @@ layer {
   bottom: "level2_conv0"
   top: "info_fc0"
   inner_product_param {
-    num_output: 2048
+    num_output: 1024
     weight_filler {
       type: "xavier"
     }

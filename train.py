@@ -47,7 +47,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
     if 'info_loss' in disc_net.blobs: # ignore info_loss
         del disc_loss_dict['info_loss']
         info_loss_weight = disc_net.blobs['info_loss'].diff
-        disc_net.blobs['info_loss'].diff = 0.0
+        disc_net.blobs['info_loss'].diff[...] = 0.0
 
     for i in range(n_iter):
 
@@ -68,7 +68,11 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
                 lig_gen = gen_out['lig_gen']
 
             lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
-            disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
+            if 'info_label' in disc_net.blobs:
+                info_label = np.zeros_like(disc_net.blobs['info_label'].data)
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1, info_label=info_label)
+            else:
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
 
             for n in disc_loss_dict:
                 disc_loss_dict[n][i] = disc_out[n]
@@ -85,7 +89,11 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
                 lig_gen = gen_out['lig_gen']     
 
             lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
-            disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
+            if 'info_label' in disc_net.blobs:
+                info_label = np.zeros_like(disc_net.blobs['info_label'].data)
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2, info_label=info_label)
+            else:
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
 
             for n in disc_loss_dict:
                 disc_loss_dict[n][i] = disc_out[n]
@@ -96,7 +104,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
                 disc_solver.apply_update()
 
     if 'info_loss' in disc_net.blobs:
-        disc_net.blobs['info_loss'].diff = info_loss_weight
+        disc_net.blobs['info_loss'].diff[...] = info_loss_weight
 
     return {n: l.mean() for n,l in disc_loss_dict.items()}
 
@@ -137,11 +145,12 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
                 gen_loss_dict[n][i] = gen_out[n]
 
         # score fake ligands labeled as real (and include latent stats for info_loss)
-        if 'info_loss' in disc_net.blobs:
-            disc_net.blobs['info_label'].data[...] = \
-                np.concatenate([gen_net.blobs['lig_latent_mean'].data,
-                                gen_net.blobs['lig_latent_log_std'].data])
-        disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
+        if 'info_label' in disc_net.blobs:
+            info_label = np.concatenate([gen_net.blobs['lig_latent_mean'].data,
+                                         gen_net.blobs['lig_latent_log_std'].data], axis=1)
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size), info_label=info_label)
+        else:
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
 
         # record discriminative loss
         for n in disc_loss_dict:
@@ -153,7 +162,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
                 # apply info loss update to discriminator
                 disc_net.clear_param_diffs()
                 disc_net.backward(start='info_loss') # exclude GAN loss (should be after info_loss)
-                disc_net.apply_update()
+                disc_solver.apply_update()
 
             disc_net.clear_param_diffs()
             disc_net.backward() # now includes GAN loss and other losses
