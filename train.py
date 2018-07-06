@@ -191,6 +191,8 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
     loss_df.index.name = 'iteration'
 
     times = []
+    train_disc_loss = -1
+    train_gen_adv_loss = -1
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
 
@@ -204,10 +206,12 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             for data_name, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
-                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args.alternate)
+                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter,
+                              train=False, alternate=args.alternate)
 
                 gen_loss_dict, gen_adv_loss_dict = \
-                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args.alternate)
+                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter,
+                             train=False, alternate=args.alternate)
 
                 if 'info_loss' in gen_adv_loss_dict:
                     loss = gen_adv_loss_dict.pop('info_loss')
@@ -243,12 +247,30 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         if i == args.max_iter:
             break
 
+        # dynamic G/D balancing
+        print('{}\t{}'.format(train_disc_loss, train_gen_adv_loss))
+        if args.balance:
+            train_disc = train_disc_loss >= train_gen_adv_loss
+            train_gen = train_gen_adv_loss >= train_disc_loss
+        else:
+            train_disc = True
+            train_gen = True
+        print('{}\t{}'.format(train_disc, train_gen))
+
         # train
-        disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, True, args.alternate)
-        gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, True, args.alternate)
- 
+        disc_loss_dict = \
+            disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter,
+                      train=train_disc, alternate=args.alternate)
+        train_disc_loss = disc_loss_dict['loss']
+
+        gen_loss_dict, gen_adv_loss_dict = \
+            gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter,
+                     train=train_gen, alternate=args.alternate)
+        train_gen_adv_loss = gen_adv_loss_dict['loss']
+
         disc_solver.increment_iter()
         gen_solver.increment_iter()
+
         times.append(dt.timedelta(seconds=time.time() - start))
 
     return loss_df
@@ -283,10 +305,11 @@ def parse_args(argv):
     parser.add_argument('--random_seed', default=0, type=int)
     parser.add_argument('--test_iter', default=10, type=int)
     parser.add_argument('--test_interval', default=100, type=int)
-    parser.add_argument('--gen_train_iter', default=1, type=int)
+    parser.add_argument('--gen_train_iter', default=2, type=int)
     parser.add_argument('--disc_train_iter', default=2, type=int)
     parser.add_argument('--cont_iter', default=0, type=int)
     parser.add_argument('--alternate', default=False, action='store_true')
+    parser.add_argument('--balance', default=False, action='store_true')
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
     return parser.parse_args(argv)
