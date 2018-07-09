@@ -681,6 +681,7 @@ def main(argv):
     grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_mode, len(data_examples) > 1)
 
     print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
+    assert np.sum(grids) > 0
 
     if args.channel_info is None:
         channels = get_channel_info_for_grids(grids)

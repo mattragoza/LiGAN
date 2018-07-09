@@ -271,6 +271,8 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         disc_solver.increment_iter()
         gen_solver.increment_iter()
 
+        assert np.sum(gen_solver.net.blobs['lig_gen'].data) > 0
+
         times.append(dt.timedelta(seconds=time.time() - start))
 
     return loss_df
