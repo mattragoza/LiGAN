@@ -115,7 +115,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                               shuffle=training,
                               balanced=False,
                               random_rotation=training,
-                              random_translate=training*2.0)
+                              random_translate=training*2.0,
+                              radius_multiple=0.75)
 
         net.layer.add().update(name='no_label', type='Silence', bottom=['label'])
         net.layer.add().update(name='no_aff', type='Silence', bottom=['aff'])
@@ -490,7 +491,6 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                     bottom=[deconv_name],
                                     top=[deconv_name])
                 derelu_layer.relu_param.negative_slope = 0.0
-                derelu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
 
                 curr_top = deconv_name
                 curr_n_filters = next_n_filters

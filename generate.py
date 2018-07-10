@@ -139,6 +139,29 @@ def get_atom_gradient(atom_pos, atom_radius, point):
     return -(diff / dist) * d_density
 
 
+def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
+    '''
+    Compute the interatomic potential energy between two atoms.
+    '''
+    diff = atom_pos2 - atom_pos1
+    dist2 = np.sum(diff**2)
+    dist = np.sqrt(dist2)
+    return (1 - np.exp(-(dist - bond_radius)))**2
+
+
+def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
+    '''
+    Compute the derivative of interatomic potential energy between
+    two atoms with respect to the position of the first atom.
+    '''
+    diff = atom_pos2 - atom_pos1
+    dist2 = np.sum(diff**2)
+    dist = np.sqrt(dist2)
+    exp = np.exp(-(dist - bond_radius))
+    d_energy = 2 * (1 - exp) * exp
+    return -(diff / dist) * d_energy
+
+
 def add_atoms_to_grid(grid, atoms, center, resolution, atom_radius):
     '''
     Add density to a grid for a list of atoms with a given radius.
@@ -227,7 +250,7 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
     return atom_mean, 2*ll - 2*n_params
 
 
-def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01, mo=0.9):
+def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01, mo=0.9, en=0.0):
     '''
     Fit atom positions to a grid by minimizing the L2 loss
     by gradient descent.
@@ -237,6 +260,7 @@ def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter
     atom_mean = np.array(atom_mean_init)
     d_atom_mean = np.zeros_like(atom_mean)
     d_atom_mean_prev = np.zeros_like(atom_mean)
+    n_pairs = n_atoms * (n_atoms - 1) / 2
 
     # minimize L2 loss by gradient descent
     L2 = np.inf
@@ -246,6 +270,10 @@ def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter
         grid_pred = add_atoms_to_grid(np.zeros_like(grid), atom_mean, center, resolution, atom_radius)
         d_grid_pred = grid_pred - grid
         L2_prev, L2 = L2, np.sum(d_grid_pred**2)/2
+        for j in range(n_atoms):
+            for k in range(j+1, n_atoms):
+                L2 += en/n_pairs * get_interatomic_energy(atom_mean[j], atom_mean[k], atom_radius)
+                L2 += en/n_pairs * get_interatomic_energy(atom_mean[k], atom_mean[j], atom_radius)
 
         print('ITERATION {} | L2 loss = {} ({})'.format(i, L2, L2-L2_prev))
         if L2 - L2_prev > -1e-3 or i == max_iter:
@@ -258,6 +286,9 @@ def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter
         for j in range(n_atoms):
             for p, d in zip(points, d_density):
                 d_atom_mean[j] += d * get_atom_gradient(atom_mean[j], atom_radius, p)
+            for k in range(j+1, n_atoms):
+                d_atom_mean[j] += en/n_pairs * get_interatomic_gradient(atom_mean[j], atom_mean[k], atom_radius)
+                d_atom_mean[k] += en/n_pairs * get_interatomic_gradient(atom_mean[k], atom_mean[j], atom_radius)
         atom_mean[...] -= lr*(mo*d_atom_mean_prev + (1-mo)*d_atom_mean)
         i += 1
 

@@ -94,7 +94,7 @@ class GroupLevelVar(Tkinter.Variable):
         element.bind('<Button-5>', self.decrement)
 
 
-def isoslider(mm_min=0.0, mm_max=1.5):
+def isoslider(mm_min=0.0, mm_max=2.0):
     '''
     DESCRIPTION
 
