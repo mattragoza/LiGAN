@@ -96,14 +96,14 @@ class GaussianMixtureGridLayer(caffe.Layer):
         pass
 
 
-def get_atom_density(atom_pos, atom_radius, point):
+def get_atom_density(atom_pos, atom_radius, point, radius_multiple):
     '''
     Compute the density value of an atom at a point.
     '''
     diff = point - atom_pos
     dist2 = np.sum(diff**2)
     dist = np.sqrt(dist2)
-    if dist >= 1.5 * atom_radius:
+    if dist >= radius_multiple * atom_radius:
         return 0.0
     elif dist <= atom_radius:
         h = 0.5 * atom_radius
@@ -116,7 +116,7 @@ def get_atom_density(atom_pos, atom_radius, point):
         return q
 
 
-def get_atom_gradient(atom_pos, atom_radius, point):
+def get_atom_gradient(atom_pos, atom_radius, point, radius_multiple):
     '''
     Compute the derivative of an atom's density with respect
     to a point.
@@ -124,7 +124,7 @@ def get_atom_gradient(atom_pos, atom_radius, point):
     diff = point - atom_pos
     dist2 = np.sum(diff**2)
     dist = np.sqrt(dist2)
-    if dist >= 1.5 * atom_radius or np.isclose(dist, 0):
+    if dist >= radius_multiple * atom_radius or np.isclose(dist, 0):
         return 0.0
     elif dist <= atom_radius:
         h = 0.5 * atom_radius
@@ -139,6 +139,22 @@ def get_atom_gradient(atom_pos, atom_radius, point):
     return -(diff / dist) * d_density
 
 
+def add_atoms_to_grid(grid, atoms, center, resolution, atom_radius, radius_multiple):
+    '''
+    Add density to a grid for a list of atoms with the given radii.
+    '''
+    dims = np.array(grid.shape)
+    origin = np.array(center) - resolution*(dims-1)/2.
+    for atom_pos, r in zip(atoms, atom_radius):
+        for i in range(dims[0]):
+            for j in range(dims[1]):
+                for k in range(dims[2]):
+                    grid_point = origin + resolution*np.array([i,j,k])
+                    density = get_atom_density(atom_pos, r, grid_point, radius_multiple)
+                    grid[i][j][k] += density
+    return grid
+
+
 def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
     '''
     Compute the interatomic potential energy between two atoms.
@@ -146,7 +162,7 @@ def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
     diff = atom_pos2 - atom_pos1
     dist2 = np.sum(diff**2)
     dist = np.sqrt(dist2)
-    return (1 - np.exp(-(dist - bond_radius)))**2
+    return (1 - np.exp(-(dist - bond_radius)))**2 - 1
 
 
 def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
@@ -162,35 +178,19 @@ def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
     return -(diff / dist) * d_energy
 
 
-def add_atoms_to_grid(grid, atoms, center, resolution, atom_radius):
-    '''
-    Add density to a grid for a list of atoms with a given radius.
-    '''
-    dims = np.array(grid.shape)
-    origin = np.array(center) - resolution*(dims-1)/2.
-    for atom_pos in atoms:
-        for i in range(dims[0]):
-            for j in range(dims[1]):
-                for k in range(dims[2]):
-                    grid_point = origin + resolution*np.array([i,j,k])
-                    density = get_atom_density(atom_pos, atom_radius, grid_point)
-                    grid[i][j][k] += density
-    return grid
-
-
-def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
+def fit_atoms_gmm(points, density, xyz_init, atom_radius,
                   noise_type, noise_params_init, max_iter):
     '''
     Fit atom positions to a list of points and densities using a
     Gaussian mixture model with an optional noise model.
     '''
     n_points = len(points)
-    n_atoms = len(atom_mean_init)
+    n_atoms = len(xyz_init)
 
     # initialize component parameters
-    atom_mean = np.array(atom_mean_init)
-    atom_cov = (0.5*atom_radius)**2
-    n_params = atom_mean.size
+    xyz = np.array(xyz_init)
+    cov = (0.5*atom_radius)**2
+    n_params = xyz.size
     if noise_type == 'd':
         noise_mean = noise_params_init['mean']
         noise_cov = noise_params_init['cov']
@@ -214,7 +214,7 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
 
         L_point = np.zeros((n_points, n_comps)) # P(point_i|comp_j)
         for j in range(n_atoms):
-            L_point[:,j] = multivariate_normal.pdf(points, mean=atom_mean[j], cov=atom_cov)
+            L_point[:,j] = multivariate_normal.pdf(points, mean=xyz[j], cov=cov[j])
         if noise_type == 'd':
             L_point[:,-1] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
         elif noise_type == 'p':
@@ -231,8 +231,8 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
 
         # estimate parameters that maximize expected log likelihood (M-step)
         for j in range(n_atoms):
-            atom_mean[j] = np.sum(density * gamma[:,j] * points.T, axis=1) \
-                         / np.sum(density * gamma[:,j])
+            xyz[j] = np.sum(density * gamma[:,j] * points.T, axis=1) \
+                   / np.sum(density * gamma[:,j])
         if noise_type == 'd':
             noise_mean = np.sum(gamma[:,-1] * density) / np.sum(gamma[:,-1])
             noise_cov = np.sum(gamma[:,-1] * (density - noise_mean)**2) / np.sum(gamma[:,-1])
@@ -247,52 +247,71 @@ def fit_atoms_gmm(points, density, atom_mean_init, atom_radius,
         i += 1
         print('ITERATION {} | log likelihood = {} ({})'.format(i, ll, ll - ll_prev))
 
-    return atom_mean, 2*ll - 2*n_params
+    return xyz, 2*ll - 2*n_params
 
 
-def fit_atoms_L2(grid, center, resolution, atom_mean_init, atom_radius, max_iter, lr=0.01, mo=0.9, en=0.0):
+def fit_atoms_L2(grid, center, resolution, xyz_init, atom_radius, radius_multiple,
+                 max_iter, lr=0.01, mo=0.9, lambda_E=1.0):
     '''
-    Fit atom positions to a grid by minimizing the L2 loss
+    Fit atom positions to a grid by minimizing the L2 loss (and interatomic energy)
     by gradient descent.
     '''
     # initialize component parameters
-    n_atoms = len(atom_mean_init)
-    atom_mean = np.array(atom_mean_init)
-    d_atom_mean = np.zeros_like(atom_mean)
-    d_atom_mean_prev = np.zeros_like(atom_mean)
-    n_pairs = n_atoms * (n_atoms - 1) / 2
+    n_atoms = len(xyz_init)
+    xyz = np.array(xyz_init)
+    d_xyz = np.zeros_like(xyz)
+    d_xyz_prev = np.zeros_like(xyz)
 
-    # minimize L2 loss by gradient descent
-    L2 = np.inf
+    # minimize loss by gradient descent
+    loss = np.inf
     i = 0
     while True:
 
-        grid_pred = add_atoms_to_grid(np.zeros_like(grid), atom_mean, center, resolution, atom_radius)
+        # L2 distance between predicted and true grids
+        grid_pred = add_atoms_to_grid(np.zeros_like(grid), xyz, center, resolution,
+                                      atom_radius, radius_multiple)
         d_grid_pred = grid_pred - grid
-        L2_prev, L2 = L2, np.sum(d_grid_pred**2)/2
-        for j in range(n_atoms):
-            for k in range(j+1, n_atoms):
-                L2 += en/n_pairs * get_interatomic_energy(atom_mean[j], atom_mean[k], atom_radius)
-                L2 += en/n_pairs * get_interatomic_energy(atom_mean[k], atom_mean[j], atom_radius)
+        L2 = np.sum(d_grid_pred**2)/2
 
-        print('ITERATION {} | L2 loss = {} ({})'.format(i, L2, L2-L2_prev))
-        if L2 - L2_prev > -1e-3 or i == max_iter:
+        # interatomic energy of predicted atom positions
+        E = 0.0
+        if lambda_E:
+            for j in range(n_atoms):
+                for k in range(j+1, n_atoms):
+                    bond_radius = (atom_radius[j] + atom_radius[k])/2.0
+                    E += get_interatomic_energy(xyz[j], xyz[k], bond_radius)
+                    E += get_interatomic_energy(xyz[k], xyz[j], bond_radius)
+
+        loss_prev, loss = loss, L2 + lambda_E*E
+        delta_loss = loss - loss_prev
+        if lambda_E:
+            print('ITERATION {} | L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss))
+        else:
+            print('ITERATION {} | L2 = {} ({})'.format(i, loss, delta_loss))
+        if delta_loss > -1e-3 or i == max_iter:
             break
 
-        # dL2/datom = sum_grid dL2/dgrid * dgrid/datom
+        # compute derivatives and descend loss gradient
         points, d_density = grid_to_points_and_values(d_grid_pred, center, resolution)
-        d_atom_mean_prev[...] = d_atom_mean
-        d_atom_mean[...] = 0.0
+        d_xyz_prev[...] = d_xyz
+        d_xyz[...] = 0.0
         for j in range(n_atoms):
+
+            # dL2/datom = sum_grid dL2/dgrid * dgrid/datom
             for p, d in zip(points, d_density):
-                d_atom_mean[j] += d * get_atom_gradient(atom_mean[j], atom_radius, p)
-            for k in range(j+1, n_atoms):
-                d_atom_mean[j] += en/n_pairs * get_interatomic_gradient(atom_mean[j], atom_mean[k], atom_radius)
-                d_atom_mean[k] += en/n_pairs * get_interatomic_gradient(atom_mean[k], atom_mean[j], atom_radius)
-        atom_mean[...] -= lr*(mo*d_atom_mean_prev + (1-mo)*d_atom_mean)
+                d_xyz[j] += d * get_atom_gradient(xyz[j], atom_radius[j], p, radius_multiple)
+
+            # dE/datom = sum_atom2 dE/datom2
+            if lambda_E:
+                for k in range(j+1, n_atoms):
+                    bond_radius = (atom_radius[j] + atom_radius[k])/2.0
+                    d_xyz[j] += lambda_E * get_interatomic_gradient(xyz[j], xyz[k], bond_radius)
+                    d_xyz[k] += lambda_E * get_interatomic_gradient(xyz[k], xyz[j], bond_radius)
+
+        xyz[...] -= lr*(mo*d_xyz_prev + (1-mo)*d_xyz)
         i += 1
 
-    return atom_mean, L2
+    return xyz, L2
 
 
 def get_max_density_points(points, density, distance):
@@ -321,7 +340,7 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_L2, 
-                      cython, density_threshold=0.0, verbose=True):
+                      cython, radius_multiple, density_threshold=0.0, verbose=True):
     '''
     Fit atom positions to a grid using either a Gaussian mixture model with
     an optional noise model or gradient descent on the L2 loss.
@@ -367,10 +386,11 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, noise_type, by_L2
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
         while True:
             if by_L2:
-                xyz, L2 = fit_atoms(grid, center, resolution, xyz_init, atom_radius, max_iter)
+                xyz, L2 = fit_atoms(grid, center, resolution, xyz_init, [atom_radius]*len(xyz_init),
+                                    radius_multiple, max_iter)
                 loss = L2
             else:
-                xyz, ll = fit_atoms(points, density, xyz_init, atom_radius,
+                xyz, ll = fit_atoms(points, density, xyz_init, [atom_radius]*len(xyz_init),
                                     noise_type, noise_params_init, max_iter)
                 loss = -ll
             if verbose:
@@ -420,8 +440,8 @@ def fit_grid_to_grid(grid_args, center, resolution, *args, **kwargs):
     Fit atom positions to a grid and then recompute a grid from the
     atom positions.
     '''
-    atom_radius = grid_args[1][2]
     xyz = fit_atoms_to_grid(grid_args, center, resolution, *args, **kwargs)
+    atom_radius = [grid_args[1][2] for _ in xyz]
     return add_atoms_to_grid(np.zeros_like(grid), xyz, center, resolution, atom_radius)
 
 
@@ -705,7 +725,9 @@ def main(argv):
         data_examples.append([rec_file2, lig_file2])
 
     net_param = caffe_util.NetParameter.from_prototxt(args.model_file)
-    resolution = net_param.get_molgrid_data_resolution(caffe.TEST)
+    data_param = net_param.get_molgrid_data_param(caffe.TEST)
+    resolution = data_param.resolution
+    radius_multiple = data_param.radius_multiple
     with temp_data_file(data_examples) as data_file:
         net_param.set_molgrid_data_source(data_file, '', caffe.TEST)
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
@@ -742,7 +764,7 @@ def main(argv):
 
         xyzs = fit_atoms_to_grids(grids, channels, n_atoms, center=center, resolution=resolution,
                                   max_iter=args.max_iter, noise_type=args.noise_type, by_L2=args.by_L2,
-                                  cython=args.cython)
+                                  cython=args.cython, radius_multiple=radius_multiple)
 
         pred_file = '{}_fit.sdf'.format(args.out_prefix)
         write_atoms_to_sdf_file(pred_file, xyzs, channels)

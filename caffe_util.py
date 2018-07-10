@@ -69,14 +69,14 @@ def set_molgrid_data_source(net_param, data_file, data_root, phase=None):
                 data_param.root_folder = data_root
 
 
-def get_molgrid_data_resolution(net_param, phase=None):
+def get_molgrid_data_param(net_param, phase=None):
     for layer_param in net_param.layer:
         if layer_param.type == 'MolGridData':
             data_param = layer_param.molgrid_data_param
             if phase is None:
-                return data_param.resolution
+                return data_param
             elif layer_param.include[0].phase == phase:
-                return data_param.resolution    
+                return data_param
 
 
 # can't inherit from protobuf message, so just add methods to the generated classes
@@ -90,7 +90,7 @@ for name, cls in caffe_pb2.__dict__.iteritems():
         globals()[name] = cls
         if issubclass(cls, caffe_pb2.NetParameter):
             cls.set_molgrid_data_source = set_molgrid_data_source
-            cls.get_molgrid_data_resolution = get_molgrid_data_resolution
+            cls.get_molgrid_data_param = get_molgrid_data_param
 
 
 class Net(caffe.Net):
