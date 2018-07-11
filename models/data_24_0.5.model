@@ -18,6 +18,7 @@ layer {
     random_rotation: true
     random_translate: 2.0
     has_affinity: true
+	radius_multiple: 1.0
   }
 }
 layer {
@@ -40,6 +41,7 @@ layer {
     random_rotation: false
     random_translate: 0.0
     has_affinity: true
+	radius_multiple: 1.0
   }
 }
 layer {
