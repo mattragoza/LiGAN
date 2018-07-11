@@ -131,7 +131,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
         # generate fake ligands
         if alternate and i%2:
             # sample unit ligand latent space instead of conditioning on real ligand, no gen_loss
-            gen_net.forward(start='rec', end='rec_latent_fc', rec=rec_real, lig=lig_real)
+            gen_net.forward(end='latent_concat', rec=rec_real, lig=lig_real)
             gen_net.blobs['lig_latent_mean'].data[...] = 0.0
             gen_net.blobs['lig_latent_std'].data[...] = 1.0
             gen_out = gen_net.forward(start='lig_latent_noise', end='lig_gen')
@@ -269,7 +269,10 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         disc_solver.increment_iter()
         gen_solver.increment_iter()
 
-        assert np.sum(gen_solver.net.blobs['lig_gen'].data) > 0
+        # check common failure cases
+        lig_gen = gen_solver.net.blobs['lig_gen']
+        assert not np.all(lig_gen.data == 0.0)
+        assert train_disc_loss > 0.0
 
         times.append(dt.timedelta(seconds=time.time() - start))
 
