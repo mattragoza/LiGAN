@@ -72,7 +72,11 @@ def get_n_gpus_free(queue):
         raise Exception(stderr)
     df = parse_qstat(stdout)
     df = df[df['job_state'] == 'R']
-    df['Node Id'] = df['gpus_reserved'].map(lambda g: g.split(':', 1)[0])
+    try:
+        df['Node Id'] = df['gpus_reserved'].map(lambda g: g.split(':', 1)[0])
+    except AttributeError:
+        print(df['gpus_reserved'][df['gpus_reserved'].map(lambda g: type(g) == float)])
+        raise
     df['gpu'] = df['gpus_reserved'].map(lambda g: g.split(':', 1)[1])
     df = df[df['Node Id'].map(lambda n: n in n_gpus)]
     n_gpus_used = df.groupby('Node Id')['gpu'].nunique().astype(int)
@@ -97,16 +101,16 @@ def wait_for_free_gpus_and_submit_job(args):
 
 if __name__ == '__main__':
 
-    pbs_template = 'gan.pbs'
+    _, pbs_template, models_file = sys.argv
 
-    model_names = [line.rstrip() for line in open('wgan_vce13_models')]
+    model_names = [line.rstrip() for line in open(models_file)]
     model_files = ['models/' + m + '.model' for m in model_names]
     for model_file in model_files:
         assert os.path.isfile(model_file), 'file {} does not exist'.format(model_file)
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    max_iter = 50000
+    max_iter = 100000
     cont_iter = 0
     seeds = [0]
     folds = [0, 1, 2, 3]
@@ -114,14 +118,15 @@ if __name__ == '__main__':
     args = []
     for model_file, seed, fold in itertools.product(model_files, seeds, folds):
         model_name = os.path.splitext(os.path.split(model_file)[1])[0]
-        if pbs_template.startswith('gan'):
+        if 'gan' in pbs_template:
+            gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
             resolution = model_name.split('_')[3]
             gen_model_name = model_name
             data_model_name = 'data_24_{}'.format(resolution)
-            disc_model_name = 'disc'
+            disc_model_name = 'info_2048' if '1024' in model_name else 'info_1024'
             solver_name = 'adam0'
             gen_warmup_name = model_name.lstrip('_')
-            gan_name = 'wgan{}_{}'.format(gen_model_name, disc_model_name)
+            gan_name = '{}{}_{}'.format(gan_type, gen_model_name, disc_model_name)
             if not os.path.isdir(gan_name):
                 os.makedirs(gan_name)
             pbs_file = os.path.join(gan_name, pbs_template)
