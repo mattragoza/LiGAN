@@ -248,14 +248,12 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             break
 
         # dynamic G/D balancing
-        print('{}\t{}'.format(train_disc_loss, train_gen_adv_loss))
         if args.balance:
             train_disc = train_disc_loss >= train_gen_adv_loss
             train_gen = train_gen_adv_loss >= train_disc_loss
         else:
             train_disc = True
             train_gen = True
-        print('{}\t{}'.format(train_disc, train_gen))
 
         # train
         disc_loss_dict = \
