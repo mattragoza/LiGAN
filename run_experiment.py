@@ -101,7 +101,8 @@ def wait_for_free_gpus_and_submit_job(args):
 
 if __name__ == '__main__':
 
-    _, pbs_template, models_file = sys.argv
+    _, models_file = sys.argv
+    pbs_templates = ['bgan.pbs', 'agan.pbs', 'abgan.pbs']
 
     model_names = [line.rstrip() for line in open(models_file)]
     model_files = ['models/' + m + '.model' for m in model_names]
@@ -110,20 +111,20 @@ if __name__ == '__main__':
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    max_iter = 100000
+    max_iter = 20000
     cont_iter = 0
     seeds = [0]
     folds = [0, 1, 2, 3]
 
     args = []
-    for model_file, seed, fold in itertools.product(model_files, seeds, folds):
+    for pbs_template, model_file, seed, fold in itertools.product(pbs_templates, model_files, seeds, folds):
         model_name = os.path.splitext(os.path.split(model_file)[1])[0]
         if 'gan' in pbs_template:
             gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
             resolution = model_name.split('_')[3]
             gen_model_name = model_name
             data_model_name = 'data_24_{}'.format(resolution)
-            disc_model_name = 'info_2048' if '1024' in model_name else 'info_1024'
+            disc_model_name = 'disc' #'info_2048' if '1024' in model_name else 'info_1024'
             solver_name = 'adam0'
             gen_warmup_name = model_name.lstrip('_')
             gan_name = '{}{}_{}'.format(gan_type, gen_model_name, disc_model_name)
