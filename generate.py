@@ -362,7 +362,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
                 loss = -ll
             else:
                 xyz, loss = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms,
-                                            radius_multiple, max_iter)
+                                            radius_multiple, max_iter, lambda_E=lambda_E)
 
             if verbose:
                 print('{:36}density_sum = {:.5f}\tn_atoms = {}\tloss = {:f}' \
