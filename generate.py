@@ -100,8 +100,7 @@ def get_atom_density(atom_pos, atom_radius, point, radius_multiple):
     '''
     Compute the density value of an atom at a point.
     '''
-    diff = point - atom_pos
-    dist2 = np.sum(diff**2)
+    dist2 = np.sum((point - atom_pos)**2)
     dist = np.sqrt(dist2)
     if dist >= radius_multiple * atom_radius:
         return 0.0
@@ -114,6 +113,21 @@ def get_atom_density(atom_pos, atom_radius, point, radius_multiple):
         inv_e2 = np.exp(-2)
         q = dist2*inv_e2/(h**2) - 6*dist*inv_e2/h + 9*inv_e2
         return q
+
+
+def get_atom_density_v(atom_pos, atom_radius, points, radius_multiple):
+    '''
+    Compute the density value of an atom at a set of points.
+    '''
+    dist2 = np.sum((points - atom_pos)**2, axis=1)
+    dist = np.sqrt(dist2)
+    h = 0.5*atom_radius
+    ie2 = np.exp(-2)
+    zero_cond = dist >= radius_multiple * atom_radius
+    gauss_cond = dist <= atom_radius
+    gauss_val = np.exp(-dist2 / (2*h**2))
+    quad_val = dist2*ie2/(h**2) - 6*dist*ie2/h + 9*ie2
+    return np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val))
 
 
 def get_atom_gradient(atom_pos, atom_radius, point, radius_multiple):
@@ -135,34 +149,41 @@ def get_atom_gradient(atom_pos, atom_radius, point, radius_multiple):
         h = 0.5 * atom_radius
         inv_e2 = np.exp(-2)
         d_density = 2*dist*inv_e2/(h**2) - 6*inv_e2/h
-
     return -(diff / dist) * d_density
 
 
-def add_atoms_to_grid(grid, atoms, center, resolution, atom_radius, radius_multiple):
+def get_atom_gradient_v(atom_pos, atom_radius, points, radius_multiple):
     '''
-    Add density to a grid for a list of atoms with the given radii.
+    Compute the derivative of an atom's density with respect
+    to a set of points.
     '''
-    dims = np.array(grid.shape)
-    origin = np.array(center) - resolution*(dims-1)/2.
-    for atom_pos, r in zip(atoms, atom_radius):
-        for i in range(dims[0]):
-            for j in range(dims[1]):
-                for k in range(dims[2]):
-                    grid_point = origin + resolution*np.array([i,j,k])
-                    density = get_atom_density(atom_pos, r, grid_point, radius_multiple)
-                    grid[i][j][k] += density
-    return grid
+    diff = points - atom_pos
+    dist2 = np.sum(diff**2, axis=1)
+    dist = np.sqrt(dist2)
+    h = 0.5*atom_radius
+    ie2 = np.exp(-2)
+    zero_cond = np.logical_or(dist >= radius_multiple * atom_radius, np.isclose(dist, 0))
+    gauss_cond = dist <= atom_radius
+    gauss_val = -dist / h**2 * np.exp(-dist2 / (2*h**2))
+    quad_val = 2*dist*ie2/(h**2) - 6*ie2/h
+    return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
 
 
 def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
     '''
     Compute the interatomic potential energy between two atoms.
     '''
-    diff = atom_pos2 - atom_pos1
-    dist2 = np.sum(diff**2)
-    dist = np.sqrt(dist2)
+    dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2))
     return (1 - np.exp(-(dist - bond_radius)))**2 - 1
+
+
+def get_interatomic_energy_v(atom_pos1, atom_pos2, bond_radius):
+    '''
+    Compute the interatomic potential energy between an atom and a set of atoms.
+    '''
+    dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
+    exp = np.exp(-(dist - bond_radius))
+    return (1 - exp)**2 - 1
 
 
 def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
@@ -176,6 +197,19 @@ def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
     exp = np.exp(-(dist - bond_radius))
     d_energy = 2 * (1 - exp) * exp
     return -(diff / dist) * d_energy
+
+
+def get_interatomic_gradient_v(atom_pos1, atom_pos2, bond_radius):
+    '''
+    Compute the derivative of interatomic potential energy between
+    an atom and a set of atoms with respect to the position of the first atom.
+    '''
+    diff = atom_pos2 - atom_pos1
+    dist2 = np.sum(diff**2, axis=1)
+    dist = np.sqrt(dist2)
+    exp = np.exp(-(dist - bond_radius))
+    d_energy = 2 * (1 - exp) * exp
+    return -diff * (d_energy / dist)[:,np.newaxis]
 
 
 def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, 
@@ -250,7 +284,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius,
     return xyz, 2*ll - 2*n_params
 
 
-def fit_atoms_by_GD(grid, center, resolution, xyz_init, atom_radius, radius_multiple,
+def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
                     max_iter, lr=0.01, mo=0.9, lambda_E=1.0):
     '''
     Fit atom positions to a grid by minimizing the L2 loss (and interatomic energy)
@@ -260,27 +294,58 @@ def fit_atoms_by_GD(grid, center, resolution, xyz_init, atom_radius, radius_mult
     n_atoms = len(xyz_init)
     xyz = np.array(xyz_init)
     d_xyz = np.zeros_like(xyz)
+    d_xyz_v = np.zeros_like(xyz)
     d_xyz_prev = np.zeros_like(xyz)
+    atom_radius = np.array(atom_radius)
+    density_pred = np.zeros_like(density)
+    density_pred_v = np.zeros_like(density)
+    d_density_pred = np.zeros_like(density)
 
     # minimize loss by gradient descent
     loss = np.inf
     i = 0
     while True:
 
-        # L2 distance between predicted and true grids
-        grid_pred = add_atoms_to_grid(np.zeros_like(grid), xyz, center, resolution,
-                                      atom_radius, radius_multiple)
-        d_grid_pred = grid_pred - grid
-        L2 = np.sum(d_grid_pred**2)/2
+        # L2 distance between predicted and true density
+        density_pred[...] = 0.0
+        t_i = time.time()
+        for j in range(n_atoms):
+            for k, p in enumerate(points):
+                density_pred[k] += get_atom_density(xyz[j], atom_radius[j], p, radius_multiple)
+        dt_o = time.time() - t_i
+
+        density_pred_v[...] = 0.0
+        t_i = time.time()
+        for j in range(n_atoms):
+            density_pred_v += get_atom_density_v(xyz[j], atom_radius[j], points, radius_multiple)
+        dt_v = time.time() - t_i
+
+        assert np.allclose(density_pred, density_pred_v)
+        print('get_atom_density\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
+
+        d_density_pred[...] = density_pred - density
+        L2 = np.sum(d_density_pred**2)/2
 
         # interatomic energy of predicted atom positions
         E = 0.0
+        E_v = 0.0
         if lambda_E:
+            t_i = time.time()
             for j in range(n_atoms):
                 for k in range(j+1, n_atoms):
                     bond_radius = 0.774 * (atom_radius[j] + atom_radius[k])/2.0
                     E += get_interatomic_energy(xyz[j], xyz[k], bond_radius)
                     E += get_interatomic_energy(xyz[k], xyz[j], bond_radius)
+            dt_o = time.time() - t_i
+
+            t_i = time.time()
+            for j in range(n_atoms):
+                bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
+                E_v += 2*np.sum(get_interatomic_energy_v(xyz[j], xyz[j+1:,:], bond_radius))
+            dt_v = time.time() - t_i
+
+            assert np.allclose(E, E_v)
+            print('get_interatomic_energy\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
 
         loss_prev, loss = loss, L2 + lambda_E*E
         delta_loss = loss - loss_prev
@@ -292,21 +357,46 @@ def fit_atoms_by_GD(grid, center, resolution, xyz_init, atom_radius, radius_mult
             break
 
         # compute derivatives and descend loss gradient
-        points, d_density = grid_to_points_and_values(d_grid_pred, center, resolution)
         d_xyz_prev[...] = d_xyz
         d_xyz[...] = 0.0
+        d_xyz_v[...] = 0.0
+
+        t_i = time.time()
         for j in range(n_atoms):
-
             # dL2/datom = sum_grid dL2/dgrid * dgrid/datom
-            for p, d in zip(points, d_density):
+            for p, d in zip(points, d_density_pred):
                 d_xyz[j] += d * get_atom_gradient(xyz[j], atom_radius[j], p, radius_multiple)
+        dt_o = time.time() - t_i
 
-            # dE/datom = sum_atom2 dE/datom2
-            if lambda_E:
+        t_i = time.time()
+        for j in range(n_atoms):
+            d_xyz_v[j] += np.sum(d_density_pred[:,np.newaxis] * \
+                            get_atom_gradient_v(xyz[j], atom_radius[j], points, radius_multiple), axis=0)
+        dt_v = time.time() - t_i
+
+        assert np.allclose(d_xyz, d_xyz_v), '{} {}'.format(d_xyz[0], d_xyz_v[0])
+        print('get_atom_gradient\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
+
+        if lambda_E:
+            t_i = time.time()
+            for j in range(n_atoms):
+                # dE/datom = sum_atom2 dE/datom2
                 for k in range(j+1, n_atoms):
                     bond_radius = 0.774 * (atom_radius[j] + atom_radius[k])/2.0
                     d_xyz[j] += lambda_E * get_interatomic_gradient(xyz[j], xyz[k], bond_radius)
                     d_xyz[k] += lambda_E * get_interatomic_gradient(xyz[k], xyz[j], bond_radius)
+            dt_o = time.time() - t_i
+
+            t_i = time.time()
+            for j in range(n_atoms-1):
+                bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
+                forces = lambda_E * get_interatomic_gradient_v(xyz[j], xyz[j+1:,:], bond_radius)
+                d_xyz_v[j] += np.sum(forces, axis=0)
+                d_xyz_v[j+1:,:] -= forces
+            dt_v = time.time() - t_i
+
+            assert np.allclose(d_xyz, d_xyz_v), '{} {}'.format(d_xyz[0], d_xyz_v[0])
+            print('get_interatomic_gradient({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
 
         xyz[...] -= lr*(mo*d_xyz_prev + (1-mo)*d_xyz)
         i += 1
@@ -389,7 +479,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
                                            noise_model, noise_params_init, max_iter)
                 loss = -ll
             else:
-                xyz, loss = fit_atoms_by_GD(grid, center, resolution, xyz_init, [atom_radius]*n_atoms,
+                xyz, loss = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms,
                                             radius_multiple, max_iter)
 
             if verbose:
@@ -429,7 +519,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     return xyz_best
 
 
-def fit_atoms_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
+def fit_atoms_to_grids(grids, channels, n_atoms, parallel=False, *args, **kwargs):
     '''
     Fit atom positions to lists of grids with corresponding channel info and
     optional numbers of atoms, in parallel by default.
@@ -783,10 +873,8 @@ def main(argv):
         # fine-tune atoms by fitting to summed grid channels
         if args.fine_tune:
             chan_map = [i for i, xyz in enumerate(xyzs) for _ in xyz]
-            #points, density = grid_to_points_and_values(np.sum(grids, axis=0), center, resolution)
-            all_xyz, _ = fit_atoms_by_GD(grid=np.sum(grids),
-                                         center=center,
-                                         resolution=resolution,
+            points, density = grid_to_points_and_values(np.sum(grids, axis=0), center, resolution)
+            all_xyz, _ = fit_atoms_by_GD(points, density,
                                          xyz_init=np.concatenate(xyzs, axis=0),
                                          atom_radius=[channels[i][2] for i in chan_map],
                                          radius_multiple=radius_multiple,
