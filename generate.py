@@ -96,26 +96,7 @@ class GaussianMixtureGridLayer(caffe.Layer):
         pass
 
 
-def get_atom_density(atom_pos, atom_radius, point, radius_multiple):
-    '''
-    Compute the density value of an atom at a point.
-    '''
-    dist2 = np.sum((point - atom_pos)**2)
-    dist = np.sqrt(dist2)
-    if dist >= radius_multiple * atom_radius:
-        return 0.0
-    elif dist <= atom_radius:
-        h = 0.5 * atom_radius
-        ex = -dist2 / (2*h*h)
-        return np.exp(ex)
-    else:
-        h = 0.5 * atom_radius
-        inv_e2 = np.exp(-2)
-        q = dist2*inv_e2/(h**2) - 6*dist*inv_e2/h + 9*inv_e2
-        return q
-
-
-def get_atom_density_v(atom_pos, atom_radius, points, radius_multiple):
+def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
     '''
     Compute the density value of an atom at a set of points.
     '''
@@ -130,29 +111,7 @@ def get_atom_density_v(atom_pos, atom_radius, points, radius_multiple):
     return np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val))
 
 
-def get_atom_gradient(atom_pos, atom_radius, point, radius_multiple):
-    '''
-    Compute the derivative of an atom's density with respect
-    to a point.
-    '''
-    diff = point - atom_pos
-    dist2 = np.sum(diff**2)
-    dist = np.sqrt(dist2)
-    if dist >= radius_multiple * atom_radius or np.isclose(dist, 0):
-        return 0.0
-    elif dist <= atom_radius:
-        h = 0.5 * atom_radius
-        ex = -dist2 / (2*h*h)
-        coef = -dist / (h*h)
-        d_density = coef * np.exp(ex)
-    else:
-        h = 0.5 * atom_radius
-        inv_e2 = np.exp(-2)
-        d_density = 2*dist*inv_e2/(h**2) - 6*inv_e2/h
-    return -(diff / dist) * d_density
-
-
-def get_atom_gradient_v(atom_pos, atom_radius, points, radius_multiple):
+def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
     '''
     Compute the derivative of an atom's density with respect
     to a set of points.
@@ -171,14 +130,6 @@ def get_atom_gradient_v(atom_pos, atom_radius, points, radius_multiple):
 
 def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
     '''
-    Compute the interatomic potential energy between two atoms.
-    '''
-    dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2))
-    return (1 - np.exp(-(dist - bond_radius)))**2 - 1
-
-
-def get_interatomic_energy_v(atom_pos1, atom_pos2, bond_radius):
-    '''
     Compute the interatomic potential energy between an atom and a set of atoms.
     '''
     dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
@@ -186,20 +137,7 @@ def get_interatomic_energy_v(atom_pos1, atom_pos2, bond_radius):
     return (1 - exp)**2 - 1
 
 
-def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
-    '''
-    Compute the derivative of interatomic potential energy between
-    two atoms with respect to the position of the first atom.
-    '''
-    diff = atom_pos2 - atom_pos1
-    dist2 = np.sum(diff**2)
-    dist = np.sqrt(dist2)
-    exp = np.exp(-(dist - bond_radius))
-    d_energy = 2 * (1 - exp) * exp
-    return -(diff / dist) * d_energy
-
-
-def get_interatomic_gradient_v(atom_pos1, atom_pos2, bond_radius):
+def get_interatomic_forces(atom_pos1, atom_pos2, bond_radius):
     '''
     Compute the derivative of interatomic potential energy between
     an atom and a set of atoms with respect to the position of the first atom.
@@ -294,11 +232,9 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
     n_atoms = len(xyz_init)
     xyz = np.array(xyz_init)
     d_xyz = np.zeros_like(xyz)
-    d_xyz_v = np.zeros_like(xyz)
     d_xyz_prev = np.zeros_like(xyz)
     atom_radius = np.array(atom_radius)
     density_pred = np.zeros_like(density)
-    density_pred_v = np.zeros_like(density)
     d_density_pred = np.zeros_like(density)
 
     # minimize loss by gradient descent
@@ -308,44 +244,17 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
 
         # L2 distance between predicted and true density
         density_pred[...] = 0.0
-        t_i = time.time()
         for j in range(n_atoms):
-            for k, p in enumerate(points):
-                density_pred[k] += get_atom_density(xyz[j], atom_radius[j], p, radius_multiple)
-        dt_o = time.time() - t_i
-
-        density_pred_v[...] = 0.0
-        t_i = time.time()
-        for j in range(n_atoms):
-            density_pred_v += get_atom_density_v(xyz[j], atom_radius[j], points, radius_multiple)
-        dt_v = time.time() - t_i
-
-        assert np.allclose(density_pred, density_pred_v)
-        print('get_atom_density\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
-
+            density_pred += get_atom_density(xyz[j], atom_radius[j], points, radius_multiple)
         d_density_pred[...] = density_pred - density
         L2 = np.sum(d_density_pred**2)/2
 
         # interatomic energy of predicted atom positions
         E = 0.0
-        E_v = 0.0
         if lambda_E:
-            t_i = time.time()
-            for j in range(n_atoms):
-                for k in range(j+1, n_atoms):
-                    bond_radius = 0.774 * (atom_radius[j] + atom_radius[k])/2.0
-                    E += get_interatomic_energy(xyz[j], xyz[k], bond_radius)
-                    E += get_interatomic_energy(xyz[k], xyz[j], bond_radius)
-            dt_o = time.time() - t_i
-
-            t_i = time.time()
             for j in range(n_atoms):
                 bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
-                E_v += 2*np.sum(get_interatomic_energy_v(xyz[j], xyz[j+1:,:], bond_radius))
-            dt_v = time.time() - t_i
-
-            assert np.allclose(E, E_v)
-            print('get_interatomic_energy\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
+                E += 2*np.sum(get_interatomic_energy(xyz[j], xyz[j+1:,:], bond_radius))
 
         loss_prev, loss = loss, L2 + lambda_E*E
         delta_loss = loss - loss_prev
@@ -359,44 +268,17 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
         # compute derivatives and descend loss gradient
         d_xyz_prev[...] = d_xyz
         d_xyz[...] = 0.0
-        d_xyz_v[...] = 0.0
 
-        t_i = time.time()
         for j in range(n_atoms):
-            # dL2/datom = sum_grid dL2/dgrid * dgrid/datom
-            for p, d in zip(points, d_density_pred):
-                d_xyz[j] += d * get_atom_gradient(xyz[j], atom_radius[j], p, radius_multiple)
-        dt_o = time.time() - t_i
-
-        t_i = time.time()
-        for j in range(n_atoms):
-            d_xyz_v[j] += np.sum(d_density_pred[:,np.newaxis] * \
-                            get_atom_gradient_v(xyz[j], atom_radius[j], points, radius_multiple), axis=0)
-        dt_v = time.time() - t_i
-
-        assert np.allclose(d_xyz, d_xyz_v), '{} {}'.format(d_xyz[0], d_xyz_v[0])
-        print('get_atom_gradient\t({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
+            d_xyz[j] += np.sum(d_density_pred[:,np.newaxis] * \
+                get_atom_gradient(xyz[j], atom_radius[j], points, radius_multiple), axis=0)
 
         if lambda_E:
-            t_i = time.time()
-            for j in range(n_atoms):
-                # dE/datom = sum_atom2 dE/datom2
-                for k in range(j+1, n_atoms):
-                    bond_radius = 0.774 * (atom_radius[j] + atom_radius[k])/2.0
-                    d_xyz[j] += lambda_E * get_interatomic_gradient(xyz[j], xyz[k], bond_radius)
-                    d_xyz[k] += lambda_E * get_interatomic_gradient(xyz[k], xyz[j], bond_radius)
-            dt_o = time.time() - t_i
-
-            t_i = time.time()
             for j in range(n_atoms-1):
                 bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
-                forces = lambda_E * get_interatomic_gradient_v(xyz[j], xyz[j+1:,:], bond_radius)
-                d_xyz_v[j] += np.sum(forces, axis=0)
-                d_xyz_v[j+1:,:] -= forces
-            dt_v = time.time() - t_i
-
-            assert np.allclose(d_xyz, d_xyz_v), '{} {}'.format(d_xyz[0], d_xyz_v[0])
-            print('get_interatomic_gradient({:.12f}s before, {:.12f}s after, {}x speedup)'.format(dt_o, dt_v, dt_o/(dt_v + 1e-12)))
+                forces = get_interatomic_forces(xyz[j], xyz[j+1:,:], bond_radius)
+                d_xyz[j] += lambda_E * np.sum(forces, axis=0)
+                d_xyz[j+1:,:] -= lambda_E * forces
 
         xyz[...] -= lr*(mo*d_xyz_prev + (1-mo)*d_xyz)
         i += 1
