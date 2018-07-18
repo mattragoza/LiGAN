@@ -178,7 +178,7 @@ def get_interatomic_gradient(atom_pos1, atom_pos2, bond_radius):
     return -(diff / dist) * d_energy
 
 
-def fit_atoms_by_GMM(points, density, xyz_init, atom_radius,
+def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, 
                      noise_model, noise_params_init, max_iter):
     '''
     Fit atom positions to a list of points and densities using a
@@ -350,7 +350,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
 
     # nothing to fit if the whole grid is sub threshold
     if np.max(grid) <= density_threshold:
-        return []
+        return np.ndarray((0, 3))
 
     if verbose:
         print('\nfitting {}'.format(channel_name))
@@ -706,6 +706,7 @@ def parse_args(argv=None):
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file by fitting atoms to atom density grids')
     parser.add_argument('--max_iter', type=int, default=np.inf, help='Maximum number of iterations for atom fitting')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='Interatomic energy loss weight for gradient descent atom fitting')
+    parser.add_argument('--fine_tune', action='store_true', help='Fine-tune final fit atom positions to summed grid channels')
     parser.add_argument('--fit_GMM', action='store_true', help='Fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='Noise model for GMM atom fitting (d|p)')
     parser.add_argument('--combine_channels', action='store_true', help="Combine channels with same element for atom fitting")
@@ -769,6 +770,7 @@ def main(argv):
         else:
             n_atoms = [None for g in grids]
 
+        # fit atoms to each grid channel separately
         xyzs = fit_atoms_to_grids(grids, channels, n_atoms,
                                   center=center,
                                   resolution=resolution,
@@ -777,6 +779,22 @@ def main(argv):
                                   fit_GMM=args.fit_GMM,
                                   noise_model=args.noise_model,
                                   radius_multiple=radius_multiple)
+
+        # fine-tune atoms by fitting to summed grid channels
+        if args.fine_tune:
+            chan_map = [i for i, xyz in enumerate(xyzs) for _ in xyz]
+            #points, density = grid_to_points_and_values(np.sum(grids, axis=0), center, resolution)
+            all_xyz, _ = fit_atoms_by_GD(grid=np.sum(grids),
+                                         center=center,
+                                         resolution=resolution,
+                                         xyz_init=np.concatenate(xyzs, axis=0),
+                                         atom_radius=[channels[i][2] for i in chan_map],
+                                         radius_multiple=radius_multiple,
+                                         max_iter=args.max_iter,
+                                         lambda_E=args.lambda_E)
+            xyzs = [[] for _ in channels]
+            for i, (x,y,z) in zip(chan_map, all_xyz):
+                xyzs[i].append((x,y,z))
 
         pred_file = '{}_fit.sdf'.format(args.out_prefix)
         write_atoms_to_sdf_file(pred_file, xyzs, channels)
