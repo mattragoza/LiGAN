@@ -161,6 +161,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius,
 
     # initialize component parameters
     xyz = np.array(xyz_init)
+    atom_radius = np.array(atom_radius)
     cov = (0.5*atom_radius)**2
     n_params = xyz.size
     if noise_model == 'd':
@@ -198,7 +199,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius,
 
         # compute expected log likelihood
         ll_prev, ll = ll, np.sum(density * np.log(P_point))
-        if ll - ll_prev < 1e-8 or i == max_iter:
+        if ll - ll_prev < 1e-3 or i == max_iter:
             break
 
         # estimate parameters that maximize expected log likelihood (M-step)
@@ -223,7 +224,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius,
 
 
 def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
-                    max_iter, lr=0.01, mo=0.9, lambda_E=1.0):
+                    max_iter, lr=0.01, mo=0.9, lambda_E=0.0):
     '''
     Fit atom positions to a grid by minimizing the L2 loss (and interatomic energy)
     by gradient descent.
@@ -401,7 +402,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     return xyz_best
 
 
-def fit_atoms_to_grids(grids, channels, n_atoms, parallel=False, *args, **kwargs):
+def fit_atoms_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
     '''
     Fit atom positions to lists of grids with corresponding channel info and
     optional numbers of atoms, in parallel by default.
