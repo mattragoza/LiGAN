@@ -287,6 +287,22 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
     return xyz, L2
 
 
+def wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=4.0):
+    points, _ = grid_to_points_and_values(grid, center, resolution)
+    h = get_atom_density(center+resolution/2, atom_radius, points, radius_multiple).reshape(grid.shape)
+    h = np.roll(h, shift=(12,12,12), axis=(0,1,2)) # center at origin
+    # we want a convolution g such that g * grid = a, where a is the atom positions
+    # we assume that grid = h * a, so g is the inverse of h: g * (h * a) = a
+    # take F() to be the Fourier transform, F-1() the inverse Fourier transform
+    # convolution theorem: g * grid = F-1(F(g)F(grid))
+    # Wiener deconvolution: F(g) = 1/F(h) |F(h)|^2 / (|F(h)|^2 + noise_ratio)
+    F_h = np.fft.fftn(h) 
+    F_grid = np.fft.fftn(grid)
+    conj_F_h = np.conj(F_h)
+    F_g = conj_F_h / (F_h*conj_F_h + noise_ratio)
+    return np.real(np.fft.ifftn(F_grid * F_g))
+
+
 def get_max_density_points(points, density, distance):
     '''
     Generate maximum density points that are at least some distance
@@ -497,7 +513,7 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None, diff_rec=False):
+def generate_grids_from_net(net, blob_pattern, index=0, lig_gen_mode=None, diff_rec=False):
     '''
     Generate grids from a specific blob in a net at a specific data index.
     '''
@@ -505,7 +521,7 @@ def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None, diff_rec=
     batch_size = blob.shape[0]
     print(batch_size)
     index += batch_size
-    assert lig_mode in {None, 'unit', 'mean'}
+    assert lig_gen_mode in {None, 'unit', 'mean', 'zero'}
     while index >= batch_size:
         net.forward(end='latent_concat') # get rec latent and "init" var lig layers
         if diff_rec:
@@ -513,10 +529,13 @@ def generate_grids_from_net(net, blob_pattern, index=0, lig_mode=None, diff_rec=
                 net.blobs['rec'].data[(index+1)%batch_size,...]
             net.blobs['rec_latent_fc'].data[index%batch_size,...] = \
                 net.blobs['rec_latent_fc'].data[(index+1)%batch_size,...]
-        if lig_mode == 'unit':
+        if lig_gen_mode == 'unit':
             net.blobs['lig_latent_mean'].data[...] = 0.0
             net.blobs['lig_latent_std'].data[...] = 1.0
-        elif lig_mode == 'mean':
+        elif lig_gen_mode == 'mean':
+            net.blobs['lig_latent_std'].data[...] = 0.0
+        elif lig_gen_mode == 'zero':
+            net.blobs['lig_latent_mean'].data[...] = 0.0
             net.blobs['lig_latent_std'].data[...] = 0.0
         net.forward(start='lig_latent_noise') 
         index -= batch_size
@@ -685,9 +704,11 @@ def parse_args(argv=None):
     parser.add_argument('--combine_channels', action='store_true', help="Combine channels with same element for atom fitting")
     parser.add_argument('--read_n_atoms', action='store_true', help="Get exact number of atoms to fit from ligand file")
     parser.add_argument('--channel_info', default=None, help='How to interpret grid channels (None|data|rec|lig)')
-    parser.add_argument('--lig_mode', default=None, help='Alternate ligand generation (None|mean|unit)')
+    parser.add_argument('--lig_gen_mode', default=None, help='Alternate ligand generation (None|mean|unit)')
     parser.add_argument('-r2', '--rec_file2', default='', help='Alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='Alternate ligand file (for receptor latent space)')
+    parser.add_argument('--deconvolve', action='store_true', help="Apply Wiener deconvolution to atom density grids")
+    parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
     return parser.parse_args(argv)
 
 
@@ -712,7 +733,7 @@ def main(argv):
     with temp_data_file(data_examples) as data_file:
         net_param.set_molgrid_data_source(data_file, '', caffe.TEST)
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
-    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_mode, len(data_examples) > 1)
+    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_gen_mode, len(data_examples) > 1)
 
     print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
     assert np.sum(grids) > 0
@@ -727,6 +748,10 @@ def main(argv):
         channels = lig_channels
     else:
         raise ValueError('--channel_info must be data, rec, or lig')
+
+    if args.deconvolve:
+        grids = 10*np.stack([wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple) \
+                    for grid, (_, _, atom_radius) in zip(grids, channels)], axis=0)
 
     dx_files = []
     if args.output_dx:
