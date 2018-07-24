@@ -2,6 +2,7 @@ from __future__ import print_function, division
 import sys
 import os
 import re
+import argparse
 import itertools
 import caffe
 caffe.set_mode_gpu()
@@ -49,13 +50,13 @@ SEARCH_SPACES = {
 
     (1, 3): dict(encode_type=['rvl-l', '_rvl-l'],
                  data_dim=[24],
-                 resolution=[0.5, 1.0],
-                 n_levels=[3, 4, 5],
-                 conv_per_level=[1, 2, 3],
-                 n_filters=[16, 32, 64],
-                 width_factor=[1, 2],
-                 n_latent=[512, 1024],
-                 loss_types=['', 'e', 'em'])
+                 resolution=[0.5],
+                 n_levels=[3],
+                 conv_per_level=[2, 3],
+                 n_filters=[32, 64],
+                 width_factor=[2],
+                 n_latent=[1024],
+                 loss_types=['', 'e', 'em', 'c'])
 }
 
 
@@ -560,25 +561,38 @@ def orthogonal_samples(n, **kwargs):
         yield dict(zip(kwargs, values))
 
 
-if __name__ == '__main__':
+def parse_version(version_str):
+    return tuple(map(int, version_str.split('.')))
 
-    version = (1, 3)
-    do_scaffold = False
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--version', type=parse_version, required=True)
+    parser.add_argument('-s', '--do_scaffold', action='store_true')
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
 
     model_data = []
-    for kwargs in keyword_product(**SEARCH_SPACES[version]):
-        model_name = NAME_FORMATS[version].format(**kwargs)
+    for kwargs in keyword_product(**SEARCH_SPACES[args.version]):
+        model_name = NAME_FORMATS[args.version].format(**kwargs)
         model_file = os.path.join('models', model_name + '.model')
         net_param = make_model(**kwargs)
         net_param.to_prototxt(model_file)
 
-        if do_scaffold:
+        if args.do_scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
             model_data.append((model_name, net.get_n_params(), net.get_size()))
         else:
             print(model_file)
 
-    if do_scaffold:
+    if args.do_scaffold:
         print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
         for model_name, n_params, size in model_data:
             print('{:30}{:12d}{:10.2f} MiB'.format(model_name, n_params, size/2**20))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
