@@ -1,197 +1,130 @@
-import caffe
+import copy
 import numpy as np
+import scipy as sp
+import caffe
+caffe.set_mode_gpu()
 
-eps = 1.0
-testing = False
+import caffe_util
+
+EPS = 1e-3
 
 
 class ChannelEuclideanLossLayer(caffe.Layer):
     '''
-    Compute a Euclidean loss for each channel and take
-    their sum weighted by the channel amount in the label.
+    Compute a Euclidean loss for each channel and take their sum weighted in
+    inverse proportion to the mean L2 norm of the channel in the current batch.
     '''
     def setup(self, bottom, top):
-        # check number of inputs
+
         if len(bottom) != 2:
             raise Exception('Need two inputs')
 
     def reshape(self, bottom, top):
 
-        # check input shapes
-        shape0 = tuple(bottom[0].shape)
-        shape1 = tuple(bottom[1].shape)
-        if shape0 != shape1:
-            raise Exception('Inputs must have the same shape ({} vs. {})'.format(shape0, shape1))
+        input0_shape = tuple(bottom[0].shape)
+        input1_shape = tuple(bottom[1].shape)
+        if input0_shape != input1_shape:
+            raise Exception('Inputs must have the same shape ({} vs. {})'
+                            .format(input0_shape, input1_shape))
 
-        # gradient is same shape as inputs
-        self.diff = np.zeros(shape0, dtype=np.float32)
+        self.diff = np.zeros(input0_shape, dtype=np.float32)
 
-        # intermediate sum keeps channels separate
-        self.non_chan_sse = np.zeros(shape0[1], dtype=np.float32)
-        self.non_chan_sum = np.zeros(shape0[1], dtype=np.float32)
-        self.non_chan_axes = (0,) + tuple(range(2, len(shape0)))
-        self.chan_shape = tuple([1, shape0[1]] + [1 for i in range(2, len(shape0))])
+        n_channels = input0_shape[1]
+        self.chan_sse = np.zeros(n_channels, dtype=np.float32)
+        self.chan_norm = np.zeros(n_channels, dtype=np.float32)
+        self.chan_weight = np.zeros(n_channels, dtype=np.float32)
 
-        # loss output is scalar
+        n_dims = len(input0_shape)
+        self.non_chan_axes = tuple(i for i in range(n_dims) if i != 1)
+        self.chan_shape = tuple(n_channels if i == 1 else 1 for i in range(n_dims))
+
         top[0].reshape(1)
 
     def forward(self, bottom, top):
 
-        # get total squared error in each channel
+        # get total squared error in each channel (batch mean)
+        batch_size = bottom[0].shape[0]
         self.diff[...] = bottom[0].data - bottom[1].data
-        self.non_chan_sse[...] = np.sum(self.diff**2, axis=self.non_chan_axes) / 2.
-        if testing:
-            print 'non_chan_sse =', self.non_chan_sse
+        self.chan_sse[...] = np.sum(self.diff**2, axis=self.non_chan_axes) / batch_size / 2.0
 
-        # get total channel density in label blob
-        self.non_chan_sum[...] = np.sum(bottom[1].data, axis=self.non_chan_axes) + eps
-        if testing:
-            print 'non_chan_sum =', self.non_chan_sum
+        # weights are inversely proportional to label channel squared L2 norms and have mean of 1.0
+        self.chan_norm[...] = np.sum(bottom[1].data**2, axis=self.non_chan_axes) / batch_size + EPS
+        self.chan_weight[...] = (1 / np.mean(1 / self.chan_norm)) / self.chan_norm
 
         # weighted sum across channels
-        top[0].data[...] = np.sum(self.non_chan_sse / self.non_chan_sum)
-        if testing:
-            print 'loss =', top[0].data
+        top[0].data[...] = np.sum(self.chan_sse * self.chan_weight)
 
     def backward(self, top, propagate_down, bottom):
 
+        batch_size = bottom[0].shape[0]
         if propagate_down[0]:
-            bottom[0].diff[...] = self.diff / np.reshape(self.non_chan_sum, self.chan_shape)
-
-        if propagate_down[1]:
-            pass
-            # quotient rule, but should test this
-            #bottom[1].diff[...] = (self.non_chan_sum * -self.diff - (self.non_chan_sse**2)/2) / self.non_chan_sum**2
+            bottom[0].diff[...] = self.diff * np.reshape(self.chan_weight, self.chan_shape) / batch_size
 
 
 if __name__ == '__main__':
-    testing = True
-    param = '''
-    force_backward: true
-    layer {
-      name: "input0"
-      type: "Input"
-      top: "input0"
-      input_param {
-        shape {
-          dim: 2
-          dim: 2
-          dim: 2
-        }
-      }
-    }
-    layer {
-      name: "input1"
-      type: "Input"
-      top: "input1"
-      input_param {
-        shape {
-          dim: 2
-          dim: 2
-          dim: 2
-        }
-      }
-    }
-    layer {
-      name: "loss"
-      type: "Python"
-      top: "loss"
-      bottom: "input0"
-      bottom: "input1"
-      python_param {
-        module: "channel_euclidean_loss_layer"
-        layer: "ChannelEuclideanLossLayer"
-      }
-    }
-    '''
-    open('asdf.model','w').write(param)
-    net = caffe.Net('asdf.model', caffe.TEST)
 
-    def clear_net():
-        net.blobs['input0'].data[...] = 0
-        net.blobs['input1'].data[...] = 0
-        net.blobs['input0'].diff[...] = 0
-        net.blobs['input1'].diff[...] = 0
+    net = caffe_util.Net.from_param(
+        force_backward=True,
+        layer=[
+            dict(
+                name='input0',
+                type='Input',
+                top=['input0'],
+                input_param=dict(
+                    shape=[dict(dim=[1, 10, 3, 3, 3])]
+                )
+            ),
+            dict(
+                name='input1',
+                type='Input',
+                top=['input1'],
+                input_param=dict(
+                    shape=[dict(dim=[1, 10, 3, 3, 3])]
+                )
+            ),
+            dict(
+                name='loss',
+                type='Python',
+                bottom=['input0', 'input1'],
+                top=['loss'],
+                python_param=dict(
+                    module='channel_euclidean_loss_layer',
+                    layer='ChannelEuclideanLossLayer'
+                )
+            )
+        ],
+        phase=caffe.TEST)
 
-    print 'test0'
-    clear_net()
-    net.forward()
-    assert net.blobs['loss'].data == 0.
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[0.,0.], [0.,0.]], [[0.,0.], [0.,0.]]])
+    def eval(x0, x1):
+        net.blobs['input0'].data[...] = x0
+        net.blobs['input1'].data[...] = x1
+        net.forward()
+        net.backward()
+        return np.array(net.blobs['loss'].data), \
+               np.array(net.blobs['input0'].diff)
 
-    print 'test1'
-    clear_net()
-    net.blobs['input0'].data[0,0,0] = 2.
-    net.forward()
-    assert net.blobs['loss'].data == (2.-0.)**2 / 2 / (0 + eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[2.,0.], [0.,0.]], [[0.,0.], [0.,0.]]])
+    for i in range(1000):
 
-    print 'test2'
-    clear_net()
-    net.blobs['input1'].data[0,0,0] = 2.
-    net.forward()
-    assert net.blobs['loss'].data == (0.-2.)**2 / 2 / (2 + eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[-2./3.,0.], [0.,0.]], [[0.,0.], [0.,0.]]])
+        # evaluate f(x) and df/dx at random point x0
+        x0 = np.random.randn(*net.blobs['input0'].shape)
+        x1 = np.random.randn(*net.blobs['input1'].shape)
+        f, g = eval(x0, x1)
 
-    print 'test3'
-    clear_net()
-    net.blobs['input0'].data[0,0,0] = 4.
-    net.forward()
-    assert net.blobs['loss'].data == (4.-0.)**2 / 2 / (0 + eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[4.,0.], [0.,0.]], [[0.,0.], [0.,0.]]])
+        # approximate df/dx = (f(x+h) - f(x-h)) / 2h
+        g_approx = np.zeros_like(x0)
+        h = 1e-3
+        for j in np.ndindex(*x0.shape):
 
-    print 'test4'
-    clear_net()
-    net.blobs['input0'].data[0,0,0] = 2.
-    net.blobs['input0'].data[0,0,1] = 4.
-    net.forward()
-    assert net.blobs['loss'].data == ((2.-0.)**2 + (4.-0.)**2) / 2 / (0 + eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[2.,4.], [0.,0.]], [[0.,0.], [0.,0.]]])
+            x0p = copy.deepcopy(x0)
+            x0p[j] += h
+            fp, _ = eval(x0p, x1)
 
-    print 'test5'
-    clear_net()
-    net.blobs['input0'].data[0,0,0] = 2.
-    net.blobs['input0'].data[0,1,0] = 4.
-    net.forward()
-    assert net.blobs['loss'].data == (2.-0.)**2 / 2 / (0+eps) + (4.-0.)**2 / 2 / (0+eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[2.,0.], [4.,0.]], [[0.,0.], [0.,0.]]])
+            x0n = copy.deepcopy(x0)
+            x0n[j] -= h
+            fn, _ = eval(x0n, x1)
 
-    print 'test6'
-    clear_net()
-    net.blobs['input1'].data[0,0,0] = 2.
-    net.blobs['input1'].data[0,0,1] = 4.
-    net.forward()
-    assert net.blobs['loss'].data == ((0.-2.)**2 + (0.-4.)**2) / 2 / (2 + 4 + eps)
-    net.backward()
-    assert np.allclose(net.blobs['input0'].diff, [[[-2./7,-4./7], [0.,0.]], [[0.,0.], [0.,0.]]])
+            g_approx[j] = (fp - fn) / (2*h)
 
-    print 'numeric gradient tests'
-    h = 1e-6
-    for n in range(100):
-        for i in range(2):
-            for j in range(2):
-                for k in range(2):
-
-                    clear_net()
-                    net.blobs['input0'].data[...] = 0.01*np.abs(np.random.randn(2, 2, 2))
-                    net.blobs['input1'].data[...] = 0.01*np.abs(np.random.randn(2, 2, 2))
-
-                    net.forward()
-                    y = net.blobs['loss'].data[0]
-
-                    net.backward()
-                    m = net.blobs['input0'].diff[i,j,k]
-
-                    net.blobs['input0'].data[i,j,k] += h
-                    net.forward()
-                    yh = net.blobs['loss'].data[0]
-
-                    mapprox = (yh - y) / h
-                    assert np.abs(m - mapprox) < 0.01, (m, mapprox)
-
+        norm = lambda x: np.sum(np.abs(x))
+        rel_err = norm(g - g_approx) / np.maximum(norm(g), norm(g_approx))
+        print('rel_err = {}, log_10 = {}'.format(rel_err, np.log10(rel_err)))
