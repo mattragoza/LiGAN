@@ -286,7 +286,7 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
         xyz[...] -= lr*(mo*d_xyz_prev + (1-mo)*d_xyz)
         i += 1
 
-    return xyz, L2
+    return xyz, loss
 
 
 def wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=0.0):
