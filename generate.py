@@ -15,6 +15,8 @@ caffe.set_device(0)
 import caffe_util
 import cgenerate
 
+BOND_LENGTH_K = 0.8
+
 
 # channel name, element, atom radius
 rec_channels = [("rec_AliphaticCarbonXSHydrophobe", "C", 1.90),
@@ -128,25 +130,25 @@ def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
     return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
 
 
-def get_interatomic_energy(atom_pos1, atom_pos2, bond_radius):
+def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
     '''
     Compute the interatomic potential energy between an atom and a set of atoms.
     '''
     dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
-    exp = np.exp(-(dist - bond_radius))
+    exp = np.exp(-width_factor*(dist - bond_length))
     return (1 - exp)**2 - 1
 
 
-def get_interatomic_forces(atom_pos1, atom_pos2, bond_radius):
+def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
     '''
-    Compute the derivative of interatomic potential energy between
-    an atom and a set of atoms with respect to the position of the first atom.
+    Compute the derivative of interatomic potential energy between an atom
+    and a set of atoms with respect to the position of the first atom.
     '''
     diff = atom_pos2 - atom_pos1
     dist2 = np.sum(diff**2, axis=1)
     dist = np.sqrt(dist2)
-    exp = np.exp(-(dist - bond_radius))
-    d_energy = 2 * (1 - exp) * exp
+    exp = np.exp(-width_factor*(dist - bond_length))
+    d_energy = 2 * (1 - exp) * exp * width_factor
     return -diff * (d_energy / dist)[:,np.newaxis]
 
 
@@ -227,8 +229,9 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, noise_model, noise_
 def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
                     max_iter, lr=0.01, mo=0.9, lambda_E=0.0, verbose=False):
     '''
-    Fit atom positions to a grid by minimizing the L2 loss (and interatomic energy)
-    by gradient descent.
+    Fit atom positions to a set of points with the given density values by
+    minimizing the L2 loss (and interatomic energy) by gradient descent with
+    momentum. Return the final atom positions and loss.
     '''
     # initialize component parameters
     n_atoms = len(xyz_init)
@@ -255,8 +258,8 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
         E = 0.0
         if lambda_E:
             for j in range(n_atoms):
-                bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
-                E += 2*np.sum(get_interatomic_energy(xyz[j], xyz[j+1:,:], bond_radius))
+                bond_length = BOND_LENGTH_K * (atom_radius[j] + atom_radius[j+1:])/2.0
+                E += 2*np.sum(get_interatomic_energy(xyz[j], xyz[j+1:,:], bond_length))
 
         loss_prev, loss = loss, L2 + lambda_E*E
         delta_loss = loss - loss_prev
@@ -278,8 +281,8 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
 
         if lambda_E:
             for j in range(n_atoms-1):
-                bond_radius = 0.774 * (atom_radius[j] + atom_radius[j+1:])/2.0
-                forces = get_interatomic_forces(xyz[j], xyz[j+1:,:], bond_radius)
+                bond_length = BOND_LENGTH_K * (atom_radius[j] + atom_radius[j+1:])/2.0
+                forces = get_interatomic_forces(xyz[j], xyz[j+1:,:], bond_length)
                 d_xyz[j] += lambda_E * np.sum(forces, axis=0)
                 d_xyz[j+1:,:] -= lambda_E * forces
 
@@ -371,9 +374,9 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     # generator for inital atom positions
     if deconv_fit:
         deconv_grid = wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=noise_ratio)
-        max_density_points = get_max_density_points(points, deconv_grid.flatten(), 0.774*atom_radius)
+        max_density_points = get_max_density_points(points, deconv_grid.flatten(), BOND_LENGTH_K*atom_radius)
     else:
-        max_density_points = get_max_density_points(points, density, 0.774*atom_radius)
+        max_density_points = get_max_density_points(points, density, BOND_LENGTH_K*atom_radius)
 
     if n_atoms is None: # iteratively add atoms, fit, and assess loss
 
