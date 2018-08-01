@@ -152,20 +152,23 @@ def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
     return -diff * (d_energy / dist)[:,np.newaxis]
 
 
-def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, noise_model, noise_params_init,
-                     max_iter, verbose=False):
+def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, max_iter, 
+                     noise_model='', noise_params_init={}, gof_crit='nll', verbose=False):
     '''
-    Fit atom positions to a list of points and densities using a
-    Gaussian mixture model with an optional noise model.
+    Fit atom positions to a set of points with the given density values with
+    a Gaussian mixture model (and optional noise model). Return the final atom
+    positions and a goodness-of-fit criterion (negative log likelihood, Akaike
+    information criterion, or L2 loss).
     '''
+    assert gof_crit in {'nll', 'aic', 'L2'}, 'Invalid value for gof_crit argument'
     n_points = len(points)
     n_atoms = len(xyz_init)
-
-    # initialize component parameters
     xyz = np.array(xyz_init)
     atom_radius = np.array(atom_radius)
     cov = (0.5*atom_radius)**2
     n_params = xyz.size
+
+    assert noise_model in {'d', 'p', ''}, 'Invalid value for noise_model argument'
     if noise_model == 'd':
         noise_mean = noise_params_init['mean']
         noise_cov = noise_params_init['cov']
@@ -173,12 +176,10 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, noise_model, noise_
     elif noise_model == 'p':
         noise_prob = noise_params_init['prob']
         n_params += 1
-    elif len(noise_model) > 0:
-        raise TypeError("noise_model must be 'd' or 'p', or '', got {}".format(repr(noise_model)))
-    n_comps = n_atoms + bool(noise_model)
-    assert n_comps > 0
 
-    # initialize prior over components
+    # initialize uniform prior over components
+    n_comps = n_atoms + bool(noise_model)
+    assert n_comps > 0, 'Need at least one component (atom or noise model) to fit GMM'
     P_comp = np.full(n_comps, 1.0/n_comps) # P(comp_j)
     n_params += n_comps - 1
 
@@ -221,9 +222,20 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, noise_model, noise_
             P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
         i += 1
         if verbose:
-            print('ITERATION {} | log likelihood = {} ({})'.format(i, ll, ll - ll_prev))
+            print('ITERATION {} | nll = {} ({})'.format(i, -ll, -(ll - ll_prev)), file=sys.stderr)
 
-    return xyz, 2*ll - 2*n_params
+    # compute the goodness-of-fit
+    if gof_crit == 'L2':
+        density_pred = np.zeros_like(density)
+        for j in range(n_atoms):
+            density_pred += get_atom_density(xyz[j], atom_radius[j], points, radius_multiple)
+        gof = np.sum((density_pred - density)**2)/2
+    elif gof_crit == 'aic':
+        gof = 2*n_params - 2*ll
+    else:
+        gof = -ll
+
+    return xyz, gof
 
 
 def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
@@ -233,7 +245,6 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
     minimizing the L2 loss (and interatomic energy) by gradient descent with
     momentum. Return the final atom positions and loss.
     '''
-    # initialize component parameters
     n_atoms = len(xyz_init)
     xyz = np.array(xyz_init)
     d_xyz = np.zeros_like(xyz)
@@ -247,7 +258,7 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
     i = 0
     while True:
 
-        # L2 distance between predicted and true density
+        # L2 loss is the squared L2 norm of the difference between predicted and true density
         density_pred[...] = 0.0
         for j in range(n_atoms):
             density_pred += get_atom_density(xyz[j], atom_radius[j], points, radius_multiple)
@@ -265,9 +276,9 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
         delta_loss = loss - loss_prev
         if verbose:
             if lambda_E:
-                print('ITERATION {} | L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss))
+                print('ITERATION {} | L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss), file=sys.stderr)
             else:
-                print('ITERATION {} | L2 = {} ({})'.format(i, loss, delta_loss))
+                print('ITERATION {} | L2 = {} ({})'.format(i, loss, delta_loss), file=sys.stderr)
         if delta_loss > -1e-3 or i == max_iter:
             break
 
@@ -338,7 +349,7 @@ def grid_to_points_and_values(grid, center, resolution):
     return origin + resolution*indices, grid.flatten()
 
 
-def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM, noise_model, 
+def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM, noise_model, gof_criterion,
                       radius_multiple, density_threshold=0.0, deconv_fit=False, noise_ratio=0.0, verbose=False):
     '''
     Fit atom positions to a grid either by gradient descent on L2 loss with an
@@ -349,19 +360,17 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
 
     # nothing to fit if the whole grid is sub threshold
     if np.max(grid) <= density_threshold:
-        return np.ndarray((0, 3))
+        return np.ndarray((0, 3)), 0.0
 
     if verbose:
-        print('\nfitting {}'.format(channel_name))
+        print('\nfitting {}'.format(channel_name), file=sys.stderr)
 
     # convert grid to arrays of xyz points and density values
     points, density = grid_to_points_and_values(grid, center, resolution)
 
     if fit_GMM: # initialize noise model params
 
-        noise_params_init = dict(mean=np.mean(density),
-                                 cov=np.cov(density),
-                                 prob=1.0/len(points))
+        noise_params_init = dict(mean=np.mean(density), cov=np.cov(density), prob=1.0/len(points))
 
         if noise_model != 'd': # TODO this breaks d noise model
             # speed up GMM by only fitting points above threshold
@@ -374,35 +383,34 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     # generator for inital atom positions
     if deconv_fit:
         deconv_grid = wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=noise_ratio)
-        max_density_points = get_max_density_points(points, deconv_grid.flatten(), BOND_LENGTH_K*atom_radius)
+        deconv_density = deconv_grid.flatten()
+        max_density_points = get_max_density_points(points, deconv_density, BOND_LENGTH_K*atom_radius)
     else:
         max_density_points = get_max_density_points(points, density, BOND_LENGTH_K*atom_radius)
 
-    if n_atoms is None: # iteratively add atoms, fit, and assess loss
+    if n_atoms is None: # iteratively add atoms, fit, and assess goodness-of-fit
 
         xyz_init = np.ndarray((0, 3))
         if fit_GMM and not noise_model: # can't fit GMM with 0 atoms and no noise model
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
         n_atoms = len(xyz_init)
 
-        xyz_best, loss_best = [], np.inf
+        xyz_best, gof_best = [], np.inf
         while True:
             if fit_GMM:
-                xyz, ll = fit_atoms_by_GMM(points, density, xyz_init, [atom_radius]*n_atoms,
-                                           noise_model, noise_params_init, max_iter, verbose=verbose)
-                loss = -ll
+                xyz, gof = fit_atoms_by_GMM(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
+                                            noise_model, noise_params_init, gof_criterion, verbose=verbose)
             else:
-                xyz, loss = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms,
-                                            radius_multiple, max_iter, lambda_E=lambda_E, verbose=verbose)
+                xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
+                                           lambda_E=lambda_E, verbose=verbose)
 
             if verbose:
-                print('{:36}density_sum = {:.5f}\tn_atoms = {}\tloss = {:f}' \
-                      .format(channel_name, np.sum(density), n_atoms, loss))
+                print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
-            # stop when fit gets worse or there are no more initial atom positions
-            if loss > loss_best:
+            # stop when fit gets worse (gof increases) or there are no more initial atom positions
+            if gof > gof_best:
                 break
-            xyz_best, loss_best = xyz, loss
+            xyz_best, gof_best = xyz, gof
             try:
                 xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
                 n_atoms += 1
@@ -416,33 +424,30 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
 
         if fit_GMM:
-            xyz, ll = fit_atoms_by_GMM(points, density, xyz_init, [atom_radius]*n_atoms,
-                                       noise_model, noise_params_init, max_iter)
-            loss = -ll
+            xyz, gof = fit_atoms_by_GMM(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
+                                        noise_model, noise_params_init, gof_criterion, verbose=verbose)
         else:
-            xyz, loss = fit_atoms_by_GD(grid, center, resolution, xyz_init, [atom_radius]*n_atoms,
-                                        radius_multiple, max_iter)
+            xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
+                                       lambda_E=lambda_E, verbose=verbose)
 
         if verbose:
-            print('{:36}density_sum = {:.5f}\tn_atoms = {}\tloss = {:f}' \
-                  .format(channel_name, np.sum(density), n_atoms, loss))
+            print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
-        xyz_best, loss_best = xyz, loss
+        xyz_best, gof_best = xyz, gof
 
-    return xyz_best
+    return xyz_best, gof_best
 
 
 def fit_atoms_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
     '''
     Fit atom positions to lists of grids with corresponding channel info and
-    optional numbers of atoms, in parallel by default.
+    optional numbers of atoms, in parallel by default. Return a list of lists
+    of fit atoms positions (one per channel) and the overall goodness-of-fit.
     '''
     grid_args = zip(grids, channels, n_atoms)
-    if parallel:
-        map_func = Pool(processes=len(grid_args)).map
-    else:
-        map_func = map
-    return map_func(partial(fit_atoms_to_grid, *args, **kwargs), grid_args)
+    map_func = Pool(processes=len(grid_args)).map if parallel else map
+    xyzs, gofs = zip(*map_func(partial(fit_atoms_to_grid, *args, **kwargs), grid_args))
+    return xyzs, np.sum(gofs)
 
 
 def fit_grid_to_grid(grid_args, center, resolution, *args, **kwargs):
@@ -492,7 +497,7 @@ def best_loss_batch_index_from_net(net, loss_name, n_batches, best):
         if i == 0 or best(l, best_loss) == l:
             best_loss = l
             best_index = i
-            print('{} ({} / {})'.format(best_loss, i, n_batches))
+            print('{} ({} / {})'.format(best_loss, i, n_batches), file=sys.stderr)
     return best_index
 
 
@@ -533,7 +538,6 @@ def generate_grids_from_net(net, blob_pattern, index=0, lig_gen_mode=None, diff_
     '''
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
-    print(batch_size)
     index += batch_size
     assert lig_gen_mode in {None, 'unit', 'mean', 'zero'}
     while index >= batch_size:
@@ -715,6 +719,7 @@ def parse_args(argv=None):
     parser.add_argument('--fine_tune', action='store_true', help='Fine-tune final fit atom positions to summed grid channels')
     parser.add_argument('--fit_GMM', action='store_true', help='Fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='Noise model for GMM atom fitting (d|p)')
+    parser.add_argument('--gof_criterion', default='nll', help='Goodness-of-fit criterion for GMM atom fitting (nll|aic|L2)')
     parser.add_argument('--combine_channels', action='store_true', help="Combine channels with same element for atom fitting")
     parser.add_argument('--read_n_atoms', action='store_true', help="Get exact number of atoms to fit from ligand file")
     parser.add_argument('--channel_info', default=None, help='How to interpret grid channels (None|data|rec|lig)')
@@ -722,6 +727,7 @@ def parse_args(argv=None):
     parser.add_argument('-r2', '--rec_file2', default='', help='Alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='Alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="Apply Wiener deconvolution to atom density grids")
+    parser.add_argument('--scale_grids', type=float, default=1.0, help='Factor by which to scale atom density grids')
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
@@ -752,7 +758,8 @@ def main(argv):
         net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
     grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_gen_mode, len(data_examples) > 1)
 
-    print('shape = {}\ndensity sum = {}'.format(grids.shape, np.sum(grids)))
+    if args.verbose:
+        print('shape = {}\ndensity_norm = {}'.format(grids.shape, np.sum(grids**2)**0.5), file=sys.stderr)
     assert np.sum(grids) > 0
 
     if args.channel_info is None:
@@ -769,6 +776,7 @@ def main(argv):
     if args.deconv_grids:
         grids = np.stack([wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=args.noise_ratio) \
                     for grid, (_, _, atom_radius) in zip(grids, channels)], axis=0)
+    grids *= args.scale_grids
 
     dx_files = []
     if args.output_dx:
@@ -786,18 +794,19 @@ def main(argv):
             n_atoms = [None for g in grids]
 
         # fit atoms to each grid channel separately
-        xyzs = fit_atoms_to_grids(grids, channels, n_atoms,
-                                  center=center,
-                                  resolution=resolution,
-                                  max_iter=args.max_iter,
-                                  lambda_E=args.lambda_E,
-                                  fit_GMM=args.fit_GMM,
-                                  noise_model=args.noise_model,
-                                  radius_multiple=radius_multiple,
-                                  deconv_fit=args.deconv_fit,
-                                  noise_ratio=args.noise_ratio,
-                                  parallel=args.parallel,
-                                  verbose=args.verbose)
+        xyzs, loss = fit_atoms_to_grids(grids, channels, n_atoms,
+                                        center=center,
+                                        resolution=resolution,
+                                        max_iter=args.max_iter,
+                                        lambda_E=args.lambda_E,
+                                        fit_GMM=args.fit_GMM,
+                                        noise_model=args.noise_model,
+                                        gof_criterion=args.gof_criterion,
+                                        radius_multiple=radius_multiple,
+                                        deconv_fit=args.deconv_fit,
+                                        noise_ratio=args.noise_ratio,
+                                        parallel=args.parallel,
+                                        verbose=args.verbose)
 
         # fine-tune atoms by fitting to summed grid channels
         if args.fine_tune:
@@ -812,6 +821,15 @@ def main(argv):
             xyzs = [[] for _ in channels]
             for i, (x,y,z) in zip(chan_map, all_xyz):
                 xyzs[i].append((x,y,z))
+
+        loss = 0.0
+        for xyz, grid, (_, _, atom_radius) in zip(xyzs, grids, channels):
+            points, density = grid_to_points_and_values(grid, center, resolution)
+            density_pred = np.zeros_like(density)
+            for i in range(len(xyz)):
+                density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
+            loss += np.sum((density_pred - density)**2)/2.0
+        print(loss)
 
         pred_file = '{}_fit.sdf'.format(args.out_prefix)
         write_atoms_to_sdf_file(pred_file, xyzs, channels)
