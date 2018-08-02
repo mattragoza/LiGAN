@@ -705,15 +705,17 @@ def get_n_atoms_from_sdf_file(sdf_file):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--model_file', required=True, help='Generator model prototxt file')
-    parser.add_argument('-w', '--weights_file', required=True, help='Generator model weights file')
+    parser.add_argument('-m', '--model_file', required=True, help='Generative model prototxt file')
+    parser.add_argument('-w', '--weights_file', default=None, help='Generative model weights file')
     parser.add_argument('-b', '--blob_name', required=True, help='Name of blob in model to generate/fit')
     parser.add_argument('-r', '--rec_file', default='', help='Receptor file (relative to data_root)')
     parser.add_argument('-l', '--lig_file', default='', help='Ligand file (relative to data_root)')
+    #parser.add_argument('-f', '--data_file', default='', help='Path to data file (generate for every line)')
     parser.add_argument('-d', '--data_root', default='', help='Path to root for receptor and ligand files')
     parser.add_argument('-o', '--out_prefix', default=None, help='Common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='Output .dx files of atom density grids for each channel')
-    parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file by fitting atoms to atom density grids')
+    parser.add_argument('--fit_atoms', action='store_true', help='Fit atoms to density grids and print the goodness-of-fit')
+    parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file of fit atom positions')
     parser.add_argument('--max_iter', type=int, default=np.inf, help='Maximum number of iterations for atom fitting')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='Interatomic energy loss weight for gradient descent atom fitting')
     parser.add_argument('--fine_tune', action='store_true', help='Fine-tune final fit atom positions to summed grid channels')
@@ -778,15 +780,15 @@ def main(argv):
                     for grid, (_, _, atom_radius) in zip(grids, channels)], axis=0)
     grids *= args.scale_grids
 
+    if args.combine_channels:
+        grids, channels = combine_element_grids_and_channels(grids, channels)
+
     dx_files = []
     if args.output_dx:
         dx_files += write_grids_to_dx_files(args.out_prefix, grids, channels, center, resolution)
 
     extra_files = [f for example in data_examples for f in example]
-    if args.output_sdf:
-
-        if args.combine_channels:
-            grids, channels = combine_element_grids_and_channels(grids, channels)
+    if args.fit_atoms:
 
         if args.read_n_atoms:
             n_atoms = get_n_atoms_from_sdf_file(lig_file)
@@ -831,9 +833,10 @@ def main(argv):
             loss += np.sum((density_pred - density)**2)/2.0
         print(loss)
 
-        pred_file = '{}_fit.sdf'.format(args.out_prefix)
-        write_atoms_to_sdf_file(pred_file, xyzs, channels)
-        extra_files.append(pred_file)
+        if args.output_sdf:
+            pred_file = '{}_fit.sdf'.format(args.out_prefix)
+            write_atoms_to_sdf_file(pred_file, xyzs, channels)
+            extra_files.append(pred_file)
 
     pymol_file = '{}.pymol'.format(args.out_prefix)
     write_pymol_script(pymol_file, dx_files, *extra_files)
