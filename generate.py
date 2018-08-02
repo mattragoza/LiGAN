@@ -221,7 +221,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, ma
             P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
             P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
         i += 1
-        if verbose:
+        if verbose > 0:
             print('ITERATION {} | nll = {} ({})'.format(i, -ll, -(ll - ll_prev)), file=sys.stderr)
 
     # compute the goodness-of-fit
@@ -274,7 +274,7 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
 
         loss_prev, loss = loss, L2 + lambda_E*E
         delta_loss = loss - loss_prev
-        if verbose:
+        if verbose > 0:
             if lambda_E:
                 print('ITERATION {} | L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss), file=sys.stderr)
             else:
@@ -303,7 +303,7 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
     return xyz, loss
 
 
-def wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=0.0):
+def wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=0.0):
     '''
     Applies a convolution to the input grid that approximates the inverse
     of the operation that converts a set of atom positions to a grid of
@@ -323,6 +323,12 @@ def wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple,
     F_g = conj_F_h / (F_h*conj_F_h + noise_ratio)
     return np.real(np.fft.ifftn(F_grid * F_g))
 
+
+def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, noise_ratio=0.0):
+    deconv_grids = []
+    for grid, (_, _, atom_radius) in zip(grids, channels):
+        deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio)
+    return np.stack(deconv_grids, axis=0)
 
 def get_max_density_points(points, density, distance):
     '''
@@ -362,7 +368,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     if np.max(grid) <= density_threshold:
         return np.ndarray((0, 3)), 0.0
 
-    if verbose:
+    if verbose > 0:
         print('\nfitting {}'.format(channel_name), file=sys.stderr)
 
     # convert grid to arrays of xyz points and density values
@@ -382,7 +388,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
 
     # generator for inital atom positions
     if deconv_fit:
-        deconv_grid = wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=noise_ratio)
+        deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=noise_ratio)
         deconv_density = deconv_grid.flatten()
         max_density_points = get_max_density_points(points, deconv_density, BOND_LENGTH_K*atom_radius)
     else:
@@ -404,7 +410,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
                 xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
                                            lambda_E=lambda_E, verbose=verbose)
 
-            if verbose:
+            if verbose > 0:
                 print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
             # stop when fit gets worse (gof increases) or there are no more initial atom positions
@@ -430,7 +436,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
             xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
                                        lambda_E=lambda_E, verbose=verbose)
 
-        if verbose:
+        if verbose > 0:
             print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
         xyz_best, gof_best = xyz, gof
@@ -532,32 +538,39 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, index=0, lig_gen_mode=None, diff_rec=False):
+def generate_grids_from_net(net, blob_pattern, n_examples, lig_gen_mode='', diff_rec=False):
     '''
-    Generate grids from a specific blob in a net at a specific data index.
+    Generate grids from a specific blob in net for some number of examples.
     '''
+    assert lig_gen_mode in {'', 'unit', 'mean', 'zero'}
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
-    index += batch_size
-    assert lig_gen_mode in {None, 'unit', 'mean', 'zero'}
-    while index >= batch_size:
-        net.forward(end='latent_concat') # get rec latent and "init" var lig layers
-        if diff_rec:
-            net.blobs['rec'].data[index%batch_size,...] = \
-                net.blobs['rec'].data[(index+1)%batch_size,...]
-            net.blobs['rec_latent_fc'].data[index%batch_size,...] = \
-                net.blobs['rec_latent_fc'].data[(index+1)%batch_size,...]
-        if lig_gen_mode == 'unit':
-            net.blobs['lig_latent_mean'].data[...] = 0.0
-            net.blobs['lig_latent_std'].data[...] = 1.0
-        elif lig_gen_mode == 'mean':
-            net.blobs['lig_latent_std'].data[...] = 0.0
-        elif lig_gen_mode == 'zero':
-            net.blobs['lig_latent_mean'].data[...] = 0.0
-            net.blobs['lig_latent_std'].data[...] = 0.0
-        net.forward(start='lig_latent_noise') 
-        index -= batch_size
-    return blob.data[index]
+
+    for i in range(n_examples):
+
+        if (i % batch_size) == 0: # forward next batch up to latent vectors
+            net.forward(end='latent_concat')
+
+            if diff_rec: # roll rec latent vectors along batch axis by 1
+                net.blobs['rec_latent_fc'].data[...] = \
+                    np.roll(net.blobs['rec_latent_fc'].data, shift=1, axis=0)
+
+            # set lig_gen_mode parameters if necessary
+            if lig_gen_mode == 'unit':
+                net.blobs['lig_latent_mean'].data[...] = 0.0
+                net.blobs['lig_latent_std'].data[...] = 1.0
+
+            elif lig_gen_mode == 'mean':
+                net.blobs['lig_latent_std'].data[...] = 0.0
+
+            elif lig_gen_mode == 'zero':
+                net.blobs['lig_latent_mean'].data[...] = 0.0
+                net.blobs['lig_latent_std'].data[...] = 0.0
+
+            # forward from lig latent noise to output
+            net.forward(start='lig_latent_noise')
+
+        yield blob.data[(i % batch_size)]
 
 
 def combine_element_grids_and_channels(grids, channels):
@@ -568,7 +581,7 @@ def combine_element_grids_and_channels(grids, channels):
     elem_map = dict()
     elem_grids = []
     elem_channels = []
-    for grid, (channel_name, element, atom_radius) in zip(grids, channels):
+    for grid, (_, element, atom_radius) in zip(grids, channels):
         if element not in elem_map:
             elem_map[element] = len(elem_map)
             elem_grids.append(np.zeros_like(grid))
@@ -577,24 +590,11 @@ def combine_element_grids_and_channels(grids, channels):
     return np.array(elem_grids), elem_channels
 
 
-@contextlib.contextmanager
-def temp_data_file(examples):
+def write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file=None):
     '''
-    Temporarily create a data file with a line for each
-    receptor ligand pair in examples.
-    '''
-    _, data_file = tempfile.mkstemp()
-    with open(data_file, 'w') as f:
-        for rec_file, lig_file in examples:
-            f.write('0 0 {} {}\n'.format(rec_file, lig_file))
-    yield data_file
-    os.remove(data_file)
-
-
-def write_pymol_script(pymol_file, dx_files, *extra_files):
-    '''
-    Write a pymol script with a map object for each of dx_files,
-    a group of all map objects, and load some extra_files
+    Write a pymol script with a map object for each of dx_files, a
+    group of all map objects (if any), a rec_file, a lig_file, and
+    an optional fit_file.
     '''
     with open(pymol_file, 'w') as out:
         map_objects = []
@@ -602,10 +602,13 @@ def write_pymol_script(pymol_file, dx_files, *extra_files):
             map_object = dx_file.replace('.dx', '_map')
             out.write('load {}, {}\n'.format(dx_file, map_object))
             map_objects.append(map_object)
-        map_group = pymol_file.replace('.pymol', '_maps')
-        out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
-        for extra_file in extra_files:
-            out.write('load {}\n'.format(extra_file))
+        if map_objects:
+            map_group = pymol_file.replace('.pymol', '_maps')
+            out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
+        out.write('load {}\n'.format(rec_file))
+        out.write('load {}\n'.format(lig_file))
+        if fit_file:
+            out.write('load {}\n'.format(fit_file))
 
 
 def write_atoms_to_sdf_file(sdf_file, xyzs, channels):
@@ -685,22 +688,87 @@ def get_channel_info_for_grids(grids):
     return channels
 
 
-def get_center_from_sdf_file(sdf_file):
+def get_mols_from_sdf_file(sdf_file):
     '''
-    Compute the center of a chemical structure .sdf file as the mean of the
-    non-hydrogen atom positions, using the first conformation.
+    Read the molecules from an .sdf file.
     '''
-    mol = Chem.MolFromMolFile(sdf_file)
+    return Chem.rdmolfiles.SDMolSupplier(sdf_file)
+
+
+def get_center_from_sdf_file(sdf_file, idx=0):
+    '''
+    Compute the center of a molecule in an .sdf file
+    by taking the mean of the non-hydrogen atom positions.
+    '''
+    mol = get_mols_from_sdf_file(sdf_file)[idx]
     xyz = Chem.RemoveHs(mol).GetConformer().GetPositions()
     return xyz.mean(axis=0)
 
 
-def get_n_atoms_from_sdf_file(sdf_file):
+def get_n_atoms_from_sdf_file(sdf_file, idx=0):
     '''
-    Count the number of atoms of each element in a chemical structure .sdf file.
+    Count the number of atoms of each element in a molecule 
+    from an .sdf file.
     '''
-    mol = Chem.MolFromMolFile(sdf_file)
-    return Counter(a.GetSymbol() for a in mol.GetAtoms())
+    mol = get_mols_from_sdf_file(sdf_file)[idx]
+    return Counter(atom.GetSymbol() for atom in mol.GetAtoms())
+
+
+def get_sdf_file_and_idx(gninatypes_file):
+    '''
+    Get the name of the .sdf file and conformer idx that a
+    .gninatypes file was created from.
+    '''
+    m = re.match(r'.*_ligand_(\d+)\.gninatypes', gninatypes_file)
+    if m:
+        idx = int(m.group(1))
+        from_str = r'_ligand_{}\.gninatypes$'.format(idx)
+        to_str = '_docked.sdf'
+    else:
+        idx = 0
+        m = re.match(r'.*_(.+)\.gninatypes$', gninatypes_file)
+        from_str = r'_{}\.gninatypes'.format(m.group(1))
+        to_str = '_{}.sdf'.format(m.group(1))
+    sdf_file = re.sub(from_str, to_str, gninatypes_file)
+    return sdf_file, idx
+        
+
+def write_examples_to_data_file(data_file, examples):
+    '''
+    Write (rec_file, lig_file) examples to data_file.
+    '''
+    _, data_file = tempfile.mkstemp()
+    with open(data_file, 'w') as f:
+        for rec_file, lig_file in examples:
+            f.write('0 0 {} {}\n'.format(rec_file, lig_file))
+    return data_file
+
+
+def get_temp_data_file(examples):
+    '''
+    Write (rec_file, lig_file) examples to a temporary
+    data file and return the path to the file.
+    '''
+    _, data_file = tempfile.mkstemp()
+    write_examples_to_data_file(data_file, examples)
+    return data_file
+
+
+def get_examples_from_data_file(data_file, data_root=''):
+    '''
+    Read (rec_file, lig_file) examples from data_file,
+    optionally prepended with data_root.
+    '''
+    with open(data_file, 'r') as f:
+        lines = f.readlines()
+    examples = []
+    for line in lines:
+        rec_file, lig_file = line.rstrip().split()[2:4]
+        if data_root:
+            rec_file = os.path.join(data_root, rec_file)
+            lig_file = os.path.join(data_root, lig_file)
+        examples.append((rec_file, lig_file))
+    return examples
 
 
 def parse_args(argv=None):
@@ -708,11 +776,11 @@ def parse_args(argv=None):
     parser.add_argument('-m', '--model_file', required=True, help='Generative model prototxt file')
     parser.add_argument('-w', '--weights_file', default=None, help='Generative model weights file')
     parser.add_argument('-b', '--blob_name', required=True, help='Name of blob in model to generate/fit')
-    parser.add_argument('-r', '--rec_file', default='', help='Receptor file (relative to data_root)')
-    parser.add_argument('-l', '--lig_file', default='', help='Ligand file (relative to data_root)')
-    #parser.add_argument('-f', '--data_file', default='', help='Path to data file (generate for every line)')
-    parser.add_argument('-d', '--data_root', default='', help='Path to root for receptor and ligand files')
-    parser.add_argument('-o', '--out_prefix', default=None, help='Common prefix for output files')
+    parser.add_argument('-r', '--rec_file', default=[], action='append', help='Receptor file (relative to data_root)')
+    parser.add_argument('-l', '--lig_file', default=[], action='append', help='Ligand file (relative to data_root)')
+    parser.add_argument('--data_file', default='', help='Path to data file (generate for every line)')
+    parser.add_argument('--data_root', default='', help='Path to root for receptor and ligand files')
+    parser.add_argument('-o', '--out_prefix', default='', help='Common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='Output .dx files of atom density grids for each channel')
     parser.add_argument('--fit_atoms', action='store_true', help='Fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file of fit atom positions')
@@ -724,8 +792,8 @@ def parse_args(argv=None):
     parser.add_argument('--gof_criterion', default='nll', help='Goodness-of-fit criterion for GMM atom fitting (nll|aic|L2)')
     parser.add_argument('--combine_channels', action='store_true', help="Combine channels with same element for atom fitting")
     parser.add_argument('--read_n_atoms', action='store_true', help="Get exact number of atoms to fit from ligand file")
-    parser.add_argument('--channel_info', default=None, help='How to interpret grid channels (None|data|rec|lig)')
-    parser.add_argument('--lig_gen_mode', default=None, help='Alternate ligand generation (None|mean|unit)')
+    parser.add_argument('--channel_info', default='infer', help='How to interpret grid channels (infer|data|rec|lig)')
+    parser.add_argument('--lig_gen_mode', default='', help='Alternate ligand generation (|mean|unit|zero)')
     parser.add_argument('-r2', '--rec_file2', default='', help='Alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='Alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="Apply Wiener deconvolution to atom density grids")
@@ -740,106 +808,127 @@ def parse_args(argv=None):
 def main(argv):
     args = parse_args(argv)
 
-    rec_file = os.path.join(args.data_root, args.rec_file)
-    lig_file = os.path.join(args.data_root, args.lig_file)
-    center = get_center_from_sdf_file(lig_file)
-    data_examples = [[rec_file, lig_file]]
-
-    if args.rec_file2 and args.lig_file2:
-        rec_file2 = os.path.join(args.data_root, args.rec_file2)
-        lig_file2 = os.path.join(args.data_root, args.lig_file2)
-        center2 = get_center_from_sdf_file(lig_file2)
-        data_examples.append([rec_file2, lig_file2])
-
+    # read the net parameter file and get values relevant for atom gridding
     net_param = caffe_util.NetParameter.from_prototxt(args.model_file)
     data_param = net_param.get_molgrid_data_param(caffe.TEST)
+    data_param.shuffle = False
+    data_param.balanced = False
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
-    with temp_data_file(data_examples) as data_file:
-        net_param.set_molgrid_data_source(data_file, '', caffe.TEST)
-        net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
-    grids = generate_grids_from_net(net, args.blob_name, 0, args.lig_gen_mode, len(data_examples) > 1)
 
-    if args.verbose:
-        print('shape = {}\ndensity_norm = {}'.format(grids.shape, np.sum(grids**2)**0.5), file=sys.stderr)
-    assert np.sum(grids) > 0
+    if not args.data_file: # use the set of (rec_file, lig_file) examples
+        assert len(args.rec_file) == len(args.lig_file)
+        data_file = get_temp_data_file(zip(args.rec_file, args.lig_file))
 
-    if args.channel_info is None:
-        channels = get_channel_info_for_grids(grids)
+    else: # use the examples in the provided data_file
+        assert len(args.rec_file) == len(args.lig_file) == 0
+        data_file = args.data_file
+
+    examples = get_examples_from_data_file(data_file, args.data_root)
+    n_examples = len(examples)
+    assert n_examples > 0
+
+    # create the net in caffe
+    net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
+    net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
+
+    # get the appropriate channel information
+    assert args.channel_info in {'infer', 'data', 'rec', 'lig'}
+    if args.channel_info == 'infer':
+        channels = None
     elif args.channel_info == 'data':
         channels = rec_channels + lig_channels
     elif args.channel_info == 'rec':
         channels = rec_channels
     elif args.channel_info == 'lig':
         channels = lig_channels
-    else:
-        raise ValueError('--channel_info must be data, rec, or lig')
 
-    if args.deconv_grids:
-        grids = np.stack([wiener_deconvolution(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=args.noise_ratio) \
-                    for grid, (_, _, atom_radius) in zip(grids, channels)], axis=0)
-    grids *= args.scale_grids
+    grids_generator = generate_grids_from_net(net, args.blob_name, n_examples, args.lig_gen_mode)
 
-    if args.combine_channels:
-        grids, channels = combine_element_grids_and_channels(grids, channels)
+    for (rec_file, lig_file), grids in zip(examples, grids_generator):
 
-    dx_files = []
-    if args.output_dx:
-        dx_files += write_grids_to_dx_files(args.out_prefix, grids, channels, center, resolution)
+        rec_file = rec_file.replace('.gninatypes', '.pdb')
+        lig_file = lig_file.replace('.gninatypes', '.sdf')
+        lig_name = os.path.splitext(os.path.basename(lig_file))[0]
 
-    extra_files = [f for example in data_examples for f in example]
-    if args.fit_atoms:
+        center = get_center_from_sdf_file(lig_file)
+        out_prefix = '{}_{}'.format(args.out_prefix, lig_name)
 
-        if args.read_n_atoms:
-            n_atoms = get_n_atoms_from_sdf_file(lig_file)
+        density_norm = np.sum(grids**2)**0.5
+        if args.verbose > 0:
+            print('{:32}density_norm = {:.5f}'.format(lig_name, density_norm, file=sys.stderr))
+        assert density_norm > 0
+
+        if not channels: # infer channel info from shape of first grids
+            channels = get_channel_info_for_grids(grids)
+
+        if args.combine_channels:
+            grids, channels = combine_element_grids_and_channels(grids, channels)
+
+        if args.deconv_grids:
+            grids = wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, \
+                                        noise_ratio=args.noise_ratio)
+        grids *= args.scale_grids
+
+        if args.output_dx:
+            dx_files = write_grids_to_dx_files(out_prefix, grids, channels, center, resolution)
         else:
-            n_atoms = [None for g in grids]
+            dx_files = []
 
-        # fit atoms to each grid channel separately
-        xyzs, loss = fit_atoms_to_grids(grids, channels, n_atoms,
-                                        center=center,
-                                        resolution=resolution,
-                                        max_iter=args.max_iter,
-                                        lambda_E=args.lambda_E,
-                                        fit_GMM=args.fit_GMM,
-                                        noise_model=args.noise_model,
-                                        gof_criterion=args.gof_criterion,
-                                        radius_multiple=radius_multiple,
-                                        deconv_fit=args.deconv_fit,
-                                        noise_ratio=args.noise_ratio,
-                                        parallel=args.parallel,
-                                        verbose=args.verbose)
+        if args.fit_atoms: # fit atoms to density grids
 
-        # fine-tune atoms by fitting to summed grid channels
-        if args.fine_tune:
-            chan_map = [i for i, xyz in enumerate(xyzs) for _ in xyz]
-            points, density = grid_to_points_and_values(np.sum(grids, axis=0), center, resolution)
-            all_xyz, _ = fit_atoms_by_GD(points, density,
-                                         xyz_init=np.concatenate(xyzs, axis=0),
-                                         atom_radius=[channels[i][2] for i in chan_map],
-                                         radius_multiple=radius_multiple,
-                                         max_iter=args.max_iter,
-                                         lambda_E=args.lambda_E)
-            xyzs = [[] for _ in channels]
-            for i, (x,y,z) in zip(chan_map, all_xyz):
-                xyzs[i].append((x,y,z))
+            if args.read_n_atoms:
+                n_atoms = get_n_atoms_from_sdf_file(lig_file)
+            else:
+                n_atoms = [None for _ in channels]
 
-        loss = 0.0
-        for xyz, grid, (_, _, atom_radius) in zip(xyzs, grids, channels):
-            points, density = grid_to_points_and_values(grid, center, resolution)
-            density_pred = np.zeros_like(density)
-            for i in range(len(xyz)):
-                density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
-            loss += np.sum((density_pred - density)**2)/2.0
-        print(loss)
+            # fit atoms to each grid channel separately
+            xyzs, loss = fit_atoms_to_grids(grids, channels, n_atoms,
+                                            center=center,
+                                            resolution=resolution,
+                                            max_iter=args.max_iter,
+                                            lambda_E=args.lambda_E,
+                                            fit_GMM=args.fit_GMM,
+                                            noise_model=args.noise_model,
+                                            gof_criterion=args.gof_criterion,
+                                            radius_multiple=radius_multiple,
+                                            deconv_fit=args.deconv_fit,
+                                            noise_ratio=args.noise_ratio,
+                                            parallel=args.parallel,
+                                            verbose=args.verbose)
 
-        if args.output_sdf:
-            pred_file = '{}_fit.sdf'.format(args.out_prefix)
-            write_atoms_to_sdf_file(pred_file, xyzs, channels)
-            extra_files.append(pred_file)
+            # fine-tune atoms by fitting to summed grid channels
+            if args.fine_tune:
+                chan_map = [i for i, xyz in enumerate(xyzs) for _ in xyz]
+                points, density = grid_to_points_and_values(np.sum(grids, axis=0), center, resolution)
+                all_xyz, _ = fit_atoms_by_GD(points, density,
+                                             xyz_init=np.concatenate(xyzs, axis=0),
+                                             atom_radius=[channels[i][2] for i in chan_map],
+                                             radius_multiple=radius_multiple,
+                                             max_iter=args.max_iter,
+                                             lambda_E=args.lambda_E)
+                xyzs = [[] for _ in channels]
+                for i, (x,y,z) in zip(chan_map, all_xyz):
+                    xyzs[i].append((x,y,z))
 
-    pymol_file = '{}.pymol'.format(args.out_prefix)
-    write_pymol_script(pymol_file, dx_files, *extra_files)
+            loss = 0.0
+            for xyz, grid, (_, _, atom_radius) in zip(xyzs, grids, channels):
+                points, density = grid_to_points_and_values(grid, center, resolution)
+                density_pred = np.zeros_like(density)
+                for i in range(len(xyz)):
+                    density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
+                loss += np.sum((density_pred - density)**2)/2.0
+            
+            print('{} {:.5}'.format(out_prefix, loss))
+
+            if args.output_sdf:
+                fit_file = '{}_fit.sdf'.format(out_prefix)
+                write_atoms_to_sdf_file(fit_file, xyzs, channels)
+            else:
+                fit_file = None
+
+        pymol_file = '{}.pymol'.format(out_prefix)
+        write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file)
 
 
 if __name__ == '__main__':
