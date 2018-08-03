@@ -763,7 +763,6 @@ def get_examples_from_data_file(data_file, data_root=''):
     '''
     with open(data_file, 'r') as f:
         for line in f:
-            print(repr(line))
             rec_file, lig_file = line.rstrip().split()[2:4]
             if data_root:
                 rec_file = os.path.join(data_root, rec_file)
@@ -847,9 +846,12 @@ def main(argv):
         rec_file = rec_file.replace('.gninatypes', '.pdb')
         lig_file = lig_file.replace('.gninatypes', '.sdf')
         lig_name = os.path.splitext(os.path.basename(lig_file))[0]
-
-        center = get_center_from_sdf_file(lig_file)
         out_prefix = '{}_{}'.format(args.out_prefix, lig_name)
+
+        try:
+            center = get_center_from_sdf_file(lig_file)
+        except:
+            center = np.zeros(3) # TODO use openbabel, this is a hack 
 
         density_norm = np.sum(grids**2)**0.5
         if args.verbose > 0:
