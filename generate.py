@@ -719,6 +719,10 @@ def main(argv):
     examples = get_examples_from_data_file(data_file, args.data_root)
     grids_generator = generate_grids_from_net(net, args.blob_name, lig_gen_mode=args.lig_gen_mode)
 
+    if args.fit_atoms:
+        out_file = '{}.fit_output'.format(args.out_prefix)
+        out = open(out_file, 'w')
+
     for (rec_file, lig_file), grids in izip(examples, grids_generator):
 
         rec_file = rec_file.replace('.gninatypes', '.pdb')
@@ -798,7 +802,7 @@ def main(argv):
                     density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
                 loss += np.sum((density_pred - density)**2)/2.0
             
-            print('{} {:.5}'.format(out_prefix, loss))
+            out.write('{} {:.5}'.format(lig_name, loss))
 
         if args.fit_atoms and args.output_sdf:
             fit_file = '{}_fit.sdf'.format(out_prefix)

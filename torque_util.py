@@ -91,10 +91,10 @@ def get_job_state(job_id):
         return 'C'
 
 
-def submit_job(pbs_file, array_idx=None):
+def qsub_job(pbs_file, array_idx=None):
     '''
     Submit a job script with an optional array index using qsub,
-    and return the job ID (including the array index)
+    and return the job ID (including the array index).
     '''
     cmd = 'qsub {}'.format(pbs_file)
     if array_idx is not None:
@@ -108,10 +108,9 @@ def submit_job(pbs_file, array_idx=None):
     return job_id
 
 
-def submit_job_and_wait_to_complete(args):
+def submit_job(args):
     '''
-    Submit a job with the args (pbs_file, array_idx) and then wait
-    for it to complete, querying its state every 5 seconds. The job
+    Submit a job with the args (pbs_file, array_idx). The job
     will be submit from the dir containing the job script.
     '''
     pbs_file, array_idx = args
@@ -119,12 +118,24 @@ def submit_job_and_wait_to_complete(args):
     if work_dir:
         orig_dir = os.getcwd()
         os.chdir(work_dir)
-    job_id = submit_job(pbs_file, array_idx)
+    job_id = qsub_job(pbs_file, array_idx)
+    if work_dir:
+        os.chdir(orig_dir)
+    print(job_id)
+    return job_id
+
+
+def submit_job_and_wait_to_complete(args):
+    '''
+    Submit a job with the args (pbs_file, array_idx) and then wait
+    for it to complete, querying its state every 5 seconds. The job
+    will be submit from the dir containing the job script.
+    '''
+    job_id = submit_job(args)
     time.sleep(5)
     while get_job_state(job_id) != 'C':
         time.sleep(5)
-    if work_dir:
-        os.chdir(orig_dir)
+    return job_id
 
 
 def get_n_gpus_free(queue):
@@ -156,21 +167,9 @@ def wait_for_free_gpus_and_submit_job(args, queue='dept_gpu', min_gpus_free=4):
     Wait for a certain number of gpus to be free and then
     submit a job with args (pbs_file, array_idx). The job
     will be submit from the dir containing the job script.
-    '''
-    pbs_file, array_idx = args
-    work_dir, pbs_file = os.path.split(pbs_file)
-    if work_dir:
-        orig_dir = os.getcwd()
-        os.chdir(work_dir)
-    last_n_gpus_free = -1
-    n_gpus_free = get_n_gpus_free(queue)
-    while n_gpus_free <= min_gpus_free:
-        if n_gpus_free != last_n_gpus_free:
-            print(n_gpus_free)
+    ''' 
+    while get_n_gpus_free(queue) <= min_gpus_free:
         time.sleep(5)
-        n_gpus_free = get_n_gpus_free(queue)
-    job_id = submit_job(pbs_file, array_idx)
-    print(job_id)
+    job_id = submit_job(args)
     time.sleep(5)
-    if work_dir:
-        os.chdir(orig_dir)
+    return job_id
