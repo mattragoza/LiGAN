@@ -667,7 +667,7 @@ def parse_args(argv=None):
     parser.add_argument('-l', '--lig_file', default=[], action='append', help='Ligand file (relative to data_root)')
     parser.add_argument('--data_file', default='', help='Path to data file (generate for every line)')
     parser.add_argument('--data_root', default='', help='Path to root for receptor and ligand files')
-    parser.add_argument('-o', '--out_prefix', default='', help='Common prefix for output files')
+    parser.add_argument('-o', '--out_prefix', required=True, help='Common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='Output .dx files of atom density grids for each channel')
     parser.add_argument('--fit_atoms', action='store_true', help='Fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file of fit atom positions')
@@ -760,6 +760,7 @@ def main(argv):
 
         if args.fit_atoms: # fit atoms to density grids
 
+            t_i = time.time()
             if args.read_n_atoms:
                 n_atoms = get_n_atoms_from_sdf_file(lig_file)
             else:
@@ -802,7 +803,9 @@ def main(argv):
                     density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
                 loss += np.sum((density_pred - density)**2)/2.0
             
-            out.write('{} {:.5}'.format(lig_name, loss))
+            delta_t = time.time() - t_i
+            out.write('{} {} {}\n'.format(lig_name, loss, delta_t))
+            out.flush()
 
         if args.fit_atoms and args.output_sdf:
             fit_file = '{}_fit.sdf'.format(out_prefix)
