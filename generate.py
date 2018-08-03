@@ -6,6 +6,7 @@ from collections import Counter
 import contextlib
 import tempfile
 from multiprocessing.pool import Pool, ThreadPool
+from itertools import izip
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
@@ -538,15 +539,16 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_pattern, n_examples, lig_gen_mode='', diff_rec=False):
+def generate_grids_from_net(net, blob_pattern, n_grids=np.inf, lig_gen_mode='', diff_rec=False):
     '''
-    Generate grids from a specific blob in net for some number of examples.
+    Generate grids from a specific blob in net.
     '''
     assert lig_gen_mode in {'', 'unit', 'mean', 'zero'}
     blob = find_blobs_in_net(net, blob_pattern)[-1]
     batch_size = blob.shape[0]
 
-    for i in range(n_examples):
+    i = 0
+    while i < n_grids:
 
         if (i % batch_size) == 0: # forward next batch up to latent vectors
             net.forward(end='latent_concat')
@@ -571,6 +573,7 @@ def generate_grids_from_net(net, blob_pattern, n_examples, lig_gen_mode='', diff
             net.forward(start='lig_latent_noise')
 
         yield blob.data[(i % batch_size)]
+        i += 1
 
 
 def combine_element_grids_and_channels(grids, channels):
@@ -737,7 +740,6 @@ def write_examples_to_data_file(data_file, examples):
     '''
     Write (rec_file, lig_file) examples to data_file.
     '''
-    _, data_file = tempfile.mkstemp()
     with open(data_file, 'w') as f:
         for rec_file, lig_file in examples:
             f.write('0 0 {} {}\n'.format(rec_file, lig_file))
@@ -756,19 +758,17 @@ def get_temp_data_file(examples):
 
 def get_examples_from_data_file(data_file, data_root=''):
     '''
-    Read (rec_file, lig_file) examples from data_file,
-    optionally prepended with data_root.
+    Iterate through (rec_file, lig_file) examples from
+    data_file, optionally prepended with data_root.
     '''
     with open(data_file, 'r') as f:
-        lines = f.readlines()
-    examples = []
-    for line in lines:
-        rec_file, lig_file = line.rstrip().split()[2:4]
-        if data_root:
-            rec_file = os.path.join(data_root, rec_file)
-            lig_file = os.path.join(data_root, lig_file)
-        examples.append((rec_file, lig_file))
-    return examples
+        for line in f:
+            print(repr(line))
+            rec_file, lig_file = line.rstrip().split()[2:4]
+            if data_root:
+                rec_file = os.path.join(data_root, rec_file)
+                lig_file = os.path.join(data_root, lig_file)
+            yield rec_file, lig_file
 
 
 def parse_args(argv=None):
@@ -801,7 +801,7 @@ def parse_args(argv=None):
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
-    parser.add_argument('--verbose', action='store_true', help="Verbose output for atom fitting")
+    parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     return parser.parse_args(argv)
 
 
@@ -824,10 +824,6 @@ def main(argv):
         assert len(args.rec_file) == len(args.lig_file) == 0
         data_file = args.data_file
 
-    examples = get_examples_from_data_file(data_file, args.data_root)
-    n_examples = len(examples)
-    assert n_examples > 0
-
     # create the net in caffe
     net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
     net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
@@ -843,9 +839,10 @@ def main(argv):
     elif args.channel_info == 'lig':
         channels = lig_channels
 
-    grids_generator = generate_grids_from_net(net, args.blob_name, n_examples, args.lig_gen_mode)
+    examples = get_examples_from_data_file(data_file, args.data_root)
+    grids_generator = generate_grids_from_net(net, args.blob_name, lig_gen_mode=args.lig_gen_mode)
 
-    for (rec_file, lig_file), grids in zip(examples, grids_generator):
+    for (rec_file, lig_file), grids in izip(examples, grids_generator):
 
         rec_file = rec_file.replace('.gninatypes', '.pdb')
         lig_file = lig_file.replace('.gninatypes', '.sdf')
@@ -921,11 +918,11 @@ def main(argv):
             
             print('{} {:.5}'.format(out_prefix, loss))
 
-            if args.output_sdf:
-                fit_file = '{}_fit.sdf'.format(out_prefix)
-                write_atoms_to_sdf_file(fit_file, xyzs, channels)
-            else:
-                fit_file = None
+        if args.fit_atoms and args.output_sdf:
+            fit_file = '{}_fit.sdf'.format(out_prefix)
+            write_atoms_to_sdf_file(fit_file, xyzs, channels)
+        else:
+            fit_file = None
 
         pymol_file = '{}.pymol'.format(out_prefix)
         write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file)
