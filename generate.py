@@ -14,89 +14,9 @@ caffe.set_mode_gpu()
 caffe.set_device(0)
 
 import caffe_util
-import cgenerate
+import channel_info
 
 BOND_LENGTH_K = 0.8
-
-
-# channel name, element, atom radius
-rec_channels = [("rec_AliphaticCarbonXSHydrophobe", "C", 1.90),
-                ("rec_AliphaticCarbonXSNonHydrophobe", "C", 1.90),
-                ("rec_AromaticCarbonXSHydrophobe", "C", 1.90),
-                ("rec_AromaticCarbonXSNonHydrophobe", "C", 1.90),
-                ("rec_Calcium", "Ca", 1.20),
-                ("rec_Iron", "Fe", 1.20),
-                ("rec_Magnesium", "Mg", 1.20),
-                ("rec_Nitrogen", "N", 1.80),
-                ("rec_NitrogenXSAcceptor", "N", 1.80),
-                ("rec_NitrogenXSDonor", "N", 1.80),
-                ("rec_NitrogenXSDonorAcceptor", "N", 1.80),
-                ("rec_OxygenXSAcceptor", "O", 1.70),
-                ("rec_OxygenXSDonorAcceptor", "O", 1.70),
-                ("rec_Phosphorus", "P", 2.10),
-                ("rec_Sulfur", "S", 2.00),
-                ("rec_Zinc", "Zn", 1.20)]
-
-lig_channels = [("lig_AliphaticCarbonXSHydrophobe", "C", 1.90),
-                ("lig_AliphaticCarbonXSNonHydrophobe", "C", 1.90),
-                ("lig_AromaticCarbonXSHydrophobe", "C", 1.90),
-                ("lig_AromaticCarbonXSNonHydrophobe", "C", 1.90),
-                ("lig_Bromine", "Br", 2.00),
-                ("lig_Chlorine", "Cl", 1.80),
-                ("lig_Fluorine", "F", 1.50),
-                ("lig_Nitrogen", "N", 1.80),
-                ("lig_NitrogenXSAcceptor", "N", 1.80),
-                ("lig_NitrogenXSDonor", "N", 1.80),
-                ("lig_NitrogenXSDonorAcceptor", "N", 1.80),
-                ("lig_Oxygen", "O", 1.70),
-                ("lig_OxygenXSAcceptor", "O", 1.70),
-                ("lig_OxygenXSDonorAcceptor", "O", 1.70),
-                ("lig_Phosphorus", "P", 2.10),
-                ("lig_Sulfur", "S", 2.00),
-                ("lig_SulfurAcceptor", "S", 2.00),
-                ("lig_Iodine", "I", 2.20),
-                ("lig_Boron", "B", 1.92)]
-
-
-def get_color_for_channel(channel_name):
-    '''
-    Return the color of a channel by getting the element from its name.
-    '''
-    if 'Carbon' in channel_name:
-        return 'grey'
-    elif 'Oxygen' in channel_name:
-        return 'red'
-    elif 'Nitrogen' in channel_name:
-        return 'blue'
-    elif 'Phosphorus' in channel_name:
-        return 'orange'
-    elif 'Sulfur' in channel_name:
-        return 'yellow'
-    else:
-        return 'green'
-
-
-class GaussianMixtureGridLayer(caffe.Layer):
-    '''
-    A caffe layer that fits atoms to the input blob and then computes
-    an atom density grid from the fit atoms as the output blob.
-    '''
-    def setup(self, bottom, top):
-        if len(bottom) != 1:
-            raise Exception('Must have one input.')
-        params = ast.literal_eval(self.param_str)
-        self.f = partial(fit_grids_to_grids, max_iter=params.get('max_iter', 20),
-                         resolution=params.get('resolution', 0.5))
-
-    def reshape(self, bottom, top):
-        top[0].reshape(*bottom[0].shape)
-        self.pool = ThreadPool(bottom[0].shape[0])
-
-    def forward(self, bottom, top):
-        top[0].data[...] = np.array(self.pool.map(self.f, bottom[0].data))
-
-    def backward(self, top, propagate_down, bottom):
-        pass
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -154,7 +74,7 @@ def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
 
 
 def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, max_iter, 
-                     noise_model='', noise_params_init={}, gof_crit='nll', verbose=False):
+                     noise_model='', noise_params_init={}, gof_crit='nll', verbose=0):
     '''
     Fit atom positions to a set of points with the given density values with
     a Gaussian mixture model (and optional noise model). Return the final atom
@@ -222,8 +142,8 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, ma
             P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
             P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
         i += 1
-        if verbose > 0:
-            print('ITERATION {} | nll = {} ({})'.format(i, -ll, -(ll - ll_prev)), file=sys.stderr)
+        if verbose > 2:
+            print('iteration = {}, nll = {} ({})'.format(i, -ll, -(ll - ll_prev)), file=sys.stderr)
 
     # compute the goodness-of-fit
     if gof_crit == 'L2':
@@ -240,7 +160,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, ma
 
 
 def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
-                    max_iter, lr=0.01, mo=0.9, lambda_E=0.0, verbose=False):
+                    max_iter, lr=0.01, mo=0.9, lambda_E=0.0, verbose=0):
     '''
     Fit atom positions to a set of points with the given density values by
     minimizing the L2 loss (and interatomic energy) by gradient descent with
@@ -275,11 +195,11 @@ def fit_atoms_by_GD(points, density, xyz_init, atom_radius, radius_multiple,
 
         loss_prev, loss = loss, L2 + lambda_E*E
         delta_loss = loss - loss_prev
-        if verbose > 0:
+        if verbose > 2:
             if lambda_E:
-                print('ITERATION {} | L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss), file=sys.stderr)
+                print('iteration = {}, L2 = {}, E = {}, loss = {} ({})'.format(i, L2, E, loss, delta_loss), file=sys.stderr)
             else:
-                print('ITERATION {} | L2 = {} ({})'.format(i, loss, delta_loss), file=sys.stderr)
+                print('iteration = {}, L2 = {} ({})'.format(i, loss, delta_loss), file=sys.stderr)
         if delta_loss > -1e-3 or i == max_iter:
             break
 
@@ -331,6 +251,7 @@ def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, no
         deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio)
     return np.stack(deconv_grids, axis=0)
 
+
 def get_max_density_points(points, density, distance):
     '''
     Generate maximum density points that are at least some distance
@@ -357,7 +278,7 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM, noise_model, gof_criterion,
-                      radius_multiple, density_threshold=0.0, deconv_fit=False, noise_ratio=0.0, verbose=False):
+                      radius_multiple, density_threshold=0.0, deconv_fit=False, noise_ratio=0.0, verbose=0):
     '''
     Fit atom positions to a grid either by gradient descent on L2 loss with an
     optional interatomic energy term or using a Gaussian mixture model with an
@@ -369,8 +290,9 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
     if np.max(grid) <= density_threshold:
         return np.ndarray((0, 3)), 0.0
 
-    if verbose > 0:
-        print('\nfitting {}'.format(channel_name), file=sys.stderr)
+    if verbose > 1:
+        print('channel_name = {}, element = {}, atom_radius = {}' \
+              .format(channel_name, element, atom_radius), file=sys.stderr)
 
     # convert grid to arrays of xyz points and density values
     points, density = grid_to_points_and_values(grid, center, resolution)
@@ -411,13 +333,14 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
                 xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
                                            lambda_E=lambda_E, verbose=verbose)
 
-            if verbose > 0:
-                print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
-
             # stop when fit gets worse (gof increases) or there are no more initial atom positions
             if gof > gof_best:
                 break
+
             xyz_best, gof_best = xyz, gof
+            if verbose > 1:
+                print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
+
             try:
                 xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
                 n_atoms += 1
@@ -437,7 +360,7 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
             xyz, gof = fit_atoms_by_GD(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
                                        lambda_E=lambda_E, verbose=verbose)
 
-        if verbose > 0:
+        if verbose > 1:
             print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
         xyz_best, gof_best = xyz, gof
@@ -455,30 +378,6 @@ def fit_atoms_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs)
     map_func = Pool(processes=len(grid_args)).map if parallel else map
     xyzs, gofs = zip(*map_func(partial(fit_atoms_to_grid, *args, **kwargs), grid_args))
     return xyzs, np.sum(gofs)
-
-
-def fit_grid_to_grid(grid_args, center, resolution, *args, **kwargs):
-    '''
-    Fit atom positions to a grid and then recompute a grid from the
-    atom positions.
-    '''
-    xyz = fit_atoms_to_grid(grid_args, center, resolution, *args, **kwargs)
-    atom_radius = [grid_args[1][2] for _ in xyz]
-    return add_atoms_to_grid(np.zeros_like(grid), xyz, center, resolution, atom_radius)
-
-
-def fit_grids_to_grids(grids, channels, n_atoms, parallel=True, *args, **kwargs):
-    '''
-    Fit atom positions to lists of grids with corresponding channel info and
-    optional numbers of atoms and then recompute the grids, in parallel by default.
-    '''
-    grid_args = zip(grids, channels, n_atoms)
-    if parallel:
-        fmap = Pool(processes=len(grid_args)).map
-    else:
-        fmap = map
-    f = partial(fit_grid_to_grid, *args, **kwargs)
-    return np.array(fmap(f, grid_args))
 
 
 def rec_and_lig_at_index_in_data_file(file, index):
@@ -551,26 +450,31 @@ def generate_grids_from_net(net, blob_pattern, n_grids=np.inf, lig_gen_mode='', 
     while i < n_grids:
 
         if (i % batch_size) == 0: # forward next batch up to latent vectors
-            net.forward(end='latent_concat')
 
-            if diff_rec: # roll rec latent vectors along batch axis by 1
-                net.blobs['rec_latent_fc'].data[...] = \
-                    np.roll(net.blobs['rec_latent_fc'].data, shift=1, axis=0)
+            if diff_rec or lig_gen_mode:
+                net.forward(end='latent_concat')
 
-            # set lig_gen_mode parameters if necessary
-            if lig_gen_mode == 'unit':
-                net.blobs['lig_latent_mean'].data[...] = 0.0
-                net.blobs['lig_latent_std'].data[...] = 1.0
+                if diff_rec: # roll rec latent vectors along batch axis by 1
+                    net.blobs['rec_latent_fc'].data[...] = \
+                        np.roll(net.blobs['rec_latent_fc'].data, shift=1, axis=0)
 
-            elif lig_gen_mode == 'mean':
-                net.blobs['lig_latent_std'].data[...] = 0.0
+                # set lig_gen_mode parameters if necessary
+                if lig_gen_mode == 'unit':
+                    net.blobs['lig_latent_mean'].data[...] = 0.0
+                    net.blobs['lig_latent_std'].data[...] = 1.0
 
-            elif lig_gen_mode == 'zero':
-                net.blobs['lig_latent_mean'].data[...] = 0.0
-                net.blobs['lig_latent_std'].data[...] = 0.0
+                elif lig_gen_mode == 'mean':
+                    net.blobs['lig_latent_std'].data[...] = 0.0
 
-            # forward from lig latent noise to output
-            net.forward(start='lig_latent_noise')
+                elif lig_gen_mode == 'zero':
+                    net.blobs['lig_latent_mean'].data[...] = 0.0
+                    net.blobs['lig_latent_std'].data[...] = 0.0
+
+                # forward from lig latent noise to output
+                net.forward(start='lig_latent_noise')
+
+            else:
+                net.forward()
 
         yield blob.data[(i % batch_size)]
         i += 1
@@ -602,11 +506,11 @@ def write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file=None):
     with open(pymol_file, 'w') as out:
         map_objects = []
         for dx_file in dx_files:
-            map_object = dx_file.replace('.dx', '_map')
+            map_object = dx_file.replace('.dx', '_grid')
             out.write('load {}, {}\n'.format(dx_file, map_object))
             map_objects.append(map_object)
         if map_objects:
-            map_group = pymol_file.replace('.pymol', '_maps')
+            map_group = pymol_file.replace('.pymol', '_grids')
             out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
         out.write('load {}\n'.format(rec_file))
         out.write('load {}\n'.format(lig_file))
@@ -673,22 +577,6 @@ def write_grids_to_dx_files(out_prefix, grids, channels, center, resolution):
         write_grid_to_dx_file(dx_file, grid, center, resolution)
         dx_files.append(dx_file)
     return dx_files
-
-
-def get_channel_info_for_grids(grids):
-    '''
-    Infer the channel info for a list of grids by the number of grids.
-    '''
-    n_channels = grids.shape[0]
-    if n_channels == len(rec_channels):
-        channels = rec_channels
-    elif n_channels == len(lig_channels):
-        channels = lig_channels
-    elif n_channels == len(rec_channels) + len(lig_channels):
-        channels = rec_channels + lig_channels
-    else:
-        raise ValueError('could not infer channel info for grids with {} channels'.format(n_channels))
-    return channels
 
 
 def get_mols_from_sdf_file(sdf_file):
@@ -791,7 +679,6 @@ def parse_args(argv=None):
     parser.add_argument('--gof_criterion', default='nll', help='Goodness-of-fit criterion for GMM atom fitting (nll|aic|L2)')
     parser.add_argument('--combine_channels', action='store_true', help="Combine channels with same element for atom fitting")
     parser.add_argument('--read_n_atoms', action='store_true', help="Get exact number of atoms to fit from ligand file")
-    parser.add_argument('--channel_info', default='infer', help='How to interpret grid channels (infer|data|rec|lig)')
     parser.add_argument('--lig_gen_mode', default='', help='Alternate ligand generation (|mean|unit|zero)')
     parser.add_argument('-r2', '--rec_file2', default='', help='Alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='Alternate ligand file (for receptor latent space)')
@@ -814,6 +701,7 @@ def main(argv):
     data_param.balanced = False
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
+    use_covalent_radius = data_param.use_covalent_radius
 
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
@@ -827,17 +715,7 @@ def main(argv):
     net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
     net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
 
-    # get the appropriate channel information
-    assert args.channel_info in {'infer', 'data', 'rec', 'lig'}
-    if args.channel_info == 'infer':
-        channels = None
-    elif args.channel_info == 'data':
-        channels = rec_channels + lig_channels
-    elif args.channel_info == 'rec':
-        channels = rec_channels
-    elif args.channel_info == 'lig':
-        channels = lig_channels
-
+    channels = None
     examples = get_examples_from_data_file(data_file, args.data_root)
     grids_generator = generate_grids_from_net(net, args.blob_name, lig_gen_mode=args.lig_gen_mode)
 
@@ -854,12 +732,14 @@ def main(argv):
             center = np.zeros(3) # TODO use openbabel, this is a hack 
 
         density_norm = np.sum(grids**2)**0.5
+        density_sum = np.sum(grids)
         if args.verbose > 0:
-            print('{:32}density_norm = {:.5f}'.format(lig_name, density_norm, file=sys.stderr))
-        assert density_norm > 0
+            print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}' \
+                  .format(lig_name, grids.shape, density_norm, density_sum), file=sys.stderr)
+        assert grids.sum() > 0
 
         if not channels: # infer channel info from shape of first grids
-            channels = get_channel_info_for_grids(grids)
+            channels = channel_info.get_channels_for_grids(grids, use_covalent_radius)
 
         if args.combine_channels:
             grids, channels = combine_element_grids_and_channels(grids, channels)
