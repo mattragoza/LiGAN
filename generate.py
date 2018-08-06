@@ -252,13 +252,13 @@ def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, no
     return np.stack(deconv_grids, axis=0)
 
 
-def get_max_density_points(points, density, distance):
+def get_max_density_points(points, density, min_distance, max_distance):
     '''
     Generate maximum density points that are at least some distance
     apart from each other from a list of points and densities.
     '''
     assert len(points) > 0, 'no points provided'
-    distance_check = lambda a, b: np.sum((a - b)**2) > distance**2
+    distance_check = lambda a, b: max_distance**2 > np.sum((a - b)**2) > min_distance**2
     max_points = []
     for p, d in sorted(zip(points, density), key=lambda pd: -pd[1]):
         if all(distance_check(p, max_p) for max_p in max_points):
@@ -278,7 +278,7 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM, noise_model, gof_criterion,
-                      radius_multiple, density_threshold=0.0, deconv_fit=False, noise_ratio=0.0, verbose=0):
+                      radius_multiple, density_threshold=0.0, deconv_fit=False, noise_ratio=0.0, greedy=False, verbose=0):
     '''
     Fit atom positions to a grid either by gradient descent on L2 loss with an
     optional interatomic energy term or using a Gaussian mixture model with an
@@ -310,12 +310,14 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
         raise NotImplementedError('noise model only allowed for GMM atom fitting')
 
     # generator for inital atom positions
+    min_distance = BOND_LENGTH_K*atom_radius
+    max_distance = np.inf
     if deconv_fit:
         deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio=noise_ratio)
         deconv_density = deconv_grid.flatten()
-        max_density_points = get_max_density_points(points, deconv_density, BOND_LENGTH_K*atom_radius)
+        max_density_points = get_max_density_points(points, deconv_density, min_distance, max_distance)
     else:
-        max_density_points = get_max_density_points(points, density, BOND_LENGTH_K*atom_radius)
+        max_density_points = get_max_density_points(points, density, min_distance, max_distance)
 
     if n_atoms is None: # iteratively add atoms, fit, and assess goodness-of-fit
 
@@ -324,8 +326,9 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
             xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
         n_atoms = len(xyz_init)
 
-        xyz_best, gof_best = [], np.inf
+        xyz_best, gof_best = np.ndarray((0, 3)), np.inf
         while True:
+
             if fit_GMM:
                 xyz, gof = fit_atoms_by_GMM(points, density, xyz_init, [atom_radius]*n_atoms, radius_multiple, max_iter,
                                             noise_model, noise_params_init, gof_criterion, verbose=verbose)
@@ -336,16 +339,17 @@ def fit_atoms_to_grid(grid_args, center, resolution, max_iter, lambda_E, fit_GMM
             # stop when fit gets worse (gof increases) or there are no more initial atom positions
             if gof > gof_best:
                 break
-
             xyz_best, gof_best = xyz, gof
             if verbose > 1:
                 print('n_atoms = {}\tgof = {:f}'.format(n_atoms, gof), file=sys.stderr)
 
+            if greedy:
+                xyz_init = xyz_best
             try:
                 xyz_init = np.append(xyz_init, next(max_density_points)[np.newaxis,:], axis=0)
-                n_atoms += 1
             except StopIteration:
                 break
+            n_atoms += 1
 
     else: # fit an exact number of atoms
 
@@ -686,6 +690,7 @@ def parse_args(argv=None):
     parser.add_argument('--scale_grids', type=float, default=1.0, help='Factor by which to scale atom density grids')
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
+    parser.add_argument('--greedy', action='store_true', help="Fit atoms by greedily adding next atoms at bond distance")
     parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     return parser.parse_args(argv)
@@ -737,9 +742,6 @@ def main(argv):
 
         density_norm = np.sum(grids**2)**0.5
         density_sum = np.sum(grids)
-        if args.verbose > 0:
-            print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}' \
-                  .format(lig_name, grids.shape, density_norm, density_sum), file=sys.stderr)
         assert grids.sum() > 0
 
         if not channels: # infer channel info from shape of first grids
@@ -778,6 +780,7 @@ def main(argv):
                                             radius_multiple=radius_multiple,
                                             deconv_fit=args.deconv_fit,
                                             noise_ratio=args.noise_ratio,
+                                            greedy=args.greedy,
                                             parallel=args.parallel,
                                             verbose=args.verbose)
 
@@ -802,10 +805,18 @@ def main(argv):
                 for i in range(len(xyz)):
                     density_pred += get_atom_density(xyz[i], atom_radius, points, radius_multiple)
                 loss += np.sum((density_pred - density)**2)/2.0
-            
+
             delta_t = time.time() - t_i
             out.write('{} {} {}\n'.format(lig_name, loss, delta_t))
             out.flush()
+
+            if args.verbose > 0:
+                print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}, loss = {:.5f}' \
+                      .format(lig_name, grids.shape, density_norm, density_sum, loss), file=sys.stderr)
+        else:
+            if args.verbose > 0:
+                print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}' \
+                      .format(lig_name, grids.shape, density_norm, density_sum), file=sys.stderr)
 
         if args.fit_atoms and args.output_sdf:
             fit_file = '{}_fit.sdf'.format(out_prefix)
