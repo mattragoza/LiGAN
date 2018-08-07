@@ -249,6 +249,7 @@ def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, no
     deconv_grids = []
     for grid, (_, _, atom_radius) in zip(grids, channels):
         deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio)
+        deconv_grids.append(deconv_grid)
     return np.stack(deconv_grids, axis=0)
 
 
@@ -693,6 +694,7 @@ def parse_args(argv=None):
     parser.add_argument('--greedy', action='store_true', help="Fit atoms by greedily adding next atoms at bond distance")
     parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
+    parser.add_argument('--use_covalent', action='store_true', help="Use covalent radius instead of XS radius")
     return parser.parse_args(argv)
 
 
@@ -706,7 +708,7 @@ def main(argv):
     data_param.balanced = False
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
-    use_covalent_radius = data_param.use_covalent_radius
+    use_covalent_radius = data_param.use_covalent_radius = args.use_covalent
 
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
