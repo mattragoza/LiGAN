@@ -346,7 +346,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
         else:
             break
 
-    return xyz_best, c, gof_best, grids_diff
+    return xyz_best, c, gof_best
 
 
 def get_max_density_points(points, density, min_distance, max_distance):
@@ -739,7 +739,7 @@ def main(argv):
         if args.fit_atoms: # fit atoms to density grids
 
             t_i = time.time()
-            xyz, c, loss, grids_deconv = fit_atoms_to_grids(grids, channels,
+            xyz, c, loss = fit_atoms_to_grids(grids, channels,
                                               center=center,
                                               resolution=resolution,
                                               max_iter=args.max_iter,
@@ -749,7 +749,6 @@ def main(argv):
                                               noise_ratio=args.noise_ratio,
                                               greedy=args.greedy,
                                               verbose=args.verbose)
-            dx_files = write_grids_to_dx_files(out_prefix, grids_deconv, channels, center, resolution)
 
             delta_t = time.time() - t_i
             out.write('{} {} {}\n'.format(lig_name, loss, delta_t))
