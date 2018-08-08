@@ -320,8 +320,8 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
                 xyz_init[...] = xyz_best
 
         # try adding an atom to remaining density
+        density_diff = density - density_pred
         if deconv_fit:
-            density_diff = density - density_pred
             grids_diff = density_diff.T.reshape((n_channels,) + grid_shape)
             grids_deconv = wiener_deconv_grids(grids_diff, channels, center, resolution, \
                                                radius_multiple, noise_ratio)
@@ -668,7 +668,6 @@ def parse_args(argv=None):
     parser.add_argument('--greedy', action='store_true', help="Fit atoms by greedily adding next atoms at bond distance")
     parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
-    parser.add_argument('--use_covalent', action='store_true', help="Use covalent radius instead of XS radius")
     return parser.parse_args(argv)
 
 
@@ -682,7 +681,7 @@ def main(argv):
     data_param.balanced = False
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
-    use_covalent_radius = data_param.use_covalent_radius = args.use_covalent
+    use_covalent_radius = data_param.use_covalent_radius
 
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
