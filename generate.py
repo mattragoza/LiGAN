@@ -12,6 +12,7 @@ from scipy.stats import multivariate_normal
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
+import openbabel as ob
 
 import caffe_util
 import channel_info
@@ -278,7 +279,8 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, radius_multiple,
-                       deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0):
+                       deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0,
+                       all_iters=False):
     '''
     Fit atom positions to grids either by gradient descent on L2 loss with an
     optional interatomic energy term or using a Gaussian mixture model with an
@@ -298,16 +300,19 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
 
     # iteratively add atoms, fit, and assess goodness-of-fit
     xyz_init = np.ndarray((0, 3))
-    c = np.ndarray(0, dtype=int)
+    c_init = np.ndarray(0, dtype=int)
     gof_best = np.inf
+    if all_iters:
+        all_xyz_best = []
+        all_c_best = []
     while True:
 
         # optimize atom positions by gradient descent
         xyz, density_pred, gof = \
-            fit_atoms_by_GD(points, density, xyz_init, c, atom_radius, radius_multiple,
+            fit_atoms_by_GD(points, density, xyz_init, c_init, atom_radius, radius_multiple,
                             max_iter, lambda_E=lambda_E, verbose=verbose)
         if verbose > 1:
-            added_str = 'added ' + channels[c[-1]][1] if len(xyz) > 0 else ''
+            added_str = 'added ' + channels[c_init[-1]][1] if len(xyz) > 0 else ''
             print('n_atoms = {}, gof = {:f}, {}'.format(len(xyz), gof, added_str), file=sys.stderr)
 
         # stop if fit gets worse (gof increases)
@@ -315,7 +320,11 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
             break
         else:
             xyz_best = xyz
+            c_best = c_init
             gof_best = gof
+            if all_iters:
+                all_xyz_best.append(xyz_best)
+                all_c_best.append(c_best)
             if greedy:
                 xyz_init[...] = xyz_best
 
@@ -354,11 +363,11 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
                     # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
                     # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
                     if bonded:
-                        dist_min2 = 0.5*bond_length2[c]
-                        dist_max2 = 1.5*bond_length2[c]
+                        dist_min2 = 0.5*bond_length2[c_init]
+                        dist_max2 = 1.5*bond_length2[c_init]
                     else:
-                        dist_min2 = atom_radius[c,np.newaxis] #np.repeat(atom_radius[c,np.newaxis]**2, n_channels, axis=1)
-                        dist_max2 = np.full_like(dist_min2, np.inf) #np.full((len(xyz_init), n_channels), np.inf)
+                        dist_min2 = atom_radius[c_init,np.newaxis]
+                        dist_max2 = np.full_like(dist_min2, np.inf)
 
                     # far_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
                     # near_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
@@ -375,11 +384,14 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
 
         if xyz_new is not None:
             xyz_init = np.append(xyz_init, [xyz_new], axis=0)
-            c = np.append(c, c_new)
+            c_init = np.append(c_init, c_new)
         else:
             break
 
-    return xyz_best, c, gof_best
+    if all_iters:
+        return all_xyz_best, all_c_best, gof_best
+    else:
+        return xyz_best, c_best, gof_best
 
 
 def get_max_density_points(points, density, min_distance, max_distance):
@@ -533,25 +545,49 @@ def write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file=None):
             out.write('load {}\n'.format(fit_file))
 
 
-def write_atoms_to_sdf_file(sdf_file, xyz, elements):
+def ob_mol_from_xyz_and_elements(xyz, elements):
     '''
-    Write an array of atom positions and list of corresponding
-    elements as a chemical structure in an .sdf file.
+    Return an OpenBabel molecule from an array of
+    xyz atom positions and associated elements.
+    '''
+    table = ob.OBElementTable()
+    mol = ob.OBMol()
+    for (x, y, z), element in zip(xyz, elements):
+        atom = mol.NewAtom()
+        atom.SetAtomicNum(table.GetAtomicNum(element))
+        atom.SetVector(x, y, z)
+    return mol
+
+
+def write_mols_to_sdf_file(sdf_file, mols):
+    conv = ob.OBConversion()
+    conv.SetOutFormat('sdf')
+    for i, mol in enumerate(mols):
+        conv.WriteFile(mol, sdf_file) if i == 0 else conv.Write(mol)
+    conv.CloseOutFile()
+
+
+def write_atoms_to_sdf_file(sdf_file, xyz_and_elements):
+    '''
+    Write tuples of (xyz, elements) atom positions and
+    corresponding elements as chemical structures in an
+    .sdf file.
     '''
     out = open(sdf_file, 'w')
-    out.write('\n\n\n')
-    n_atoms = xyz.shape[0]
-    out.write('{:3d}'.format(n_atoms))
-    out.write('  0  0  0  0  0  0  0  0  0')
-    out.write('999 V2000\n')
-    for (x, y, z), element in zip(xyz, elements):
-        out.write('{:10.4f}'.format(x))
-        out.write('{:10.4f}'.format(y))
-        out.write('{:10.4f}'.format(z))
-        out.write(' {:3}'.format(element))
-        out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
-    out.write('M  END\n')
-    out.write('$$$$')
+    for xyz, elements in xyz_and_elements:
+        out.write('\n\n\n')
+        n_atoms = xyz.shape[0]
+        out.write('{:3d}'.format(n_atoms))
+        out.write('  0  0  0  0  0  0  0  0  0')
+        out.write('999 V2000\n')
+        for (x, y, z), element in zip(xyz, elements):
+            out.write('{:10.4f}'.format(x))
+            out.write('{:10.4f}'.format(y))
+            out.write('{:10.4f}'.format(z))
+            out.write(' {:3}'.format(element))
+            out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
+        out.write('M  END\n')
+        out.write('$$$$')
     out.close()
 
 
@@ -701,6 +737,7 @@ def parse_args(argv=None):
     parser.add_argument('--greedy', action='store_true', help="Initialize atoms to optimized positions when atom fitting")
     parser.add_argument('--bonded', action='store_true', help="Add next atoms within bonding distance when atom fitting")
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
+    parser.add_argument('--all_iters_sdf', action='store_true', help="Output a .sdf structure for each outer iteration of atom fitting")
     return parser.parse_args(argv)
 
 
@@ -781,7 +818,8 @@ def main(argv):
                                               noise_ratio=args.noise_ratio,
                                               greedy=args.greedy,
                                               bonded=args.bonded,
-                                              verbose=args.verbose)
+                                              verbose=args.verbose,
+                                              all_iters=args.all_iters_sdf)
 
             delta_t = time.time() - t_i
             out.write('{} {} {}\n'.format(lig_name, loss, delta_t))
@@ -796,8 +834,13 @@ def main(argv):
                       .format(lig_name, grids.shape, density_norm, density_sum), file=sys.stderr)
 
         if args.fit_atoms and args.output_sdf:
+            get_elements = lambda x: [channels[i][1] for i in x]
+            if args.all_iters_sdf:
+                mols = [ob_mol_from_xyz_and_elements(xyz_, get_elements(c_)) for xyz_, c_ in zip(xyz, c)]
+            else:
+                mols = [ob_mol_from_xyz_and_elements(xyz, get_elements(c))]
             fit_file = '{}_fit.sdf'.format(out_prefix)
-            write_atoms_to_sdf_file(fit_file, xyz, np.array(zip(*channels)[1])[c])
+            write_mols_to_sdf_file(fit_file, mols)
         else:
             fit_file = None
 
