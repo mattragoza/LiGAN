@@ -6,13 +6,13 @@ import torque_util
 if __name__ == '__main__':
 
     _, params_file = sys.argv
-    params = [line.rstrip('\n').split(' ', 1) for line in open(params_file)]
+    params = [line.rstrip('\n').split(' ', 2) for line in open(params_file)]
 
     data_name = 'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
 
     job_args = []
-    for out_prefix, fit_params in params:
+    for out_prefix, model_name, fit_params in params:
         pbs_template = 'fit.pbs'
         model_name = 'data_24_0.5'
         blob_name = 'lig'

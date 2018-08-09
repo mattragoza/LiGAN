@@ -278,7 +278,7 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, radius_multiple,
-                       deconv_fit=False, noise_ratio=0.0, greedy=False, verbose=0):
+                       deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0):
     '''
     Fit atom positions to grids either by gradient descent on L2 loss with an
     optional interatomic energy term or using a Gaussian mixture model with an
@@ -326,20 +326,53 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
             grids_deconv = wiener_deconv_grids(grids_diff, channels, center, resolution, \
                                                radius_multiple, noise_ratio)
             density_deconv = grids_deconv.reshape((n_channels, -1)).T
-            max_density_idx = np.argsort(-np.max(density_deconv, axis=1))
-        else:
-            max_density_idx = np.argsort(-np.max(density_diff, axis=1))
+            density_diff = density_deconv
 
         xyz_new = None
         c_new = None
-        for i in max_density_idx:
-            dist2 = np.sum((points[np.newaxis,i] - xyz_init)**2, axis=1)
-            dist_min2 = atom_radius[c]
-            dist_max2 = np.inf
-            if all((dist2 > dist_min2) & (dist2 < dist_max2)):
-                xyz_new = points[i]
-                c_new = np.argmax(density[i])
-                break
+        d_new = 0.0
+
+        if bonded:
+            # bond_length2[i,j] = length^2 of bond between channel[i] and channel[j]
+            bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
+
+        for p, d in zip(points, density_diff):
+
+            # more_density[i] = p has more density in channel[i] than best point so far
+            more_density = d > d_new
+            if np.any(more_density):
+
+                if len(xyz_init) == 0:
+                    xyz_new = p
+                    c_new = np.argmax(d)
+                    d_new = d[c_new]
+
+                else:
+                    # dist2[i] = distance^2 between p and xyz_init[i]
+                    dist2 = np.sum((p[np.newaxis,:] - xyz_init)**2, axis=1)
+
+                    # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
+                    # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
+                    if bonded:
+                        dist_min2 = 0.5*bond_length2[c]
+                        dist_max2 = 1.5*bond_length2[c]
+                    else:
+                        dist_min2 = atom_radius[c,np.newaxis] #np.repeat(atom_radius[c,np.newaxis]**2, n_channels, axis=1)
+                        dist_max2 = np.full_like(dist_min2, np.inf) #np.full((len(xyz_init), n_channels), np.inf)
+
+                    # far_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
+                    # near_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
+                    far_enough = dist2[:,np.newaxis] > dist_min2
+                    near_enough = dist2[:,np.newaxis] < dist_max2
+
+                    # bondable[i] = p is far enough from all xyz_init and near_enough to
+                    # some xyz_init to make a bond in channel[i]
+                    bondable = np.all(far_enough, axis=0) & np.any(near_enough, axis=0)
+                    if np.any(bondable & more_density):
+                        xyz_new = p
+                        c_new = np.argmax(bondable*d)
+                        d_new = d[c_new]
+
         if xyz_new is not None:
             xyz_init = np.append(xyz_init, [xyz_new], axis=0)
             c = np.append(c, c_new)
@@ -665,8 +698,8 @@ def parse_args(argv=None):
     parser.add_argument('--scale_grids', type=float, default=1.0, help='Factor by which to scale atom density grids')
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
-    parser.add_argument('--greedy', action='store_true', help="Fit atoms by greedily adding next atoms at bond distance")
-    parser.add_argument('--parallel', action='store_true', help="Fit atoms to each grid channel in parallel")
+    parser.add_argument('--greedy', action='store_true', help="Initialize atoms to optimized positions when atom fitting")
+    parser.add_argument('--bonded', action='store_true', help="Add next atoms within bonding distance when atom fitting")
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     return parser.parse_args(argv)
 
@@ -747,6 +780,7 @@ def main(argv):
                                               deconv_fit=args.deconv_fit,
                                               noise_ratio=args.noise_ratio,
                                               greedy=args.greedy,
+                                              bonded=args.bonded,
                                               verbose=args.verbose)
 
             delta_t = time.time() - t_i
