@@ -10,8 +10,6 @@ from itertools import izip
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
-caffe.set_mode_gpu()
-caffe.set_device(0)
 import openbabel as ob
 
 import caffe_util
@@ -768,6 +766,7 @@ def parse_args(argv=None):
     parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='Maximum energy of bonds to consider when adding bonded atoms')
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     parser.add_argument('--all_iters_sdf', action='store_true', help="Output a .sdf structure for each outer iteration of atom fitting")
+    parser.add_argument('--gpu', action='store_true', help="Generate grids from model on GPU")
     return parser.parse_args(argv)
 
 
@@ -790,6 +789,12 @@ def main(argv):
     else: # use the examples in the provided data_file
         assert len(args.rec_file) == len(args.lig_file) == 0
         data_file = args.data_file
+
+    if args.gpu:
+        caffe.set_mode_gpu()
+        caffe.set_device(0)
+    else:
+        caffe.set_mode_cpu()
 
     # create the net in caffe
     net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
@@ -860,11 +865,11 @@ def main(argv):
             out.flush()
 
             if args.verbose > 0:
-                print('{:20}shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}, loss = {:.5f}' \
+                print('lig_name = {}, shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}, loss = {:.5f}' \
                       .format(lig_name, grids.shape, density_norm2, density_sum, density_max, loss), file=sys.stderr)
         else:
             if args.verbose > 0:
-                print('{:20}shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}' \
+                print('lig_name = {}, shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}' \
                       .format(lig_name, grids.shape, density_norm2, density_sum, density_max), file=sys.stderr)
 
         if args.fit_atoms and args.output_sdf:
