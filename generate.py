@@ -50,16 +50,16 @@ def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
     return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
 
 
-def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, bonds, width_factor=1.0):
+def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, bonds):
     '''
     Compute the interatomic potential energy between an atom and a set of atoms.
     '''
     dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
-    exp = np.exp(-width_factor*(dist - bond_length))
+    exp = np.exp(-(dist - bond_length))
     return (1 - exp)**2 * bonds
 
 
-def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, bonds, width_factor=1.0):
+def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, bonds):
     '''
     Compute the derivative of interatomic potential energy between an atom
     and a set of atoms with respect to the position of the first atom.
@@ -67,8 +67,8 @@ def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, bonds, width_facto
     diff = atom_pos2 - atom_pos1
     dist2 = np.sum(diff**2, axis=1)
     dist = np.sqrt(dist2)
-    exp = np.exp(-width_factor*(dist - bond_length))
-    d_energy = 2 * (1 - exp) * exp * width_factor * bonds
+    exp = np.exp(-(dist - bond_length))
+    d_energy = 2 * (1 - exp) * exp * bonds
     return (-diff * (d_energy / dist)[:,np.newaxis])
 
 
@@ -280,7 +280,7 @@ def grid_to_points_and_values(grid, center, resolution):
 
 def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, radius_multiple,
                        deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0,
-                       all_iters=False):
+                       all_iters=False, max_init_bond_E=0.5):
     '''
     Fit atoms to grids by iteratively placing atoms and then optimizing their
     positions by gradient descent on L2 loss between the true grid density and
@@ -337,7 +337,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
 
         # try adding an atom to remaining density
         xyz_new, c_new, bonds_new = \
-            get_next_atom(points, density, xyz_init, c, atom_radius, bonded)
+            get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bond_E)
 
         if xyz_new is not None:
             xyz_init = np.append(xyz_init, xyz_new[np.newaxis,:], axis=0)
@@ -354,7 +354,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
         return xyz_best, c_best, bonds_best, loss_best
 
 
-def get_next_atom(points, density, xyz_init, c, atom_radius, bonded):
+def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bond_E=0.5):
     '''
     Get next atom tuple (xyz_new, c_new, bonds_new) of initial position,
     channel index, and bonds to other atoms. Select the atom as maximum
@@ -369,6 +369,8 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded):
     if bonded:
         # bond_length2[i,j] = length^2 of bond between channel[i] and channel[j]
         bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
+        min_bond_length2 = bond_length2 - np.log(1 + np.sqrt(max_init_bond_E))
+        max_bond_length2 = bond_length2 - np.log(1 - np.sqrt(max_init_bond_E))
 
     for p, d in zip(points, density):
 
@@ -389,8 +391,8 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded):
                 # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
                 # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
                 if bonded:
-                    dist_min2 = 0.75*bond_length2[c]
-                    dist_max2 = 1.25*bond_length2[c]
+                    dist_min2 = min_bond_length2[c]
+                    dist_max2 = max_bond_length2[c]
                 else:
                     dist_min2 = atom_radius[c,np.newaxis]
                     dist_max2 = np.full_like(dist_min2, np.inf)
@@ -749,7 +751,7 @@ def parse_args(argv=None):
     parser.add_argument('--fit_atoms', action='store_true', help='Fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file of fit atom positions')
     parser.add_argument('--max_iter', type=int, default=np.inf, help='Maximum number of iterations for atom fitting')
-    parser.add_argument('--lambda_E', type=float, default=0.0, help='Interatomic energy loss weight for gradient descent atom fitting')
+    parser.add_argument('--lambda_E', type=float, default=0.0, help='Interatomic bond energy loss weight for gradient descent atom fitting')
     parser.add_argument('--fine_tune', action='store_true', help='Fine-tune final fit atom positions to summed grid channels')
     parser.add_argument('--fit_GMM', action='store_true', help='Fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='Noise model for GMM atom fitting (d|p)')
@@ -762,7 +764,8 @@ def parse_args(argv=None):
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--greedy', action='store_true', help="Initialize atoms to optimized positions when atom fitting")
-    parser.add_argument('--bonded', action='store_true', help="Add next atoms within bonding distance when atom fitting")
+    parser.add_argument('--bonded', action='store_true', help="Add atoms by creating bonds to existing atoms when atom fitting")
+    parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='Maximum energy of bonds to consider when adding bonded atoms')
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     parser.add_argument('--all_iters_sdf', action='store_true', help="Output a .sdf structure for each outer iteration of atom fitting")
     return parser.parse_args(argv)
@@ -848,6 +851,7 @@ def main(argv):
                                    noise_ratio=args.noise_ratio,
                                    greedy=args.greedy,
                                    bonded=args.bonded,
+                                   max_init_bond_E=args.max_init_bond_E,
                                    verbose=args.verbose,
                                    all_iters=args.all_iters_sdf)
 
