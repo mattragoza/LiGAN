@@ -50,16 +50,16 @@ def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
     return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
 
 
-def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
+def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, bonds, width_factor=1.0):
     '''
     Compute the interatomic potential energy between an atom and a set of atoms.
     '''
     dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
     exp = np.exp(-width_factor*(dist - bond_length))
-    return (1 - exp)**2 - 1
+    return (1 - exp)**2 * bonds
 
 
-def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
+def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, bonds, width_factor=1.0):
     '''
     Compute the derivative of interatomic potential energy between an atom
     and a set of atoms with respect to the position of the first atom.
@@ -68,8 +68,8 @@ def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, width_factor=1.0):
     dist2 = np.sum(diff**2, axis=1)
     dist = np.sqrt(dist2)
     exp = np.exp(-width_factor*(dist - bond_length))
-    d_energy = 2 * (1 - exp) * exp * width_factor
-    return -diff * (d_energy / dist)[:,np.newaxis]
+    d_energy = 2 * (1 - exp) * exp * width_factor * bonds
+    return (-diff * (d_energy / dist)[:,np.newaxis])
 
 
 def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, max_iter, 
@@ -158,7 +158,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, ma
     return xyz, gof
 
 
-def fit_atoms_by_GD(points, density, xyz_init, c, atom_radius, radius_multiple,
+def fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_multiple,
                     max_iter, lr=0.01, mo=0.9, lambda_E=0.0, verbose=0):
     '''
     Fit atom positions, provided by arrays xyz_init of initial positions, c of
@@ -194,7 +194,7 @@ def fit_atoms_by_GD(points, density, xyz_init, c, atom_radius, radius_multiple,
         if lambda_E:
             for j in range(n_atoms): # assumes use_covalent_radius
                 bond_length = atom_radius[c[j]] + atom_radius[c[j+1:]]
-                E += np.sum(get_interatomic_energy(xyz[j], xyz[j+1:], bond_length))
+                E += np.sum(get_interatomic_energy(xyz[j], xyz[j+1:], bond_length, bonds[j,j+1:]))
 
         loss_prev = loss
         loss = L2 + lambda_E*E
@@ -217,7 +217,7 @@ def fit_atoms_by_GD(points, density, xyz_init, c, atom_radius, radius_multiple,
         if lambda_E:
             for j in range(n_atoms-1):
                 bond_length = atom_radius[c[j]] + atom_radius[c[j+1:]]
-                forces = get_interatomic_forces(xyz[j], xyz[j+1:], bond_length)
+                forces = get_interatomic_forces(xyz[j], xyz[j+1:], bond_length, bonds[j,j+1:])
                 d_xyz[j] += lambda_E*np.sum(forces, axis=0)
                 d_xyz[j+1:,:] -= lambda_E*forces
 
@@ -282,17 +282,12 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
                        deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0,
                        all_iters=False):
     '''
-    Fit atom positions to grids either by gradient descent on L2 loss with an
-    optional interatomic energy term or using a Gaussian mixture model with an
-    optional noise model. Return arrays of fit atom positions, channel indices,
-    and the final goodness-of-fit.
+    Fit atoms to grids by iteratively placing atoms and then optimizing their
+    positions by gradient descent on L2 loss between the true grid density and
+    predicted density associated with the atoms until L2 loss stops improving.
     '''
     n_channels, grid_shape = grids.shape[0], grids.shape[1:]
     atom_radius = np.array(zip(*channels)[2])
-
-    # nothing to fit if the whole grid is zero
-    if np.allclose(grids, 0.0):
-        return np.ndarray((0, 3)), np.ndarray(0), 0.0
 
     # convert grids to arrays of xyz points and channel density values
     points = get_grid_points(grid_shape, center, resolution)
@@ -302,7 +297,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
     xyz_init = np.ndarray((0, 3))
     c = np.ndarray(0, dtype=int)
     bonds = np.ndarray((0, 0))
-    gof_best = np.inf
+    loss_best = np.inf
     if all_iters:
         all_xyz = []
         all_c = []
@@ -310,21 +305,21 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
     while True:
 
         # optimize atom positions by gradient descent
-        xyz, density_pred, gof = \
-            fit_atoms_by_GD(points, density, xyz_init, c, atom_radius, radius_multiple,
+        xyz, density_pred, loss = \
+            fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_multiple,
                             max_iter, lambda_E=lambda_E, verbose=verbose)
         if verbose > 1:
             added_str = 'added ' + channels[c[-1]][1] if len(xyz) > 0 else ''
-            print('n_atoms = {}, gof = {:f}, {}'.format(len(xyz), gof, added_str), file=sys.stderr)
+            print('n_atoms = {}, loss = {:f}, {}'.format(len(xyz), loss, added_str), file=sys.stderr)
 
-        # stop if fit gets worse (gof increases)
-        if gof > gof_best:
+        # stop if fit gets worse (loss increases)
+        if loss > loss_best:
             break
         else:
             xyz_best = xyz
             c_best = c
             bonds_best = bonds
-            gof_best = gof
+            loss_best = loss
             if all_iters:
                 all_xyz.append(xyz_best)
                 all_c.append(c_best)
@@ -332,7 +327,6 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
             if greedy:
                 xyz_init[...] = xyz_best
 
-        # try adding an atom to remaining density
         density_diff = density - density_pred
         if deconv_fit:
             grids_diff = density_diff.T.reshape((n_channels,) + grid_shape)
@@ -341,55 +335,9 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
             density_deconv = grids_deconv.reshape((n_channels, -1)).T
             density_diff = density_deconv
 
-        xyz_new = None
-        c_new = None
-        d_new = 0.0
-        if bonded:
-            # bond_length2[i,j] = length^2 of bond between channel[i] and channel[j]
-            bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
-            bonds_new = None
-
-        for p, d in zip(points, density_diff):
-
-            # more_density[i] = p has more density in channel[i] than best point so far
-            more_density = d > d_new
-            if np.any(more_density):
-
-                if len(xyz_init) == 0:
-                    xyz_new = p
-                    c_new = np.argmax(d)
-                    d_new = d[c_new]
-                    bonds_new = np.array([])
-
-                else:
-                    # dist2[i] = distance^2 between p and xyz_init[i]
-                    dist2 = np.sum((p[np.newaxis,:] - xyz_init)**2, axis=1)
-
-                    # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
-                    # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
-                    if bonded:
-                        dist_min2 = 0.5*bond_length2[c]
-                        dist_max2 = 1.5*bond_length2[c]
-                    else:
-                        dist_min2 = atom_radius[c,np.newaxis]
-                        dist_max2 = np.full_like(dist_min2, np.inf)
-
-                    # far_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
-                    # near_enough[i,j] = p is near enough to xyz_init[i] in channel[j]
-                    far_enough = dist2[:,np.newaxis] > dist_min2
-                    near_enough = dist2[:,np.newaxis] < dist_max2
-
-                    # in_range[i] = p is far enough from all xyz_init and near_enough to
-                    # some xyz_init to make a bond in channel[i]
-                    in_range = np.all(far_enough, axis=0) & np.any(near_enough, axis=0)
-                    if np.any(in_range & more_density):
-                        xyz_new = p
-                        c_new = np.argmax(in_range*more_density*d)
-                        d_new = d[c_new]
-                        if bonded:
-                            bonds_new = near_enough[:,c_new]
-                        else:
-                            bonds_new = np.zeros(len(xyz_init))
+        # try adding an atom to remaining density
+        xyz_new, c_new, bonds_new = \
+            get_next_atom(points, density, xyz_init, c, atom_radius, bonded)
 
         if xyz_new is not None:
             xyz_init = np.append(xyz_init, xyz_new[np.newaxis,:], axis=0)
@@ -401,22 +349,70 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
             break
 
     if all_iters:
-        return all_xyz, all_c, all_bonds, gof_best
+        return all_xyz, all_c, all_bonds, loss_best
     else:
-        return xyz_best, c_best, bonds_best, gof_best
+        return xyz_best, c_best, bonds_best, loss_best
 
 
-def get_max_density_points(points, density, min_distance, max_distance):
+def get_next_atom(points, density, xyz_init, c, atom_radius, bonded):
     '''
-    Generate maximum density points that are within some distance
-    range from each other from arrays of points and densities.
+    Get next atom tuple (xyz_new, c_new, bonds_new) of initial position,
+    channel index, and bonds to other atoms. Select the atom as maximum
+    density point within some distance range from the other atoms, given
+    by positions xyz_init and channel indices c.
     '''
-    distance_check = lambda a, b: max_distance**2 > np.sum((a - b)**2) > min_distance**2
-    max_points = []
-    for p, d in sorted(zip(points, density), key=lambda pd: -np.max(pd[1])):
-        if all(distance_check(p, max_p) for max_p in max_points):
-            max_points.append(p)
-            yield max_points[-1]
+    xyz_new = None
+    c_new = None
+    bonds_new = None
+    d_max = 0.0
+
+    if bonded:
+        # bond_length2[i,j] = length^2 of bond between channel[i] and channel[j]
+        bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
+
+    for p, d in zip(points, density):
+
+        # more_density[i] = p has more density in channel[i] than best point so far
+        more_density = d > d_max
+        if np.any(more_density):
+
+            if len(xyz_init) == 0:
+                xyz_new = p
+                c_new = np.argmax(d)
+                bonds_new = np.array([])
+                d_max = d[c_new]
+
+            else:
+                # dist2[i] = distance^2 between p and xyz_init[i]
+                dist2 = np.sum((p[np.newaxis,:] - xyz_init)**2, axis=1)
+
+                # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
+                # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
+                if bonded:
+                    dist_min2 = 0.75*bond_length2[c]
+                    dist_max2 = 1.25*bond_length2[c]
+                else:
+                    dist_min2 = atom_radius[c,np.newaxis]
+                    dist_max2 = np.full_like(dist_min2, np.inf)
+
+                # far_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
+                # near_enough[i,j] = p is near enough to xyz_init[i] in channel[j]
+                far_enough = dist2[:,np.newaxis] > dist_min2
+                near_enough = dist2[:,np.newaxis] < dist_max2
+
+                # in_range[i] = p is far enough from all xyz_init and near_enough to
+                # some xyz_init to make a bond in channel[i]
+                in_range = np.all(far_enough, axis=0) & np.any(near_enough, axis=0)
+                if np.any(in_range & more_density):
+                    xyz_new = p
+                    c_new = np.argmax(in_range*more_density*d)
+                    if bonded:
+                        bonds_new = near_enough[:,c_new]
+                    else:
+                        bonds_new = np.zeros(len(xyz_init))
+                    d_max = d[c_new]
+
+    return xyz_new, c_new, bonds_new
 
 
 def rec_and_lig_at_index_in_data_file(file, index):
@@ -491,6 +487,7 @@ def generate_grids_from_net(net, blob_pattern, n_grids=np.inf, lig_gen_mode='', 
         if (i % batch_size) == 0: # forward next batch up to latent vectors
 
             if diff_rec or lig_gen_mode:
+
                 net.forward(end='latent_concat')
 
                 if diff_rec: # roll rec latent vectors along batch axis by 1
@@ -815,8 +812,9 @@ def main(argv):
         except:
             center = np.zeros(3) # TODO use openbabel, this is a hack 
 
-        density_norm = np.sum(grids**2)**0.5
+        density_norm2 = np.sum(grids**2)
         density_sum = np.sum(grids)
+        density_max = np.max(grids)
         assert grids.sum() > 0
 
         if not channels: # infer channel info from shape of first grids
@@ -828,6 +826,7 @@ def main(argv):
         if args.deconv_grids:
             grids = wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, \
                                         noise_ratio=args.noise_ratio)
+
         grids *= args.scale_grids
 
         if args.output_dx:
@@ -857,12 +856,12 @@ def main(argv):
             out.flush()
 
             if args.verbose > 0:
-                print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}, loss = {:.5f}' \
-                      .format(lig_name, grids.shape, density_norm, density_sum, loss), file=sys.stderr)
+                print('{:20}shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}, loss = {:.5f}' \
+                      .format(lig_name, grids.shape, density_norm2, density_sum, density_max, loss), file=sys.stderr)
         else:
             if args.verbose > 0:
-                print('{:20}shape = {}, density_norm = {:.5f}, density_sum = {:.5f}' \
-                      .format(lig_name, grids.shape, density_norm, density_sum), file=sys.stderr)
+                print('{:20}shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}' \
+                      .format(lig_name, grids.shape, density_norm2, density_sum, density_max), file=sys.stderr)
 
         if args.fit_atoms and args.output_sdf:
             get_elements = lambda x: [channels[i][1] for i in x]
