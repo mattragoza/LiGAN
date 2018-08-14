@@ -50,6 +50,27 @@ elem_color_map = defaultdict(
 )
 
 
+max_n_bonds = defaultdict(
+    lambda: 8,
+    H=1,
+    C=4,
+    N=3,
+    O=2,
+    P=6,
+    S=6,
+    F=1,
+    Cl=1,
+    Br=1,
+    I=1,
+    Mg=2,
+    Mn=8,
+    Zn=6,
+    Ca=2,
+    Fe=6,
+    B=4
+)
+
+
 def get_default_channels(rec, lig, use_covalent_radius=False):
     idx = rec_idx if rec else [] + lig_idx if lig else []
     channels = []
