@@ -403,6 +403,7 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bo
                 # in_range[i] = p is far enough from all xyz_init and near_enough to
                 # some xyz_init to make a bond in channel[i]
                 in_range = np.all(far_enough, axis=0) & np.any(near_enough, axis=0)
+
                 if np.any(in_range & more_density):
                     xyz_new = p
                     c_new = np.argmax(in_range*more_density*d)
@@ -559,12 +560,16 @@ def ob_mol_from_xyz_elems_bonds(xyz, elems, bonds):
     Return an OpenBabel molecule from an array of
     xyz atom positions and associated elements.
     '''
-    table = ob.OBElementTable()
+    try:
+        table = ob.OBElementTable()
+        get_atomic_num = table.GetAtomicNum
+    except AttributeError:
+        get_atomic_num = ob.GetAtomicNum
     mol = ob.OBMol()
     n_atoms = len(xyz)
     for (x, y, z), element in zip(xyz, elems):
         atom = mol.NewAtom()
-        atom.SetAtomicNum(table.GetAtomicNum(element))
+        atom.SetAtomicNum(get_atomic_num(element))
         atom.SetVector(x, y, z)
     n_bonds = 0
     for i in range(n_atoms):
@@ -823,7 +828,7 @@ def main(argv):
         density_norm2 = np.sum(grids**2)
         density_sum = np.sum(grids)
         density_max = np.max(grids)
-        assert grids.sum() > 0
+        assert np.any(grids != 0)
 
         if not channels: # infer channel info from shape of first grids
             channels = channel_info.get_channels_for_grids(grids, use_covalent_radius)
@@ -883,6 +888,7 @@ def main(argv):
             #mols = [ob_mol_from_xyz_elems_bonds(*args) for args in xyz_elems_bonds]
             #write_ob_mols_to_sdf_file(fit_file, mols)
             write_xyz_elems_bonds_to_sdf_file(fit_file, xyz_elems_bonds)
+
         else:
             fit_file = None
 
