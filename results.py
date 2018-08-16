@@ -38,14 +38,14 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
         ax = next(axes)
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
-        if 'L2_loss' in y_:
-            ax.set_ylim(40, 110)
-        if 'KLdiv_loss' in y_:
-            ax.set_ylim(-10, 1000)
+        #if 'L2_loss' in y_:
+        #    ax.set_ylim(40, 110)
+        #if 'KLdiv_loss' in y_:
+        #    ax.set_ylim(-10, 1000)
         if 'disc_loss' in y_:
-            ax.set_ylim(-0.01, 1.5)
+            ax.set_ylim(0.55, 0.75)
         if 'gen_adv_loss' in y_:
-            ax.set_ylim(-0.01, 1.5)
+            ax.set_ylim(0.55, 0.75)
         if hue:
             for j, _ in df.groupby(level=0):
                 mean = df.loc[j][y_].groupby(level=0).mean()
@@ -70,7 +70,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None):
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, box=False, height=4, width=4):
     df = df.reset_index()
     if n_cols is None:
         n_cols = len(x)
@@ -78,17 +78,21 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None):
     assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows),
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows),
                              sharex=len(x) == 1, sharey=len(y) == 1, squeeze=False)
     axes = axes.reshape(n_rows, n_cols)
     axes = iter(axes.flatten())
     for i, y_ in enumerate(y):
         for j, x_ in enumerate(x):
             ax = next(axes)
-            sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=0.5, ax=ax)
-            handles, labels = ax.get_legend_handles_labels()
-            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, markers='', capsize=0.1, ax=ax)
+            if box:
+                sns.boxplot(data=df, x=x_, y=y_, hue=hue, ax=ax, showfliers=False, boxprops=dict(alpha=1.0))
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=30)
+            else:
+                sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=0.5, ax=ax)
+                sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, markers='', capsize=0.1, ax=ax)
             if hue:
+                handles, labels = ax.get_legend_handles_labels()
                 ax.legend_.remove()
     fig.tight_layout()
     extra = []
@@ -151,7 +155,7 @@ def parse_args(argv=None):
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
     parser.add_argument('--plot_ext', default='png')
-    parser.add_argument('--agg_data', default=False, action='store_true')
+    parser.add_argument('--aggregate', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -162,11 +166,11 @@ def main(argv):
     model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
     seeds = [int(s) for s in args.seeds.split(',')]
     folds = [int(f) for f in args.folds.split(',')]
-    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, args.agg_data)
+    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, args.aggregate)
 
     # aggregate output values for each model across seeds and folds
     index_cols = ['model_name', 'iteration']
-    if args.agg_data:
+    if args.aggregate:
         f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
                 for col in df if col not in index_cols}
         agg_df = df.groupby(index_cols).agg(f)

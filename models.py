@@ -117,7 +117,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                               balanced=False,
                               random_rotation=training,
                               random_translate=training*2.0,
-                              radius_multiple=1.00)
+                              radius_multiple=1.00,
+                              use_covalent_radius=True)
 
         net.layer.add().update(name='no_label', type='Silence', bottom=['label'])
         net.layer.add().update(name='no_aff', type='Silence', bottom=['aff'])
