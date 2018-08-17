@@ -48,25 +48,21 @@ def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
     return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
 
 
-def get_interatomic_energy(atom_pos1, atom_pos2, bond_length, bonds):
+def get_bond_length_energy(distance, bond_length, bonds):
     '''
     Compute the interatomic potential energy between an atom and a set of atoms.
     '''
-    dist = np.sqrt(np.sum((atom_pos2 - atom_pos1)**2, axis=1))
-    exp = np.exp(-(dist - bond_length))
+    exp = np.exp(bond_length - distance)
     return (1 - exp)**2 * bonds
 
 
-def get_interatomic_forces(atom_pos1, atom_pos2, bond_length, bonds):
+def get_bond_length_gradient(distance, bond_length, bonds):
     '''
     Compute the derivative of interatomic potential energy between an atom
     and a set of atoms with respect to the position of the first atom.
     '''
-    diff = atom_pos2 - atom_pos1
-    dist2 = np.sum(diff**2, axis=1)
-    dist = np.sqrt(dist2)
-    exp = np.exp(-(dist - bond_length))
-    d_energy = 2 * (1 - exp) * exp * bonds
+    exp = np.exp(bond_length - distance)
+    return 2 * (1 - exp) * exp * bonds
     return (-diff * (d_energy / dist)[:,np.newaxis])
 
 
@@ -157,7 +153,7 @@ def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, ma
 
 
 def fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_multiple,
-                    max_iter, lr=0.01, mo=0.9, lambda_E=0.0, verbose=0):
+                    max_iter, lr=0.01, mo=0.9, lambda_E=0.0, radius_factor=1.0, verbose=0):
     '''
     Fit atom positions, provided by arrays xyz_init of initial positions, c of
     channel indices, and atom_radius of atom radius for each channel, to arrays
@@ -172,7 +168,12 @@ def fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_mul
     d_xyz_prev = np.zeros_like(xyz)
     atom_radius = np.array(atom_radius)
     density_pred = np.zeros_like(density)
-    d_density_pred = np.zeros_like(density)
+    density_diff = np.zeros_like(density)
+    xyz_diff = np.zeros((n_atoms, n_atoms, 3))
+    xyz_dist = np.zeros((n_atoms, n_atoms))
+
+    bond_length = atom_radius[c][:,np.newaxis] + atom_radius[c][np.newaxis,:]
+    opt_bond_angle = np.deg2rad(109.5)
 
     # minimize loss by gradient descent
     loss = np.inf
@@ -183,19 +184,27 @@ def fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_mul
         density_pred[...] = 0.0
         for j in range(n_atoms):
             density_pred[:,c[j]] += \
-                get_atom_density(xyz[j], atom_radius[c[j]], points, radius_multiple)
-        d_density_pred[...] = density_pred - density
-        L2 = np.sum(d_density_pred**2)/2
+                get_atom_density(xyz[j], radius_factor*atom_radius[c[j]], points, radius_multiple)
+        density_diff[...] = density_pred - density
+        L2 = np.sum(density_diff**2)/2
 
         # interatomic energy of predicted atom positions
         E = 0.0
         if lambda_E:
+            xyz_diff[...] = xyz[:,np.newaxis,:] - xyz[np.newaxis,:,:]
+            xyz_dist[...] = np.linalg.norm(xyz_diff, axis=2)
             for j in range(n_atoms): # assumes use_covalent_radius
-                bond_length = atom_radius[c[j]] + atom_radius[c[j+1:]]
-                E += np.sum(get_interatomic_energy(xyz[j], xyz[j+1:], bond_length, bonds[j,j+1:]))
+                E += lambda_E*np.sum(get_bond_length_energy(xyz_dist[j,j+1:], bond_length[j,j+1:], bonds[j,j+1:]))
+
+                if False:
+                    cos_num = np.sum(xyz_diff[:,np.newaxis,j,:] * xyz_diff[np.newaxis,:,j,:], axis=2)
+                    cos_den = (xyz_dist[:,np.newaxis,j] * xyz_dist[np.newaxis,:,j])
+                    bond_angle = np.arccos(cos_num / cos_den)
+                    is_bond_angle = bonds[j,:,np.newaxis] * bonds[j,np.newaxis,:] * (1 - np.eye(n_atoms))
+                    E += lambda_E*np.sum(np.where(is_bond_angle, 1.911 - bond_angle, 0.0))
 
         loss_prev = loss
-        loss = L2 + lambda_E*E
+        loss = L2 + E
         delta_loss = loss - loss_prev
         if verbose > 2:
             print('iteration = {}, L2 = {}, E = {}, loss = {} ({})' \
@@ -209,13 +218,13 @@ def fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_mul
         d_xyz[...] = 0.0
 
         for j in range(n_atoms):
-            gradient = get_atom_gradient(xyz[j], atom_radius[c[j]], points, radius_multiple)
-            d_xyz[j] += np.sum(d_density_pred[:,c[j],np.newaxis]*gradient, axis=0)
+            gradient = get_atom_gradient(xyz[j], radius_factor*atom_radius[c[j]], points, radius_multiple)
+            d_xyz[j] += np.sum(density_diff[:,c[j],np.newaxis]*gradient, axis=0)
 
         if lambda_E:
             for j in range(n_atoms-1):
-                bond_length = atom_radius[c[j]] + atom_radius[c[j+1:]]
-                forces = get_interatomic_forces(xyz[j], xyz[j+1:], bond_length, bonds[j,j+1:])
+                gradient = get_bond_length_gradient(xyz_dist[j,j+1], bond_length[j,j+1], bonds[j,j+1:])
+                forces = xyz_diff[j,j+1:] * (gradient / xyz_dist[j,j+1:])[:,np.newaxis]
                 d_xyz[j] += lambda_E*np.sum(forces, axis=0)
                 d_xyz[j+1:,:] -= lambda_E*forces
 
@@ -246,10 +255,10 @@ def wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, n
     return np.real(np.fft.ifftn(F_grid * F_g))
 
 
-def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, noise_ratio=0.0):
+def wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, noise_ratio=0.0, radius_factor=1.0):
     deconv_grids = []
     for grid, (_, _, atom_radius) in zip(grids, channels):
-        deconv_grid = wiener_deconv_grid(grid, center, resolution, atom_radius, radius_multiple, noise_ratio)
+        deconv_grid = wiener_deconv_grid(grid, center, resolution, radius_factor*atom_radius, radius_multiple, noise_ratio)
         deconv_grids.append(deconv_grid)
     return np.stack(deconv_grids, axis=0)
 
@@ -276,8 +285,8 @@ def grid_to_points_and_values(grid, center, resolution):
     return points, grid.flatten()
 
 
-def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, radius_multiple,
-                       deconv_fit=False, noise_ratio=0.0, greedy=False, bonded=False, verbose=0,
+def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, radius_multiple, lambda_E=1.0,
+                       deconv_fit=False, noise_ratio=0.0, radius_factor=1.0, greedy=False, bonded=False, verbose=0,
                        all_iters=False, max_init_bond_E=0.5):
     '''
     Fit atoms to grids by iteratively placing atoms and then optimizing their
@@ -286,6 +295,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
     '''
     n_channels, grid_shape = grids.shape[0], grids.shape[1:]
     atom_radius = np.array(zip(*channels)[2])
+    max_n_bonds = np.array([channel_info.max_n_bonds[c[1]] for c in channels])
 
     # convert grids to arrays of xyz points and channel density values
     points = get_grid_points(grid_shape, center, resolution)
@@ -305,7 +315,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
         # optimize atom positions by gradient descent
         xyz, density_pred, loss = \
             fit_atoms_by_GD(points, density, xyz_init, c, bonds, atom_radius, radius_multiple,
-                            max_iter, lambda_E=lambda_E, verbose=verbose)
+                            max_iter, lambda_E=lambda_E, radius_factor=radius_factor, verbose=verbose)
         if verbose > 1:
             added_str = 'added ' + channels[c[-1]][1] if len(xyz) > 0 else ''
             print('n_atoms = {}, loss = {:f}, {}'.format(len(xyz), loss, added_str), file=sys.stderr)
@@ -329,13 +339,13 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
         if deconv_fit:
             grids_diff = density_diff.T.reshape((n_channels,) + grid_shape)
             grids_deconv = wiener_deconv_grids(grids_diff, channels, center, resolution, \
-                                               radius_multiple, noise_ratio)
+                                               radius_multiple, noise_ratio, radius_factor)
             density_deconv = grids_deconv.reshape((n_channels, -1)).T
             density_diff = density_deconv
 
         # try adding an atom to remaining density
         xyz_new, c_new, bonds_new = \
-            get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bond_E)
+            get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_n_bonds, max_init_bond_E)
 
         if xyz_new is not None:
             xyz_init = np.append(xyz_init, xyz_new[np.newaxis,:], axis=0)
@@ -352,7 +362,7 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, lambda_E, 
         return xyz_best, c_best, bonds_best, loss_best
 
 
-def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bond_E=0.5):
+def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_n_bonds, max_init_bond_E=0.5):
     '''
     Get next atom tuple (xyz_new, c_new, bonds_new) of initial position,
     channel index, and bonds to other atoms. Select the atom as maximum
@@ -369,6 +379,9 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bo
         bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
         min_bond_length2 = bond_length2 - np.log(1 + np.sqrt(max_init_bond_E))
         max_bond_length2 = bond_length2 - np.log(1 - np.sqrt(max_init_bond_E))
+
+    # can_bond[i] = xyz_init[i] has less than its max number of bonds
+    can_bond = np.sum(bonds, axis=1) < max_n_bonds[c]
 
     for p, d in zip(points, density):
 
@@ -401,14 +414,15 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, max_init_bo
                 near_enough = dist2[:,np.newaxis] < dist_max2
 
                 # in_range[i] = p is far enough from all xyz_init and near_enough to
-                # some xyz_init to make a bond in channel[i]
-                in_range = np.all(far_enough, axis=0) & np.any(near_enough, axis=0)
+                # some xyz_init that can bond to make a bond in channel[i]
+                in_range = np.all(far_enough, axis=0) & \
+                           np.any(near_enough & can_bond[:,np.newaxis], axis=0)
 
                 if np.any(in_range & more_density):
                     xyz_new = p
                     c_new = np.argmax(in_range*more_density*d)
                     if bonded:
-                        bonds_new = near_enough[:,c_new]
+                        bonds_new = near_enough[:,c_new] & can_bond
                     else:
                         bonds_new = np.zeros(len(xyz_init))
                     d_max = d[c_new]
@@ -534,26 +548,30 @@ def combine_element_grids_and_channels(grids, channels):
     return np.array(elem_grids), elem_channels
 
 
-def write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file=None):
+def write_pymol_script(pymol_file, dx_groups, other_files, centers):
     '''
     Write a pymol script with a map object for each of dx_files, a
     group of all map objects (if any), a rec_file, a lig_file, and
     an optional fit_file.
     '''
     with open(pymol_file, 'w') as out:
-        map_objects = []
-        for dx_file in dx_files:
-            map_object = dx_file.replace('.dx', '_grid')
-            out.write('load {}, {}\n'.format(dx_file, map_object))
-            map_objects.append(map_object)
-        if map_objects:
-            map_group = pymol_file.replace('.pymol', '_grids')
-            out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
-        out.write('load {}\n'.format(rec_file))
-        out.write('load {}\n'.format(lig_file))
-        if fit_file:
-            out.write('load {}\n'.format(fit_file))
+        for group_name, dx_files in dx_groups.items():
+            map_objects = []
+            for dx_file in dx_files:
+                map_object = dx_file.replace('.dx', '_grid')
+                out.write('load {}, {}\n'.format(dx_file, map_object))
+                map_objects.append(map_object)
+            if map_objects:
+                map_group = group_name + '_grids'
+                out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
 
+        for other_file in other_files:
+            obj_name = os.path.splitext(os.path.basename(other_file))[0]
+            out.write('load {}, {}\n'.format(other_file, obj_name))
+
+        for other_file, (x,y,z) in zip(other_files, centers):
+            obj_name = os.path.splitext(os.path.basename(other_file))[0]
+            out.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
 
 def ob_mol_from_xyz_elems_bonds(xyz, elems, bonds):
     '''
@@ -601,7 +619,11 @@ def write_xyz_elems_bonds_to_sdf_file(sdf_file, xyz_elems_bonds):
     for xyz, elems, bonds in xyz_elems_bonds:
         out.write('\n mattragoza\n\n')
         n_atoms = xyz.shape[0]
-        n_bonds = np.sum(bonds.astype(bool))
+        n_bonds = 0
+        for i in range(n_atoms):
+            for j in range(i+1, n_atoms):
+                if bonds[i,j]:
+                    n_bonds += 1
         out.write('{:3d}'.format(n_atoms))
         out.write('{:3d}'.format(n_bonds))
         out.write('  0  0  0  0  0  0  0  0')
@@ -613,7 +635,7 @@ def write_xyz_elems_bonds_to_sdf_file(sdf_file, xyz_elems_bonds):
             out.write(' {:3}'.format(element))
             out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
         for i in range(n_atoms):
-            for j in range(n_atoms):
+            for j in range(i+1, n_atoms):
                 if bonds[i,j]:
                     out.write('{:3d}'.format(i+1))
                     out.write('{:3d}'.format(j+1))
@@ -754,7 +776,7 @@ def parse_args(argv=None):
     parser.add_argument('--fit_atoms', action='store_true', help='Fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--output_sdf', action='store_true', help='Output .sdf file of fit atom positions')
     parser.add_argument('--max_iter', type=int, default=np.inf, help='Maximum number of iterations for atom fitting')
-    parser.add_argument('--lambda_E', type=float, default=0.0, help='Interatomic bond energy loss weight for gradient descent atom fitting')
+    parser.add_argument('--lambda_E', type=float, default=1.0, help='Interatomic bond energy loss weight for gradient descent atom fitting')
     parser.add_argument('--fine_tune', action='store_true', help='Fine-tune final fit atom positions to summed grid channels')
     parser.add_argument('--fit_GMM', action='store_true', help='Fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='Noise model for GMM atom fitting (d|p)')
@@ -764,8 +786,10 @@ def parse_args(argv=None):
     parser.add_argument('-l2', '--lig_file2', default='', help='Alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="Apply Wiener deconvolution to atom density grids")
     parser.add_argument('--scale_grids', type=float, default=1.0, help='Factor by which to scale atom density grids')
+    parser.add_argument('--norm_grids', action='store_true', help='Divide non-zero atom density grid channels by their maximum')
     parser.add_argument('--deconv_fit', action='store_true', help="Apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="Noise-to-signal ratio for Wiener deconvolution")
+    parser.add_argument('--radius_factor', default=1.0, type=float, help="Factor to multiply atom radius for Wiener deconvolution")
     parser.add_argument('--greedy', action='store_true', help="Initialize atoms to optimized positions when atom fitting")
     parser.add_argument('--bonded', action='store_true', help="Add atoms by creating bonds to existing atoms when atom fitting")
     parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='Maximum energy of bonds to consider when adding bonded atoms')
@@ -835,10 +859,15 @@ def main(argv):
 
         if args.combine_channels:
             grids, channels = combine_element_grids_and_channels(grids, channels)
+        n_channels = len(channels)
 
         if args.deconv_grids:
             grids = wiener_deconv_grids(grids, channels, center, resolution, radius_multiple, \
-                                        noise_ratio=args.noise_ratio)
+                                        noise_ratio=args.noise_ratio, radius_factor=args.radius_factor)
+
+        if args.norm_grids:
+            norm = np.linalg.norm(grids.reshape(n_channels, -1), axis=1)[:,np.newaxis,np.newaxis,np.newaxis]
+            grids /= norm + 1e-1
 
         grids *= args.scale_grids
 
@@ -855,10 +884,11 @@ def main(argv):
                                    center=center,
                                    resolution=resolution,
                                    max_iter=args.max_iter,
-                                   lambda_E=args.lambda_E,
                                    radius_multiple=radius_multiple,
+                                   lambda_E=args.lambda_E,
                                    deconv_fit=args.deconv_fit,
                                    noise_ratio=args.noise_ratio,
+                                   radius_factor=args.radius_factor,
                                    greedy=args.greedy,
                                    bonded=args.bonded,
                                    max_init_bond_E=args.max_init_bond_E,
@@ -877,6 +907,7 @@ def main(argv):
                 print('lig_name = {}, shape = {}, density_norm2 = {:.5f}, density_sum = {:.5f}, density_max = {:.5f}' \
                       .format(lig_name, grids.shape, density_norm2, density_sum, density_max), file=sys.stderr)
 
+        pymol_file = '{}.pymol'.format(out_prefix)
         if args.fit_atoms and args.output_sdf:
             get_elements = lambda x: [channels[i][1] for i in x]
             if args.all_iters_sdf:
@@ -888,12 +919,13 @@ def main(argv):
             #mols = [ob_mol_from_xyz_elems_bonds(*args) for args in xyz_elems_bonds]
             #write_ob_mols_to_sdf_file(fit_file, mols)
             write_xyz_elems_bonds_to_sdf_file(fit_file, xyz_elems_bonds)
+            conv = ob.OBConversion()
+            conv.SetInFormat('sdf')
+            print(conv.ReadFile(ob.OBMol(), fit_file))
 
+            write_pymol_script(pymol_file, dict(out_prefix=dx_files), [rec_file, lig_file, fit_file])
         else:
-            fit_file = None
-
-        pymol_file = '{}.pymol'.format(out_prefix)
-        write_pymol_script(pymol_file, dx_files, rec_file, lig_file, fit_file)
+            write_pymol_script(pymol_file, dict(out_prefix=dx_files), [rec_file, lig_file])
 
 
 if __name__ == '__main__':
