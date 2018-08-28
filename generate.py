@@ -1,5 +1,5 @@
 from __future__ import print_function
-import sys, os, re, argparse, ast, time
+import sys, os, re, argparse, ast, time, glob
 import numpy as np
 from rdkit import Chem
 from collections import Counter
@@ -548,22 +548,17 @@ def combine_element_grids_and_channels(grids, channels):
     return np.array(elem_grids), elem_channels
 
 
-def write_pymol_script(pymol_file, dx_groups, other_files, centers):
+def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
     '''
     Write a pymol script with a map object for each of dx_files, a
     group of all map objects (if any), a rec_file, a lig_file, and
     an optional fit_file.
     '''
     with open(pymol_file, 'w') as out:
-        for group_name, dx_files in dx_groups.items():
-            map_objects = []
-            for dx_file in dx_files:
-                map_object = dx_file.replace('.dx', '_grid')
-                out.write('load {}, {}\n'.format(dx_file, map_object))
-                map_objects.append(map_object)
-            if map_objects:
-                map_group = group_name + '_grids'
-                out.write('group {}, {}\n'.format(map_group, ' '.join(map_objects)))
+        for dx_prefix in dx_groups:
+            dx_pattern = '{}_*.dx'.format(dx_prefix)
+            grid_name = '{}_grid'.format(dx_prefix)
+            out.write('load_group {}, {}\n'.format(dx_pattern, grid_name))
 
         for other_file in other_files:
             obj_name = os.path.splitext(os.path.basename(other_file))[0]
@@ -872,9 +867,7 @@ def main(argv):
         grids *= args.scale_grids
 
         if args.output_dx:
-            dx_files = write_grids_to_dx_files(out_prefix, grids, channels, center, resolution)
-        else:
-            dx_files = []
+            write_grids_to_dx_files(out_prefix, grids, channels, center, resolution)
 
         if args.fit_atoms: # fit atoms to density grids
 
@@ -923,9 +916,9 @@ def main(argv):
             conv.SetInFormat('sdf')
             print(conv.ReadFile(ob.OBMol(), fit_file))
 
-            write_pymol_script(pymol_file, dict(out_prefix=dx_files), [rec_file, lig_file, fit_file])
+            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file, fit_file])
         else:
-            write_pymol_script(pymol_file, dict(out_prefix=dx_files), [rec_file, lig_file])
+            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file])
 
 
 if __name__ == '__main__':
