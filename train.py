@@ -31,7 +31,7 @@ def training_plot(plot_file, loss_df, binsize=1):
     fig.savefig(plot_file)
 
 
-def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
+def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_noise_std):
     '''
     Train or test the discriminative GAN component for n_iter iterations.
     '''
@@ -48,6 +48,8 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
         del disc_loss_dict['info_loss']
         info_loss_weight = disc_net.blobs['info_loss'].diff
         disc_net.blobs['info_loss'].diff[...] = 0.0
+    elif 'lig_instance_std' in disc_net.blobs:
+        inst_noise_std *= np.ones_like(disc_net.blobs['lig_instance_std'].data)
 
     for i in range(n_iter):
 
@@ -70,7 +72,11 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
             lig_bal = np.concatenate([lig_real[half1,...], lig_gen[half2,...]])
             if 'info_label' in disc_net.blobs:
                 info_label = np.zeros_like(disc_net.blobs['info_label'].data)
-                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1, info_label=info_label)
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1,
+                                            info_label=info_label)
+            elif 'lig_instance_std' in disc_net.blobs:
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1,
+                                            lig_instance_std=inst_noise_std)
             else:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
 
@@ -91,7 +97,11 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
             lig_bal = np.concatenate([lig_gen[half1,...], lig_real[half2,...]])
             if 'info_label' in disc_net.blobs:
                 info_label = np.zeros_like(disc_net.blobs['info_label'].data)
-                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2, info_label=info_label)
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2,
+                                            info_label=info_label)
+            elif 'lig_instance_std' in disc_net.blobs:
+                disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2,
+                                            lig_instance_std=inst_noise_std)
             else:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
 
@@ -109,7 +119,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
     return {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
-def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
+def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_noise_std):
     '''
     Train or test the generative GAN component for n_iter iterations.
     '''
@@ -120,6 +130,9 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
 
     gen_loss_dict = {n: np.full(n_iter, np.nan) for n in gen_net.blobs if n.endswith('loss')}
     disc_loss_dict = {n: np.full(n_iter, np.nan) for n in disc_net.blobs if n.endswith('loss')}
+
+    if 'lig_instance_std' in disc_net.blobs:
+        inst_noise_std *= np.ones_like(disc_net.blobs['lig_instance_std'].data)
 
     for i in range(n_iter):
 
@@ -148,7 +161,11 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate):
         if 'info_label' in disc_net.blobs:
             info_label = np.concatenate([gen_net.blobs['lig_latent_mean'].data,
                                          gen_net.blobs['lig_latent_log_std'].data], axis=1)
-            disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size), info_label=info_label)
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size),
+                                        info_label=info_label)
+        elif 'lig_instance_std' in disc_net.blobs:
+            disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size),
+                                        lig_instance_std=inst_noise_std)
         else:
             disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
 
@@ -190,11 +207,16 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
     loss_df = pd.DataFrame(index=range(args.cont_iter, args.max_iter+1, args.test_interval))
     loss_df.index.name = 'iteration'
 
+    inst_noise_std = args.instance_noise
+    inst_noise_decay = 0.01**(1./args.max_iter)
+
     times = []
     train_disc_loss = -1
     train_gen_adv_loss = -1
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
+
+        inst_noise_std *= inst_noise_decay
 
         if i%args.snapshot == 0:
             disc_solver.snapshot()
@@ -207,11 +229,11 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
 
                 disc_loss_dict = \
                     disc_step(test_data_net, gen_solver, disc_solver, args.test_iter,
-                              train=False, alternate=args.alternate)
+                              train=False, alternate=args.alternate, inst_noise_std=inst_noise_std)
 
                 gen_loss_dict, gen_adv_loss_dict = \
                     gen_step(test_data_net, gen_solver, disc_solver, args.test_iter,
-                             train=False, alternate=args.alternate)
+                             train=False, alternate=args.alternate, inst_noise_std=inst_noise_std)
 
                 if 'info_loss' in gen_adv_loss_dict:
                     loss = gen_adv_loss_dict.pop('info_loss')
@@ -258,12 +280,12 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         # train
         disc_loss_dict = \
             disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter,
-                      train=train_disc, alternate=args.alternate)
+                      train=train_disc, alternate=args.alternate, inst_noise_std=inst_noise_std)
         train_disc_loss = disc_loss_dict['loss']
 
         gen_loss_dict, gen_adv_loss_dict = \
             gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter,
-                     train=train_gen, alternate=args.alternate)
+                     train=train_gen, alternate=args.alternate, inst_noise_std=inst_noise_std)
         train_gen_adv_loss = gen_adv_loss_dict['loss']
 
         disc_solver.increment_iter()
@@ -313,6 +335,7 @@ def parse_args(argv):
     parser.add_argument('--cont_iter', default=0, type=int)
     parser.add_argument('--alternate', default=False, action='store_true')
     parser.add_argument('--balance', default=False, action='store_true')
+    parser.add_argument('--instance_noise', type=float, default=0.0)
     parser.add_argument('--gen_weights_file')
     parser.add_argument('--disc_weights_file')
     return parser.parse_args(argv)

@@ -19,7 +19,10 @@ NAME_FORMATS = {
             + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
     (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
+            + '_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
+
+    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
+            + '{arch_options}_{loss_types}'
 }
 
 
@@ -56,7 +59,15 @@ SEARCH_SPACES = {
                  n_filters=[32, 64],
                  width_factor=[2],
                  n_latent=[1024],
-                 loss_types=['', 'e', 'em', 'c'])
+                 loss_types=['', 'e', 'em', 'c']),
+
+    (1, 4): dict(encode_type=['vr-l', '_vr-l'],
+                 data_dim=[32, 24],
+                 resolution=[0.5],
+                 n_levels=[3],
+                 conv_per_level=[1, 2, 3],
+                 arch_options=['', 'l'],
+                 loss_types=['', 'e', 'a'])
 }
 
 
@@ -83,11 +94,12 @@ def format_encode_type(molgrid_data, encoders, decoders):
     return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
 
 
-def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_filters,
-               width_factor, n_latent=None, loss_types='', batch_size=50,
+def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch_options='',
+               n_filters=32, width_factor=2, n_latent=1024, loss_types='', batch_size=50,
                conv_kernel_size=3, pool_type='a', depool_type='n'):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
+    leaky_relu = 'l' in arch_options
 
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
@@ -235,7 +247,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                   type='ReLU',
                                   bottom=[conv_name],
                                   top=[conv_name])
-                relu_layer.relu_param.negative_slope = 0.0
+                relu_layer.relu_param.negative_slope = 0.1 * leaky_relu
                 relu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
 
                 curr_top = conv_name
@@ -347,7 +359,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                  coeff=[0.5, 0.5, -1.0, -0.5])
                 latent_kldiv = add_name
 
-                sum_name = 'aff_loss' # TODO handle multiple Kldiv losses
+                sum_name = 'kldiv_loss' # TODO handle multiple Kldiv losses
                 sum_layer = net.layer.add()
                 sum_layer.update(name=sum_name,
                                  type='Reduction',
@@ -409,7 +421,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                           type='ReLU',
                           bottom=[fc_name],
                           top=[fc_name])
-        relu_layer.relu_param.negative_slope = 0.0
+        relu_layer.relu_param.negative_slope = 0.1 * leaky_relu
         relu_layer.relu_param.engine = caffe.params.ReLU.CAFFE
         curr_top = fc_name
 
@@ -492,7 +504,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                                     type='ReLU',
                                     bottom=[deconv_name],
                                     top=[deconv_name])
-                derelu_layer.relu_param.negative_slope = 0.0
+                derelu_layer.relu_param.negative_slope = 0.1 * leaky_relu * ~last_conv
 
                 curr_top = deconv_name
                 curr_n_filters = next_n_filters
@@ -510,7 +522,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
         # loss
         if 'e' in loss_types:
 
-            loss_name = 'loss'
+            loss_name = 'L2_loss'
             loss_layer = net.layer.add()
             loss_layer.update(name=loss_name,
                               type='EuclideanLoss',
@@ -518,9 +530,31 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
                               top=[loss_name],
                               loss_weight=[1.0])
 
+        if 'a' in loss_types:
+
+            diff_name = 'diff'
+            diff_layer = net.layer.add()
+            diff_layer.update(name=diff_name,
+                              type='Eltwise',
+                              bottom=[pred_top, label_top],
+                              top=[diff_name])
+            diff_param = diff_layer.eltwise_param
+            diff_param.update(operation=caffe.params.Eltwise.SUM,
+                              coeff=[-1.0, 1.0])
+
+            loss_name = 'L1_loss'
+            loss_layer = net.layer.add()
+            loss_layer.update(name=loss_name,
+                              type='Reduction',
+                              bottom=[diff_name],
+                              top=[loss_name],
+                              loss_weight=[1.0])
+            loss_param = loss_layer.reduction_param
+            loss_param.update(operation=caffe.params.Reduction.ASUM)
+
         if 'c' in loss_types:
 
-            loss_name = 'loss'
+            loss_name = 'chan_L2_loss'
             loss_layer = net.layer.add()
             loss_layer.update(name=loss_name,
                               type='Python',
@@ -533,7 +567,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, n_fi
 
         if 'm' in loss_types:
 
-            loss_name = 'rmsd_loss'
+            loss_name = 'mask_L2_loss'
             loss_layer = net.layer.add()
             loss_layer.update(name=loss_name,
                               type='Python',
