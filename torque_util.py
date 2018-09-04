@@ -144,12 +144,12 @@ def get_n_gpus_free(queue):
     not currently being used by any jobs, using pbsnodes and qstat.
     '''
     # get total n_gpus in each currently available node in the queue
-    df = get_pbsnodes_data(stdout)
+    df = get_pbsnodes_data()
     df = df[df['properties'].map(lambda qs: queue in qs.split(','))]
     df = df[df['state'] == 'free']
     n_gpus = df['gpus'].astype(int)
     # get jobs running on those nodes that are using gpus
-    df = get_qstat_data(stdout)
+    df = get_qstat_data()
     df = df[df['job_state'] == 'R']
     df = df[df['gpus_reserved'].notnull()]
     df['Node Id'] = df['gpus_reserved'].map(lambda g: g.split(':', 1)[0])
