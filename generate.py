@@ -791,6 +791,9 @@ def parse_args(argv=None):
     parser.add_argument('--verbose', default=0, type=int, help="Verbose output level")
     parser.add_argument('--all_iters_sdf', action='store_true', help="Output a .sdf structure for each outer iteration of atom fitting")
     parser.add_argument('--gpu', action='store_true', help="Generate grids from model on GPU")
+    parser.add_argument('--random_rotation', default=False, action='store_true')
+    parser.add_argument('--random_translate', default=0.0, type=float)
+    parser.add_argument('--fix_center_to_origin', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -802,9 +805,13 @@ def main(argv):
     data_param = net_param.get_molgrid_data_param(caffe.TEST)
     data_param.shuffle = False
     data_param.balanced = False
+    data_param.random_rotation = args.random_rotation
+    data_param.random_translate = args.random_translate
+    data_param.fix_center_to_origin = args.fix_center_to_origin
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
     use_covalent_radius = data_param.use_covalent_radius
+    fix_center_to_origin = data_param.fix_center_to_origin
 
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
@@ -840,6 +847,7 @@ def main(argv):
         out_prefix = '{}_{}'.format(args.out_prefix, lig_name)
 
         try:
+            assert not fix_center_to_origin
             center = get_center_from_sdf_file(lig_file)
         except:
             center = np.zeros(3) # TODO use openbabel, this is a hack 
