@@ -16,12 +16,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 sns.set_context('notebook')#, rc={'lines.linewidth': 1.0})
-sns.set_palette('muted')
+sns.set_palette('Set1')
 
 import models
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, ymax=None):
+def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=None):
     if hue:
         df = df.reset_index().set_index([hue, x])
     else:
@@ -32,22 +32,17 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, ymax=None):
     assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows),
-                             sharex=True, sharey=False, squeeze=False)
-    axes = axes.reshape(n_rows, n_cols)
-    axes = iter(axes.flatten())
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(width*n_cols, height*n_rows),
+                             sharex=len(x) == 1,
+                             sharey=len(y) == 1,
+                             squeeze=False)
+    iter_axes = iter(axes.flatten())
+    extra = []
     for i, y_ in enumerate(y):
-        ax = next(axes)
+        ax = next(iter_axes)
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
-        #if 'L2_loss' in y_:
-        #    ax.set_ylim(0, 20)
-        #if 'KLdiv_loss' in y_:
-        #    ax.set_ylim(-10, 1000)
-        #if 'disc_loss' in y_:
-        #    ax.set_ylim(0.69, 0.7)
-        #if 'gen_adv_loss' in y_:
-        #    ax.set_ylim(0.69, 0.7)
         if hue:
             for j, _ in df.groupby(level=0):
                 mean = df.loc[j][y_].groupby(level=0).mean()
@@ -61,20 +56,20 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, ymax=None):
             sem = df[y_].groupby(level=0).sem()
             ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5)
             ax.plot(mean.index, mean)
-        if ymax is not None:
-            ax.set_ylim((-0.1*ymax, 1.1*ymax))
-    fig.tight_layout()
-    extra = []
-    if hue:
-        lgd = ax.legend(loc='upper left', bbox_to_anchor=(1.00, 1.025), ncol=1)
+        if y_max is not None:
+            ax.set_ylim((0.0, y_max))
+        handles, labels = ax.get_legend_handles_labels()
+    if hue: # add legend
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False)
         lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
-    for ax in axes:
+    for ax in iter_axes:
         ax.axis('off')
+    fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, box=False, height=3, width=3, ymax=None):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=None):
     df = df.reset_index()
     if n_cols is None:
         n_cols = len(x)
@@ -87,24 +82,18 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, box=False, height=3, widt
                              sharex=len(x) == 1,
                              sharey=len(y) == 1,
                              squeeze=False)
-    axes = axes.flatten()
-    iter_axes = iter(axes)
+    iter_axes = iter(axes.flatten())
     extra = []
     for y_ in y:
-        if ymax is not None: # apply ceiling at ymax
-            df[y_].loc[df[y_] > ymax] = ymax
+        if y_max is not None: # apply ceiling at y_max
+            df[y_].loc[df[y_] > y_max] = y_max
         for x_ in x:
             ax = next(iter_axes)
-            if box:
-                sns.boxplot(data=df, x=x_, y=y_, hue=hue, ax=ax, showfliers=False, boxprops=dict(alpha=1.0))
-                handles, labels = ax.get_legend_handles_labels()
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=30)
-            else:
-                sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=1.0, ax=ax)
-                handles, labels = ax.get_legend_handles_labels()
-                sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, markers='', capsize=0.1, ax=ax)
-            if ymax is not None:
-                ax.set_ylim((0.0, ymax))
+            sns.stripplot(data=df, x=x_, y=y_, hue=hue, jitter=True, alpha=1.0, ax=ax)
+            handles, labels = ax.get_legend_handles_labels()
+            #sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=True, alpha=1.0, ax=ax)
+            if y_max is not None:
+                ax.set_ylim((0.0, y_max))
             if hue:
                 ax.legend_.remove()
     if hue: # add legend
@@ -179,7 +168,7 @@ def parse_args(argv=None):
     parser.add_argument('-r', '--rename_col', default=[], action='append')
     parser.add_argument('-x', '--x', default=[], action='append')
     parser.add_argument('-y', '--y', default=[], action='append')
-    parser.add_argument('--ymax', type=float)
+    parser.add_argument('--y_max', type=float)
     parser.add_argument('--hue', default=None)
     parser.add_argument('--n_cols', default=4, type=int)
     parser.add_argument('--masked', default=False, action='store_true')
@@ -214,17 +203,27 @@ def main(argv):
     for model_name, model_df in agg_df.groupby(level=0):
 
         # try to parse it as a GAN
-        m = re.match(r'^(.+_)?(.+e(\d+)_.+)(_disc.+)$', model_name)
+        m = re.match(r'^(.+_)?(.+e(\d+)_.+)_(disc.+)$', model_name)
         name_fields = add_data_from_name_parse(agg_df, model_name, models.SOLVER_NAME_FORMAT, m.group(1))
 
-        gen_model_name = model_name_fix(m.group(2), ' ', [-1, -2])
         v = tuple(int(c) for c in m.group(3))
+        if v == (1, 4):
+            gen_model_name = model_name_fix(m.group(2), ' ', [-1, -2])
+        elif v == (1, 3):            
+            gen_model_name = model_name_fix(m.group(2), ' ', [-1, -5])
+        else:
+            gen_model_name = m.group(2)
         agg_df.loc[model_name, 'gen_model_version'] = str(v)
         name_fields.append('gen_model_version')
         name_fields += add_data_from_name_parse(agg_df, model_name, models.GEN_NAME_FORMATS[v], gen_model_name)
 
-        disc_model_name = model_name_fix(m.group(4), '_', [-1])
-        name_fields += add_data_from_name_parse(agg_df, model_name, models.DISC_NAME_FORMAT, disc_model_name)
+        try:
+            disc_model_name = model_name_fix(m.group(4), '_' , [-1])
+            name_fields += add_data_from_name_parse(agg_df, model_name, models.DISC_NAME_FORMAT, disc_model_name)
+        except:
+            disc_model_name = m.group(4)
+            name_fields += add_data_from_name_parse(agg_df, model_name, models.OLD_DISC_NAME_FORMAT, disc_model_name)
+
 
     # fill in default values so that different model versions may be compared
     if 'resolution' in agg_df:
@@ -266,7 +265,7 @@ def main(argv):
     if args.plot_lines: # plot training progress
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
-                   n_cols=args.n_cols, ymax=args.ymax)
+                   n_cols=args.n_cols, y_max=args.y_max)
 
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
  
@@ -276,7 +275,7 @@ def main(argv):
     if args.plot_strips: # plot final loss distributions
         strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
         plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
-                    n_cols=args.n_cols, ymax=args.ymax)
+                    n_cols=args.n_cols, y_max=args.y_max)
 
     # display names of best models
     print()

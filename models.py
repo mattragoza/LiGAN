@@ -11,22 +11,23 @@ caffe.set_device(0)
 import caffe_util
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{solver_options}_{instance_noise:.1f}_'
+SOLVER_NAME_FORMAT = '{solver_name}_{G_train_iter:d}_{D_train_iter:d}_{solver_options}_{instance_noise:.1f}_'
 
-DISC_NAME_FORMAT = '_disc2_in{disc_options}'
+DISC_NAME_FORMAT = 'disc2_in{D_arch_options}'
+OLD_DISC_NAME_FORMAT = 'disc_{data_dim:d}_{D_n_levels:d}_{D_conv_per_level:d}_{D_n_filters:d}_{D_width_factor:d}_in'
 
 GEN_NAME_FORMATS = {
-    (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{pool_type}_{depool_type}',
+    (1, 1): '{encode_type}e11_{data_dim:d}_{G_n_levels:d}_{G_conv_per_level:d}' \
+            + '_{G_n_filters:d}_{G_pool_type}_{G_depool_type}',
 
-    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{width_factor:d}_{loss_types}',
+    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{G_n_levels:d}_{G_conv_per_level:d}' \
+            + '_{G_n_filters:d}_{G_width_factor:d}_{G_loss_types}',
 
-    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '{gen_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
+    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{G_n_levels:d}_{G_conv_per_level:d}' \
+            + '{G_arch_options}_{G_n_filters:d}_{G_width_factor:d}_{G_n_latent:d}_{G_loss_types}',
 
-    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '{gen_options}_{loss_types}'
+    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{G_n_levels:d}_{G_conv_per_level:d}' \
+            + '{G_arch_options}_{G_loss_types}'
 }
 
 
