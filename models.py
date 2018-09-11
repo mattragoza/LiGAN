@@ -11,7 +11,11 @@ caffe.set_device(0)
 import caffe_util
 
 
-NAME_FORMATS = {
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{solver_options}_{instance_noise:.1f}_'
+
+DISC_NAME_FORMAT = '_disc2_in{disc_options}'
+
+GEN_NAME_FORMATS = {
     (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
             + '_{n_filters:d}_{pool_type}_{depool_type}',
 
@@ -19,14 +23,14 @@ NAME_FORMATS = {
             + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
     (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
+            + '{gen_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
 
     (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '{arch_options}_{loss_types}'
+            + '{gen_options}_{loss_types}'
 }
 
 
-SEARCH_SPACES = {
+GEN_SEARCH_SPACES = {
     (1, 1): dict(encode_type=['c', 'a'],
                  data_dim=[24],
                  resolution=[0.5],
@@ -51,22 +55,15 @@ SEARCH_SPACES = {
                  pool_type=['a'],
                  depool_type=['n']),
 
-    (1, 3): dict(encode_type=['rvl-l', '_rvl-l'],
-                 data_dim=[24],
+    (1, 3): dict(encode_type=['vr-l', '_vr-l', 'rl-l', '_rl-l', 'rvl-l', '_rvl-l'],
+                 data_dim=[12],
                  resolution=[0.5],
-                 n_levels=[3],
-                 conv_per_level=[2, 3],
-                 n_filters=[32, 64],
-                 width_factor=[2],
-                 n_latent=[1024],
-                 loss_types=['', 'e', 'em', 'c']),
-
-    (1, 4): dict(encode_type=['vr-l', '_vr-l'],
-                 data_dim=[32, 24],
-                 resolution=[0.5],
-                 n_levels=[3],
+                 n_levels=[1],
                  conv_per_level=[1, 2, 3],
-                 arch_options=['', 'l'],
+                 gen_options=[''],
+                 n_filters=[8, 16],
+                 width_factor=[1, 2],
+                 n_latent=[128],
                  loss_types=['', 'e', 'a'])
 }
 
@@ -94,12 +91,12 @@ def format_encode_type(molgrid_data, encoders, decoders):
     return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
 
 
-def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch_options='',
+def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, gen_options='',
                n_filters=32, width_factor=2, n_latent=1024, loss_types='', batch_size=50,
                conv_kernel_size=3, pool_type='a', depool_type='n'):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
-    leaky_relu = 'l' in arch_options
+    leaky_relu = 'l' in gen_options
 
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
@@ -611,8 +608,8 @@ def main(argv):
     args = parse_args(argv)
 
     model_data = []
-    for kwargs in keyword_product(**SEARCH_SPACES[args.version]):
-        model_name = NAME_FORMATS[args.version].format(**kwargs)
+    for kwargs in keyword_product(**GEN_SEARCH_SPACES[args.version]):
+        model_name = GEN_NAME_FORMATS[args.version].format(**kwargs)
         model_file = os.path.join('models', model_name + '.model')
         net_param = make_model(**kwargs)
         net_param.to_prototxt(model_file)

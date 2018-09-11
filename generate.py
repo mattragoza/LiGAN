@@ -808,6 +808,7 @@ def main(argv):
     data_param.random_rotation = args.random_rotation
     data_param.random_translate = args.random_translate
     data_param.fix_center_to_origin = args.fix_center_to_origin
+    data_param.radius_multiple = 1.5
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
     use_covalent_radius = data_param.use_covalent_radius
@@ -855,7 +856,6 @@ def main(argv):
         density_norm2 = np.sum(grids**2)
         density_sum = np.sum(grids)
         density_max = np.max(grids)
-        assert np.any(grids != 0)
 
         if not channels: # infer channel info from shape of first grids
             channels = channel_info.get_channels_for_grids(grids, use_covalent_radius)
