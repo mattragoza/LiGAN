@@ -24,7 +24,7 @@ import models
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=None):
     if hue:
         df = df.reset_index().set_index([hue, x])
-    else:
+    elif df.index.name != x:
         df = df.reset_index().set_index(x)
     if n_cols is None:
         n_cols = len(y)
@@ -60,13 +60,14 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=N
             ax.set_ylim((0.0, y_max))
         handles, labels = ax.get_legend_handles_labels()
     if hue: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False)
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
         lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
     for ax in iter_axes:
         ax.axis('off')
     fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
+    plt.close(fig)
 
 
 def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=None):
@@ -97,13 +98,14 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, y_max=
             if hue:
                 ax.legend_.remove()
     if hue: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False)
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
         lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
     for ax in iter_axes:
         ax.axis('off')
     fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
+    plt.close(fig)
 
 
 def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check):

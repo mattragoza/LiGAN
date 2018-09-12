@@ -7,28 +7,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-sns.set_style('white')
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
 import caffe_util
-
-
-def training_plot(plot_file, loss_df, binsize=1):
-
-    loss_df = loss_df.groupby(np.arange(len(loss_df))//binsize).mean()
-    loss_df.index = binsize*(loss_df.index + 1)
-
-    fig, ax = plt.subplots()
-    ax.set_xlabel('iteration')
-    ax.set_ylabel('loss')
-    for column in loss_df:
-        ax.plot(loss_df.index, loss_df[column], label=column, linewidth=2)
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(plot_file)
+import results
+sns.set_style('whitegrid')
 
 
 def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_noise_std):
@@ -198,15 +183,13 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_n
            {n: np.nanmean(l) for n,l in disc_loss_dict.items()}
 
 
-def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, loss_out, args):
+def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
+                    loss_df, loss_out, plot_out, args):
     '''
     Train a GAN using the provided train_data_net, gen_solver, and disc_solver.
     Return the loss output from periodically testing on each of test_data_nets
     as a data frame, and write it to loss_out as training to proceeds.
     '''
-    loss_df = pd.DataFrame(index=range(args.cont_iter, args.max_iter+1, args.test_interval))
-    loss_df.index.name = 'iteration'
-
     inst_noise_std = args.instance_noise
     inst_noise_decay = 0.01**(1./args.max_iter)
 
@@ -225,7 +208,7 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         first_cont_iter = (args.cont_iter and i == args.cont_iter)
         if i%args.test_interval == 0 and not first_cont_iter: # test
 
-            for data_name, test_data_net in test_data_nets.items():
+            for test_data, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
                     disc_step(test_data_net, gen_solver, disc_solver, args.test_iter,
@@ -237,20 +220,27 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
 
                 if 'info_loss' in gen_adv_loss_dict:
                     loss = gen_adv_loss_dict.pop('info_loss')
-                    loss_df.loc[i, '{}_info_loss'.format(data_name)] = loss
+                    loss_df.loc[(i, test_data), 'info_loss'] = loss
 
                 for loss_name, loss in disc_loss_dict.items():
-                    loss_df.loc[i, '{}_disc_{}'.format(data_name, loss_name)] = loss
+                    loss_df.loc[(i, test_data), 'disc_{}'.format(loss_name)] = loss
 
                 for loss_name, loss in gen_loss_dict.items():
-                    loss_df.loc[i, '{}_gen_{}'.format(data_name, loss_name)] = loss
+                    loss_df.loc[(i, test_data), 'gen_{}'.format(loss_name)] = loss
 
                 for loss_name, loss in gen_adv_loss_dict.items():
-                    loss_df.loc[i, '{}_gen_adv_{}'.format(data_name, loss_name)] = loss
+                    loss_df.loc[(i, test_data), 'gen_adv_{}'.format(loss_name)] = loss
 
-            first_test = (i == 0)
-            loss_df.loc[i:i+1].to_csv(loss_out, header=first_test, sep=' ')
+            loss_out.seek(0)
+            loss_df.to_csv(loss_out, sep=' ')
             loss_out.flush()
+
+            plot_out.seek(0)
+            results.plot_lines(plot_out, loss_df,
+                               x='iteration',
+                               y=loss_df.columns,
+                               hue='test_data')
+            plot_out.flush()
 
             time_elapsed = np.sum(times)
             time_mean = time_elapsed // len(times)
@@ -261,9 +251,10 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
             print('  {} elapsed'.format(time_elapsed))
             print('  {} per iter'.format(time_mean))
             print('  {} left'.format(time_left))
-            for loss_name in loss_df:
-                loss = loss_df.loc[i, loss_name]
-                print('  {} = {}'.format(loss_name, loss))
+            for test_data in test_data_nets:
+                for loss_name in loss_df:
+                    loss = loss_df.loc[(i, test_data), loss_name]
+                    print('  {} {} = {}'.format(test_data, loss_name, loss))
             sys.stdout.flush()
 
         if i == args.max_iter:
@@ -297,8 +288,6 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver, los
         assert train_disc_loss > 0.0
 
         times.append(dt.timedelta(seconds=time.time() - start))
-
-    return loss_df
 
 
 def get_train_and_test_files(data_prefix, fold_nums):
@@ -392,22 +381,26 @@ def main(argv):
             disc_state_file = '{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter)
             gen_solver.restore(gen_state_file)
             disc_solver.restore(disc_state_file)
-            loss_out = open(loss_file, 'a')
+            loss_df = pd.read_csv(loss_file, sep=' ', header=0, index_col=[0, 1])
+            loss_df = loss_df[:args.cont_iter+1]
         else:
-            loss_out = open(loss_file, 'w')
+            columns = ['iteration', 'test_data']
+            loss_df = pd.DataFrame(columns=columns).set_index(columns)
+
+        loss_out = open(loss_file, 'w')
+
+        plot_file = '{}.{}.png'.format(args.out_prefix, fold)
+        plot_out = open(plot_file, 'w')
 
         # begin training GAN
         try:
-            loss_df = train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
-                                      loss_out, args)
-        except:
+            train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
+                            loss_df, loss_out, plot_out, args)
+        finally:
             disc_solver.snapshot()
             gen_solver.snapshot()
-            raise
-
-        # plot training output against iteration
-        plot_file = '{}.{}.pdf'.format(args.out_prefix, fold)
-        training_plot(plot_file, loss_df)
+            loss_out.close()
+            plot_out.close()
 
 
 if __name__ == '__main__':
