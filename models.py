@@ -60,11 +60,11 @@ GEN_SEARCH_SPACES = {
                  data_dim=[12],
                  resolution=[0.5],
                  n_levels=[1],
-                 conv_per_level=[1, 2, 3],
+                 conv_per_level=[0, 1, 2, 3],
                  arch_options=[''],
                  n_filters=[8, 16],
                  width_factor=[1, 2],
-                 n_latent=[128],
+                 n_latent=[4, 8, 16, 32, 64, 128],
                  loss_types=['', 'e', 'a'])
 }
 
@@ -308,10 +308,11 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
         decoder_type = dict(d='data', r='rec', l='lig')[d]
         label_top = net[decoder_type]
         label_n_filters = nc[d]
+        next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
 
         fc = '{}_latent_defc'.format(decoder_type)
         net[fc] = caffe.layers.InnerProduct(curr_top,
-            num_output=dec_init_n_filters*dec_init_dim**3,
+            num_output=next_n_filters*dec_init_dim**3,
             weight_filler=dict(type='xavier'))
 
         relu = '{}_relu'.format(fc)
@@ -321,7 +322,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
         reshape = '{}_latent_reshape'.format(decoder_type)
         net[reshape] = caffe.layers.Reshape(net[fc],
-            shape=dict(dim=[bsz, dec_init_n_filters] + [dec_init_dim]*3))
+            shape=dict(dim=[bsz, next_n_filters] + [dec_init_dim]*3))
 
         curr_top = net[reshape]
         curr_n_filters = dec_init_n_filters
