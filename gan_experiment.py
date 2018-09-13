@@ -10,19 +10,19 @@ if __name__ == '__main__':
 
     data_name = 'two_atoms' #'lowrmsd' #'genlowrmsd'
     data_root = '/net/pulsar/home/koes/mtr22/gan/data/' #'/net/pulsar/home/koes/dkoes/PDBbind/refined-set/' #general-set-with-refined/'
-    max_iter = 10000
+    max_iter = 25000
     cont_iter = 0
     seed = 0
 
     job_args = []
     for pbs_template in ['adam0_2_2_b_0.0.pbs', 'adam0_2_2_b_0.1.pbs']:
-        for gen_model_file in glob.glob('models/_vr-le14_24_*'):
-            for disc_model_file in glob.glob('models/disc2_in*'):
+        for gen_model_file in glob.glob('models/_*e13_12_*'):
+            for disc_model_file in glob.glob('models/disc_12_*_in*'):
                 for fold in [3]:
                     gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
                     gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
                     resolution = 0.5 #gen_model_name.split('_')[3]
-                    data_model_name = 'data_24_{}_cov_origin'.format(resolution)
+                    data_model_name = 'data_12_{}_cov_origin'.format(resolution)
                     disc_model_name = os.path.splitext(os.path.split(disc_model_file)[1])[0]
                     seed, fold = int(seed), int(fold)
                     gen_warmup_name = gen_model_name.lstrip('_')
@@ -44,3 +44,4 @@ if __name__ == '__main__':
                     job_args.append((pbs_file, 4*seed + fold))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)
+
