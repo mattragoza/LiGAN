@@ -16,7 +16,7 @@ import results
 sns.set_style('whitegrid')
 
 
-def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_noise_std):
+def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
     '''
     Train or test the discriminative GAN component for n_iter iterations.
     '''
@@ -34,7 +34,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
         info_loss_weight = disc_net.blobs['info_loss'].diff
         disc_net.blobs['info_loss'].diff[...] = 0.0
     elif 'lig_instance_std' in disc_net.blobs:
-        inst_noise_std *= np.ones_like(disc_net.blobs['lig_instance_std'].data)
+        instance_noise_std = np.full_like(disc_net.blobs['lig_instance_std'].data, args.instance_noise)
 
     for i in range(n_iter):
 
@@ -44,7 +44,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
             rec_real = data_out['rec']
             lig_real = data_out['lig']
 
-            if alternate: # sample unit ligand latent space
+            if args.alternate: # sample unit ligand latent space
                 gen_net.forward(start='rec', end='rec_latent_fc', rec=rec_real, lig=lig_real)
                 gen_net.blobs['lig_latent_mean'].data[...] = 0.0
                 gen_net.blobs['lig_latent_std'].data[...] = 1.0
@@ -61,7 +61,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
                                             info_label=info_label)
             elif 'lig_instance_std' in disc_net.blobs:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1,
-                                            lig_instance_std=inst_noise_std)
+                                            lig_instance_std=instance_noise_std)
             else:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half1)
 
@@ -75,7 +75,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
 
         else: # first half gen, second half real
 
-            if alternate: # autoencode real ligand
+            if args.alternate: # autoencode real ligand
                 gen_out = gen_net.forward(start='lig_level0_conv0', end='lig_gen')
                 lig_gen = gen_out['lig_gen']     
 
@@ -86,7 +86,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
                                             info_label=info_label)
             elif 'lig_instance_std' in disc_net.blobs:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2,
-                                            lig_instance_std=inst_noise_std)
+                                            lig_instance_std=instance_noise_std)
             else:
                 disc_out = disc_net.forward(rec=rec_real, lig=lig_bal, label=half2)
 
@@ -104,7 +104,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_
     return {n: l.mean() for n,l in disc_loss_dict.items()}
 
 
-def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_noise_std):
+def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
     '''
     Train or test the generative GAN component for n_iter iterations.
     '''
@@ -117,7 +117,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_n
     disc_loss_dict = {n: np.full(n_iter, np.nan) for n in disc_net.blobs if n.endswith('loss')}
 
     if 'lig_instance_std' in disc_net.blobs:
-        inst_noise_std *= np.ones_like(disc_net.blobs['lig_instance_std'].data)
+        instance_noise_std = np.full_like(disc_net.blobs['lig_instance_std'].data, args.instance_noise)
 
     for i in range(n_iter):
 
@@ -127,7 +127,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_n
         lig_real = data_out['lig']
 
         # generate fake ligands
-        if alternate and i%2:
+        if args.alternate and i%2:
             # sample unit ligand latent space instead of conditioning on real ligand, no gen_loss
             gen_net.forward(end='latent_concat', rec=rec_real, lig=lig_real)
             gen_net.blobs['lig_latent_mean'].data[...] = 0.0
@@ -150,7 +150,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_n
                                         info_label=info_label)
         elif 'lig_instance_std' in disc_net.blobs:
             disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size),
-                                        lig_instance_std=inst_noise_std)
+                                        lig_instance_std=instance_noise_std)
         else:
             disc_out = disc_net.forward(rec=rec_real, lig=lig_gen, label=np.ones(batch_size))
 
@@ -171,7 +171,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, alternate, inst_n
             gen_net.blobs['lig_gen'].diff[...] = disc_net.blobs['lig'].diff
             gen_net.clear_param_diffs()
 
-            if alternate and i%2: # skip gen_loss and lig encoder
+            if args.alternate and i%2: # skip gen_loss and lig encoder
                 gen_net.backward(start='lig_gen', end='lig_latent_noise')
                 gen_net.backward(start='rec_latent_fc', end='rec')
             else:
@@ -190,16 +190,13 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
     Return the loss output from periodically testing on each of test_data_nets
     as a data frame, and write it to loss_out as training to proceeds.
     '''
-    inst_noise_std = args.instance_noise
-    inst_noise_decay = 0.01**(1./args.max_iter)
-
     times = []
-    train_disc_loss = -1
-    train_gen_adv_loss = -1
+    train_disc_loss = np.nan
+    train_gen_adv_loss = np.nan
+    train_disc = True
+    train_gen = True
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
-
-        inst_noise_std *= inst_noise_decay
 
         if i%args.snapshot == 0:
             disc_solver.snapshot()
@@ -211,12 +208,10 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
             for test_data, test_data_net in test_data_nets.items():
 
                 disc_loss_dict = \
-                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter,
-                              train=False, alternate=args.alternate, inst_noise_std=inst_noise_std)
+                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args)
 
                 gen_loss_dict, gen_adv_loss_dict = \
-                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter,
-                             train=False, alternate=args.alternate, inst_noise_std=inst_noise_std)
+                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args)
 
                 if 'info_loss' in gen_adv_loss_dict:
                     loss = gen_adv_loss_dict.pop('info_loss')
@@ -262,21 +257,31 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
 
         # dynamic G/D balancing
         if args.balance:
-            train_disc = train_disc_loss >= train_gen_adv_loss
-            train_gen = train_gen_adv_loss >= train_disc_loss
+            if train_disc and train_disc_loss < 0.1*train_gen_adv_loss:
+                train_disc = False
+                train_gen = True
+                print('TRAIN G ONLY')
+
+            if not train_disc and train_disc_loss > 0.5*train_gen_adv_loss:
+                train_disc = True
+                train_gen = True
+                print('TRAIN G AND D')
+
+            if train_gen and train_disc_loss > train_gen_adv_loss:
+                train_disc = True
+                train_gen = False
+                print('TRAIN D ONLY')
         else:
             train_disc = True
             train_gen = True
 
         # train
         disc_loss_dict = \
-            disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter,
-                      train=train_disc, alternate=args.alternate, inst_noise_std=inst_noise_std)
+            disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, train_disc, args)
         train_disc_loss = disc_loss_dict['loss']
 
         gen_loss_dict, gen_adv_loss_dict = \
-            gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter,
-                     train=train_gen, alternate=args.alternate, inst_noise_std=inst_noise_std)
+            gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, train_gen, args)
         train_gen_adv_loss = gen_adv_loss_dict['loss']
 
         disc_solver.increment_iter()
