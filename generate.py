@@ -10,8 +10,10 @@ from itertools import izip
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
-import openbabel as ob
-
+try:
+    import openbabel as ob
+except ImportError as e:
+    print(e)
 import caffe_util
 import channel_info
 
@@ -794,6 +796,7 @@ def parse_args(argv=None):
     parser.add_argument('--random_rotation', default=False, action='store_true')
     parser.add_argument('--random_translate', default=0.0, type=float)
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true')
+    parser.add_argument('--instance_noise', default=0.0, type=float)
     return parser.parse_args(argv)
 
 
@@ -859,6 +862,9 @@ def main(argv):
 
         if not channels: # infer channel info from shape of first grids
             channels = channel_info.get_channels_for_grids(grids, use_covalent_radius)
+
+        if args.instance_noise:
+            grids += np.random.normal(0, args.instance_noise, grids.shape)
 
         if args.combine_channels:
             grids, channels = combine_element_grids_and_channels(grids, channels)
