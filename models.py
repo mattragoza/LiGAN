@@ -61,7 +61,7 @@ GEN_SEARCH_SPACES = {
                  resolution=[0.5],
                  n_levels=[1],
                  conv_per_level=[0, 1, 2, 3],
-                 arch_options=[''],
+                 arch_options=['', 'l'],
                  n_filters=[8, 16],
                  width_factor=[1, 2],
                  n_latent=[4, 8, 16, 32, 64, 128],
@@ -377,8 +377,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 relu = '{}_relu'.format(deconv)
                 net[relu] = caffe.layers.ReLU(net[deconv],
-                    negative_slope=0.1*leaky_relu*~last_conv,
-                    in_place=True)
+                    negative_slope=0.1*leaky_relu,
+                    in_place=~last_conv)
 
                 curr_top = net[deconv]
                 curr_n_filters = next_n_filters

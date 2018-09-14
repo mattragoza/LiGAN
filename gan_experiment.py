@@ -14,10 +14,40 @@ if __name__ == '__main__':
     cont_iter = 0
     seed = 0
 
+    pbs_temps = [
+        'adam0_2_2__0.0.pbs',
+        'adam0_2_2_g_0.0.pbs',
+        'adam0_2_2_s_0.0.pbs',
+        'adam0_2_2__0.01.pbs',
+        'adam0_2_2_g_0.01.pbs',
+        'adam0_2_2_s_0.01.pbs',
+        'adam1_2_2__0.0.pbs',
+        'adam1_2_2_g_0.0.pbs',
+        'adam1_2_2_s_0.0.pbs',
+        'adam1_2_2__0.01.pbs',
+        'adam1_2_2_g_0.01.pbs',
+        'adam1_2_2_s_0.01.pbs',
+        'adam2_2_2__0.0.pbs',
+        'adam2_2_2_g_0.0.pbs',
+        'adam2_2_2_s_0.0.pbs',
+        'adam2_2_2__0.01.pbs',
+        'adam2_2_2_g_0.01.pbs',
+        'adam2_2_2_s_0.01.pbs',
+        'adam3_2_2__0.0.pbs',
+        'adam3_2_2_g_0.0.pbs',
+        'adam3_2_2_s_0.0.pbs',
+        'adam3_2_2__0.01.pbs',
+        'adam3_2_2_g_0.01.pbs',
+        'adam3_2_2_s_0.01.pbs'
+    ]
+
+    pbs_temps = np.random.choice(pbs_temps, 10, replace=False)
+
+    gan_names = []
     job_args = []
-    for pbs_template in ['adam0_2_2_b_0.0.pbs', 'adam0_2_2_b_0.1.pbs']:
-        for gen_model_file in glob.glob('models/_*e13_12_*'):
-            for disc_model_file in glob.glob('models/disc_12_*_in*'):
+    for pbs_template in pbs_temps:
+        for gen_model_file in ['models/_vr-le13_12_0.5_1_2l_8_1_8_', 'models/_vr-le13_12_0.5_1_2l_16_1_8_']:
+            for disc_model_file in ['models/disc_12_1_1l_8_1_in', 'models/disc_12_1_1l_16_1_in']:
                 for fold in [3]:
                     gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
                     gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
@@ -41,7 +71,11 @@ if __name__ == '__main__':
                                                cont_iter=cont_iter,
                                                gen_warmup_name=gen_warmup_name)
 
+                    gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
+
+    with open('GAN_NAMES', 'w') as f:
+        f.write('\n'.join(gan_names))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)
 
