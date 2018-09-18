@@ -13,71 +13,96 @@ import caffe_util
 
 SOLVER_NAME_FORMAT = '{solver_name}_{G_train_iter:d}_{D_train_iter:d}_{solver_options}_{instance_noise:.1f}_'
 
-DISC_NAME_FORMAT = 'disc2_in{D_arch_options}'
-OLD_DISC_NAME_FORMAT = 'disc_{data_dim:d}_{D_n_levels:d}_{D_conv_per_level:d}_{D_n_filters:d}_{D_width_factor:d}_in'
+
+DISC_NAME_FORMATS = {
+    (1, 1): 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
+}
+
+
+DISC_SEARCH_SPACES = {
+    (1, 1): dict(
+        encode_type=['_d-'],
+        data_dim=[24],
+        resolution=[0.5],
+        n_levels=[2, 3],
+        conv_per_level=[1, 2],
+        arch_options=['', 'l'],
+        n_filters=[8, 16],
+        width_factor=[1, 2],
+        n_latent=[1],
+        loss_types=['x'])
+}
+
 
 GEN_NAME_FORMATS = {
-    (1, 1): '{encode_type}e11_{data_dim:d}_{G_n_levels:d}_{G_conv_per_level:d}' \
-            + '_{G_n_filters:d}_{G_pool_type}_{G_depool_type}',
+    (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
+            + '_{n_filters:d}_{pool_type}_{depool_type}',
 
-    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{G_n_levels:d}_{G_conv_per_level:d}' \
-            + '_{G_n_filters:d}_{G_width_factor:d}_{G_loss_types}',
+    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
+            + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
     (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
             + '{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
 
-    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{G_n_levels:d}_{G_conv_per_level:d}' \
-            + '{G_arch_options}_{G_loss_types}'
+    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
+            + '{arch_options}_{loss_types}'
 }
 
 
 GEN_SEARCH_SPACES = {
-    (1, 1): dict(encode_type=['c', 'a'],
-                 data_dim=[24],
-                 resolution=[0.5],
-                 n_levels=[1, 2, 3, 4, 5],
-                 conv_per_level=[1, 2, 3],
-                 n_filters=[16, 32, 64, 128],
-                 width_factor=[1],
-                 n_latent=[None],
-                 loss_types=['e'],
-                 pool_type=['c', 'm', 'a'],
-                 depool_type=['c', 'n']),
+    (1, 1): dict(
+        encode_type=['c', 'a'],
+        data_dim=[24],
+        resolution=[0.5],
+        n_levels=[1, 2, 3, 4, 5],
+        conv_per_level=[1, 2, 3],
+        n_filters=[16, 32, 64, 128],
+        width_factor=[1],
+        n_latent=[None],
+        loss_types=['e'],
+        pool_type=['c', 'm', 'a'],
+        depool_type=['c', 'n']),
 
-    (1, 2): dict(encode_type=['c', 'a'],
-                 data_dim=[24],
-                 resolution=[0.5, 1.0],
-                 n_levels=[2, 3],
-                 conv_per_level=[2, 3],
-                 n_filters=[16, 32, 64, 128],
-                 width_factor=[1, 2, 3],
-                 n_latent=[None],
-                 loss_types=['e'],
-                 pool_type=['a'],
-                 depool_type=['n']),
+    (1, 2): dict(
+        encode_type=['c', 'a'],
+        data_dim=[24],
+        resolution=[0.5, 1.0],
+        n_levels=[2, 3],
+        conv_per_level=[2, 3],
+        n_filters=[16, 32, 64, 128],
+        width_factor=[1, 2, 3],
+        n_latent=[None],
+        loss_types=['e'],
+        pool_type=['a'],
+        depool_type=['n']),
 
-    (1, 3): dict(encode_type=['r-l', '_r-l', 'vr-l', '_vr-l', 'rl-l', '_rl-l', 'rvl-l', '_rvl-l'],
-                 data_dim=[12],
-                 resolution=[0.5],
-                 n_levels=[1],
-                 conv_per_level=[0, 1, 2, 3],
-                 arch_options=['', 'l'],
-                 n_filters=[8, 16],
-                 width_factor=[1, 2],
-                 n_latent=[4, 8, 16, 32, 64, 128],
-                 loss_types=['', 'e', 'a'])
+    (1, 3): dict(
+        encode_type=['vr-l', '_vr-l'],
+        data_dim=[24],
+        resolution=[0.5],
+        n_levels=[2, 3],
+        conv_per_level=[1, 2],
+        arch_options=['', 'l'],
+        n_filters=[8, 16],
+        width_factor=[1, 2],
+        n_latent=[8, 16],
+        loss_types=['', 'e', 'a'])
 }
 
 
 def parse_encode_type(encode_type):
+    disc_pat = r'disc'
+    m = re.match(disc_pat, encode_type)
+    if m:
+        encode_type = '_d-'
     old_pat = r'(_)?(v)?(a|c)'
     m = re.match(old_pat, encode_type)
     if m:
         encode_type = encode_type.replace('a', 'd-d')
         encode_type = encode_type.replace('c', 'r-l')
     encode_pat = r'(v)?(d|r|l)' 
-    decode_pat = r'(d|r|l)'
-    full_pat = r'(_)?(?P<enc>({})+)-(?P<dec>({})+)'.format(encode_pat, decode_pat)
+    decode_pat = r'(d|r|l|y)'
+    full_pat = r'(_)?(?P<enc>({})+)-(?P<dec>({})*)'.format(encode_pat, decode_pat)
     m = re.match(full_pat, encode_type)
     assert m, 'encode_type did not match pattern {}'.format(full_pat)
     molgrid_data = not m.group(1)
@@ -99,6 +124,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
     leaky_relu = 'l' in arch_options
 
+    assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
 
@@ -149,14 +175,17 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
     else:
 
-        if 'd' in encode_type:
-            net.data = caffe.layers.Input(shape=dict(dim=[bsz, nc['d'], dim, dim, dim]))
-
-        if 'r' in encode_type:
+        if 'r' in encode_type or 'd' in encode_type:
             net.rec = caffe.layers.Input(shape=dict(dim=[bsz, nc['r'], dim, dim, dim]))
 
-        if 'l' in encode_type:
+        if 'l' in encode_type or 'd' in encode_type:
             net.lig = caffe.layers.Input(shape=dict(dim=[bsz, nc['l'], dim, dim, dim]))
+
+        if 'd' in encode_type:
+            net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
+
+        if not decoders:
+            net.label = caffe.layers.Input(shape=dict(dim=[bsz, n_latent]))
 
     # encoder(s)
     encoder_tops = []
@@ -299,122 +328,137 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
         net.latent_concat = caffe.layers.Concat(*encoder_tops, axis=1)
         curr_top = net.latent_concat
 
-    # decoder(s)
-    dec_init_dim = curr_dim
-    dec_init_n_filters = curr_n_filters
-    decoder_tops = []
-    for d in decoders:
+    if decoders: # decoder(s)
 
-        decoder_type = dict(d='data', r='rec', l='lig')[d]
-        label_top = net[decoder_type]
-        label_n_filters = nc[d]
-        next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
+        dec_init_dim = curr_dim
+        dec_init_n_filters = curr_n_filters
+        decoder_tops = []
+        for d in decoders:
 
-        fc = '{}_latent_defc'.format(decoder_type)
-        net[fc] = caffe.layers.InnerProduct(curr_top,
-            num_output=next_n_filters*dec_init_dim**3,
-            weight_filler=dict(type='xavier'))
+            decoder_type = dict(d='data', r='rec', l='lig')[d]
+            label_top = net[decoder_type]
+            label_n_filters = nc[d]
+            next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
 
-        relu = '{}_relu'.format(fc)
-        net[relu] = caffe.layers.ReLU(net[fc],
-            negative_slope=0.1*leaky_relu,
-            in_place=True)
+            fc = '{}_latent_defc'.format(decoder_type)
+            net[fc] = caffe.layers.InnerProduct(curr_top,
+                num_output=next_n_filters*dec_init_dim**3,
+                weight_filler=dict(type='xavier'))
 
-        reshape = '{}_latent_reshape'.format(decoder_type)
-        net[reshape] = caffe.layers.Reshape(net[fc],
-            shape=dict(dim=[bsz, next_n_filters] + [dec_init_dim]*3))
+            relu = '{}_relu'.format(fc)
+            net[relu] = caffe.layers.ReLU(net[fc],
+                negative_slope=0.1*leaky_relu,
+                in_place=True)
 
-        curr_top = net[reshape]
-        curr_n_filters = dec_init_n_filters
-        curr_dim = dec_init_dim
+            reshape = '{}_latent_reshape'.format(decoder_type)
+            net[reshape] = caffe.layers.Reshape(net[fc],
+                shape=dict(dim=[bsz, next_n_filters] + [dec_init_dim]*3))
 
-        for i in reversed(range(n_levels)):
+            curr_top = net[reshape]
+            curr_n_filters = dec_init_n_filters
+            curr_dim = dec_init_dim
 
-            if i < n_levels-1: # upsample before convolution
+            for i in reversed(range(n_levels)):
 
-                unpool = '{}_level{}_unpool'.format(decoder_type, i)
-                pool_factor = pool_factors.pop(-1)
+                if i < n_levels-1: # upsample before convolution
 
-                if depool_type == 'c': # deconvolution with stride
+                    unpool = '{}_level{}_unpool'.format(decoder_type, i)
+                    pool_factor = pool_factors.pop(-1)
 
-                    net[unpool] = caffe.layers.Deconvolution(curr_top,
-                        convolution_param=dict(
-                            num_output=curr_n_filters,
-                            group=curr_n_filters,
-                            weight_filler=dict(type='xavier'),
-                            kernel_size=pool_factor,
-                            stride=pool_factor))
+                    if depool_type == 'c': # deconvolution with stride
 
-                elif depool_type == 'n': # nearest-neighbor interpolation
+                        net[unpool] = caffe.layers.Deconvolution(curr_top,
+                            convolution_param=dict(
+                                num_output=curr_n_filters,
+                                group=curr_n_filters,
+                                weight_filler=dict(type='xavier'),
+                                kernel_size=pool_factor,
+                                stride=pool_factor))
 
-                    net[unpool] = caffe.layers.Deconvolution(curr_top,
-                        param=dict(lr_mult=0, decay_mult=0),
-                        convolution_param=dict(
-                            num_output=curr_n_filters,
-                            group=curr_n_filters,
-                            weight_filler=dict(type='constant', value=1),
-                            bias_term=False,
-                            kernel_size=pool_factor,
-                            stride=pool_factor))
+                    elif depool_type == 'n': # nearest-neighbor interpolation
 
-                curr_top = net[unpool]
-                curr_dim = int(pool_factor*curr_dim)
-                next_n_filters = int(curr_n_filters//width_factor)
+                        net[unpool] = caffe.layers.Deconvolution(curr_top,
+                            param=dict(lr_mult=0, decay_mult=0),
+                            convolution_param=dict(
+                                num_output=curr_n_filters,
+                                group=curr_n_filters,
+                                weight_filler=dict(type='constant', value=1),
+                                bias_term=False,
+                                kernel_size=pool_factor,
+                                stride=pool_factor))
 
-            for j in range(conv_per_level): # convolutions
+                    curr_top = net[unpool]
+                    curr_dim = int(pool_factor*curr_dim)
+                    next_n_filters = int(curr_n_filters//width_factor)
 
-                last_conv = i == 0 and j+1 == conv_per_level
-                if last_conv:
-                    next_n_filters = label_n_filters
+                for j in range(conv_per_level): # convolutions
 
-                deconv = '{}_level{}_deconv{}'.format(decoder_type, i, j)
-                net[deconv] = caffe.layers.Deconvolution(curr_top,
-                        convolution_param=dict(
-                            num_output=next_n_filters,
-                            weight_filler=dict(type='xavier'),
-                            kernel_size=conv_kernel_size,
-                            pad=1))
+                    last_conv = i == 0 and j+1 == conv_per_level
+                    if last_conv:
+                        next_n_filters = label_n_filters
 
-                relu = '{}_relu'.format(deconv)
-                net[relu] = caffe.layers.ReLU(net[deconv],
-                    negative_slope=0.1*leaky_relu,
-                    in_place=~last_conv)
+                    deconv = '{}_level{}_deconv{}'.format(decoder_type, i, j)
+                    net[deconv] = caffe.layers.Deconvolution(curr_top,
+                            convolution_param=dict(
+                                num_output=next_n_filters,
+                                weight_filler=dict(type='xavier'),
+                                kernel_size=conv_kernel_size,
+                                pad=1))
 
-                curr_top = net[deconv]
-                curr_n_filters = next_n_filters
+                    relu = '{}_relu'.format(deconv)
+                    net[relu] = caffe.layers.ReLU(net[deconv],
+                        negative_slope=0.1*leaky_relu,
+                        in_place=~last_conv)
 
+                    curr_top = net[deconv]
+                    curr_n_filters = next_n_filters
+
+            # output
+            gen = '{}_gen'.format(decoder_type)
+            net[gen] = caffe.layers.Power(curr_top)
+
+    else:
+        label_top = net.label
         # output
-        gen = '{}_gen'.format(decoder_type)
-        net[gen] = caffe.layers.Power(curr_top)
+        if n_latent > 1:
+            net.output = caffe.layers.Softmax(curr_top)
+        else:
+            net.output = caffe.layers.Sigmoid(curr_top)
 
-        # loss
-        if 'e' in loss_types:
+    # loss
+    if 'e' in loss_types:
+        net.L2_loss = caffe.layers.EuclideanLoss(curr_top, label_top, loss_weight=1.0)
 
-            net.L2_loss = caffe.layers.EuclideanLoss(curr_top, label_top, loss_weight=1.0)
+    if 'a' in loss_types:
 
-        if 'a' in loss_types:
+        net.diff = caffe.layers.Eltwise(curr_top, label_top,
+            operation=caffe.params.Eltwise.SUM,
+            coeff=[-1.0, 1.0])
 
-            net.diff = caffe.layers.Eltwise(curr_top, label_top,
-                operation=caffe.params.Eltwise.SUM,
-                coeff=[-1.0, 1.0])
+        net.L1_loss = caffe.layers.Reduction(net.diff,
+            operation=caffe.params.Reduction.ASUM,
+            loss_weight=1.0)
 
-            net.L1_loss = caffe.layers.Reduction(net.diff,
-                operation=caffe.params.Reduction.ASUM,
-                loss_weight=1.0)
+    if 'c' in loss_types:
 
-        if 'c' in loss_types:
+        net.chan_L2_loss = caffe.layers.Python(curr_top, label_top,
+            model='channel_euclidean_loss_layer',
+            layer='ChannelEuclideanLossLayer',
+            loss_weight=1.0)
 
-            net.chan_L2_loss = caffe.layers.Python(curr_top, label_top,
-                model='channel_euclidean_loss_layer',
-                layer='ChannelEuclideanLossLayer',
-                loss_weight=1.0)
+    if 'm' in loss_types:
 
-        if 'm' in loss_types:
+        net.mask_L2_loss = caffe.layers.Python(curr_top, label_top,
+            model='masked_euclidean_loss_layer',
+            layer='MaskedEuclideanLossLayer',
+            loss_weight=0.0)
 
-            net.mask_L2_loss = caffe.layers.Python(curr_top, label_top,
-                model='masked_euclidean_loss_layer',
-                layer='MaskedEuclideanLossLayer',
-                loss_weight=0.0)
+    if 'x' in loss_types:
+
+        if n_latent > 1:
+            net.log_loss = caffe.layers.SoftmaxWithLoss(curr_top, label_top, loss_weight=1.0)
+        else:
+            net.log_loss = caffe.layers.SigmoidCrossEntropyLoss(curr_top, label_top, loss_weight=1.0)
 
     return net.to_proto()
 
@@ -440,18 +484,44 @@ def parse_version(version_str):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-v', '--version', type=parse_version, required=True)
+    parser.add_argument('-m', '--model_type', required=True)
+    parser.add_argument('-v', '--version', type=str)
     parser.add_argument('-s', '--do_scaffold', action='store_true')
+    parser.add_argument('-o', '--out_prefix', default='models')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
+    if args.model_type == 'gen':
+
+        if args.version is None:
+            version = (1, 3)
+        else:
+            version = parse_version(args.version)
+
+        search_space = GEN_SEARCH_SPACES[version]
+        name_format = GEN_NAME_FORMATS[version]
+
+    elif args.model_type == 'disc':
+
+        if args.version is None:
+            version = (1, 1)
+        else:
+            version = parse_version(args.version)
+
+        search_space = DISC_SEARCH_SPACES[version]
+        name_format = DISC_NAME_FORMATS[version]
+
+    else:
+        raise ValueError('--model_type must be "gen" or "disc"')
+
     model_data = []
-    for kwargs in keyword_product(**GEN_SEARCH_SPACES[args.version]):
-        model_name = GEN_NAME_FORMATS[args.version].format(**kwargs)
-        model_file = os.path.join('models', model_name + '.model')
+    for kwargs in keyword_product(**search_space):
+
+        model_name = name_format.format(**kwargs)
+        model_file = os.path.join(args.out_prefix, model_name + '.model')
         net_param = make_model(**kwargs)
         net_param.to_prototxt(model_file)
 
