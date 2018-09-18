@@ -1,4 +1,5 @@
 import sys, os, glob
+import numpy as np
 
 import torque_util
 
@@ -46,8 +47,8 @@ if __name__ == '__main__':
     gan_names = []
     job_args = []
     for pbs_template in pbs_temps:
-        for gen_model_file in ['models/_vr-le13_12_0.5_1_2l_8_1_8_', 'models/_vr-le13_12_0.5_1_2l_16_1_8_']:
-            for disc_model_file in ['models/disc_12_1_1l_8_1_in', 'models/disc_12_1_1l_16_1_in']:
+        for gen_model_file in ['models/_vr-le13_12_0.5_1_2l_8_1_8_.model', 'models/_vr-le13_12_0.5_1_2l_16_1_8_.model']:
+            for disc_model_file in ['models/disc_12_1_1l_8_1_in.model', 'models/disc_12_1_1l_16_1_in.model']:
                 for fold in [3]:
                     gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
                     gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
