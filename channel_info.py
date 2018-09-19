@@ -72,7 +72,11 @@ max_n_bonds = defaultdict(
 
 
 def get_default_channels(rec, lig, use_covalent_radius=False):
-    idx = rec_idx if rec else [] + lig_idx if lig else []
+    idx = []
+    if rec:
+        idx += rec_idx
+    if lig:
+        idx += lig_idx
     channels = []
     for i in idx:
         channel_name = smina_types[i].name
