@@ -287,6 +287,13 @@ def grid_to_points_and_values(grid, center, resolution):
     return points, grid.flatten()
 
 
+def get_atom_density_kernel(shape, resolution, atom_radius, radius_mult):
+    center = np.zeros(len(shape))
+    points = get_grid_points(shape, center, resolution)
+    density = get_atom_density(center, atom_radius, points, radius_mult)
+    return density.reshape(shape)
+
+
 def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, radius_multiple, lambda_E=1.0,
                        deconv_fit=False, noise_ratio=0.0, radius_factor=1.0, greedy=False, bonded=False, verbose=0,
                        all_iters=False, max_init_bond_E=0.5):

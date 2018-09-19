@@ -22,13 +22,13 @@ DISC_NAME_FORMATS = {
 DISC_SEARCH_SPACES = {
     (1, 1): dict(
         encode_type=['_d-'],
-        data_dim=[24],
+        data_dim=[12, 4],
         resolution=[0.5],
-        n_levels=[2, 3],
+        n_levels=[1, 2, 3],
         conv_per_level=[1, 2],
         arch_options=['', 'l'],
         n_filters=[8, 16],
-        width_factor=[1, 2],
+        width_factor=[1],
         n_latent=[1],
         loss_types=['x'])
 }
@@ -78,13 +78,13 @@ GEN_SEARCH_SPACES = {
 
     (1, 3): dict(
         encode_type=['vr-l', '_vr-l'],
-        data_dim=[24],
+        data_dim=[12, 24],
         resolution=[0.5],
-        n_levels=[2, 3],
+        n_levels=[1, 2, 3],
         conv_per_level=[1, 2],
-        arch_options=['', 'l'],
+        arch_options=['l', 'lg'],
         n_filters=[8, 16],
-        width_factor=[1, 2],
+        width_factor=[1],
         n_latent=[8, 16],
         loss_types=['', 'e', 'a'])
 }
@@ -123,6 +123,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
     leaky_relu = 'l' in arch_options
+    gaussian_output = 'g' in arch_options
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
@@ -373,7 +374,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                                 group=curr_n_filters,
                                 weight_filler=dict(type='xavier'),
                                 kernel_size=pool_factor,
-                                stride=pool_factor))
+                                stride=pool_factor,
+                                engine=caffe.params.Convolution.CAFFE))
 
                     elif depool_type == 'n': # nearest-neighbor interpolation
 
@@ -385,7 +387,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                                 weight_filler=dict(type='constant', value=1),
                                 bias_term=False,
                                 kernel_size=pool_factor,
-                                stride=pool_factor))
+                                stride=pool_factor,
+                                engine=caffe.params.Convolution.CAFFE))
 
                     curr_top = net[unpool]
                     curr_dim = int(pool_factor*curr_dim)
@@ -393,7 +396,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 for j in range(conv_per_level): # convolutions
 
-                    last_conv = i == 0 and j+1 == conv_per_level
+                    last_conv = i == 0 and j+1 == conv_per_level and not gaussian_output
                     if last_conv:
                         next_n_filters = label_n_filters
 
@@ -414,6 +417,20 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     curr_n_filters = next_n_filters
 
             # output
+            if gaussian_output:
+
+                guass_kernel_size = 7
+                conv = '{}_gauss_conv'.format(decoder_type)
+                net[conv] = caffe.layers.Convolution(curr_top,
+                    param=dict(lr_mult=0, decay_mult=0),
+                    num_output=label_n_filters,
+                    weight_filler=dict(type='constant', value=0),
+                    bias_term=False,
+                    kernel_size=guass_kernel_size,
+                    pad=guass_kernel_size//2)
+
+                curr_top = net[conv]
+
             gen = '{}_gen'.format(decoder_type)
             net[gen] = caffe.layers.Power(curr_top)
 
