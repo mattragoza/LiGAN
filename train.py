@@ -21,7 +21,7 @@ def get_metric_from_net(net, metric):
     if metric in net.blobs:
         return np.array(net.blobs[metric].data)
     elif metric == 'grad_norm':
-        return get_gradient_L2_norm(net)
+        return get_gradient_norm(net)
     elif metric == 'last_conv':
         last_conv = [n for n in net.blobs if 'conv' in n][-1]
         return np.mean(net.blobs[last_conv].data)
@@ -29,32 +29,84 @@ def get_metric_from_net(net, metric):
         raise KeyError(metric)
 
 
-def get_gradient_L2_norm(net):
-    L2_norm = 0.0
+def get_gradient_norm(net, ord=2):
+    grad_norm = 0.0
     for blob_vec in net.params.values():
         for blob in blob_vec:
-            L2_norm += np.sum(blob.diff**2)
-    return np.sqrt(L2_norm)
+            grad_norm += np.abs(blob.diff)**ord
+    return grad_norm**1/ord
 
 
-def gradient_normalize(net):
-    grad_norm = get_gradient_L2_norm(net)
+def gradient_normalize(net, ord=2):
+    grad_norm = get_gradient_norm(net, ord)
     if grad_norm > 1.0:
         for blob_vec in net.params.values():
             for blob in blob_vec:
                 blob.diff[...] /= grad_norm
 
 
-def spectral_normalize(net):
-    norm = lambda x: x/np.linalg.norm(x)
-    for blob_vec in net.params.values():
-        for blob in blob_vec:
-            W = blob.data.reshape(blob.shape[0], -1)
-            u = norm(np.random.normal(0, 1, W.shape[0]))
-            # for i in range(n_iter):
-            v = norm(np.matmul(W.T, u))
-            u = norm(np.matmul(W, v))
-            blob.diff[...] /= np.matmul(u, np.matmul(W, v)) 
+def normalize(x, ord=2):
+    return x / np.linalg.norm(x, ord)
+
+
+def spectral_power_iterate(W, u, n_iter):
+    for i in range(n_iter):
+        v = normalize(np.matmul(W.T, u))
+        u = normalize(np.matmul(W, v))
+    sigma = np.matmul(u.T, np.matmul(W, v))
+    return u, v, sigma
+
+
+def spectral_norm_init(net):
+
+    net.sn_params = defaultdict(dict)
+    for name, blob_vec in net.params.items():
+
+        W_blob = blob_vec[0]
+        W = W_blob.data.reshape(W_blob.shape[0], -1)
+
+        u = np.random.normal(0, 1, W.shape[0])
+        u, v, sigma = spectral_power_iterate(W, u, n_iter=10)
+
+        net.sn_params[name]['u'] = u
+        net.sn_params[name]['v'] = v
+        net.sn_params[name]['sigma'] = sigma
+
+
+def spectral_norm_forward(net, n_iter=1):
+
+    for name, blob_vec in net.params.items():
+
+        W_blob = blob_vec[0]
+        W = W_blob.data.reshape(W_blob.shape[0], -1)
+
+        u = net.sn_params[name]['u']
+        u, v, sigma = spectral_power_iterate(W, u, n_iter=1)
+        W_blob.data[...] /= sigma
+
+        net.sn_params[name]['u'] = u
+        net.sn_params[name]['v'] = v
+        net.sn_params[name]['sigma'] = sigma
+
+
+def spectral_norm_backward(net):
+
+    for name, blob_vec in net.params.items():
+
+        W_blob = blob_vec[0] # n_out, n_in
+        W_diff = W_blob.diff.reshape(W_blob.shape[0], -1)
+
+        y_blob = net.blobs[name] # n_batch, n_out
+        y_diff = y_blob.diff.reshape(y_blob.shape[0], -1)
+        y = y_blob.data.reshape(y_blob.shape[0], -1)
+
+        u = net.sn_params[name]['u']
+        v = net.sn_params[name]['v']
+        sigma = net.sn_params[name]['sigma']
+
+        lambd = np.sum(y_diff * y) / y.shape[0]
+        W_blob.diff[...] -= lambd * np.outer(u, v)
+        W_blob.diff[...] /= sigma
 
 
 def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
@@ -116,6 +168,10 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.blobs['info_label'].data[...] = info_label
             elif 'lig_instance_std' in disc_net.blobs:
                 disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
+
+            if args.disc_spectral_norm:
+                spectral_norm_forward(disc_net)
+
             disc_net.forward()
 
             if train or compute_grad: # update D only
@@ -123,14 +179,15 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.clear_param_diffs()
                 disc_net.backward()
 
+                if args.disc_spectral_norm:
+                    spectral_norm_backward(disc_net)
+
                 if args.disc_grad_norm:
                     gradient_normalize(disc_net)
 
                 if train:
                     disc_solver.apply_update()
 
-                    if args.disc_spectral_norm:
-                        spectral_normalize(disc_net)
 
             # record discriminator metrics
             for n in disc_metrics:
@@ -156,6 +213,10 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.blobs['info_label'].data[...] = info_label
             elif 'lig_instance_std' in disc_net.blobs:
                 disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
+
+            if args.disc_spectral_norm:
+                spectral_norm_forward(disc_net)
+
             disc_net.forward()
 
             if train or compute_grad: # update D only
@@ -163,14 +224,14 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.clear_param_diffs()
                 disc_net.backward()
 
+                if args.disc_spectral_norm:
+                    spectral_norm_backward(disc_net)
+
                 if args.disc_grad_norm:
                     gradient_normalize(disc_net)
 
                 if train:
                     disc_solver.apply_update()
-
-                    if args.disc_spectral_norm:
-                        spectral_normalize(disc_net)
 
             # record discriminator metrics
             for n in disc_metrics:
@@ -216,6 +277,10 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
         # generate fake ligands conditioned on receptors
         gen_net.blobs['rec'].data[...] = rec_real
         gen_net.blobs['lig'].data[...] = lig_real
+
+        if args.gen_spectral_norm:
+            spectral_norm_forward(gen_net)
+
         if args.alternate and i%2:
             # sample ligand prior (for rvl-l models)
             gen_net.forward(start='rec', end='rec_latent_fc')
@@ -258,14 +323,14 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
             else:
                 gen_net.backward()
 
+            if args.gen_spectral_norm:
+                spectral_norm_backward(gen_net)
+
             if args.gen_grad_norm:
                 gradient_normalize(gen_net)
 
             if train:
                 gen_solver.apply_update()
-
-                if args.gen_spectral_norm:
-                    spectral_normalize(gen_net)
 
         # record generator metrics
         for n in gen_metrics:
@@ -293,6 +358,12 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
     disc_iter = 0
     gen_iter = 0
     times = []
+
+    if args.disc_spectral_norm:
+        spectral_norm_init(disc_net)
+
+    if args.gen_spectral_norm:
+        spectral_norm_init(gen_net)
 
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
@@ -472,6 +543,9 @@ def main(argv):
                                                   snapshot_prefix=gen_prefix)
         if args.gen_weights_file:
             gen_solver.net.copy_from(args.gen_weights_file)
+
+        elif any(n == 'lig_gauss_conv' for n in gen_solver.net.blobs):
+            gen_solver.net.copy_from('lig_gauss_conv.caffemodel')
 
         # create solver for discriminative model
         disc_prefix = '{}.{}_disc'.format(args.out_prefix, fold)
