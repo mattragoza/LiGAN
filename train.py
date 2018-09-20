@@ -424,20 +424,21 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
 
         # dynamic G/D balancing
         if args.balance:
-            if train_disc and train_disc_loss < 0.1*train_gen_adv_loss:
+
+            # how much better is D than G?
+            train_loss_ratio = train_gen_adv_loss / train_disc_loss
+
+            if train_disc and train_loss_ratio > 10:
                 train_disc = False
-                train_gen = True
 
-            if not train_disc and train_disc_loss > 0.5*train_gen_adv_loss:
+            if not train_disc and train_loss_ratio < 2:
                 train_disc = True
-                train_gen = True
 
-            if train_gen and train_disc_loss > train_gen_adv_loss:
-                train_disc = True
+            if train_gen and train_loss_ratio < 1:
                 train_gen = False
-        else:
-            train_disc = True
-            train_gen = True
+
+            if not train_gen and train_loss_ratio > 2:
+                train_gen = True
 
         # train
         disc_metrics = \
