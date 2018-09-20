@@ -2,7 +2,7 @@ from __future__ import print_function, division
 import matplotlib
 matplotlib.use('Agg')
 import sys, os, argparse, time
-from collections import defaultdict
+from collections import OrderedDict
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -50,63 +50,48 @@ def normalize(x, ord=2):
 
 
 def spectral_power_iterate(W, u, n_iter):
+
+    W = W.reshape(W.shape[0], -1) # treat as matrix
+
     for i in range(n_iter):
         v = normalize(np.matmul(W.T, u))
         u = normalize(np.matmul(W, v))
+
     sigma = np.matmul(u.T, np.matmul(W, v))
     return u, v, sigma
 
 
-def spectral_norm_init(net):
+def spectral_norm_setup(net):
 
-    net.sn_params = defaultdict(dict)
-    for name, blob_vec in net.params.items():
-
-        W_blob = blob_vec[0]
-        W = W_blob.data.reshape(W_blob.shape[0], -1)
-
+    params = OrderedDict()
+    for layer in net.params:
+        W = net.params[layer][0]
         u = np.random.normal(0, 1, W.shape[0])
-        u, v, sigma = spectral_power_iterate(W, u, n_iter=10)
+        u, v, sigma = spectral_power_iterate(W.data, u, 10)
+        params[layer] = (u, v, sigma)
 
-        net.sn_params[name]['u'] = u
-        net.sn_params[name]['v'] = v
-        net.sn_params[name]['sigma'] = sigma
-
-
-def spectral_norm_forward(net, n_iter=1):
-
-    for name, blob_vec in net.params.items():
-
-        W_blob = blob_vec[0]
-        W = W_blob.data.reshape(W_blob.shape[0], -1)
-
-        u = net.sn_params[name]['u']
-        u, v, sigma = spectral_power_iterate(W, u, n_iter=1)
-        W_blob.data[...] /= sigma
-
-        net.sn_params[name]['u'] = u
-        net.sn_params[name]['v'] = v
-        net.sn_params[name]['sigma'] = sigma
+    return params
 
 
-def spectral_norm_backward(net):
+def spectral_norm_forward(net, params):
 
-    for name, blob_vec in net.params.items():
+    for layer in net.params:
+        W = net.params[layer][0]
+        u, v, sigma = params[layer]
+        u, v, sigma = spectral_power_iterate(W.data, u, 1)
+        W.data[...] /= sigma
+        params[layer] = (u, v, sigma)
 
-        W_blob = blob_vec[0] # n_out, n_in
-        W_diff = W_blob.diff.reshape(W_blob.shape[0], -1)
 
-        y_blob = net.blobs[name] # n_batch, n_out
-        y_diff = y_blob.diff.reshape(y_blob.shape[0], -1)
-        y = y_blob.data.reshape(y_blob.shape[0], -1)
+def spectral_norm_backward(net, params):
 
-        u = net.sn_params[name]['u']
-        v = net.sn_params[name]['v']
-        sigma = net.sn_params[name]['sigma']
-
-        lambd = np.sum(y_diff * y) / y.shape[0]
-        W_blob.diff[...] -= lambd * np.outer(u, v)
-        W_blob.diff[...] /= sigma
+    for layer in net.params:
+        W = net.params[layer][0]
+        y = net.blobs[layer]
+        u, v, sigma = params[layer]
+        lambda_ = np.sum(y.diff * y.data) / y.shape[0]
+        W.diff[...] -= (lambda_ * np.outer(u, v)).reshape(W.shape)
+        W.diff[...] /= sigma
 
 
 def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
@@ -170,7 +155,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
 
             if args.disc_spectral_norm:
-                spectral_norm_forward(disc_net)
+                spectral_norm_forward(disc_net, args.disc_spectral_norm)
 
             disc_net.forward()
 
@@ -180,7 +165,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.backward()
 
                 if args.disc_spectral_norm:
-                    spectral_norm_backward(disc_net)
+                    spectral_norm_backward(disc_net, args.disc_spectral_norm)
 
                 if args.disc_grad_norm:
                     gradient_normalize(disc_net)
@@ -214,7 +199,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
 
             if args.disc_spectral_norm:
-                spectral_norm_forward(disc_net)
+                spectral_norm_forward(disc_net, args.disc_spectral_norm)
 
             disc_net.forward()
 
@@ -224,7 +209,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 disc_net.backward()
 
                 if args.disc_spectral_norm:
-                    spectral_norm_backward(disc_net)
+                    spectral_norm_backward(disc_net, args.disc_spectral_norm)
 
                 if args.disc_grad_norm:
                     gradient_normalize(disc_net)
@@ -278,7 +263,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
         gen_net.blobs['lig'].data[...] = lig_real
 
         if args.gen_spectral_norm:
-            spectral_norm_forward(gen_net)
+            spectral_norm_forward(gen_net, args.gen_spectral_norm)
 
         if args.alternate and i%2:
             # sample ligand prior (for rvl-l models)
@@ -323,7 +308,7 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 gen_net.backward()
 
             if args.gen_spectral_norm:
-                spectral_norm_backward(gen_net)
+                spectral_norm_backward(gen_net, args.gen_spectral_norm)
 
             if args.gen_grad_norm:
                 gradient_normalize(gen_net)
@@ -359,10 +344,10 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
     times = []
 
     if args.disc_spectral_norm:
-        spectral_norm_init(disc_solver.net)
+        args.disc_spectral_norm = spectral_norm_setup(disc_solver.net)
 
     if args.gen_spectral_norm:
-        spectral_norm_init(gen_solver.net)
+        args.gen_spectral_norm = spectral_norm_setup(gen_solver.net)
 
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
