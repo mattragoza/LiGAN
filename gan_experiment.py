@@ -16,39 +16,37 @@ if __name__ == '__main__':
     seed = 0
 
     pbs_temps = [
-        'adam0_2_2__0.0.pbs',
-        'adam0_2_2_g_0.0.pbs',
-        'adam0_2_2_s_0.0.pbs',
-        'adam0_2_2__0.01.pbs',
-        'adam0_2_2_g_0.01.pbs',
-        'adam0_2_2_s_0.01.pbs',
-        'adam1_2_2__0.0.pbs',
-        'adam1_2_2_g_0.0.pbs',
-        'adam1_2_2_s_0.0.pbs',
-        'adam1_2_2__0.01.pbs',
-        'adam1_2_2_g_0.01.pbs',
-        'adam1_2_2_s_0.01.pbs',
+        'adam2_2_2_s_0.0.pbs',
         'adam2_2_2__0.0.pbs',
         'adam2_2_2_g_0.0.pbs',
-        'adam2_2_2_s_0.0.pbs',
         'adam2_2_2__0.01.pbs',
         'adam2_2_2_g_0.01.pbs',
         'adam2_2_2_s_0.01.pbs',
-        'adam3_2_2__0.0.pbs',
-        'adam3_2_2_g_0.0.pbs',
-        'adam3_2_2_s_0.0.pbs',
-        'adam3_2_2__0.01.pbs',
-        'adam3_2_2_g_0.01.pbs',
-        'adam3_2_2_s_0.01.pbs'
+        'adam2_2_2_b_0.0.pbs',
+        'adam2_2_2_bg_0.0.pbs',
+        'adam2_2_2_bs_0.0.pbs',
+        'adam2_2_2_b_0.01.pbs',
+        'adam2_2_2_bg_0.01.pbs',
+        'adam2_2_2_bs_0.01.pbs',
     ]
 
-    pbs_temps = np.random.choice(pbs_temps, 10, replace=False)
+    gen_model_files = [
+        'models/_vr-le13_12_0.5_1_2lg_8_1_8_.model',
+        'models/_vr-le13_12_0.5_1_2lg_16_1_8_.model',
+        'models/_vr-le13_12_0.5_1_2l_8_1_8_.model',
+        'models/_vr-le13_12_0.5_1_2l_16_1_8_.model',
+    ]
+
+    disc_model_files = [
+        'models/d11_12_1_1l_8_1_x.model',
+        'models/d11_12_1_1l_16_1_x.model',
+    ]
 
     gan_names = []
     job_args = []
     for pbs_template in pbs_temps:
-        for gen_model_file in ['models/_vr-le13_12_0.5_1_2l_8_1_8_.model', 'models/_vr-le13_12_0.5_1_2l_16_1_8_.model']:
-            for disc_model_file in ['models/disc_12_1_1l_8_1_in.model', 'models/disc_12_1_1l_16_1_in.model']:
+        for gen_model_file in gen_model_files:
+            for disc_model_file in disc_model_files:
                 for fold in [3]:
                     gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
                     gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
@@ -75,7 +73,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('GAN_NAMES', 'w') as f:
+    with open('GAN_NAMES2', 'w') as f:
         f.write('\n'.join(gan_names))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)
