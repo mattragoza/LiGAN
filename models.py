@@ -413,21 +413,23 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                         negative_slope=0.1*leaky_relu,
                         in_place=~last_conv)
 
-                    curr_top = net[deconv]
+                    curr_top = net[relu] if last_conv else net[deconv]
                     curr_n_filters = next_n_filters
 
             # output
             if gaussian_output:
 
-                guass_kernel_size = 7
+                gauss_kernel_size = 7
                 conv = '{}_gauss_conv'.format(decoder_type)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     param=dict(lr_mult=0, decay_mult=0),
                     num_output=label_n_filters,
-                    weight_filler=dict(type='constant', value=0),
+                    group=label_n_filters,
+                    weight_filler=dict(type='constant', value=0), # fill from saved weights
                     bias_term=False,
-                    kernel_size=guass_kernel_size,
-                    pad=guass_kernel_size//2)
+                    kernel_size=gauss_kernel_size,
+                    pad=gauss_kernel_size//2,
+                    engine=caffe.params.Convolution.CAFFE)
 
                 curr_top = net[conv]
 

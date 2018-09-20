@@ -33,7 +33,7 @@ def get_gradient_norm(net, ord=2):
     grad_norm = 0.0
     for blob_vec in net.params.values():
         for blob in blob_vec:
-            grad_norm += np.abs(blob.diff)**ord
+            grad_norm += np.sum(np.abs(blob.diff)**ord)
     return grad_norm**1/ord
 
 
@@ -162,7 +162,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
             # compute likelihood that generated ligands fool discriminator
             disc_net.blobs['rec'].data[...] = rec_real
             disc_net.blobs['lig'].data[...] = lig_bal
-            disc_net.blobs['label'].data[...] = half1
+            disc_net.blobs['label'].data[...] = half1[:,np.newaxis]
             if 'info_label' in disc_net.blobs:
                 info_label = np.zeros_like(disc_net.blobs['info_label'].data)
                 disc_net.blobs['info_label'].data[...] = info_label
@@ -188,7 +188,6 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
                 if train:
                     disc_solver.apply_update()
 
-
             # record discriminator metrics
             for n in disc_metrics:
                 disc_metrics[n][i] = get_metric_from_net(disc_net, n)
@@ -207,7 +206,7 @@ def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
             # compute likelihood that generated ligands fool discriminator
             disc_net.blobs['rec'].data[...] = rec_real
             disc_net.blobs['lig'].data[...] = lig_bal
-            disc_net.blobs['label'].data[...] = half2
+            disc_net.blobs['label'].data[...] = half2[:,np.newaxis]
             if 'info_label' in disc_net.blobs:
                 info_label = np.zeros_like(disc_net.blobs['info_label'].data)
                 disc_net.blobs['info_label'].data[...] = info_label
@@ -360,10 +359,10 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
     times = []
 
     if args.disc_spectral_norm:
-        spectral_norm_init(disc_net)
+        spectral_norm_init(disc_solver.net)
 
     if args.gen_spectral_norm:
-        spectral_norm_init(gen_net)
+        spectral_norm_init(gen_solver.net)
 
     for i in range(args.cont_iter, args.max_iter+1):
         start = time.time()
@@ -447,8 +446,8 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
         gen_metrics, gen_adv_metrics = \
             gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, train_gen, args)
 
-        train_disc_loss = disc_metrics['loss']
-        train_gen_adv_loss = gen_adv_metrics['loss']
+        train_disc_loss = disc_metrics['log_loss']
+        train_gen_adv_loss = gen_adv_metrics['log_loss']
 
         disc_solver.increment_iter()
         gen_solver.increment_iter()
