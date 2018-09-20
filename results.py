@@ -17,8 +17,8 @@ np.random.seed(0)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import random
-sns.set_style('white')
-sns.set_context('notebook')#, rc={'lines.linewidth': 1.0})
+sns.set_style('whitegrid')
+sns.set_context('notebook')
 sns.set_palette('Set1')
 
 import models
@@ -46,13 +46,16 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, outlier
     extra = []
     for i, y_ in enumerate(y):
 
+        if outlier_z is not None:
+            df[y_] = replace_outliers(df[y_], np.nan, z=outlier_z)
+
         ax = next(iter_axes)
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
-        if 'disc_loss' in y_ or 'gen_adv_loss' in y_:
+        if y_.endswith('log_loss'):
             ax.hlines(-np.log(0.5), *xlim, linestyle=':', linewidth=1.0)
-        else:
-            ax.hlines(0, *xlim, linestyle=':', linewidth=1.0)
+        
+        ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
 
         if hue:
             alpha = 0.5/df.index.get_level_values(hue).nunique()
@@ -93,7 +96,7 @@ def replace_outliers(x, value, z=3):
 def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, outlier_z=None):
     df = df.reset_index()
     if n_cols is None:
-        n_cols = len(x)
+        n_cols = len(x) - bool(hue)
     n_axes = len(x)*len(y)
     assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
@@ -174,14 +177,17 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
     return pd.concat(all_model_dfs)
 
 
-def add_data_from_name_parse(df, index, name_format, name):
+def add_data_from_name_parse(df, index, prefix, name_format, name):
     name_parse = parse.parse(name_format, name)
     if name_parse is None:
         raise Exception('could not parse {} with format {}'.format(repr(name), repr(name_format)))
-    name_fields = sorted(name_parse.named, key=name_parse.spans.get)
-    for field in name_fields:
+    name_fields = []
+    for field in sorted(name_parse.named, key=name_parse.spans.get):
         value = name_parse.named[field]
+        if prefix:
+            field = '{}_{}'.format(prefix, field)
         df.loc[index, field] = value
+        name_fields.append(field)
     return name_fields
 
 
@@ -246,28 +252,26 @@ def main(argv):
     for model_name, model_df in agg_df.groupby(level=0):
 
         # try to parse it as a GAN
-        m = re.match(r'^(.+_)?(.+e(\d+)_.+)_(disc.+)$', model_name)
+        m = re.match(r'^(.+_)?(.+e(\d+)_.+)_(d(\d+)_.+)$', model_name)
         solver_name = fix_name(m.group(1), ' ', [3])
-        name_fields = add_data_from_name_parse(agg_df, model_name, models.SOLVER_NAME_FORMAT, solver_name)
+        name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
 
-        v = tuple(int(c) for c in m.group(3))
-        if v == (1, 4):
+        gen_v = tuple(int(c) for c in m.group(3))
+        if gen_v == (1, 4):
             gen_model_name = fix_name(m.group(2), ' ', [-1, -2])
-        elif v == (1, 3):            
+        elif gen_v == (1, 3):            
             gen_model_name = fix_name(m.group(2), ' ', [-1, -5])
         else:
             gen_model_name = m.group(2)
-        agg_df.loc[model_name, 'gen_model_version'] = str(v)
+        agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
         name_fields.append('gen_model_version')
-        name_fields += add_data_from_name_parse(agg_df, model_name, models.GEN_NAME_FORMATS[v], gen_model_name)
+        name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
 
-        try:
-            disc_model_name = fix_name(m.group(4), '_' , [-1])
-            name_fields += add_data_from_name_parse(agg_df, model_name, models.DISC_NAME_FORMAT, disc_model_name)
-        except:
-            disc_model_name = m.group(4)
-            name_fields += add_data_from_name_parse(agg_df, model_name, models.OLD_DISC_NAME_FORMAT, disc_model_name)
-
+        disc_v = tuple(int(c) for c in m.group(5))
+        disc_model_name = m.group(4)
+        agg_df.loc[model_name, 'disc_model_version'] = str(disc_v)
+        name_fields.append('disc_model_version')
+        name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
 
     # fill in default values so that different model versions may be compared
     if 'resolution' in agg_df:
@@ -302,8 +306,6 @@ def main(argv):
     agg_df.rename(columns=col_name_map, inplace=True)
     name_fields = [col_name_map[n] for n in name_fields]
 
-    print(agg_df.head())
-
     # by default, don't make separate plots for the hue variable or variables with 1 unique value
     if not args.x:
         args.x = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
@@ -315,7 +317,7 @@ def main(argv):
 
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
  
-    #print(final_df[col_name_map['model_name']].unique())
+    print('\nfinal data')
     print(final_df)
     
     if args.plot_strips: # plot final loss distributions
@@ -324,7 +326,7 @@ def main(argv):
                     n_cols=args.n_cols, outlier_z=args.outlier_z)
 
     # display names of best models
-    print()
+    print('\nbest models')
     for y in args.y:
         print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)].head(5))
 

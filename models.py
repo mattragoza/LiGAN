@@ -11,7 +11,7 @@ caffe.set_device(0)
 import caffe_util
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{G_train_iter:d}_{D_train_iter:d}_{solver_options}_{instance_noise:.1f}_'
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:.1f}_'
 
 
 DISC_NAME_FORMATS = {
@@ -396,7 +396,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 for j in range(conv_per_level): # convolutions
 
-                    last_conv = i == 0 and j+1 == conv_per_level and not gaussian_output
+                    last_conv = (i == 0) and (j+1 == conv_per_level)
                     if last_conv:
                         next_n_filters = label_n_filters
 
