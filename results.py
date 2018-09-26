@@ -1,12 +1,8 @@
 from __future__ import print_function, division
 import matplotlib
 matplotlib.use('Agg')
-import sys
-import os
-import re
-import glob
-import argparse
-import parse
+import sys, os, re, glob, argparse, parse, ast
+from collections import defaultdict
 import pandas as pd
 pd.set_option('display.max_columns', 100)
 pd.set_option('display.max_colwidth', 100)
@@ -24,38 +20,33 @@ sns.set_palette('Set1')
 import models
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, outlier_z=None):
+def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None):
+
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
     if hue:
         df = df.set_index([hue, x])
     elif df.index.name != x:
         df = df.set_index(x)
+
     if n_cols is None:
         n_cols = len(y)
     n_axes = len(y)
     assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(width*n_cols, height*n_rows),
-                             sharex=len(x) == 1,
-                             sharey=len(y) == 1,
-                             squeeze=False)
-    iter_axes = iter(axes.flatten())
-    extra = []
-    for i, y_ in enumerate(y):
 
-        if outlier_z is not None:
-            df[y_] = replace_outliers(df[y_], np.nan, z=outlier_z)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows))
+    iter_axes = iter(axes.flatten())
+
+    share_axes = defaultdict(list)
+    share_ylim = dict()
+
+    for i, y_ in enumerate(y):
 
         ax = next(iter_axes)
         ax.set_xlabel(x)
         ax.set_ylabel(y_)
-        if y_.endswith('log_loss'):
-            ax.hlines(-np.log(0.5), *xlim, linestyle=':', linewidth=1.0)
-        
-        ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
 
         if hue:
             alpha = 0.5/df.index.get_level_values(hue).nunique()
@@ -71,9 +62,44 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, outlier
             sem = df[y_].groupby(level=0).sem()
             ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5)
             ax.plot(mean.index, mean)
-        handles, labels = ax.get_legend_handles_labels()
-        ax.set_xlim(xlim)
 
+        handles, labels = ax.get_legend_handles_labels()
+
+        if ylim:
+            if len(ylim) > 1:
+                ylim_ = ylim[i]
+            else:
+                ylim_ = ylim[0]
+        else:
+            ylim_ = ax.get_ylim()
+
+        m = re.match(r'(disc|gen_adv)_(.*)', y_)
+        if m and False:
+            name = m.group(2)
+            share_axes[name].append(ax)
+            if name not in share_ylim:
+                share_ylim[name] = ylim_
+            else:
+                ylim_ = share_ylim[name]
+
+        ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
+        if y_.endswith('log_loss'):
+            r = -np.log(0.5)
+            ax.hlines(r, *xlim, linestyle=':', linewidth=1.0)
+
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim_)
+
+    for n in share_axes:
+        share_ylim = (np.inf, -np.inf)
+        for ax in share_axes[n]:
+            ylim_ = ax.get_ylim()
+            share_ylim = (min(ylim_[0], share_ylim[0]),
+                          max(ylim_[1], share_ylim[1]))
+        for ax in share_axes[n]:
+            ax.set_ylim(share_ylim)
+
+    extra = []
     if hue: # add legend
         lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
         lgd.set_title(hue, prop=dict(size='small'))
@@ -85,11 +111,16 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, outlier
     plt.close(fig)
 
 
-def replace_outliers(x, value, z=3):
+def get_z_bounds(x, z):
     x_mean = np.mean(x)
     x_std = np.std(x)
     x_max = x_mean + z*x_std
     x_min = x_mean - z*x_std
+    return x_min, x_max
+
+
+def replace_outliers(x, value, z=3):
+    x_min, x_max = get_z_bounds(x, z)
     return np.where(x > x_max, value, np.where(x < x_min, value, x))
 
 
@@ -215,18 +246,21 @@ def parse_args(argv=None):
     parser.add_argument('-y', '--y', default=[], action='append')
     parser.add_argument('--outlier_z', default=None, type=float)
     parser.add_argument('--hue', default=None)
-    parser.add_argument('--n_cols', default=4, type=int)
+    parser.add_argument('--n_cols', default=None, type=int)
     parser.add_argument('--masked', default=False, action='store_true')
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
     parser.add_argument('--plot_ext', default='png')
     parser.add_argument('--aggregate', default=False, action='store_true')
     parser.add_argument('--test_data')
+    parser.add_argument('--ylim', default=[], action='append')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
+
+    args.ylim = [ast.literal_eval(yl) for yl in args.ylim]
 
     # read training output files from found model directories
     model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
@@ -313,7 +347,7 @@ def main(argv):
     if args.plot_lines: # plot training progress
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
-                   n_cols=args.n_cols, outlier_z=args.outlier_z)
+                   n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
  
@@ -323,7 +357,7 @@ def main(argv):
     if args.plot_strips: # plot final loss distributions
         strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
         plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
-                    n_cols=args.n_cols, outlier_z=args.outlier_z)
+                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
     # display names of best models
     print('\nbest models')
