@@ -121,7 +121,7 @@ def submit_job(args):
     job_id = qsub_job(pbs_file, array_idx)
     if work_dir:
         os.chdir(orig_dir)
-    print(job_id)
+    print('{} {}/{}'.format(job_id, work_dir, pbs_file))
     return job_id
 
 

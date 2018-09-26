@@ -577,6 +577,7 @@ def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
             obj_name = os.path.splitext(os.path.basename(other_file))[0]
             out.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
 
+
 def ob_mol_from_xyz_elems_bonds(xyz, elems, bonds):
     '''
     Return an OpenBabel molecule from an array of

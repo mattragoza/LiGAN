@@ -33,8 +33,8 @@ def set_atom_level(level, selection='*'):
             color = ci.elem_color_map[element]
             surface_object = dx_object.replace('.dx', '_surface')
             if fnmatch.fnmatch(dx_object, selection):
-                match = re.match(r'ROTATE_(\d+)', dx_prefix)
-                s = int(match.group(1))+1 if match else 0
+                match = re.match(r'(ROTATE|2A_lig_gen)_(\d+)', dx_prefix)
+                s = int(match.group(2))+1 if match else 0
                 cmd.isosurface(surface_object, dx_object, level=level, state=s)
                 cmd.color(color, surface_object)
             if dx_prefix not in surface_groups:
