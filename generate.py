@@ -701,8 +701,9 @@ def get_center_from_sdf_file(sdf_file, idx=0):
     by taking the mean of the non-hydrogen atom positions.
     '''
     mol = get_mols_from_sdf_file(sdf_file)[idx]
-    xyz = Chem.RemoveHs(mol).GetConformer().GetPositions()
-    return xyz.mean(axis=0)
+    mol = Chem.RemoveHs(mol).GetConformer()
+    xyz = [mol.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
+    return np.mean(xyz, axis=0)
 
 
 def get_n_atoms_from_sdf_file(sdf_file, idx=0):
@@ -938,9 +939,9 @@ def main(argv):
             conv.SetInFormat('sdf')
             print(conv.ReadFile(ob.OBMol(), fit_file))
 
-            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file, fit_file])
+            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file, fit_file], [center]*3)
         else:
-            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file])
+            write_pymol_script(pymol_file, [out_prefix], [rec_file, lig_file], [center]*2)
 
 
 if __name__ == '__main__':
