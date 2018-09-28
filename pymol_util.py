@@ -13,10 +13,11 @@ def set_atom_level(level, selection='*'):
     channel_index = {n: i for i, n in enumerate(channel_names)}
 
     # first identify .dx atom grid information
-    pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
+    dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
     dx_groups = OrderedDict()
     for obj in cmd.get_names('objects'):
-        match = re.match(pattern, obj)
+
+        match = re.match(dx_pattern, obj)
         if match:
             dx_prefix = match.group(1)
             if dx_prefix not in dx_groups:
@@ -25,25 +26,40 @@ def set_atom_level(level, selection='*'):
 
     surface_groups = OrderedDict()
     for dx_prefix in dx_groups:
-        for dx_object in dx_groups[dx_prefix]:
-            match = re.match(pattern, dx_object)
-            channel_name = match.group(2)
-            channel = channels[channel_index[channel_name]]
-            element = channel[1]
-            color = ci.elem_color_map[element]
-            surface_object = dx_object.replace('.dx', '_surface')
-            if fnmatch.fnmatch(dx_object, selection):
-                match = re.match(r'(ROTATE|2A_lig_gen)_(\d+)', dx_prefix)
-                s = int(match.group(2))+1 if match else 0
-                cmd.isosurface(surface_object, dx_object, level=level, state=s)
-                cmd.color(color, surface_object)
-            if dx_prefix not in surface_groups:
-                surface_groups[dx_prefix] = []
-            surface_groups[dx_prefix].append(surface_object)
 
-    for dx_prefix in surface_groups:
-        surface_group = '{}_surface'.format(dx_prefix)
-        cmd.group(surface_group, ' '.join(surface_groups[dx_prefix]))
+        match = re.match(r'(.*)_(\d+)', dx_prefix)
+        if match:
+            surface_prefix = match.group(1)
+            state = int(match.group(2)) + 1
+        else:
+            surface_prefix = dx_prefix
+            state = 0
+
+        print(surface_prefix, state)
+
+        for dx_object in dx_groups[dx_prefix]:
+
+            if fnmatch.fnmatch(dx_object, selection):
+
+                match = re.match(dx_pattern, dx_object)
+                channel_name = match.group(2)
+                channel = channels[channel_index[channel_name]]
+                element = channel[1]
+                color = ci.elem_color_map[element]
+
+                surface_object = '{}_{}_surface'.format(surface_prefix, channel_name)
+                cmd.isosurface(surface_object, dx_object, level=level, state=state)
+                cmd.color(color, surface_object)
+
+                if surface_prefix not in surface_groups:
+                    surface_groups[surface_prefix] = []
+
+                if surface_object not in surface_groups[surface_prefix]:
+                    surface_groups[surface_prefix].append(surface_object)
+
+    for surface_prefix in surface_groups:
+        surface_group = '{}_surface'.format(surface_prefix)
+        cmd.group(surface_group, ' '.join(surface_groups[surface_prefix]))
 
 
 def load_group(pattern, name):
