@@ -11,8 +11,8 @@ if __name__ == '__main__':
 
     data_name = '1ai5'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 25000
-    cont_iter = 0
+    max_iter = 50000
+    cont_iter = 25000
     seed = 0
 
     pbs_temps = [
