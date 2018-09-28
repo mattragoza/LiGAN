@@ -77,7 +77,7 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['vr-l', '_vr-l'],
+        encode_type=['l-l', '_l-l', 'vl-l', '_vl-l', 'r-l', '_r-l', 'vr-l', '_vr-l'],
         data_dim=[12, 24],
         resolution=[0.5],
         n_levels=[1, 2, 3],
@@ -85,7 +85,7 @@ GEN_SEARCH_SPACES = {
         arch_options=['l', 'lg'],
         n_filters=[8, 16],
         width_factor=[1],
-        n_latent=[8, 16],
+        n_latent=[4, 8, 16],
         loss_types=['', 'e', 'a'])
 }
 
@@ -176,17 +176,20 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
     else:
 
-        if 'r' in encode_type or 'd' in encode_type:
-            net.rec = caffe.layers.Input(shape=dict(dim=[bsz, nc['r'], dim, dim, dim]))
-
-        if 'l' in encode_type or 'd' in encode_type:
-            net.lig = caffe.layers.Input(shape=dict(dim=[bsz, nc['l'], dim, dim, dim]))
+        net.rec = caffe.layers.Input(shape=dict(dim=[bsz, nc['r'], dim, dim, dim]))
+        net.lig = caffe.layers.Input(shape=dict(dim=[bsz, nc['l'], dim, dim, dim]))
 
         if 'd' in encode_type:
             net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
         if not decoders:
             net.label = caffe.layers.Input(shape=dict(dim=[bsz, n_latent]))
+
+        if 'r' not in encode_type and 'd' not in encode_type:
+            net.no_rec = caffe.layers.Silence(net.rec, ntop=0)
+
+        if 'l' not in encode_type and 'd' not in encode_type:
+            net.no_lig = caffe.layers.Silence(net.lig, ntop=0)
 
     # encoder(s)
     encoder_tops = []

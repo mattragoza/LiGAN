@@ -11,27 +11,42 @@ if __name__ == '__main__':
 
     data_name = '1ai5'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 50000
-    cont_iter = 25000
+    max_iter = 25000
+    cont_iter = 0
     seed = 0
 
     pbs_temps = [
-        'adam2_2_2__0.0.pbs',
-        'adam2_2_2_b_0.0.pbs',
-        'adam2_2_2_g_0.0.pbs',
-        'adam2_2_2_s_0.0.pbs',
         'adam2_2_2__0.01.pbs',
     ]
 
     gen_model_files = [
-        'models/_vr-le13_24_0.5_2_1lg_8_1_8_.model',
-        'models/_vr-le13_24_0.5_2_1lg_16_1_8_.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_4_.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_8_.model',
+        'models/_l-le13_24_0.5_2_1l_8_1_16_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_4_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_8_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_16_.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_4_.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_8_.model',
+        'models/_r-le13_24_0.5_2_1l_8_1_16_.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_4_.model',
         'models/_vr-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_vr-le13_24_0.5_2_1l_16_1_8_.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_16_.model',
     ]
 
     disc_model_files = [
-        'models/d11_24_2_1l_8_1_x.model',
         'models/d11_24_2_1l_16_1_x.model',
     ]
 
@@ -66,7 +81,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('GAN_NAMES3', 'w') as f:
+    with open('WEEKEND', 'w') as f:
         f.write('\n'.join(gan_names))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)
