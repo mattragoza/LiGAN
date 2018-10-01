@@ -124,10 +124,10 @@ def replace_outliers(x, value, z=3):
     return np.where(x > x_max, value, np.where(x < x_min, value, x))
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, outlier_z=None):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=None, outlier_z=None):
     df = df.reset_index()
     if n_cols is None:
-        n_cols = len(x) - bool(hue)
+        n_cols = len(x) - (hue in x)
     n_axes = len(x)*len(y)
     assert n_axes > 0
     n_rows = (n_axes + n_cols-1)//n_cols
@@ -287,25 +287,41 @@ def main(argv):
 
         # try to parse it as a GAN
         m = re.match(r'^(.+_)?(.+e(\d+)_.+)_(d(\d+)_.+)$', model_name)
-        solver_name = fix_name(m.group(1), ' ', [3])
-        name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
+        if m:
+            solver_name = fix_name(m.group(1), ' ', [3])
+            name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
 
-        gen_v = tuple(int(c) for c in m.group(3))
-        if gen_v == (1, 4):
-            gen_model_name = fix_name(m.group(2), ' ', [-1, -2])
-        elif gen_v == (1, 3):            
-            gen_model_name = fix_name(m.group(2), ' ', [-1, -5])
+            gen_v = tuple(int(c) for c in m.group(3))
+            if gen_v == (1, 4):
+                gen_model_name = fix_name(m.group(2), ' ', [-1, -2])
+            elif gen_v == (1, 3):            
+                gen_model_name = fix_name(m.group(2), ' ', [-1, -5])
+            else:
+                gen_model_name = m.group(2)
+            agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
+            name_fields.append('gen_model_version')
+            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
+
+            disc_v = tuple(int(c) for c in m.group(5))
+            disc_model_name = m.group(4)
+            agg_df.loc[model_name, 'disc_model_version'] = str(disc_v)
+            name_fields.append('disc_model_version')
+            name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
+
         else:
-            gen_model_name = m.group(2)
-        agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
-        name_fields.append('gen_model_version')
-        name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
+            m = re.match(r'.+e(\d+)_.+', model_name)
 
-        disc_v = tuple(int(c) for c in m.group(5))
-        disc_model_name = m.group(4)
-        agg_df.loc[model_name, 'disc_model_version'] = str(disc_v)
-        name_fields.append('disc_model_version')
-        name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
+            gen_v = tuple(int(c) for c in m.group(1))
+            if gen_v == (1, 4):
+                gen_model_name = fix_name(m.group(), ' ', [-1, -2])
+            elif gen_v == (1, 3):            
+                gen_model_name = fix_name(m.group(), ' ', [-1, -5])
+            else:
+                gen_model_name = m.group()
+            agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
+            name_fields = ['gen_model_version']
+            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
+
 
     # fill in default values so that different model versions may be compared
     if 'resolution' in agg_df:

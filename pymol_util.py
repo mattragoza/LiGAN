@@ -13,9 +13,9 @@ def set_atom_level(level, selection='*'):
     channel_index = {n: i for i, n in enumerate(channel_names)}
 
     # first identify .dx atom grid information
-    dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
+    dx_pattern = r'(.*)_(rec|lig)_({})\.dx'.format('|'.join(channel_names))
     dx_groups = OrderedDict()
-    for obj in cmd.get_names('objects'):
+    for obj in sorted(cmd.get_names('objects')):
 
         match = re.match(dx_pattern, obj)
         if match:
@@ -27,7 +27,7 @@ def set_atom_level(level, selection='*'):
     surface_groups = OrderedDict()
     for dx_prefix in dx_groups:
 
-        match = re.match(r'(.*)_(\d+)', dx_prefix)
+        match = re.match(r'^(.*)_(\d+)$', dx_prefix)
         if match:
             surface_prefix = match.group(1)
             state = int(match.group(2)) + 1
@@ -42,7 +42,7 @@ def set_atom_level(level, selection='*'):
             if fnmatch.fnmatch(dx_object, selection):
 
                 match = re.match(dx_pattern, dx_object)
-                channel_name = match.group(2)
+                channel_name = match.group(3)
                 channel = channels[channel_index[channel_name]]
                 element = channel[1]
                 color = ci.elem_color_map[element]

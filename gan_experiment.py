@@ -11,36 +11,37 @@ if __name__ == '__main__':
 
     data_name = '1ai5'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 25000
+    max_iter = 50000
     cont_iter = 0
     seed = 0
 
     pbs_temps = [
-        'adam2_2_2__0.01.pbs',
+        'adam2_2_2_s_0.01.pbs',
+        'adam2_2_2_g_0.01.pbs',
     ]
 
     gen_model_files = [
         'models/_l-le13_24_0.5_2_1l_8_1_4_e.model',
         'models/_l-le13_24_0.5_2_1l_8_1_8_e.model',
         'models/_l-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_16_e.model',
         'models/_r-le13_24_0.5_2_1l_8_1_4_e.model',
         'models/_r-le13_24_0.5_2_1l_8_1_8_e.model',
         'models/_r-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_16_e.model',
         'models/_l-le13_24_0.5_2_1l_8_1_4_.model',
         'models/_l-le13_24_0.5_2_1l_8_1_8_.model',
         'models/_l-le13_24_0.5_2_1l_8_1_16_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_4_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_16_.model',
         'models/_r-le13_24_0.5_2_1l_8_1_4_.model',
         'models/_r-le13_24_0.5_2_1l_8_1_8_.model',
         'models/_r-le13_24_0.5_2_1l_8_1_16_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_4_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_8_e.model',
+        'models/_vr-le13_24_0.5_2_1l_8_1_16_e.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_4_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_8_.model',
+        'models/_vl-le13_24_0.5_2_1l_8_1_16_.model',
         'models/_vr-le13_24_0.5_2_1l_8_1_4_.model',
         'models/_vr-le13_24_0.5_2_1l_8_1_8_.model',
         'models/_vr-le13_24_0.5_2_1l_8_1_16_.model',

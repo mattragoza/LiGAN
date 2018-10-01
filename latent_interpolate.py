@@ -4,7 +4,7 @@ import scipy as sp
 import caffe
 caffe.set_mode_gpu()
 import caffe_util
-import generate
+import generate as g
 
 
 def slerp(v0, v1, t):
@@ -20,53 +20,53 @@ def slerp(v0, v1, t):
          + s1[:,np.newaxis] * v1[np.newaxis,:]
 
 
-model_file = 'models/vr-le13_12_0.5_1_2l_8_1_8_.model'
-model_name = 'adam2_2_2__0.01_vr-le13_12_0.5_1_2l_8_1_8__d11_12_1_1l_16_1_x'
-weights_file = '{}/{}.two_atoms.0.all_gen_iter_25000.caffemodel'.format(model_name, model_name)
+def lerp(v0, v1, t):
+    return (1.0-t)[:,np.newaxis] * v0[np.newaxis,:] \
+               + t[:,np.newaxis] * v1[np.newaxis,:]
 
-lig_files = ['data/O_2_0_0.sdf']
-rec_files = ['data/O_0_0_0.pdb']
-centers = [np.zeros(3) for l in lig_files]
-data_file = generate.get_temp_data_file(zip(rec_files, lig_files))
 
+encode = 'l'
+n_latent = 16
+loss = ''
+iter_ = 50
+
+name = '{}{}{}'.format(encode, n_latent, loss)
+model_file = 'models/{}-le13_24_0.5_2_1l_8_1_{}_{}.model'.format(encode, n_latent, loss)
+model_name = 'adam2_2_2__0.01_{}-le13_24_0.5_2_1l_8_1_{}_{}_d11_24_2_1l_16_1_x'.format(encode, n_latent, loss)
+
+data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
+rec_file = data_root + '1ai5/1ai5_rec.pdb'
+lig_file = data_root + '1ai5/1ai5_min.sdf'
+center = g.get_center_from_sdf_file(lig_file)
+data_file = g.get_temp_data_file([(rec_file, lig_file)])
+channels = g.channel_info.get_default_channels(rec=False, lig=True, use_covalent_radius=True)
+
+weights_file = '{}/{}.1ai5.0.all_gen_iter_{}000.caffemodel'.format(model_name, model_name, iter_)
 net_param = caffe_util.NetParameter.from_prototxt(model_file)
 net_param.set_molgrid_data_source(data_file, '')
-
-channels = generate.channel_info.get_default_channels(False, True, True)
+data_param = net_param.get_molgrid_data_param(caffe.TEST)
+data_param.random_rotation = True
 
 net = caffe_util.Net.from_param(net_param, weights_file, phase=caffe.TEST)
-grid_blobs = dict(rec=net.blobs['rec'],
-                  lig=net.blobs['lig'],
-                  lig_gen=net.blobs['lig_gen'])
 
-net.forward()
-net.blobs['rec_latent_mean'].data[...] = 0.0
-net.blobs['rec_latent_std'].data[...] = 1.0
-net.forward(start='rec_latent_noise')
-
-n = 50
-z = 0.5
-v0 = np.array(net.blobs['rec_latent_sample'].data[0])
-v1 = np.array(net.blobs['rec_latent_sample'].data[1])
-v0 = z * v0 / np.linalg.norm(v0)
-v1 = z * v1 / np.linalg.norm(v1)
-net.blobs['rec_latent_sample'].data[0:n//2] = slerp(v0, v1, np.linspace(0, 1, n//2))
-net.blobs['rec_latent_sample'].data[n//2:n] = slerp(v1, v0, np.linspace(0, 1, n//2))
-
-net.forward(start='lig_latent_defc')
+latent_name = '{}_latent_fc'.format(dict(r='rec', l='lig')[encode])
+after_latent_name = 'lig_latent_defc'
+net.forward(end=latent_name)
+n_samples = n = net.blobs[latent_name].shape[0]
+v0 = np.array(net.blobs[latent_name].data[0])
+v1 = np.array(net.blobs[latent_name].data[1])
+net.blobs[latent_name].data[0:n//2] = lerp(v0, v1, np.linspace(0, 1, n//2))
+net.blobs[latent_name].data[n//2:n] = lerp(v1, v0, np.linspace(0, 1, n//2))
+net.forward(start=after_latent_name)
 
 dx_groups = {}
-for name, grid_blob in grid_blobs.items():
-    if name == 'lig_gen':
-        for i in range(n):
-            grid_name = '2A_{}_z{}_{}'.format(name, z, i)
-            grid = np.array(grid_blob.data[i])
-            dx_groups[grid_name] = generate.write_grids_to_dx_files(grid_name, grid, channels, np.zeros(3), 0.5)
-    else:
-        grid_name = '2A_{}_z{}'.format(name, z)
-        grid = np.array(grid_blob.data[0])
-        dx_groups[grid_name] = generate.write_grids_to_dx_files(grid_name, grid, channels, np.zeros(3), 0.5)
+blob_names = ['lig_gen']
+for j in range(n_samples):
+    for blob_name in blob_names:
+        grid_name = '{}_{}k_{}_{}'.format(name, iter_, blob_name, j)
+        grid = np.array(net.blobs[blob_name].data[j])
+        dx_groups[grid_name] = g.write_grids_to_dx_files(grid_name, grid, channels, center, 0.5)
 
-other_files = rec_files + lig_files
-centers = centers + centers
-generate.write_pymol_script('2A.pymol', dx_groups, other_files, centers)
+pymol_file = '{}.pymol'.format(name)
+other_files = [rec_file, lig_file]
+g.write_pymol_script(pymol_file, dx_groups, other_files, [center, center])
