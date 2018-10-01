@@ -1,7 +1,6 @@
 from __future__ import print_function
 import sys, os, re, argparse, ast, time, glob
 import numpy as np
-from rdkit import Chem
 from collections import Counter
 import contextlib
 import tempfile
@@ -10,10 +9,8 @@ from itertools import izip
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
-try:
-    import openbabel as ob
-except ImportError as e:
-    print(e)
+import openbabel as ob
+import pybel
 import caffe_util
 import channel_info
 
@@ -692,7 +689,7 @@ def get_mols_from_sdf_file(sdf_file):
     '''
     Read the molecules from an .sdf file.
     '''
-    return Chem.rdmolfiles.SDMolSupplier(sdf_file)
+    return list(pybel.readfile('sdf', sdf_file))
 
 
 def get_center_from_sdf_file(sdf_file, idx=0):
@@ -701,9 +698,8 @@ def get_center_from_sdf_file(sdf_file, idx=0):
     by taking the mean of the non-hydrogen atom positions.
     '''
     mol = get_mols_from_sdf_file(sdf_file)[idx]
-    mol = Chem.RemoveHs(mol).GetConformer()
-    xyz = [mol.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
-    return np.mean(xyz, axis=0)
+    mol.removeh()
+    return np.mean([a.coords for a in mol.atoms], axis=0)
 
 
 def get_n_atoms_from_sdf_file(sdf_file, idx=0):
