@@ -37,9 +37,11 @@ model_name = 'adam2_2_2__0.01_{}-le13_24_0.5_2_1l_8_1_{}_{}_d11_24_2_1l_16_1_x'.
 data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
 rec_file = data_root + '1ai5/1ai5_rec.pdb'
 lig_file = data_root + '1ai5/1ai5_min.sdf'
-center = g.get_center_from_sdf_file(lig_file)
+lig_mol = g.get_mols_from_sdf_file(lig_file)[0]
+lig_mol.removeh()
+center = g.get_mol_center(lig_mol)
 data_file = g.get_temp_data_file([(rec_file, lig_file)])
-channels = g.channel_info.get_default_channels(rec=False, lig=True, use_covalent_radius=True)
+channels = g.atom_types.get_default_channels(rec=False, lig=True, use_covalent_radius=True)
 
 weights_file = '{}/{}.1ai5.0.all_gen_iter_{}000.caffemodel'.format(model_name, model_name, iter_)
 net_param = caffe_util.NetParameter.from_prototxt(model_file)

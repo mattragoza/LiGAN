@@ -3,13 +3,13 @@ from collections import OrderedDict
 from pymol import cmd, stored
 
 sys.path.insert(0, '.')
-import channel_info as ci
+import atom_types
 
 
 def set_atom_level(level, selection='*'):
 
-    channels = ci.get_default_channels(True, True)
-    channel_names = [c[0] for c in channels]
+    channels = atom_types.get_default_channels(True, True)
+    channel_names = [c.name for c in channels]
     channel_index = {n: i for i, n in enumerate(channel_names)}
 
     # first identify .dx atom grid information
