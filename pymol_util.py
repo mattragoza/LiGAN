@@ -8,12 +8,17 @@ import atom_types
 
 def set_atom_level(level, selection='*'):
 
-    channels = atom_types.get_default_channels(True, True)
+    channels = atom_types.get_default_channels(True)
     channel_names = [c.name for c in channels]
-    channel_index = {n: i for i, n in enumerate(channel_names)}
+    channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
+
+    for channel in channels:
+        element = atom_types.get_name(channel.atomic_num)
+        color = atom_types.get_rgb(channel.atomic_num)
+        cmd.set_color(element, color)
 
     # first identify .dx atom grid information
-    dx_pattern = r'(.*)_(rec|lig)_({})\.dx'.format('|'.join(channel_names))
+    dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
     dx_groups = OrderedDict()
     for obj in sorted(cmd.get_names('objects')):
 
@@ -42,14 +47,13 @@ def set_atom_level(level, selection='*'):
             if fnmatch.fnmatch(dx_object, selection):
 
                 match = re.match(dx_pattern, dx_object)
-                channel_name = match.group(3)
-                channel = channels[channel_index[channel_name]]
-                element = channel[1]
-                color = ci.elem_color_map[element]
+                channel_name = match.group(2)
+                channel = channels_by_name[channel_name]
+                element = atom_types.get_name(channel.atomic_num)
 
                 surface_object = '{}_{}_surface'.format(surface_prefix, channel_name)
                 cmd.isosurface(surface_object, dx_object, level=level, state=state)
-                cmd.color(color, surface_object)
+                cmd.color(element, surface_object)
 
                 if surface_prefix not in surface_groups:
                     surface_groups[surface_prefix] = []
