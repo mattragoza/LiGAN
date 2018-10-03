@@ -22,13 +22,13 @@ DISC_NAME_FORMATS = {
 DISC_SEARCH_SPACES = {
     (1, 1): dict(
         encode_type=['_d-'],
-        data_dim=[12, 4],
+        data_dim=[32],
         resolution=[0.5],
-        n_levels=[1, 2, 3],
+        n_levels=[3],
         conv_per_level=[1, 2],
         arch_options=['', 'l'],
         n_filters=[8, 16],
-        width_factor=[1],
+        width_factor=[2],
         n_latent=[1],
         loss_types=['x'])
 }
@@ -78,14 +78,14 @@ GEN_SEARCH_SPACES = {
 
     (1, 3): dict(
         encode_type=['l-l', '_l-l', 'vl-l', '_vl-l', 'r-l', '_r-l', 'vr-l', '_vr-l'],
-        data_dim=[12, 24],
+        data_dim=[32],
         resolution=[0.5],
-        n_levels=[1, 2, 3],
+        n_levels=[3],
         conv_per_level=[1, 2],
         arch_options=['l', 'lg'],
         n_filters=[8, 16],
-        width_factor=[1],
-        n_latent=[4, 8, 16],
+        width_factor=[2],
+        n_latent=[512, 1024],
         loss_types=['', 'e', 'a'])
 }
 
@@ -175,7 +175,6 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                                                   axis=1, slice_point=nc['r'])
 
     else:
-
         net.rec = caffe.layers.Input(shape=dict(dim=[bsz, nc['r'], dim, dim, dim]))
         net.lig = caffe.layers.Input(shape=dict(dim=[bsz, nc['l'], dim, dim, dim]))
 

@@ -9,45 +9,61 @@ if __name__ == '__main__':
     #_, params_file = sys.argv
     #params = [line.rstrip().split() for line in open(params_file)]
 
-    data_name = '1ai5'
+    data_name = 'lowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
     max_iter = 50000
     cont_iter = 0
     seed = 0
 
     pbs_temps = [
+        'adam2_2_2__0.01.pbs',
         'adam2_2_2_g_0.01.pbs',
+        'adam2_2_2_s_0.01.pbs',
     ]
 
     gen_model_files = [
-        'models/_l-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_l-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_l-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_l-le13_24_0.5_2_1l_8_1_4_.model',
-        'models/_l-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_l-le13_24_0.5_2_1l_8_1_16_.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_4_.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_r-le13_24_0.5_2_1l_8_1_16_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_4_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_8_e.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_16_e.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_4_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_vl-le13_24_0.5_2_1l_8_1_16_.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_4_.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_8_.model',
-        'models/_vr-le13_24_0.5_2_1l_8_1_16_.model',
+        'models/_l-le13_32_0.5_3_1l_8_2_512_e.model',
+        'models/_l-le13_32_0.5_3_1l_8_2_512_.model',
+        'models/_l-le13_32_0.5_3_2l_8_2_512_.model',
+        'models/_l-le13_32_0.5_3_1l_16_2_512_.model',
+        'models/_l-le13_32_0.5_3_1l_8_2_1024_.model',
+        'models/_l-le13_32_0.5_3_1lg_8_2_512_.model',
+        'models/_l-le13_32_0.5_3_2lg_8_2_512_.model',
+        'models/_l-le13_32_0.5_3_1lg_16_2_512_.model',
+        'models/_l-le13_32_0.5_3_1lg_8_2_1024_.model',
+        'models/_r-le13_32_0.5_3_1l_8_2_512_e.model',      
+        'models/_r-le13_32_0.5_3_1l_8_2_512_.model',
+        'models/_r-le13_32_0.5_3_2l_8_2_512_.model',
+        'models/_r-le13_32_0.5_3_1l_16_2_512_.model',
+        'models/_r-le13_32_0.5_3_1l_8_2_1024_.model',
+        'models/_r-le13_32_0.5_3_1lg_8_2_512_.model',
+        'models/_r-le13_32_0.5_3_2lg_8_2_512_.model',
+        'models/_r-le13_32_0.5_3_1lg_16_2_512_.model',
+        'models/_r-le13_32_0.5_3_1lg_8_2_1024_.model',
+        'models/_vl-le13_32_0.5_3_1l_8_2_512_e.model',
+        'models/_vl-le13_32_0.5_3_1l_8_2_512_.model',
+        'models/_vl-le13_32_0.5_3_2l_8_2_512_.model',
+        'models/_vl-le13_32_0.5_3_1l_16_2_512_.model',
+        'models/_vl-le13_32_0.5_3_1l_8_2_1024_.model',
+        'models/_vl-le13_32_0.5_3_1lg_8_2_512_.model',
+        'models/_vl-le13_32_0.5_3_2lg_8_2_512_.model',
+        'models/_vl-le13_32_0.5_3_1lg_16_2_512_.model',
+        'models/_vl-le13_32_0.5_3_1lg_8_2_1024_.model',
+        'models/_vr-le13_32_0.5_3_1l_8_2_512_e.model',
+        'models/_vr-le13_32_0.5_3_1l_8_2_512_.model',
+        'models/_vr-le13_32_0.5_3_2l_8_2_512_.model',
+        'models/_vr-le13_32_0.5_3_1l_16_2_512_.model',
+        'models/_vr-le13_32_0.5_3_1l_8_2_1024_.model',
+        'models/_vr-le13_32_0.5_3_1lg_8_2_512_.model',
+        'models/_vr-le13_32_0.5_3_2lg_8_2_512_.model',
+        'models/_vr-le13_32_0.5_3_1lg_16_2_512_.model',
+        'models/_vr-le13_32_0.5_3_1lg_8_2_1024_.model',
     ]
 
     disc_model_files = [
-        'models/d11_24_2_1l_16_1_x.model',
+        'models/d11_32_3_1l_8_2_x.model',
+        'models/d11_32_3_2l_8_2_x.model',
+        'models/d11_32_3_1l_16_2_x.model',
     ]
 
     gan_names = []
@@ -59,7 +75,7 @@ if __name__ == '__main__':
                     gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
                     gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
                     resolution = 0.5 #gen_model_name.split('_')[3]
-                    data_model_name = 'data_24_{}_cov'.format(resolution)
+                    data_model_name = 'data_32_{}_cov'.format(resolution)
                     disc_model_name = os.path.splitext(os.path.split(disc_model_file)[1])[0]
                     seed, fold = int(seed), int(fold)
                     gen_warmup_name = gen_model_name.lstrip('_')
@@ -81,7 +97,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('GEN_ADV_GRAD_NORM', 'w') as f:
+    with open('ALL_TARGETS_0', 'w') as f:
         f.write('\n'.join(gan_names))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)

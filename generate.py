@@ -591,7 +591,7 @@ def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
             out.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
 
 
-def get_mols_from_sdf_file(sdf_file):
+def read_mols_from_sdf_file(sdf_file):
     '''
     Read a list of molecules from an .sdf file.
     '''
@@ -875,7 +875,7 @@ def main(argv):
         lig_name = os.path.splitext(os.path.basename(lig_file))[0]
         out_prefix = '{}_{}'.format(args.out_prefix, lig_name)
 
-        lig_mol = get_mols_from_sdf_file(lig_file)[0]
+        lig_mol = read_mols_from_sdf_file(lig_file)[0]
         lig_mol.removeh()
 
         if not fix_center_to_origin:
