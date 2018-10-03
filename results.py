@@ -111,6 +111,67 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
     plt.close(fig)
 
 
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=None, outlier_z=None, violin=False):
+
+    df = df.reset_index()
+
+    if n_cols is None:
+        n_cols = len(x) - (hue in x)
+    n_axes = len(x)*len(y)
+    assert n_axes > 0
+    n_rows = (n_axes + n_cols-1)//n_cols
+    n_cols = min(n_axes, n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows))
+    iter_axes = iter(axes.flatten())
+
+    for i, y_ in enumerate(y):
+
+        if outlier_z is not None:
+            n_y = len(df[y_])
+            df[y_] = replace_outliers(df[y_], np.nan, z=outlier_z)
+            print('dropped {} outliers from {}'.format(n_y - len(df[y_]), y_))
+
+        for x_ in x:
+            ax = next(iter_axes)
+            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, markers='', ax=ax)
+            alpha = 0.25
+
+            if violin:
+                sns.violinplot(data=df, x=x_, y=y_, hue=hue, dodge=True, inner=None, saturation=1.0, linewidth=0.0, ax=ax)
+                for c in ax.collections:
+                    if isinstance(c, matplotlib.collections.PolyCollection):
+                        c.set_alpha(alpha)
+            else:
+                sns.stripplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, jitter=0.2, size=5,alpha=alpha, ax=ax)
+
+            handles, labels = ax.get_legend_handles_labels()
+            handles = handles[len(handles)//2:]
+            labels = labels[len(labels)//2:]
+
+            if ylim:
+                if len(ylim) > 1:
+                    ylim_ = ylim[i]
+                else:
+                    ylim_ = ylim[0]
+                ax.set_ylim(ylim_)
+
+            if hue:
+                ax.legend_.remove()
+
+    extra = []
+    if hue: # add legend
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
+        lgd.set_title(hue, prop=dict(size='small'))
+        extra.append(lgd)
+
+    for ax in iter_axes:
+        ax.axis('off')
+    fig.tight_layout()
+    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
+    plt.close(fig)
+
+
 def get_z_bounds(x, z):
     x_mean = np.mean(x)
     x_std = np.std(x)
@@ -122,57 +183,6 @@ def get_z_bounds(x, z):
 def replace_outliers(x, value, z=3):
     x_min, x_max = get_z_bounds(x, z)
     return np.where(x > x_max, value, np.where(x < x_min, value, x))
-
-
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=None, outlier_z=None):
-    df = df.reset_index()
-    if n_cols is None:
-        n_cols = len(x) - (hue in x)
-    n_axes = len(x)*len(y)
-    assert n_axes > 0
-    n_rows = (n_axes + n_cols-1)//n_cols
-    n_cols = min(n_axes, n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(width*n_cols, height*n_rows),
-                             sharex=len(x) == 1,
-                             sharey=len(y) == 1,
-                             squeeze=False)
-    iter_axes = iter(axes.flatten())
-    extra = []
-    violin = False
-    for y_ in y:
-
-        if outlier_z is not None:
-            df[y_] = replace_outliers(df[y_], np.nan, z=outlier_z)
-
-        for x_ in x:
-            ax = next(iter_axes)
-            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, markers='', ax=ax)
-            ylim = ax.get_ylim()
-            alpha = 0.25
-            if violin:
-                sns.violinplot(data=df, x=x_, y=y_, hue=hue, dodge=True, inner=None, saturation=1.0, linewidth=0.0, ax=ax)
-                for c in ax.collections:
-                    if isinstance(c, matplotlib.collections.PolyCollection):
-                        c.set_alpha(alpha)
-            else:
-                sns.stripplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, jitter=0.2, size=5, alpha=alpha, ax=ax)
-            handles, labels = ax.get_legend_handles_labels()
-            handles = handles[len(handles)//2:]
-            labels = labels[len(labels)//2:]
-            ax.set_ylim(ylim)
-            if hue:
-                ax.legend_.remove()
-
-    if hue: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
-        lgd.set_title(hue, prop=dict(size='small'))
-        extra.append(lgd)
-    for ax in iter_axes:
-        ax.axis('off')
-    fig.tight_layout()
-    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
-    plt.close(fig)
 
 
 def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check):
@@ -215,6 +225,8 @@ def add_data_from_name_parse(df, index, prefix, name_format, name):
     name_fields = []
     for field in sorted(name_parse.named, key=name_parse.spans.get):
         value = name_parse.named[field]
+        if isinstance(value, str):
+            value = value.rstrip()
         if prefix:
             field = '{}_{}'.format(prefix, field)
         df.loc[index, field] = value
@@ -244,8 +256,9 @@ def parse_args(argv=None):
     parser.add_argument('-r', '--rename_col', default=[], action='append')
     parser.add_argument('-x', '--x', default=[], action='append')
     parser.add_argument('-y', '--y', default=[], action='append')
+    parser.add_argument('--log_y', default=[], action='append')
     parser.add_argument('--outlier_z', default=None, type=float)
-    parser.add_argument('--hue', default=None)
+    parser.add_argument('--hue', default=[], action='append')
     parser.add_argument('--n_cols', default=None, type=int)
     parser.add_argument('--masked', default=False, action='store_true')
     parser.add_argument('--plot_lines', default=False, action='store_true')
@@ -356,6 +369,20 @@ def main(argv):
     agg_df.rename(columns=col_name_map, inplace=True)
     name_fields = [col_name_map[n] for n in name_fields]
 
+    for y in args.log_y:
+        log_y = 'log({})'.format(y)
+        agg_df[log_y] = agg_df[y].apply(np.log)
+        args.y.append(log_y)
+
+    if len(args.hue) > 1:
+        hue = '({})'.format(', '.join(args.hue))
+        agg_df[hue] = agg_df[args.hue].apply(tuple, axis=1)
+        print(agg_df[hue])
+        args.hue = hue
+
+    elif len(args.hue) == 1:
+        args.hue = args.hue[0]
+
     # by default, don't make separate plots for the hue variable or variables with 1 unique value
     if not args.x:
         args.x = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
@@ -365,8 +392,8 @@ def main(argv):
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
-    final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
  
+    final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
     print('\nfinal data')
     print(final_df)
     
