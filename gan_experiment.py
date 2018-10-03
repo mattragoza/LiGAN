@@ -16,7 +16,6 @@ if __name__ == '__main__':
     seed = 0
 
     pbs_temps = [
-        'adam2_2_2_s_0.01.pbs',
         'adam2_2_2_g_0.01.pbs',
     ]
 
@@ -82,7 +81,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('WEEKEND', 'w') as f:
+    with open('GEN_ADV_GRAD_NORM', 'w') as f:
         f.write('\n'.join(gan_names))
 
     map(torque_util.wait_for_free_gpus_and_submit_job, job_args)

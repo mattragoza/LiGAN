@@ -298,6 +298,10 @@ def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
 
             disc_net.clear_param_diffs()
             disc_net.backward()
+
+            if args.disc_grad_norm:
+                gradient_normalize(disc_net)
+
             gen_net.blobs['lig_gen'].diff[...] = disc_net.blobs['lig'].diff
             gen_net.clear_param_diffs()
 
