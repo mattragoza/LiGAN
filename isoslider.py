@@ -58,7 +58,7 @@ class LevelVar(Tkinter.Variable):
         cmd.isolevel(self.name, self.get())
 
     def increment(self, event=None, delta=DELTA):
-        self.set(round(float(self.get()) + delta, 2))
+        self.set(round(float(self.get()) + delta, DIGITS))
 
     def decrement(self, event=None):
         self.increment(None, -DELTA)
@@ -84,7 +84,7 @@ class GroupLevelVar(Tkinter.Variable):
             cmd.isolevel(name, self.get())
 
     def increment(self, event=None, delta=DELTA):
-        self.set(round(float(self.get()) + delta, 2))
+        self.set(round(float(self.get()) + delta, DIGITS))
 
     def decrement(self, event=None):
         self.increment(None, -DELTA)
@@ -94,59 +94,67 @@ class GroupLevelVar(Tkinter.Variable):
         element.bind('<Button-5>', self.decrement)
 
 
-def isoslider(mm_min=0.0, mm_max=2.0):
+def isoslider(mm_min=0.0, mm_max=1.0):
     '''
     DESCRIPTION
 
     Opens a dialog with isolevel sliders for all isomesh and isosurface
     objects in PyMOL.
     '''
+    mm_min = float(mm_min)
+    mm_max = float(mm_max)
     top = Tkinter.Toplevel(plugins.get_tk_root())
     master = Tkinter.Frame(top, padx=5, pady=5)
     master.pack(fill="both", expand=1)
     mmvar = Tkinter.DoubleVar(top, value=mm_min)
 
     def fillmaster():
-        ffmt = '%.' + str(DIGITS) + 'f'
+        ffmt = '{:.' + str(DIGITS) + 'f}'
         for child in list(master.children.values()):
             child.destroy()
+
         mm = mmvar.get()
         mmf = Tkinter.Frame(master)
-        Tkinter.Label(mmf, text=ffmt % (mm_min)).grid(row=0, column=0, sticky='w')
-        #Tkinter.Label(mmf, text=ffmt % (0.)).grid(row=0, column=1)
-        Tkinter.Label(mmf, text=ffmt % (mm_max)).grid(row=0, column=2, sticky='e')
+        Tkinter.Label(mmf, text=ffmt.format(mm_min)).grid(row=0, column=0, sticky='w')
+        Tkinter.Label(mmf, text=ffmt.format((mm_max + mm_min)/2)).grid(row=0, column=1)
+        Tkinter.Label(mmf, text=ffmt.format(mm_max)).grid(row=0, column=2, sticky='e')
         mmf.grid(row=0, column=1, sticky='ew')
         mmf.columnconfigure(1, weight=1)
+
         names = []
         for i, (name, level) in enumerate(get_isoobjects(), 1):
             names.append(name)
             continue
-            v = LevelVar(master, name, ffmt % level)
+
+            v = LevelVar(master, name, ffmt.format(level))
             Tkinter.Label(master, text=name).grid(row=i+2, column=0, sticky="w")
             e = Tkinter.Scale(master, orient=Tkinter.HORIZONTAL,
                               from_=mm_min, to=mm_max, resolution=DELTA,
                               showvalue=0, variable=v)
             e.grid(row=i+2, column=1, sticky="ew")
             v.bindscrollwheel(e)
-            e = Tkinter.Entry(master, textvariable=v, width=4)
+            e = Tkinter.Entry(master, textvariable=v, width=6)
             e.grid(row=i+2, column=2, sticky="e")
             v.bindscrollwheel(e)
             master.columnconfigure(1, weight=1)
-        v = GroupLevelVar(master, names, ffmt % mm_min)
+
+        v = GroupLevelVar(master, names, ffmt.format(mm_min))
         Tkinter.Label(master, text='all').grid(row=1, column=0, sticky="w")
         e = Tkinter.Scale(master, orient=Tkinter.HORIZONTAL,
                           from_=mm_min, to=mm_max, resolution=DELTA,
                           showvalue=0, variable=v)
         e.grid(row=1, column=1, sticky="ew")
         v.bindscrollwheel(e)
-        e = Tkinter.Entry(master, textvariable=v, width=4)
+        e = Tkinter.Entry(master, textvariable=v, width=6)
         e.grid(row=1, column=2, sticky="e")
         v.bindscrollwheel(e)
         master.columnconfigure(1, weight=1)
+
     fillmaster()
+
     bottom = Tkinter.Frame(top, padx=5)
     Tkinter.Label(bottom, text="+/-").pack(side=Tkinter.LEFT)
-    mmentry = Tkinter.Entry(bottom, textvariable=mmvar, width=4)
+    mmentry = Tkinter.Entry(bottom, textvariable=mmvar, width=6)
     mmentry.pack(side=Tkinter.LEFT)
     refresh = Tkinter.Button(bottom, text="Refresh", command=fillmaster)
     refresh.pack(side=Tkinter.LEFT)
