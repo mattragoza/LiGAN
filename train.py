@@ -343,8 +343,8 @@ def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
     train_gen_adv_loss = np.nan
     train_disc = True
     train_gen = True
-    disc_iter = 0
-    gen_iter = 0
+    disc_iter = loss_df.loc[(args.cont_iter, 'train'), 'disc_iter']
+    gen_iter = loss_df.loc[(args.cont_iter, 'train'), 'gen_iter']
     times = []
 
     if args.disc_spectral_norm:

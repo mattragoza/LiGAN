@@ -1,7 +1,18 @@
-import sys, os, glob
+import sys, os, re, glob
 import numpy as np
 
 import torque_util
+
+
+def get_cont_iter(dir_):
+    cont_iter = 0
+    states = glob.glob(os.path.join(dir_, '*.solverstate'))
+    for state in states:
+        m = re.match(dir_ + r'.*_iter_(\d+)\.solverstate', state)
+        if m:
+            iter_ = int(m.group(1))
+            cont_iter = max(cont_iter, iter_)
+    return cont_iter
 
 
 if __name__ == '__main__':
@@ -12,7 +23,7 @@ if __name__ == '__main__':
     data_name = 'lowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
     max_iter = 50000
-    cont_iter = 0
+    #cont_iter = 0
     seed = 0
 
     pbs_temps = [
@@ -82,6 +93,7 @@ if __name__ == '__main__':
                     gan_name = '{}{}_{}'.format(gan_type, gen_model_name, disc_model_name)
                     if not os.path.isdir(gan_name):
                         os.makedirs(gan_name)
+                    cont_iter = get_cont_iter(gan_name)
                     pbs_file = os.path.join(gan_name, pbs_template)
                     torque_util.write_pbs_file(pbs_file, pbs_template, gan_name,
                                                gan_name=gan_name,
