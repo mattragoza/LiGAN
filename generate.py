@@ -1,5 +1,5 @@
 from __future__ import print_function
-import sys, os, re, argparse, ast, time, glob
+import sys, os, re, argparse, ast, time, glob, struct
 import numpy as np
 from collections import Counter
 import contextlib
@@ -364,11 +364,9 @@ def fit_atoms_to_grids(grids, channels, center, resolution, max_iter, radius_mul
             break
 
     if all_iters:
-        mols = [make_ob_mol(*t, channels=channels) for t in zip(all_xyz, all_c, all_bonds)]
+        return all_xyz, all_c, all_bonds, loss_best
     else:
-        mols = [make_ob_mol(xyz, c, bonds, channels)]
-    
-    return mols, loss_best
+        return xyz, c, bonds, loss_best
 
 
 def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_n_bonds, max_init_bond_E=0.5):
@@ -591,6 +589,24 @@ def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
             out.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
 
 
+def read_channel_atoms_from_gninatypes(lig_file, channels):
+
+    channel_names = [c.name for c in channels]
+    channel_name_idx = {n: i for i, n in enumerate(channel_names)}
+    xyz, c = [], []
+    with open(lig_file, 'rb') as f:
+        atom_bytes = f.read(16)
+        while atom_bytes:
+            x, y, z, t = struct.unpack('fffi', atom_bytes)
+            smina_type = atom_types.smina_types[t]
+            if smina_type.name in channel_name_idx:
+                c_ = channel_names.index(smina_type.name)
+                xyz.append([x, y, z])
+                c.append(c_)
+            atom_bytes = f.read(16)
+    return np.array(xyz), np.array(c)
+
+
 def read_mols_from_sdf_file(sdf_file):
     '''
     Read a list of molecules from an .sdf file.
@@ -628,6 +644,9 @@ def make_ob_mol(xyz, c, bonds, channels):
         atom.SetAtomicNum(channels[c_].atomic_num)
         atom.SetVector(x, y, z)
         n_atoms += 1
+
+    if not bonds:
+        return mol
 
     n_bonds = 0
     for i in range(n_atoms):
@@ -917,7 +936,7 @@ def main(argv):
         if args.fit_atoms: # fit atoms to density grid
 
             t_i = time.time()
-            mols, loss = \
+            xyz, c, bonds, loss = \
                 fit_atoms_to_grids(grids, channels,
                                    center=center,
                                    resolution=resolution,
@@ -937,6 +956,11 @@ def main(argv):
             out.flush()
 
             if args.output_sdf:
+                if all_iters:
+                    mols = [make_ob_mol(*t, channels=channels) for t in zip(xyz, c, bonds)]
+                else:
+                    mols = [make_ob_mol(xyz, c, bonds, channels)]
+
                 fit_file = '{}_fit.sdf'.format(out_prefix)
                 write_ob_mols_to_sdf_file(fit_file, mols)
                 extra_files.append(fit_file)
