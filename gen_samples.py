@@ -53,12 +53,12 @@ def min_rmsd(xyz1, xyz2, c):
 
 if __name__ == '__main__':
 
-    out_name = '1T'
-    data_name = '1ai5'
+    out_name = 'AT'
+    data_name = 'lowrmsd'
     iter_ = 50000
-    model_file = 'models/l-le13_24_0.5_2_1l_8_1_8_.model'
-    model_name = os.path.splitext(os.path.basename(model_file))[0]
-    model_name = 'adam2_2_2__0.01_' + model_name + '_d11_24_2_1l_16_1_x'
+
+    model_file = 'models/r-le13_32_0.5_3_1l_8_2_512_e.model'
+    model_name = 'adam2_2_2__0.01_r-le13_32_0.5_3_1l_8_2_512_e_d11_32_3_1l_8_2_x/'
     weights_file = '{}/{}.{}.0.all_gen_iter_{}.caffemodel'.format(model_name, model_name, data_name, iter_)
 
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
@@ -79,9 +79,12 @@ if __name__ == '__main__':
     lig_mol.removeh()
     center = g.get_mol_center(lig_mol)
 
-    channels = g.atom_types.get_default_lig_channels(use_covalent_radius=True)
+    use_covalent_radius = True
+    nr = 0 #len(g.atom_types.get_default_rec_channels(use_covalent_radius))
+    channels = g.atom_types.get_default_lig_channels(use_covalent_radius)
+
     lig_types = lig_file.replace('.sdf', '.gninatypes')
-    _, c = g.read_channel_atoms_from_gninatypes(lig_types, channels)
+    _, c = g.read_gninatypes_file(lig_types, channels)
     r = np.array([channel.atomic_radius for channel in channels])
 
     df = pd.DataFrame()
@@ -91,9 +94,10 @@ if __name__ == '__main__':
     n_samples = 10
     for i in range(n_samples):
 
-        rec_grid = np.array(net.blobs['rec'].data[i])
-        true_grid = np.array(net.blobs['lig'].data[i])
-        gen_grid = np.array(net.blobs['lig_gen'].data[i])
+        #rec_grid = np.array(net.blobs['rec'].data[i])
+        true_grid = np.array(net.blobs['lig'].data[i][nr:])
+        gen_grid = np.array(net.blobs['lig_gen'].data[i][nr:])
+
         true_xyz, _ = fit_atoms_to_grid(true_grid, center, resolution, c, r)
         fit_xyz, fit_grid = fit_atoms_to_grid(gen_grid, center, resolution, c, r)
 
@@ -107,7 +111,7 @@ if __name__ == '__main__':
 
         df.loc[i, 'fit_true_rmsd'] = min_rmsd(true_xyz, fit_xyz, c)
 
-        grids['rec'].append(rec_grid)
+        #grids['rec'].append(rec_grid)
         grids['true'].append(true_grid)
         grids['gen'].append(gen_grid)
         grids['fit'].append(fit_grid)
