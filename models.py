@@ -77,16 +77,16 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['l-l', '_l-l', 'vl-l', '_vl-l', 'r-l', '_r-l', 'vr-l', '_vr-l'],
-        data_dim=[32],
+        encode_type=['r-l', '_r-l', 'vr-l', '_vr-l'],
+        data_dim=[12],
         resolution=[0.5],
-        n_levels=[3],
+        n_levels=[1, 2, 3],
         conv_per_level=[1, 2],
         arch_options=['l', 'lg'],
         n_filters=[8, 16],
-        width_factor=[2],
-        n_latent=[512, 1024],
-        loss_types=['', 'e', 'a'])
+        width_factor=[1, 2],
+        n_latent=[16, 32],
+        loss_types=['', 'e', 'f'])
 }
 
 
@@ -459,6 +459,19 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
         net.L1_loss = caffe.layers.Reduction(net.diff,
             operation=caffe.params.Reduction.ASUM,
             loss_weight=1.0)
+
+    if 'f' in loss_types:
+
+        fit = '{}_fit'.format(decoder_type)
+        net[fit] = caffe.layers.Python(curr_top,
+            module='generate',
+            layer='AtomFittingLayer',
+            param_str=str(dict(
+                resolution=resolution,
+                use_covalent_radius=True,
+                gninatypes_file='GNINATYPES')))
+
+        net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
 
     if 'c' in loss_types:
 

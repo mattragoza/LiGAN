@@ -18,6 +18,37 @@ import atom_types
 pd.set_option('display.width', 250)
 
 
+class AtomFittingLayer(caffe.Layer):
+
+    def setup(self, bottom, top):
+
+        if len(bottom) != 1:
+            raise Exception('AtomFittingLayer takes 1 bottom blob')
+
+        params = ast.literal_eval(self.param_str)
+        self.resolution = params['resolution']
+        self.channels = atom_types.get_default_lig_channels(params['use_covalent_radius'])
+        self.c = read_gninatypes_file(params['gninatypes_file'], self.channels)[1]
+
+    def reshape(self, bottom, top):
+
+        self.points = get_grid_points(bottom[0].shape[2:], 0, self.resolution)
+        top[0].reshape(*bottom[0].shape)
+
+    def forward(self, bottom, top):
+
+        for bottom_grid, top_grid in zip(bottom[0].data, top[0].data):
+            top_grid[...] = 0
+            for c in self.c:
+                density = bottom_grid[c].flatten()
+                xyz = (self.points * density[:,np.newaxis]).sum(axis=0) / (density.sum() + 1e-8)
+                r = self.channels[c].atomic_radius
+                top_grid[c] += get_atom_density(xyz, r, self.points, 1.5).reshape(top_grid[c].shape)
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
     '''
     Compute the density value of an atom at a set of points.
