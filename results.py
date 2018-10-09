@@ -227,6 +227,8 @@ def add_data_from_name_parse(df, index, prefix, name_format, name):
         value = name_parse.named[field]
         if isinstance(value, str):
             value = value.rstrip()
+            if not value:
+                value = ' '
         if prefix:
             field = '{}_{}'.format(prefix, field)
         df.loc[index, field] = value
