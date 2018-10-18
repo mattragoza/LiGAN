@@ -11,10 +11,11 @@ caffe.set_device(0)
 import caffe_util
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:.1f}_'
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:.1f}'
 
 
 DISC_NAME_FORMATS = {
+    (0, 1): 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
     (1, 1): 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
 }
 
@@ -235,11 +236,11 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                         pool=caffe.params.Pooling.AVE,
                         kernel_size=pool_factor,
                         stride=pool_factor)
-      
+
                 curr_top = net[pool]
                 curr_dim = int(curr_dim//pool_factor)
                 next_n_filters = int(width_factor*curr_n_filters)
-            
+
             for j in range(conv_per_level): # convolutions
 
                 conv = '{}_level{}_conv{}'.format(encoder_type, i, j)
@@ -259,7 +260,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
         # latent
         if n_latent is not None:
-            
+
             if variational:
 
                 mean = '{}_latent_mean'.format(encoder_type)
@@ -469,7 +470,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
             param_str=str(dict(
                 resolution=resolution,
                 use_covalent_radius=True,
-                gninatypes_file='GNINATYPES')))
+                gninatypes_file='/net/pulsar/home/koes/mtr22/gan/data/O_2_0_0.gninatypes')))
 
         net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
 

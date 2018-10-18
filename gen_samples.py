@@ -53,23 +53,24 @@ def min_rmsd(xyz1, xyz2, c):
 
 if __name__ == '__main__':
 
-    out_name = 'AT'
-    data_name = 'lowrmsd'
+    out_name = '1AF'
+    data_name = 'two_atoms'
     iter_ = 50000
 
-    model_file = 'models/r-le13_32_0.5_3_1l_8_2_512_e.model'
-    model_name = 'adam2_2_2__0.01_r-le13_32_0.5_3_1l_8_2_512_e_d11_32_3_1l_8_2_x/'
+    model_file = 'models/vr-le13_12_0.5_2_1lg_8_2_16_f.model'
+    model_name = 'adam2_2_2_b_0.01_vr-le13_12_0.5_2_1lg_8_2_16_f_d11_12_2_1l_8_1_x'
     weights_file = '{}/{}.{}.0.all_gen_iter_{}.caffemodel'.format(model_name, model_name, data_name, iter_)
 
-    data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    lig_file = data_root + '1ai5/1ai5_min.sdf'
-    rec_file = data_root + '1ai5/1ai5_rec.pdb'
+    data_root = '/net/pulsar/home/koes/mtr22/gan/data/' #dkoes/PDBbind/refined-set/'
+    lig_file = data_root + 'O_2_0_0.sdf' #'1ai5/1ai5_min.sdf'
+    rec_file = data_root + 'O_0_0_0.pdb' #'1ai5/1ai5_rec.pdb'
     data_file = g.get_temp_data_file([(rec_file, lig_file)])
 
     net_param = caffe_util.NetParameter.from_prototxt(model_file)
     net_param.set_molgrid_data_source(data_file, '')
     data_param = net_param.get_molgrid_data_param(caffe.TEST)
     data_param.random_rotation = True
+    data_param.fix_center_to_origin = True
     resolution = data_param.resolution
 
     net = caffe_util.Net.from_param(net_param, weights_file, phase=caffe.TEST)
@@ -90,6 +91,8 @@ if __name__ == '__main__':
     df = pd.DataFrame()
     grids = defaultdict(list)
     xyzs = defaultdict(list)
+
+    blob_names = ['lig', 'lig_name']
 
     n_samples = 10
     for i in range(n_samples):

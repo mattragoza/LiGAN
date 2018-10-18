@@ -21,16 +21,16 @@ if __name__ == '__main__':
     #params = [line.rstrip().split() for line in open(params_file)]
 
     data_name = 'two_atoms'
-    data_root = 'data'
+    data_root = '/net/pulsar/home/koes/mtr22/gan/data'
     max_iter = 50000
     #cont_iter = 0
     seed = 0
 
     pbs_temps = [
         'adam2_2_2_b_0.01.pbs',
-        'adam2_2_2_b_0.02.pbs',
-        'adam2_2_2_bg_0.01.pbs',
-        'adam2_2_2_bs_0.01.pbs',
+        #'adam2_2_2_b_0.02.pbs',
+        #'adam2_2_2_bg_0.01.pbs',
+        #'adam2_2_2_bs_0.01.pbs',
     ]
 
     data_model_file = 'data_12_0.5_cov_origin.model'

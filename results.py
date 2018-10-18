@@ -6,7 +6,7 @@ from collections import defaultdict
 import pandas as pd
 pd.set_option('display.max_columns', 100)
 pd.set_option('display.max_colwidth', 100)
-pd.set_option('display.width', 200)
+pd.set_option('display.width', 160)
 from pandas.api.types import is_numeric_dtype
 import numpy as np
 np.random.seed(0)
@@ -18,6 +18,7 @@ sns.set_context('notebook')
 sns.set_palette('Set1')
 
 import models
+import generate
 
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None):
@@ -185,36 +186,49 @@ def replace_outliers(x, value, z=3):
     return np.where(x > x_max, value, np.where(x < x_min, value, x))
 
 
-def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check):
+def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check, gen_metrics):
+
     all_model_dfs = []
     for model_dir in model_dirs:
+
         model_dfs = []
         model_name = model_dir.rstrip('/\\')
         model_prefix = os.path.join(model_dir, model_name)
         model_errors = dict()
+
         for seed in seeds:
-            for fold in folds:
+            for fold in folds: 
                 try:
-                    file_ = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
-                    file_df = pd.read_csv(file_, sep=' ')
-                    file_df['model_name'] = model_name
+                    train_file = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
+                    train_df = pd.read_csv(train_file, sep=' ')
+                    train_df['model_name'] = model_name
                     #file_df['data_name'] = data_name #TODO allow multiple data sets
-                    file_df['seed'] = seed
-                    file_df['fold'] = fold
-                    file_df['iteration'] = file_df['iteration'].astype(int)
-                    if 'base_lr' in file_df:
-                        del file_df['base_lr']
-                    max_iter = file_df['iteration'].max()
-                    assert iteration in file_df['iteration'].unique(), \
-                        'No training output for iteration {} ({})'.format(iteration, max_iter)
-                    model_dfs.append(file_df)
+                    train_df['seed'] = seed
+                    train_df['fold'] = fold
+                    train_df['iteration'] = train_df['iteration'].astype(int)
+                    if 'base_lr' in train_df:
+                        del train_df['base_lr']
+                    max_iter = train_df['iteration'].max()
+                    #assert iteration in train_df['iteration'].unique(), \
+                    #    'No training output for iteration {} ({})'.format(iteration, max_iter)
+
+                    if gen_metrics: #TODO these should be in the train output file
+                        gen_file = '{}.{}.{}.{}.gen_metrics'.format(model_prefix, data_name, seed, fold)
+                        gen_df = pd.read_csv(gen_file, sep=' ', index_col=0, names=[0]).T
+                        for col in gen_df:
+                            train_df.loc[:, col] = gen_df[col].values
+
+                    model_dfs.append(train_df)
+
                 except (IOError, pd.io.common.EmptyDataError, AssertionError, KeyError) as e:
-                    model_errors[file_] = e
+                    model_errors[train_file] = e
+
         if not check or not model_errors:
             all_model_dfs.extend(model_dfs)
         else:
             for f, e in model_errors.items():
                 print('{}: {}'.format(f, e))
+
     return pd.concat(all_model_dfs)
 
 
@@ -249,7 +263,7 @@ def fix_name(name, char, idx):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--dir_pattern', default=[], action='append', required=True)
+    parser.add_argument('-m', '--dir_pattern', default=[], action='append')
     parser.add_argument('-d', '--data_name', default='lowrmsd')
     parser.add_argument('-s', '--seeds', default='0')
     parser.add_argument('-f', '--folds', default='0,1,2')
@@ -269,6 +283,7 @@ def parse_args(argv=None):
     parser.add_argument('--aggregate', default=False, action='store_true')
     parser.add_argument('--test_data')
     parser.add_argument('--ylim', default=[], action='append')
+    parser.add_argument('--gen_metrics', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -276,12 +291,17 @@ def main(argv):
     args = parse_args(argv)
 
     args.ylim = [ast.literal_eval(yl) for yl in args.ylim]
-
-    # read training output files from found model directories
-    model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
     seeds = args.seeds.split(',')
     folds = args.folds.split(',')
-    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, True)
+
+    if args.dir_pattern: # read training output files from found model directories
+        model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
+        df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
+        results_file = '{}.results'.format(args.out_prefix)
+        df.to_csv(results_file)
+    else:
+        results_file = '{}.results'.format(args.out_prefix)
+        df = pd.read_csv(results_file)
 
     if args.test_data is not None:
         df = df[df['test_data'] == args.test_data]
@@ -301,7 +321,7 @@ def main(argv):
     for model_name, model_df in agg_df.groupby(level=0):
 
         # try to parse it as a GAN
-        m = re.match(r'^(.+_)?(.+e(\d+)_.+)_(d(\d+)_.+)$', model_name)
+        m = re.match(r'^(.+)_(.+e(\d+)_.+)_(d([^_]+)_.+)$', model_name)
         if m:
             solver_name = fix_name(m.group(1), ' ', [3])
             name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
@@ -317,8 +337,11 @@ def main(argv):
             name_fields.append('gen_model_version')
             name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
 
-            disc_v = tuple(int(c) for c in m.group(5))
-            disc_model_name = m.group(4)
+            try:
+                disc_v = tuple(int(c) for c in m.group(5))
+            except ValueError:
+                disc_v = (0, 1)
+            disc_model_name = fix_name(m.group(4), ' ', [-4])
             agg_df.loc[model_name, 'disc_model_version'] = str(disc_v)
             name_fields.append('disc_model_version')
             name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
@@ -364,6 +387,8 @@ def main(argv):
             agg_df.loc[no_rmsd, rmsd_loss] = agg_df[no_rmsd][rmsd_loss.replace('rmsd_loss', 'loss')]
             agg_df[rmsd_loss] *= agg_df['resolution']**3
 
+    #agg_df['gen_fit_L2_loss'] = agg_df.apply(lambda x: x['gen_fit_L2_loss'] or x['gen_L2_loss'], axis=1)
+
     # rename columns if necessary
     agg_df.reset_index(inplace=True)
     col_name_map = {col: col for col in agg_df}
@@ -394,7 +419,6 @@ def main(argv):
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
- 
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
     print('\nfinal data')
     print(final_df)
