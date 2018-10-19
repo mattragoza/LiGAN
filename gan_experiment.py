@@ -44,14 +44,14 @@ if __name__ == '__main__':
         'models/_vr-le13_12_0.5_2_2l_8_2_16_f.model',
         'models/_vr-le13_12_0.5_2_1l_16_2_16_f.model',
         'models/_vr-le13_12_0.5_2_1l_8_2_32_f.model',
-        'models/_vr-le13_12_0.5_2_1lg_8_2_16_.model',
-        'models/_vr-le13_12_0.5_2_2lg_8_2_16_.model',
-        'models/_vr-le13_12_0.5_2_1lg_16_2_16_.model',
-        'models/_vr-le13_12_0.5_2_1lg_8_2_32_.model',
-        'models/_vr-le13_12_0.5_2_1l_8_2_16_.model',
-        'models/_vr-le13_12_0.5_2_2l_8_2_16_.model',
-        'models/_vr-le13_12_0.5_2_1l_16_2_16_.model',
-        'models/_vr-le13_12_0.5_2_1l_8_2_32_.model',
+        'models/_vl-le13_12_0.5_2_1lg_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_2lg_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_1lg_16_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_1lg_8_2_32_e.model',
+        'models/_vl-le13_12_0.5_2_1l_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_2l_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_1l_16_2_16_e.model',
+        'models/_vl-le13_12_0.5_2_1l_8_2_32_e.model',
     ]
 
     disc_model_files = [
@@ -98,5 +98,6 @@ if __name__ == '__main__':
     with open('TWO_ATOMS_FIT', 'w') as f:
         f.write('\n'.join(gan_names))
 
-    map(torque_util.wait_for_free_gpus_and_submit_job, job_args)
+    for a in job_args:
+        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=0, poll_every=1)
 

@@ -125,16 +125,16 @@ def submit_job(args):
     return job_id
 
 
-def submit_job_and_wait_to_complete(args):
+def submit_job_and_wait_to_complete(args, poll_every='5'):
     '''
     Submit a job with the args (pbs_file, array_idx) and then wait
     for it to complete, querying its state every 5 seconds. The job
     will be submit from the dir containing the job script.
     '''
     job_id = submit_job(args)
-    time.sleep(5)
+    time.sleep(poll_every)
     while get_job_state(job_id) != 'C':
-        time.sleep(5)
+        time.sleep(poll_every)
     return job_id
 
 
@@ -148,6 +148,7 @@ def get_n_gpus_free(queue):
     df = df[df['properties'].map(lambda qs: queue in qs.split(','))]
     df = df[df['state'] == 'free']
     n_gpus = df['gpus'].astype(int)
+
     # get jobs running on those nodes that are using gpus
     df = get_qstat_data()
     df = df[df['job_state'] == 'R']
@@ -155,21 +156,24 @@ def get_n_gpus_free(queue):
     df['Node Id'] = df['gpus_reserved'].map(lambda g: g.split(':', 1)[0])
     df['gpu']     = df['gpus_reserved'].map(lambda g: g.split(':', 1)[1])
     df = df[df['Node Id'].map(lambda n: n in n_gpus)]
+
     # get num unique gpus being used by those jobs on each node
     n_gpus_used = df.groupby('Node Id')['gpu'].nunique().astype(int)
+
     # return total free gpus as sum of total gpus minus gpus in use, per node
     n_gpus_free = n_gpus.subtract(n_gpus_used, fill_value=0).astype(int)
+
     return n_gpus_free.sum()
 
 
-def wait_for_free_gpus_and_submit_job(args, queue='dept_gpu', min_gpus_free=4):
+def wait_for_free_gpus_and_submit_job(args, n_gpus_free=5, poll_every=5, queue='dept_gpu'):
     '''
     Wait for a certain number of gpus to be free and then
     submit a job with args (pbs_file, array_idx). The job
     will be submit from the dir containing the job script.
     ''' 
-    while get_n_gpus_free(queue) <= min_gpus_free:
-        time.sleep(5)
+    while get_n_gpus_free(queue) < n_gpus_free:
+        time.sleep(poll_every)
     job_id = submit_job(args)
-    time.sleep(5)
+    time.sleep(poll_every)
     return job_id

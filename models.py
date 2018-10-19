@@ -78,7 +78,7 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['r-l', '_r-l', 'vr-l', '_vr-l'],
+        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
         data_dim=[12],
         resolution=[0.5],
         n_levels=[1, 2, 3],
@@ -86,7 +86,7 @@ GEN_SEARCH_SPACES = {
         arch_options=['l', 'lg'],
         n_filters=[8, 16],
         width_factor=[1, 2],
-        n_latent=[16, 32],
+        n_latent=[16, 32, 64, 128],
         loss_types=['', 'e', 'f'])
 }
 
@@ -463,7 +463,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
     if 'f' in loss_types:
 
-        fit = '{}_fit'.format(decoder_type)
+        fit = '{}_gen_fit'.format(decoder_type)
         net[fit] = caffe.layers.Python(curr_top,
             module='generate',
             layer='AtomFittingLayer',
