@@ -22,36 +22,36 @@ if __name__ == '__main__':
 
     data_name = 'two_atoms'
     data_root = '/net/pulsar/home/koes/mtr22/gan/data'
-    max_iter = 50000
+    max_iter = 25000
     #cont_iter = 0
     seed = 0
 
     pbs_temps = [
         'adam2_2_2_b_0.01.pbs',
-        #'adam2_2_2_b_0.02.pbs',
-        #'adam2_2_2_bg_0.01.pbs',
-        #'adam2_2_2_bs_0.01.pbs',
+        'adam2_2_2_b_0.1.pbs',
+        'adam2_2_2_bg_0.01.pbs',
+        'adam2_2_2_bs_0.01.pbs',
     ]
 
     data_model_file = 'data_12_0.5_cov_origin.model'
 
     gen_model_files = [
-        'models/_vr-le13_12_0.5_2_1lg_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_2lg_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_1lg_16_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_1lg_8_2_32_f.model',
-        'models/_vr-le13_12_0.5_2_1l_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_2l_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_1l_16_2_16_f.model',
-        'models/_vr-le13_12_0.5_2_1l_8_2_32_f.model',
-        'models/_vl-le13_12_0.5_2_1lg_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_2lg_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_1lg_16_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_1lg_8_2_32_e.model',
-        'models/_vl-le13_12_0.5_2_1l_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_2l_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_1l_16_2_16_e.model',
-        'models/_vl-le13_12_0.5_2_1l_8_2_32_e.model',
+        'models/_vr-le13_12_0.5_1_2lg_8_2_16_f.model',
+        'models/_vr-le13_12_0.5_1_2lg_8_2_32_f.model',
+        'models/_vr-le13_12_0.5_1_2lg_16_2_32_f.model',
+        'models/_vr-le13_12_0.5_1_2lg_16_2_64_f.model',
+        'models/_vr-le13_12_0.5_1_2l_8_2_16_f.model',
+        'models/_vr-le13_12_0.5_1_2l_8_2_32_f.model',
+        'models/_vr-le13_12_0.5_1_2l_16_2_32_f.model',
+        'models/_vr-le13_12_0.5_1_2l_16_2_64_f.model',
+        'models/_vl-le13_12_0.5_1_2lg_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_1_2lg_8_2_32_e.model',
+        'models/_vl-le13_12_0.5_1_2lg_16_2_32_e.model',
+        'models/_vl-le13_12_0.5_1_2lg_16_2_64_e.model',
+        'models/_vl-le13_12_0.5_1_2l_8_2_16_e.model',
+        'models/_vl-le13_12_0.5_1_2l_8_2_32_e.model',
+        'models/_vl-le13_12_0.5_1_2l_16_2_32_e.model',
+        'models/_vl-le13_12_0.5_1_2l_16_2_64_e.model',
     ]
 
     disc_model_files = [
@@ -95,9 +95,9 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('TWO_ATOMS_FIT', 'w') as f:
+    with open('TWO_ATOMS_FIT2', 'w') as f:
         f.write('\n'.join(gan_names))
 
     for a in job_args:
-        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=0, poll_every=1)
+        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=5, poll_every=1)
 

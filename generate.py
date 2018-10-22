@@ -6,7 +6,7 @@ from collections import defaultdict, Counter
 from itertools import combinations, permutations
 import contextlib
 import tempfile
-from multiprocessing.pool import Pool
+import multiprocessing as mp
 from itertools import izip
 from functools import partial
 from scipy.stats import multivariate_normal
@@ -29,10 +29,10 @@ class AtomFittingLayer(caffe.Layer):
         self.resolution = params['resolution']
         self.channels = atom_types.get_default_lig_channels(params['use_covalent_radius'])
         self.c = read_gninatypes_file(params['gninatypes_file'], self.channels)[1]
+        self.pool = mp.Pool()
 
     def reshape(self, bottom, top):
 
-        self.pool = Pool(bottom[0].shape[0])
         top[0].reshape(*bottom[0].shape)
 
     def forward(self, bottom, top):
@@ -41,11 +41,13 @@ class AtomFittingLayer(caffe.Layer):
                     channels=self.channels,
                     center=np.zeros(3),
                     resolution=self.resolution,
-                    max_iter=10,
-                    radius_multiple=1.5,
+                    max_iter=10, lr=0.1, mo=0.0,
                     fit_channels=self.c)
 
         top[0].data[...] = zip(*self.pool.map(f, bottom[0].data))[3]
+
+    def backward(self, top, propagate_down, bottom):
+        pass
 
 
 def fit_atom_types_to_grid(grid, channels, resolution, c, max_iter):
@@ -278,8 +280,9 @@ def get_atom_density_kernel(shape, resolution, atom_radius, radius_mult):
     return density.reshape(shape)
 
 
-def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, radius_multiple,
-                    max_iter, lr=0.05, mo=0.0, lambda_E=0, verbose=0):
+def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter, 
+                    lr=0.1, mo=0.0, lambda_E=0.0, radius_multiple=1.5, verbose=0,
+                    density_pred=None, density_diff=None):
     '''
     Fit atom positions, provided by arrays xyz initial positions, c channel indices, 
     and optional bonds matrix, to arrays of points with the given channel density values.
@@ -293,8 +296,10 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, radius_multipl
     d_loss_d_xyz = np.zeros_like(xyz)
     d_loss_d_xyz_prev = np.zeros_like(xyz)
     
-    density_pred = np.zeros_like(density)
-    density_diff = np.zeros_like(density)
+    if density_pred is None:
+        density_pred = np.zeros_like(density)
+    if density_diff is None:
+        density_diff = np.zeros_like(density)
 
     ax = np.newaxis
     if lambda_E:
@@ -306,10 +311,9 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, radius_multipl
     loss = np.inf
     i = 0
     while True:
-
-        # L2 loss between predicted and true density
         loss_prev = loss
 
+        # L2 loss between predicted and true density
         density_pred[...] = 0.0
         for j in range(n_atoms):
             density_pred[:,c[j]] += get_atom_density(xyz[j], atomic_radii[j], points, radius_multiple)
@@ -324,11 +328,11 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, radius_multipl
             for j in range(n_atoms):
                 loss += lambda_E * get_bond_length_energy(xyz_dist[j,j+1:], bond_length[j,j+1:], bonds[j,j+1:]).sum()
 
-        delta_loss = (loss - loss_prev)/loss_prev
+        delta_loss = loss - loss_prev
         if verbose > 2:
-            print('n_atoms = {}\titeration = {}\tloss = {} ({})'.format(n_atoms, i, loss, delta_loss), file=sys.stderr)
+            print('n_atoms = {}\titer = {}\tloss = {} ({})'.format(n_atoms, i, loss, delta_loss), file=sys.stderr)
 
-        if n_atoms == 0 or i == max_iter or abs(delta_loss) < 1e-6:
+        if n_atoms == 0 or i == max_iter or abs(delta_loss)/(abs(loss_prev) + 1e-8) < 1e-3:
             break
 
         # compute derivatives and descend loss gradient
@@ -352,9 +356,9 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, radius_multipl
     return xyz, density_pred, density_diff, loss
 
 
-def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, radius_multiple, lambda_E=0.0,
-                      deconv_fit=False, noise_ratio=0.0, bonded=False, verbose=0, max_init_bond_E=0.5,
-                      fit_channels=None):
+def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0.0, lambda_E=0.0,
+                      radius_multiple=1.5, bonded=False, max_init_bond_E=0.5, fit_channels=None,
+                      verbose=0):
     '''
     Fit atoms to grid by iteratively placing atoms and then optimizing their
     positions by gradient descent on L2 loss between the provided grid density
@@ -367,36 +371,40 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, radius_multi
     # convert grid to arrays of xyz points and channel density values
     points = get_grid_points(grid_shape, center, resolution)
     density = grid.reshape((n_channels, -1)).T
+    density_pred = np.zeros_like(density)
+    density_diff = np.zeros_like(density)
 
     # iteratively add atoms, fit, and assess goodness-of-fit
     xyz = np.ndarray((0, 3))
     c = np.ndarray(0, dtype=int)
     bonds = np.ndarray((0, 0))
     loss = np.inf
-    density_pred = None
 
     while True:
+        xyz_prev = xyz
+        density_pred_prev = density_pred
+        loss_prev = loss
 
         # optimize atom positions by gradient descent
-        xyz_prev = np.array(xyz)
-        loss_prev = loss
-        density_pred_prev = density_pred
         xyz, density_pred, density_diff, loss = \
-            fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii[c], radius_multiple, max_iter,
-                            lambda_E=lambda_E, verbose=verbose)
+            fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii[c], max_iter, lr=lr, mo=mo,
+                            lambda_E=lambda_E, radius_multiple=radius_multiple, verbose=verbose,
+                            density_pred=density_pred, density_diff=density_diff)
 
         # init next atom position on remaining density
         if fit_channels is not None:
             try:
                 c_new = fit_channels[len(c)]
-                kernel = get_atom_density(center, atomic_radii[c_new], points, 1.5).reshape(grid_shape)
-                conv = conv_grid(density_diff[:,c_new].reshape(grid_shape), kernel)
-                conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
-                xyz_new = points[conv.argmax()]
+                if False:
+                    xyz_new = points[density_diff[:,c_new].argmax()]
+                else:
+                    kernel = get_atom_density(center, atomic_radii[c_new], points, radius_multiple)
+                    conv = conv_grid(density_diff[:,c_new].reshape(grid_shape), kernel.reshape(grid_shape))
+                    conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
+                    xyz_new = points[conv.argmax()]
 
             except IndexError:
                 xyz_new = None
-
         else:
             # revert if fit gets worse (loss increases)
             if loss > loss_prev:
