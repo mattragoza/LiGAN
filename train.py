@@ -16,21 +16,8 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
-import caffe_util
-import results
-sns.set_style('whitegrid')
-
-
-def get_metric_from_net(net, metric):
-    if metric in net.blobs:
-        return np.array(net.blobs[metric].data)
-    elif metric == 'grad_norm':
-        return get_gradient_norm(net)
-    elif metric == 'last_conv':
-        last_conv = [n for n in net.blobs if 'conv' in n][-1]
-        return np.mean(net.blobs[last_conv].data)
-    else:
-        raise KeyError(metric)
+from caffe_util import NetParameter, SolverParameter, Net, Solver
+from results import plot_lines
 
 
 def get_gradient_norm(net, ord=2):
@@ -122,368 +109,282 @@ def spectral_norm_backward(net, params):
         W.diff[...] /= sigma
 
 
-def disc_step(data_net, gen_solver, disc_solver, n_iter, train, args):
+def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
     '''
-    Train or test the discriminative GAN component for n_iter iterations.
+    Train or test GAN discriminator for n_iter iterations.
     '''
-    gen_net  = gen_solver.net
-    disc_net = disc_solver.net
-    compute_grad = True
+    disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
 
-    batch_size = data_net.blobs['data'].shape[0]
-    half1 = np.arange(batch_size) < batch_size//2
-    half2 = ~half1
-
-    disc_metrics = {}
-    for blob_name in disc_net.blobs:
-        if blob_name.endswith('loss'):
-            disc_metrics[blob_name] = np.full(n_iter, np.nan)
-    if compute_grad:
-        disc_metrics['grad_norm'] = np.full(n_iter, np.nan)
-
-    if 'info_loss' in disc_net.blobs: # ignore info_loss
-        del disc_metrics['info_loss']
-        info_loss_weight = disc_net.blobs['info_loss'].diff
-        disc_net.blobs['info_loss'].diff[...] = 0.0
+    metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
     for i in range(n_iter):
 
-        if i%2 == 0:
+        if i % 2 == 0: # get real receptors and ligands
 
-            # get real receptors and ligands
-            data_net.forward()
-            rec_real = data_net.blobs['rec'].data
-            lig_real = data_net.blobs['lig'].data
+            data.forward()
+            rec = data.blobs['rec'].data
+            lig = data.blobs['lig'].data
 
-            # generate fake ligands conditioned on receptors
-            gen_net.blobs['rec'].data[...] = rec_real
-            gen_net.blobs['lig'].data[...] = lig_real
-            if args.alternate:
-                # sample ligand prior (for rvl-l models)
-                gen_net.forward(start='rec', end='rec_latent_fc')
-                gen_net.blobs['lig_latent_mean'].data[...] = 0.0
-                gen_net.blobs['lig_latent_std'].data[...] = 1.0
-                gen_net.forward(start='lig_latent_noise', end='lig_gen')
-            else:
-                gen_net.forward()
-            lig_gen = gen_net.blobs['lig_gen'].data
+            disc.net.blobs['rec'].data[...] = rec
+            disc.net.blobs['lig'].data[...] = lig
+            disc.net.blobs['label'].data[...] = 1.0
 
-            # create batch of real and generated ligands
-            lig_bal = np.concatenate([lig_real[half1,...],
-                                      lig_gen[half2,...]])
+        else: # generate fake ligands
 
-            # compute likelihood that generated ligands fool discriminator
-            disc_net.blobs['rec'].data[...] = rec_real
-            disc_net.blobs['lig'].data[...] = lig_bal
-            disc_net.blobs['label'].data[...] = half1[:,np.newaxis]
-            if 'info_label' in disc_net.blobs:
-                info_label = np.zeros_like(disc_net.blobs['info_label'].data)
-                disc_net.blobs['info_label'].data[...] = info_label
-            elif 'lig_instance_std' in disc_net.blobs:
-                disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
+            gen.net.blobs['rec'].data[...] = rec
+            gen.net.blobs['lig'].data[...] = lig
 
-            if args.disc_spectral_norm:
-                spectral_norm_forward(disc_net, args.disc_spectral_norm)
+            if args.gen_spectral_norm:
+                spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
-            disc_net.forward()
+            gen.net.forward()
+            lig_gen = gen.net.blobs['lig_gen'].data
 
-            if train or compute_grad: # update D only
+            disc.net.blobs['rec'].data[...] = rec
+            disc.net.blobs['lig'].data[...] = lig_gen
+            disc.net.blobs['label'].data[...] = 0.0
 
-                disc_net.clear_param_diffs()
-                disc_net.backward()
+        if args.disc_spectral_norm:
+            spectral_norm_forward(disc.net, args.disc_spectral_norm)
 
-                if args.disc_spectral_norm:
-                    spectral_norm_backward(disc_net, args.disc_spectral_norm)
+        disc.net.forward()
 
-                if args.disc_grad_norm:
-                    gradient_normalize(disc_net)
+        # record discriminator loss
+        for l in disc_loss_names:
+            metrics['disc_' + l][i] = float(disc.net.blobs[l].data)
+        
+        metrics['disc_iter'][i] = disc.iter
 
-                if train:
-                    disc_solver.apply_update()
+        if train or compute_metrics: # compute gradient
 
-            # record discriminator metrics
-            for n in disc_metrics:
-                disc_metrics[n][i] = get_metric_from_net(disc_net, n)
-
-        else: # use the other half of the real/generated ligands
-
-            if args.alternate:
-                # autoencode real ligands (for rvl-l models)
-                gen_net.forward(start='lig_level0_conv0', end='lig_gen')
-                lig_gen = gen_net.blobs['lig_gen'].data
-
-            # create complementary batch of real and generated ligands
-            lig_bal = np.concatenate([lig_gen[half1,...],
-                                      lig_real[half2,...]])
-
-            # compute likelihood that generated ligands fool discriminator
-            disc_net.blobs['rec'].data[...] = rec_real
-            disc_net.blobs['lig'].data[...] = lig_bal
-            disc_net.blobs['label'].data[...] = half2[:,np.newaxis]
-            if 'info_label' in disc_net.blobs:
-                info_label = np.zeros_like(disc_net.blobs['info_label'].data)
-                disc_net.blobs['info_label'].data[...] = info_label
-            elif 'lig_instance_std' in disc_net.blobs:
-                disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
+            disc.net.clear_param_diffs()
+            disc.net.backward()
 
             if args.disc_spectral_norm:
-                spectral_norm_forward(disc_net, args.disc_spectral_norm)
+                spectral_norm_backward(disc.net, args.disc_spectral_norm)
 
-            disc_net.forward()
+            if args.disc_grad_norm:
+                gradient_normalize(disc.net)
 
-            if train or compute_grad: # update D only
+            if compute_metrics:
+                metrics['disc_grad_norm'][i] = get_gradient_norm(disc.net)
 
-                disc_net.clear_param_diffs()
-                disc_net.backward()
+            if train:
+                disc.apply_update()
+                disc.increment_iter()
 
-                if args.disc_spectral_norm:
-                    spectral_norm_backward(disc_net, args.disc_spectral_norm)
-
-                if args.disc_grad_norm:
-                    gradient_normalize(disc_net)
-
-                if train:
-                    disc_solver.apply_update()
-
-            # record discriminator metrics
-            for n in disc_metrics:
-                disc_metrics[n][i] = get_metric_from_net(disc_net, n)
-
-    if 'info_loss' in disc_net.blobs:
-        disc_net.blobs['info_loss'].diff[...] = info_loss_weight
-
-    return {n: m.mean() for n,m in disc_metrics.items()}
+    return {m: np.nanmean(metrics[m]) for m in metrics}
 
 
-def gen_step(data_net, gen_solver, disc_solver, n_iter, train, args):
+def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     '''
-    Train or test the generative GAN component for n_iter iterations.
+    Train or test the GAN generator for n_iter iterations.
     '''
-    gen_net  = gen_solver.net
-    disc_net = disc_solver.net
+    gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
+    disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
+    lig_grid_names = ['lig', 'lig_gen']
 
-    batch_size = data_net.blobs['data'].shape[0]
-    compute_grad = True
-
-    gen_metrics = {}
-    for blob_name in gen_net.blobs:
-        if blob_name.endswith('loss'):
-            gen_metrics[blob_name] = np.full(n_iter, np.nan)
-    if compute_grad:
-        gen_metrics['grad_norm'] = np.full(n_iter, np.nan)
-
-    disc_metrics = {}
-    for blob_name in disc_net.blobs:
-        if blob_name.endswith('loss'):
-            disc_metrics[blob_name] = np.full(n_iter, np.nan)
-    if compute_grad:
-        disc_metrics['grad_norm'] = np.full(n_iter, np.nan)
+    metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
     for i in range(n_iter):
 
         # get real receptors and ligands
-        data_net.forward()
-        rec_real = data_net.blobs['rec'].data
-        lig_real = data_net.blobs['lig'].data
+        data.forward()
+        rec = data.blobs['rec'].data
+        lig = data.blobs['lig'].data
 
-        # generate fake ligands conditioned on receptors
-        gen_net.blobs['rec'].data[...] = rec_real
-        gen_net.blobs['lig'].data[...] = lig_real
+        # generate fake ligands
+        gen.net.blobs['rec'].data[...] = rec
+        gen.net.blobs['lig'].data[...] = lig
 
         if args.gen_spectral_norm:
-            spectral_norm_forward(gen_net, args.gen_spectral_norm)
+            spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
-        if args.alternate and i%2:
-            # sample ligand prior (for rvl-l models)
-            gen_net.forward(start='rec', end='rec_latent_fc')
-            gen_net.blobs['lig_latent_mean'].data[...] = 0.0
-            gen_net.blobs['lig_latent_std'].data[...] = 1.0
-            gen_net.forward(start='lig_latent_noise', end='lig_gen')
-        else:
-            gen_net.forward()
-        lig_gen = gen_net.blobs['lig_gen'].data
+        gen.net.forward()
+        lig_gen = gen.net.blobs['lig_gen'].data
 
-        # compute likelihood that generated ligands fool discriminator
-        disc_net.blobs['rec'].data[...] = rec_real
-        disc_net.blobs['lig'].data[...] = lig_gen
-        disc_net.blobs['label'].data[...] = 1.0
-        if 'info_label' in disc_net.blobs:
-            info_label = np.concatenate([gen_net.blobs['lig_latent_mean'].data,
-                                         gen_net.blobs['lig_latent_log_std'].data], axis=1)
-            disc_net.blobs['info_label'].data[...] = info_label
-        elif 'lig_instance_std' in disc_net.blobs:
-            disc_net.blobs['lig_instance_std'].data[...] = args.instance_noise
-        disc_net.forward()
+        disc.net.blobs['rec'].data[...] = rec
+        disc.net.blobs['lig'].data[...] = lig_gen
+        disc.net.blobs['label'].data[...] = 1.0
 
-        if train or compute_grad: # backpropagate through D and G and apply update
+        if args.disc_spectral_norm:
+            spectral_norm_forward(disc.net, args.disc_spectral_norm)
 
-            if 'info_loss' in disc_net.blobs: # TODO normalize gradients
-                # apply info loss update to discriminator
-                disc_net.clear_param_diffs()
-                disc_net.backward(start='info_loss') # exclude GAN loss (should be after info_loss)
-                if train:
-                    disc_solver.apply_update()
+        disc.net.forward()
 
-            disc_net.clear_param_diffs()
-            disc_net.backward()
+        # record generator loss
+        for l in gen_loss_names:
+            metrics['gen_' + l][i] = float(gen.net.blobs[l].data)
+
+        # record discriminator loss
+        for l in disc_loss_names:
+            metrics['gen_adv_' + l][i] = float(disc.net.blobs[l].data)
+
+        metrics['gen_iter'][i] = gen.iter
+
+        if train or compute_metrics: # compute gradient
+
+            disc.net.clear_param_diffs()
+            disc.net.backward()
+
+            if args.disc_spectral_norm:
+                spectral_norm_backward(disc.net, args.disc_spectral_norm)
 
             if args.disc_grad_norm:
-                gradient_normalize(disc_net)
+                gradient_normalize(disc.net)
 
-            gen_net.blobs['lig_gen'].diff[...] = disc_net.blobs['lig'].diff
-            gen_net.clear_param_diffs()
-
-            if args.alternate and i%2: # skip gen_loss and lig encoder
-                gen_net.backward(start='lig_gen', end='lig_latent_noise')
-                gen_net.backward(start='rec_latent_fc', end='rec')
-            else:
-                gen_net.backward()
+            gen.net.blobs['lig_gen'].diff[...] = disc.net.blobs['lig'].diff
+            gen.net.clear_param_diffs()
+            gen.net.backward()
 
             if args.gen_spectral_norm:
-                spectral_norm_backward(gen_net, args.gen_spectral_norm)
+                spectral_norm_backward(gen.net, args.gen_spectral_norm)
 
             if args.gen_grad_norm:
-                gradient_normalize(gen_net)
+                gradient_normalize(gen.net)
+
+            if compute_metrics:
+                metrics['gen_grad_norm'][i] = get_gradient_norm(gen.net)
+                metrics['gen_adv_grad_norm'][i] = get_gradient_norm(disc.net)
 
             if train:
-                gen_solver.apply_update()
+                gen.apply_update()
+                gen.increment_iter()
 
-        # record generator metrics
-        for n in gen_metrics:
-            gen_metrics[n][i] = get_metric_from_net(gen_net, n)
+    if compute_metrics: # compute additional grid metrics
 
-        # record discriminator metrics (generative-adversarial)
-        for n in disc_metrics:
-            disc_metrics[n][i] = get_metric_from_net(disc_net, n)
+        grid_axes = (1, 2, 3, 4)
+        for g in lig_grid_names:
+            grids = gen.net.blobs[g].data
+            metrics[g + '_norm'][-1] = ((grids**2).sum(grid_axes)**0.5).mean()
 
-    return {n: np.nanmean(m) for n,m in gen_metrics.items()}, \
-           {n: np.nanmean(m) for n,m in disc_metrics.items()}
+        for g, g2 in itertools.combinations(lig_grid_names, 2):
+            grids  = gen.net.blobs[g].data
+            grids2 = gen.net.blobs[g2].data
+            diffs =  grids2 - grids
+            metrics[g + '_' + g2 + '_dist'][-1] = ((diffs**2).sum(grid_axes)**0.5).mean()
+
+        for g in lig_grid_names:
+            grids = gen.net.blobs[g].data
+            diffs = grids[np.newaxis,:,...] - grids[:,np.newaxis,...]
+            metrics[g + '_' + g + '_dist'][-1] = ((diffs**2).sum(grid_axes)**0.5).mean()
+
+    return {m: np.nanmean(metrics[m]) for m in metrics}
 
 
-def train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
-                    loss_df, loss_out, plot_out, args):
+def insert_metrics(loss_df, iter_, test_data, metrics):
+
+    for m in metrics:
+        loss_df.loc[(iter_, test_data), m] = metrics[m]
+
+
+def write_and_plot_metrics(loss_df, loss_out, plot_out):
+
+    loss_out.seek(0)
+    loss_df.to_csv(loss_out, sep=' ')
+    loss_out.flush()
+
+    plot_out.seek(0)
+    plot_lines(plot_out, loss_df, x='iteration', y=loss_df.columns, hue='test_data')
+    plot_out.flush()
+
+
+def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_out, args):
     '''
-    Train a GAN using the provided train_data_net, gen_solver, and disc_solver.
-    Return the loss output from periodically testing on each of test_data_nets
-    as a data frame, and write it to loss_out as training to proceeds.
+    Train a GAN using the provided train_data net, gen solver, and disc solver.
+    Return loss_df of metrics evaluated on train and test data, while also writing
+    to loss_out and plotting to plot_out as training progresses.
     '''
-    train_disc_loss = np.nan
-    train_gen_adv_loss = np.nan
+    # training flags for dynamic balancing
     train_disc = True
-    train_gen = True
+    train_gen  = True
 
-    if args.cont_iter:
-        disc_iter = loss_df.loc[(args.cont_iter, 'train'), 'disc_iter']
-        gen_iter = loss_df.loc[(args.cont_iter, 'train'), 'gen_iter']
-    else:
-        disc_iter = 0
-        gen_iter = 0
-
-    times = []
-
+    # init spectral norm params
     if args.disc_spectral_norm:
-        args.disc_spectral_norm = spectral_norm_setup(disc_solver.net)
+        args.disc_spectral_norm = spectral_norm_setup(disc.net)
 
     if args.gen_spectral_norm:
-        args.gen_spectral_norm = spectral_norm_setup(gen_solver.net)
+        args.gen_spectral_norm = spectral_norm_setup(gen.net)
+
+    # init instance noise std
+    if args.instance_noise:
+        disc.net.blobs['lig_instance_std'].data[...] = args.instance_noise
+
+    test_times = []
+    train_times = []
 
     for i in range(args.cont_iter, args.max_iter+1):
-        start = time.time()
 
-        if i%args.snapshot == 0:
-            disc_solver.snapshot()
-            gen_solver.snapshot()
+        if i % args.snapshot == 0:
+            disc.snapshot()
+            gen.snapshot()
 
-        first_cont_iter = (args.cont_iter and i == args.cont_iter)
-        if i%args.test_interval == 0 and not first_cont_iter: # test
+        if i % args.test_interval == 0: # test nets
+            t_start = time.time()
 
-            for test_data, test_data_net in test_data_nets.items():
+            for d in test_data:
 
-                disc_metrics = \
-                    disc_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args)
+                disc_metrics = disc_step(test_data[d], gen, disc, args.test_iter, args,
+                                         train=False, compute_metrics=True)
 
-                gen_metrics, gen_adv_metrics = \
-                    gen_step(test_data_net, gen_solver, disc_solver, args.test_iter, False, args)
+                gen_metrics  = gen_step(test_data[d], gen, disc, args.test_iter, args,
+                                        train=False, compute_metrics=True)
 
-                for n in disc_metrics:
-                    loss_df.loc[(i, test_data), 'disc_' + n] = disc_metrics[n]
+                insert_metrics(loss_df, i, d, disc_metrics)
+                insert_metrics(loss_df, i, d, gen_metrics)
 
-                for n in gen_metrics:
-                    loss_df.loc[(i, test_data), 'gen_' + n] = gen_metrics[n]
+            test_times.append(time.time() - t_start)
 
-                for n in gen_adv_metrics:
-                    loss_df.loc[(i, test_data), 'gen_adv_' + n] = gen_adv_metrics[n]
-
-            loss_df.loc[(i, 'train'), 'disc_iter'] = disc_iter
-            loss_df.loc[(i, 'train'), 'gen_iter'] = gen_iter
-
-            loss_out.seek(0)
-            loss_df.to_csv(loss_out, sep=' ')
-            loss_out.flush()
-
-            plot_out.seek(0)
-            results.plot_lines(plot_out, loss_df,
-                               x='iteration',
-                               y=loss_df.columns,
-                               hue='test_data')
-            plot_out.flush()
-
-            time_elapsed = np.sum(times)
-            time_mean = time_elapsed // len(times)
-            iters_left = args.max_iter - i
-            time_left = time_mean*iters_left
+            t_train = np.sum(train_times)
+            t_test = np.sum(test_times)
+            t_total = t_train + t_test
+            pct_train = 100*t_train/t_total
+            pct_test = 100*t_test/t_total
+            t_per_iter = t_total/(i - args.cont_iter)
+            t_left = t_per_iter * (args.max_iter - i)
+            t_total = dt.timedelta(seconds=t_total)
+            if i > args.cont_iter:
+                t_per_iter = dt.timedelta(seconds=t_per_iter)
+                t_left = dt.timedelta(seconds=t_left)
 
             print('Iteration {} / {}'.format(i, args.max_iter))
-            print('  {} elapsed'.format(time_elapsed))
-            print('  {} per iter'.format(time_mean))
-            print('  {} left'.format(time_left))
-            for test_data in test_data_nets:
-                for n in loss_df:
-                    print('  {} {} = {}'.format(test_data, n, loss_df.loc[(i, test_data), n]))
-            sys.stdout.flush()
+            print('  {} elapsed ({:.1f}% training, {:.1f}% testing)'
+                  .format(t_total, pct_train, pct_test))
+            print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))
+            for d in test_data:
+                for m in sorted(loss_df.columns):
+                    print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
 
-        if i == args.max_iter:
-            break
+            write_and_plot_metrics(loss_df, loss_out, plot_out)
+        
+        t_start = time.time()
 
-        # dynamic G/D balancing
-        if args.balance:
+        # train nets       
+        disc_step(train_data, gen, disc, args.disc_train_iter, args,
+                  train=train_disc, compute_metrics=False)
+
+        gen_step(train_data, gen, disc, args.gen_train_iter, args,
+                 train=train_gen, compute_metrics=False)
+
+        if i+1 == args.max_iter:
+            train_disc = False
+            train_gen = False
+
+        elif args.balance: # dynamically balance G/D training
 
             # how much better is D than G?
-            train_loss_ratio = train_gen_adv_loss / train_disc_loss
+            train_loss_ratio = gen_metrics['gen_adv_log_loss'] / disc_metrics['disc_log_loss']
 
             if train_disc and train_loss_ratio > 10:
                 train_disc = False
-
             if not train_disc and train_loss_ratio < 2:
                 train_disc = True
-
             if train_gen and train_loss_ratio < 1:
                 train_gen = False
-
             if not train_gen and train_loss_ratio > 2:
                 train_gen = True
 
-        # train
-        disc_metrics = \
-            disc_step(train_data_net, gen_solver, disc_solver, args.disc_train_iter, train_disc, args)
-
-        gen_metrics, gen_adv_metrics = \
-            gen_step(train_data_net, gen_solver, disc_solver, args.gen_train_iter, train_gen, args)
-
-        train_disc_loss = disc_metrics['log_loss']
-        train_gen_adv_loss = gen_adv_metrics['log_loss']
-
-        disc_solver.increment_iter()
-        gen_solver.increment_iter()
-        disc_iter += train_disc * args.disc_train_iter
-        gen_iter += train_gen * args.gen_train_iter
-
-        # check common failure cases
-        lig_gen = gen_solver.net.blobs['lig_gen']
-        assert not np.all(lig_gen.data == 0.0)
-        assert train_disc_loss > 0.0
-
-        times.append(dt.timedelta(seconds=time.time() - start))
+        train_times.append(time.time() - t_start)
 
 
 def get_train_and_test_files(data_prefix, fold_nums):
@@ -534,62 +435,56 @@ def main(argv):
     args = parse_args(argv)
 
     # read solver and model param files and set general params
-    data_net_param = caffe_util.NetParameter.from_prototxt(args.data_model_file)
+    data_param = NetParameter.from_prototxt(args.data_model_file)
 
-    gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
-    gen_net_param.force_backward = True
+    gen_param = NetParameter.from_prototxt(args.gen_model_file)
+    disc_param = NetParameter.from_prototxt(args.disc_model_file)
+    
+    gen_param.force_backward = True
+    disc_param.force_backward = True
 
-    disc_net_param = caffe_util.NetParameter.from_prototxt(args.disc_model_file)
-    disc_net_param.force_backward = True
-
-    solver_param = caffe_util.SolverParameter.from_prototxt(args.solver_file)
+    solver_param = SolverParameter.from_prototxt(args.solver_file)
     solver_param.max_iter = args.max_iter
-    solver_param.test_interval = args.max_iter+1 # will test manually
+    solver_param.test_interval = args.max_iter + 1
     solver_param.random_seed = args.random_seed
 
     for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
 
-        # create data net for training (on train set)
-        data_net_param.set_molgrid_data_source(train_file, args.data_root, caffe.TRAIN)
-        train_data_net = caffe_util.Net.from_param(data_net_param, phase=caffe.TRAIN)
+        # create nets for producing train and test data
+        data_param.set_molgrid_data_source(train_file, args.data_root)
+        train_data = Net.from_param(data_param, phase=caffe.TRAIN)
 
-        # create data nets for testing on both test and train sets
-        test_data_nets = dict()
-        data_net_param.set_molgrid_data_source(test_file, args.data_root, caffe.TEST)
-        test_data_nets['test'] = caffe_util.Net.from_param(data_net_param, phase=caffe.TEST)
-        data_net_param.set_molgrid_data_source(train_file, args.data_root, caffe.TEST)
-        test_data_nets['train'] = caffe_util.Net.from_param(data_net_param, phase=caffe.TEST)
+        test_data = {}
+        data_param.set_molgrid_data_source(train_file, args.data_root)
+        test_data['train'] = Net.from_param(data_param, phase=caffe.TEST)
+        if test_file != train_file:
+            data_param.set_molgrid_data_source(test_file, args.data_root)
+            test_data['test'] = Net.from_param(data_param, phase=caffe.TEST)
 
-        # create solver for generative model
+        # create solver for training generator net
         gen_prefix = '{}.{}_gen'.format(args.out_prefix, fold)
-        gen_solver = caffe_util.Solver.from_param(solver_param, net_param=gen_net_param,
-                                                  snapshot_prefix=gen_prefix)
+        gen = Solver.from_param(solver_param, net_param=gen_param, snapshot_prefix=gen_prefix)
         if args.gen_weights_file:
-            gen_solver.net.copy_from(args.gen_weights_file)
+            gen.net.copy_from(args.gen_weights_file)
+        if 'lig_gauss_conv' in gen.net.blobs:
+            gen.net.copy_from('lig_gauss_conv.caffemodel')
 
-        elif any(n == 'lig_gauss_conv' for n in gen_solver.net.blobs):
-            gen_solver.net.copy_from('lig_gauss_conv.caffemodel')
-
-        # create solver for discriminative model
+        # create solver for training discriminator net
         disc_prefix = '{}.{}_disc'.format(args.out_prefix, fold)
-        disc_solver = caffe_util.Solver.from_param(solver_param, net_param=disc_net_param,
-                                                   snapshot_prefix=disc_prefix)
+        disc = Solver.from_param(solver_param, net_param=disc_param, snapshot_prefix=disc_prefix)
         if args.disc_weights_file:
-            disc_solver.net.copy_from(args.disc_weights_file)
+            disc.net.copy_from(args.disc_weights_file)
 
         # continue previous training state, or start new training output file
         loss_file = '{}.{}.training_output'.format(args.out_prefix, fold)
         if args.cont_iter:
-            gen_state_file = '{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter)
-            disc_state_file = '{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter)
-            gen_solver.restore(gen_state_file)
-            disc_solver.restore(disc_state_file)
+            gen.restore('{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter))
+            disc.restore('{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter))
             loss_df = pd.read_csv(loss_file, sep=' ', header=0, index_col=[0, 1])
             loss_df = loss_df[:args.cont_iter+1]
         else:
             columns = ['iteration', 'test_data']
             loss_df = pd.DataFrame(columns=columns).set_index(columns)
-
         loss_out = open(loss_file, 'w')
 
         plot_file = '{}.{}.png'.format(args.out_prefix, fold)
@@ -597,11 +492,10 @@ def main(argv):
 
         # begin training GAN
         try:
-            train_GAN_model(train_data_net, test_data_nets, gen_solver, disc_solver,
-                            loss_df, loss_out, plot_out, args)
+            train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_out, args)
         finally:
-            disc_solver.snapshot()
-            gen_solver.snapshot()
+            gen.snapshot()
+            disc.snapshot()
             loss_out.close()
             plot_out.close()
 
