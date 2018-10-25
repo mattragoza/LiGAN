@@ -2,12 +2,16 @@ from __future__ import print_function, division
 import matplotlib
 matplotlib.use('Agg')
 import sys, os, argparse, time
-from collections import OrderedDict
+import collections
+import itertools
 import datetime as dt
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 import seaborn as sns
+sns.set_style('whitegrid')
+
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
@@ -30,14 +34,20 @@ def get_metric_from_net(net, metric):
 
 
 def get_gradient_norm(net, ord=2):
+    '''
+    Compute the overall norm of blob diffs in a net.
+    '''
     grad_norm = 0.0
     for blob_vec in net.params.values():
         for blob in blob_vec:
-            grad_norm += np.sum(np.abs(blob.diff)**ord)
-    return grad_norm**1/ord
+            grad_norm += (abs(blob.diff)**ord).sum()
+    return grad_norm**(1/ord)
 
 
 def gradient_normalize(net, ord=2):
+    '''
+    Divide all blob diffs by the gradient norm.
+    '''
     grad_norm = get_gradient_norm(net, ord)
     if grad_norm > 1.0:
         for blob_vec in net.params.values():
@@ -46,11 +56,18 @@ def gradient_normalize(net, ord=2):
 
 
 def normalize(x, ord=2):
+    '''
+    Divide input by its norm.
+    '''
     return x / np.linalg.norm(x, ord)
 
 
 def spectral_power_iterate(W, u, n_iter):
-
+    '''
+    Estimate the singular vectors and spectral norm
+    (largest singular value) of a matrix W, starting
+    from initial vector u, by n_iter power iterations.
+    '''
     W = W.reshape(W.shape[0], -1) # treat as matrix
 
     for i in range(n_iter):
@@ -62,8 +79,12 @@ def spectral_power_iterate(W, u, n_iter):
 
 
 def spectral_norm_setup(net):
-
-    params = OrderedDict()
+    '''
+    Initialize a param dict for a net that maps names of
+    layers with weight params to tuples (u, v, sigma) of
+    params to be used for spectral normalization.
+    '''
+    params = collections.OrderedDict()
     for layer in net.params:
         W = net.params[layer][0]
         u = np.random.normal(0, 1, W.shape[0])
@@ -74,7 +95,11 @@ def spectral_norm_setup(net):
 
 
 def spectral_norm_forward(net, params):
-
+    '''
+    Perform one power iteration on spectral norm params
+    and then divide net weights by their spectral norm.
+    Update spectral norm params dict with new estimates.
+    '''
     for layer in net.params:
         W = net.params[layer][0]
         u, v, sigma = params[layer]
@@ -84,7 +109,10 @@ def spectral_norm_forward(net, params):
 
 
 def spectral_norm_backward(net, params):
-
+    '''
+    Replace diffs of net weights with diffs
+    of spectral-normalized weights.
+    '''
     for layer in net.params:
         W = net.params[layer][0]
         y = net.blobs[layer]
