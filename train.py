@@ -144,6 +144,10 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
             disc.net.blobs['lig'].data[...] = lig_gen
             disc.net.blobs['label'].data[...] = 0.0
 
+        if args.instance_noise:
+            noise = np.random.normal(0, args.instance_noise, lig.shape)
+            disc.net.blobs['lig'].data += noise
+
         if args.disc_spectral_norm:
             spectral_norm_forward(disc.net, args.disc_spectral_norm)
 
@@ -206,6 +210,10 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         disc.net.blobs['rec'].data[...] = rec
         disc.net.blobs['lig'].data[...] = lig_gen
         disc.net.blobs['label'].data[...] = 1.0
+
+        if args.instance_noise:
+            noise = np.random.normal(0, args.instance_noise, lig.shape)
+            disc.net.blobs['lig'].data += noise
 
         if args.disc_spectral_norm:
             spectral_norm_forward(disc.net, args.disc_spectral_norm)
@@ -305,10 +313,6 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
 
     if args.gen_spectral_norm:
         args.gen_spectral_norm = spectral_norm_setup(gen.net)
-
-    # init instance noise std
-    if args.instance_noise:
-        disc.net.blobs['lig_instance_std'].data[...] = args.instance_noise
 
     test_times = []
     train_times = []
