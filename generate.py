@@ -1089,8 +1089,6 @@ def main(argv):
                                           max_iter=args.max_iter,
                                           radius_multiple=radius_multiple,
                                           lambda_E=args.lambda_E,
-                                          deconv_fit=args.deconv_fit,
-                                          noise_ratio=args.noise_ratio,
                                           bonded=args.bonded,
                                           verbose=args.verbose,
                                           max_init_bond_E=args.max_init_bond_E,
