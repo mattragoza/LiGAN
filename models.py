@@ -23,13 +23,13 @@ DISC_NAME_FORMATS = {
 DISC_SEARCH_SPACES = {
     (1, 1): dict(
         encode_type=['_d-'],
-        data_dim=[32],
+        data_dim=[24],
         resolution=[0.5],
-        n_levels=[3],
+        n_levels=[2, 3],
         conv_per_level=[1, 2],
-        arch_options=['', 'l'],
+        arch_options=['l' , 'lb'],
         n_filters=[8, 16],
-        width_factor=[2],
+        width_factor=[1, 2],
         n_latent=[1],
         loss_types=['x'])
 }
@@ -79,15 +79,15 @@ GEN_SEARCH_SPACES = {
 
     (1, 3): dict(
         encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
-        data_dim=[12],
+        data_dim=[24],
         resolution=[0.5],
-        n_levels=[1, 2, 3],
+        n_levels=[1, 2, 3, 4],
         conv_per_level=[1, 2],
-        arch_options=['l', 'lg'],
+        arch_options=['l', 'lg', 'lga'],
         n_filters=[8, 16],
         width_factor=[1, 2],
-        n_latent=[16, 32, 64, 128],
-        loss_types=['', 'e', 'f'])
+        n_latent=[16, 32, 64, 128, 256, 512],
+        loss_types=['', 'e', 'F'])
 }
 
 
@@ -126,6 +126,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
     self_attention = 'a' in arch_options
+    batch_disc = 'b' in arch_options
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
@@ -196,8 +197,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
     encoder_tops = []
     for variational, e in encoders:
 
-        encoder_type = dict(d='data', r='rec', l='lig')[e]
-        curr_top = net[encoder_type]
+        enc = dict(d='data', r='rec', l='lig')[e]
+        curr_top = net[enc]
         curr_dim = data_dim
         curr_n_filters = nc[e]
         next_n_filters = n_filters
@@ -209,7 +210,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 assert curr_dim > 1, 'nothing to pool at level {}'.format(i)
 
-                pool = '{}_level{}_pool'.format(encoder_type, i)
+                pool = '{}_level{}_pool'.format(enc, i)
                 for pool_factor in [2, 3, 5, curr_dim]:
                     if curr_dim % pool_factor == 0:
                         break
@@ -222,7 +223,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                         group=curr_n_filters,
                         weight_filler=dict(type='xavier'),
                         kernel_size=pool_factor,
-                        stride=pool_factor)
+                        stride=pool_factor,
+                        engine=caffe.params.Convolution.CAFFE)
 
                 elif pool_type == 'm': # max pooling
 
@@ -242,9 +244,45 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                 curr_dim = int(curr_dim//pool_factor)
                 next_n_filters = int(width_factor*curr_n_filters)
 
+            if self_attention and i == 1:
+
+                att = '{}_level{}_att'.format(enc, i)
+                att_f = '{}_f'.format(att)
+                net[att_f] = caffe.layers.Convolution(curr_top,
+                    num_output=curr_n_filters//8,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=1)
+
+                att_g = '{}_g'.format(att)
+                net[att_g] = caffe.layers.Convolution(curr_top,
+                    num_output=curr_n_filters//8,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=1)
+
+                att_s = '{}_s'.format(att)
+                net[att_s] = caffe.layers.MatMul(net[att_f], net[att_g], transpose_a=True)
+
+                att_B = '{}_B'.format(att)
+                net[att_B] = caffe.layers.Softmax(net[att_s], axis=2)
+
+                att_h = '{}_h'.format(att)
+                net[att_h] = caffe.layers.Convolution(curr_top,
+                    num_output=curr_n_filters,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=1)
+
+                att_o = '{}_o'.format(att)
+                net[att_o] = caffe.layers.MatMul(net[att_h], net[att_B], transpose_b=True)
+
+                att_o_reshape = '{}_o_reshape'.format(att)
+                net[att_o_reshape] = caffe.layers.Reshape(net[att_o],
+                    shape=dict(dim=[batch_size, curr_n_filters] + [curr_dim]*3))
+
+                curr_top = net[att_o_reshape]
+
             for j in range(conv_per_level): # convolutions
 
-                conv = '{}_level{}_conv{}'.format(encoder_type, i, j)
+                conv = '{}_level{}_conv{}'.format(enc, i, j)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     num_output=next_n_filters,
                     weight_filler=dict(type='xavier'),
@@ -254,124 +292,83 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                 curr_top = net[conv]
                 curr_n_filters = next_n_filters
 
-                if self_attention:
-
-                    att_f = '{}_att_f'.format(conv)
-                    net[att_f] = caffe.layers.Convolution(curr_top,
-                        num_output=curr_n_filters//4,
-                        weight_filler=dict(type='xavier'),
-                        kernel_size=1)
-
-                    att_f_reshape = '{}_att_f_reshape'.format(conv)
-                    net[att_f_reshape] = caffe.layers.Reshape(net[att_f],
-                        shape=dict(dim=[batch_size, curr_n_filters//4, curr_dim**3, 1]))
-
-                    att_f_tile = '{}_att_f_tile'.format(conv)
-                    net[att_f_tile] = caffe.layers.Tile(net[att_f_reshape],
-                        axis=3, tiles=curr_dim**3)
-
-                    att_g = '{}_att_g'.format(conv)
-                    net[att_g] = caffe.layers.Convolution(curr_top,
-                        num_output=curr_n_filters//4,
-                        weight_filler=dict(type='xavier'),
-                        kernel_size=1)
-
-                    att_g_reshape = '{}_att_g_reshape'.format(conv)
-                    net[att_g_reshape] = caffe.layers.Reshape(net[att_g],
-                        shape=dict(dim=[batch_size, curr_n_filters//4, 1, curr_dim**3]))
-
-                    att_g_tile = '{}_att_g_tile'.format(conv)
-                    net[att_g_tile] = caffe.layers.Tile(net[att_g_reshape],
-                        axis=2, tiles=curr_dim**3)
-
-                    att_fg = '{}_att_fg'.format(conv)
-                    net[att_fg] = caffe.layers.Eltwise(net[att_f_tile], net[att_g_tile],
-                        operation=caffe.params.Eltwise.PROD)
-
-                    att_s = '{}_att_s'.format(conv)
-                    net[att_s] = caffe.layers.Convolution(net[att_fg],
-                        param=dict(lr_mult=0, decay_mult=0),
-                        convolution_param=dict(
-                            num_output=1,
-                            weight_filler=dict(type='constant', value=1),
-                            bias_term=False,
-                            kernel_size=1))
-
-                    att_B = '{}_att_B'.format(conv)
-                    net[att_B] = caffe.layers.Softmax(net[att_s], axis=3)
-
-                    att_B_tile = '{}_att_B_tile'.format(conv)
-                    net[att_B_tile] = caffe.layers.Tile(net[att_B],
-                        axis=1, tiles=curr_n_filters)
-
-                    att_h = '{}_att_h'.format(conv)
-                    net[att_h] = caffe.layers.Convolution(curr_top,
-                        num_output=curr_n_filters,
-                        weight_filler=dict(type='xavier'),
-                        kernel_size=1)
-
-                    att_h_reshape = '{}_att_h_reshape'.format(conv)
-                    net[att_h_reshape] = caffe.layers.Reshape(net[att_h],
-                        shape=dict(dim=[batch_size, curr_n_filters, 1, curr_dim**3]))
-
-                    att_h_tile = '{}_att_h_tile'.format(conv)
-                    net[att_h_tile] = caffe.layers.Tile(net[att_h_reshape],
-                        axis=2, tiles=curr_dim**3)
-
-                    att_Bh = '{}_att_Bh'.format(conv)
-                    net[att_Bh] = caffe.layers.Eltwise(net[att_B_tile], net[att_h_tile],
-                        operation=caffe.params.Eltwise.PROD)
-
-                    att_o = '{}_att_o'.format(conv)
-                    net[att_o] = caffe.layers.Convolution(net[att_Bh],
-                        param=dict(lr_mult=0, decay_mult=0),
-                        convolution_param=dict(
-                            num_output=curr_n_filters,
-                            group=curr_n_filters,
-                            weight_filler=dict(type='constant', value=1),
-                            bias_term=False,
-                            kernel_size=[1, curr_dim**3]))
-
-                    att_o_reshape = '{}_att_o_reshape'.format(conv)
-                    net[att_o_reshape] = caffe.layers.Reshape(net[att_o],
-                        shape=dict(dim=[batch_size, curr_n_filters] + [curr_dim]*3))
-
-                    curr_top = net[att_o_reshape]
-
                 relu = '{}_relu'.format(conv)
                 net[relu] = caffe.layers.ReLU(curr_top,
                     negative_slope=0.1*leaky_relu,
                     in_place=True)
 
+        if batch_disc:
+
+            bd_f = '{}_bd_f'.format(enc)
+            net[bd_f] = caffe.layers.Reshape(curr_top,
+                shape=dict(dim=[batch_size, 1, curr_n_filters*curr_dim**3]))
+
+            bd_f_tile = '{}_tile'.format(bd_f)
+            net[bd_f_tile] = caffe.layers.Tile(net[bd_f], axis=1, tiles=batch_size)
+
+            bd_f_T = '{}_T'.format(bd_f)
+            net[bd_f_T] = caffe.layers.Reshape(net[bd_f],
+                shape=dict(dim=[1, batch_size, curr_n_filters*curr_dim**3]))
+
+            bd_f_T_tile = '{}_tile'.format(bd_f_T)
+            net[bd_f_T_tile] = caffe.layers.Tile(net[bd_f_T], axis=0, tiles=batch_size)
+
+            bd_f_diff = '{}_diff'.format(bd_f)
+            net[bd_f_diff] = caffe.layers.Eltwise(net[bd_f_tile], net[bd_f_T_tile],
+                operation=caffe.params.Eltwise.SUM,
+                coeff=[1, -1])
+
+            bd_f_diff2 = '{}2'.format(bd_f_diff)
+            net[bd_f_diff2] = caffe.layers.Eltwise(net[bd_f_diff], net[bd_f_diff],
+                operation=caffe.params.Eltwise.PROD)
+
+            bd_f_ssd = '{}_ssd'.format(bd_f)
+            net[bd_f_ssd] = caffe.layers.Convolution(net[bd_f_diff2],
+                param=dict(lr_mult=0, decay_mult=0),
+                convolution_param=dict(
+                    num_output=1,
+                    weight_filler=dict(type='constant', value=1),
+                    bias_term=False,
+                    kernel_size=[1],
+                    engine=caffe.params.Convolution.CAFFE))
+
+            bd_f_ssd_reshape = '{}_reshape'.format(bd_f_ssd)
+            net[bd_f_ssd_reshape] = caffe.layers.Reshape(net[bd_f_ssd],
+                shape=dict(dim=[batch_size, curr_n_filters] + [curr_dim]*3))
+
+            bd_o = '{}_bd_o'.format(enc)
+            net[bd_o] = caffe.layers.Concat(curr_top, net[bd_f_ssd_reshape], axis=1)
+
+            curr_top = net[bd_o]
 
         # latent
         if n_latent is not None:
 
             if variational:
 
-                mean = '{}_latent_mean'.format(encoder_type)
+                mean = '{}_latent_mean'.format(enc)
                 net[mean] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
 
-                log_std = '{}_latent_log_std'.format(encoder_type)
+                log_std = '{}_latent_log_std'.format(enc)
                 net[log_std] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
 
-                std = '{}_latent_std'.format(encoder_type)
+                std = '{}_latent_std'.format(enc)
                 net[std] = caffe.layers.Exp(net[log_std])
 
-                noise = '{}_latent_noise'.format(encoder_type)
+                noise = '{}_latent_noise'.format(enc)
                 net[noise] = caffe.layers.DummyData(
                     data_filler=dict(type='gaussian'),
                     shape=dict(dim=[bsz, n_latent]))
 
-                std_noise = '{}_latent_std_noise'.format(encoder_type)
+                std_noise = '{}_latent_std_noise'.format(enc)
                 net[std_noise] = caffe.layers.Eltwise(net[noise], net[std],
                     operation=caffe.params.Eltwise.PROD)
 
-                sample = '{}_latent_sample'.format(encoder_type)
+                sample = '{}_latent_sample'.format(enc)
                 net[sample] = caffe.layers.Eltwise(net[std_noise], net[mean],
                     operation=caffe.params.Eltwise.SUM)
 
@@ -379,20 +376,20 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 # K-L divergence
 
-                mean2 = '{}_latent_mean2'.format(encoder_type)
+                mean2 = '{}_latent_mean2'.format(enc)
                 net[mean2] = caffe.layers.Eltwise(net[mean], net[mean],
                     operation=caffe.params.Eltwise.PROD)
 
-                var = '{}_latent_var'.format(encoder_type)
+                var = '{}_latent_var'.format(enc)
                 net[var] = caffe.layers.Eltwise(net[std], net[std],
                     operation=caffe.params.Eltwise.PROD)
 
-                one = '{}_latent_one'.format(encoder_type)
+                one = '{}_latent_one'.format(enc)
                 net[one] = caffe.layers.DummyData(
                     data_filler=dict(type='constant', value=1),
                     shape=dict(dim=[bsz, n_latent]))
 
-                kldiv = '{}_latent_kldiv'.format(encoder_type)
+                kldiv = '{}_latent_kldiv'.format(enc)
                 net[kldiv] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
                     operation=caffe.params.Eltwise.SUM,
                     coeff=[-0.5, -1.0, 0.5, 0.5])
@@ -404,7 +401,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
             else:
 
-                fc = '{}_latent_fc'.format(encoder_type)
+                fc = '{}_latent_fc'.format(enc)
                 net[fc] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
@@ -425,12 +422,12 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
         decoder_tops = []
         for d in decoders:
 
-            decoder_type = dict(d='data', r='rec', l='lig')[d]
-            label_top = net[decoder_type]
+            dec = dict(d='data', r='rec', l='lig')[d]
+            label_top = net[dec]
             label_n_filters = nc[d]
             next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
 
-            fc = '{}_latent_defc'.format(decoder_type)
+            fc = '{}_latent_defc'.format(dec)
             net[fc] = caffe.layers.InnerProduct(curr_top,
                 num_output=next_n_filters*dec_init_dim**3,
                 weight_filler=dict(type='xavier'))
@@ -440,7 +437,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                 negative_slope=0.1*leaky_relu,
                 in_place=True)
 
-            reshape = '{}_latent_reshape'.format(decoder_type)
+            reshape = '{}_reshape'.format(fc)
             net[reshape] = caffe.layers.Reshape(net[fc],
                 shape=dict(dim=[bsz, next_n_filters] + [dec_init_dim]*3))
 
@@ -452,7 +449,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 if i < n_levels-1: # upsample before convolution
 
-                    unpool = '{}_level{}_unpool'.format(decoder_type, i)
+                    unpool = '{}_level{}_unpool'.format(dec, i)
                     pool_factor = pool_factors.pop(-1)
 
                     if depool_type == 'c': # deconvolution with stride
@@ -489,7 +486,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     if last_conv:
                         next_n_filters = label_n_filters
 
-                    deconv = '{}_level{}_deconv{}'.format(decoder_type, i, j)
+                    deconv = '{}_level{}_deconv{}'.format(dec, i, j)
                     net[deconv] = caffe.layers.Deconvolution(curr_top,
                             convolution_param=dict(
                                 num_output=next_n_filters,
@@ -505,11 +502,47 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     curr_top = net[relu] if last_conv else net[deconv]
                     curr_n_filters = next_n_filters
 
+                if self_attention and i == 1:
+
+                    att = '{}_level{}_deatt'.format(dec, i)
+                    att_f = '{}_f'.format(att)
+                    net[att_f] = caffe.layers.Convolution(curr_top,
+                        num_output=curr_n_filters//8,
+                        weight_filler=dict(type='xavier'),
+                        kernel_size=1)
+
+                    att_g = '{}_g'.format(att)
+                    net[att_g] = caffe.layers.Convolution(curr_top,
+                        num_output=curr_n_filters//8,
+                        weight_filler=dict(type='xavier'),
+                        kernel_size=1)
+
+                    att_s = '{}_s'.format(att)
+                    net[att_s] = caffe.layers.MatMul(net[att_f], net[att_g], transpose_a=True)
+
+                    att_B = '{}_B'.format(att)
+                    net[att_B] = caffe.layers.Softmax(net[att_s], axis=2)
+
+                    att_h = '{}_h'.format(att)
+                    net[att_h] = caffe.layers.Convolution(curr_top,
+                        num_output=curr_n_filters,
+                        weight_filler=dict(type='xavier'),
+                        kernel_size=1)
+
+                    att_o = '{}_o'.format(att)
+                    net[att_o] = caffe.layers.MatMul(net[att_h], net[att_B], transpose_b=True)
+
+                    att_o_reshape = '{}_o_reshape'.format(att)
+                    net[att_o_reshape] = caffe.layers.Reshape(net[att_o],
+                        shape=dict(dim=[batch_size, curr_n_filters] + [curr_dim]*3))
+
+                    curr_top = net[att_o_reshape]
+
             # output
             if gaussian_output:
 
                 gauss_kernel_size = 7
-                conv = '{}_gauss_conv'.format(decoder_type)
+                conv = '{}_gauss_conv'.format(dec)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     param=dict(lr_mult=0, decay_mult=0),
                     num_output=label_n_filters,
@@ -522,11 +555,12 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
                 curr_top = net[conv]
 
-            gen = '{}_gen'.format(decoder_type)
+            gen = '{}_gen'.format(dec)
             net[gen] = caffe.layers.Power(curr_top)
 
     else:
         label_top = net.label
+
         # output
         if n_latent > 1:
             net.output = caffe.layers.Softmax(curr_top)
@@ -549,7 +583,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
     if 'f' in loss_types:
 
-        fit = '{}_gen_fit'.format(decoder_type)
+        fit = '{}_gen_fit'.format(dec)
         net[fit] = caffe.layers.Python(curr_top,
             module='generate',
             layer='AtomFittingLayer',
@@ -557,6 +591,18 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                 resolution=resolution,
                 use_covalent_radius=True,
                 gninatypes_file='/net/pulsar/home/koes/mtr22/gan/data/O_2_0_0.gninatypes')))
+
+        net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
+
+    if 'F' in loss_types:
+
+        fit = '{}_gen_fit'.format(dec)
+        net[fit] = caffe.layers.Python(curr_top,
+            module='generate',
+            layer='AtomFittingLayer',
+            param_str=str(dict(
+                resolution=resolution,
+                use_covalent_radius=True)))
 
         net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
 
@@ -607,7 +653,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--model_type', required=True)
     parser.add_argument('-v', '--version', type=str)
-    parser.add_argument('-s', '--do_scaffold', action='store_true')
+    parser.add_argument('-s', '--scaffold', action='store_true')
     parser.add_argument('-o', '--out_prefix', default='models')
     return parser.parse_args(argv)
 
@@ -646,13 +692,13 @@ def main(argv):
         net_param = make_model(**kwargs)
         net_param.to_prototxt(model_file)
 
-        if args.do_scaffold:
+        if args.scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
             model_data.append((model_name, net.get_n_params(), net.get_size()))
         else:
             print(model_file)
 
-    if args.do_scaffold:
+    if args.scaffold:
         print('{:30}{:>12}{:>14}'.format('model_name', 'n_params', 'size'))
         for model_name, n_params, size in model_data:
             print('{:30}{:12d}{:10.2f} MiB'.format(model_name, n_params, size/2**20))
