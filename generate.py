@@ -28,8 +28,12 @@ class AtomFittingLayer(caffe.Layer):
         params = ast.literal_eval(self.param_str)
         self.resolution = params['resolution']
         self.channels = atom_types.get_default_lig_channels(params['use_covalent_radius'])
-        self.c = read_gninatypes_file(params['gninatypes_file'], self.channels)[1]
-        self.pool = mp.Pool()
+        types_file = params.get('gninatypes_file', None)
+        if types_file:
+            self.c = read_gninatypes_file(types_file, self.channels)[1]
+        else:
+            self.c = None
+        self.map = mp.Pool().map
 
     def reshape(self, bottom, top):
 
@@ -44,7 +48,7 @@ class AtomFittingLayer(caffe.Layer):
                     max_iter=10, lr=0.1, mo=0.0,
                     fit_channels=self.c)
 
-        top[0].data[...] = zip(*self.pool.map(f, bottom[0].data))[3]
+        top[0].data[...] = zip(*self.map(f, bottom[0].data))[3]
 
     def backward(self, top, propagate_down, bottom):
         pass
@@ -417,7 +421,7 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0
                 break
 
             xyz_new, c_new, bonds_new = \
-                get_next_atom(points, density, xyz_init, c, atomic_radii, bonded, bonds, max_n_bonds, max_init_bond_E)
+                get_next_atom(points, density, xyz, c, atomic_radii, bonded, bonds, max_n_bonds, max_init_bond_E)
         
         # stop if a new atom was not added
         if xyz_new is None:
@@ -941,7 +945,7 @@ def parse_args(argv=None):
     parser.add_argument('-B', '--extra_blob_names', default=[], action='append', help='Name of blob(s) in model to generate (no fit/metrics)')
     parser.add_argument('-r', '--rec_file', default=[], action='append', help='Receptor file (relative to data_root)')
     parser.add_argument('-l', '--lig_file', default=[], action='append', help='Ligand file (relative to data_root)')
-    parser.add_argument('--data_file', default='', help='Path to data file (generate for every line)')
+    parser.add_argument('--data_file', default='', help='Path to data file (generate for every example)')
     parser.add_argument('--data_root', default='', help='Path to root for receptor and ligand files')
     parser.add_argument('--n_samples', default=1, type=int, help='Number of samples to generate for each example')
     parser.add_argument('-o', '--out_prefix', required=True, help='Common prefix for output files')
@@ -1081,7 +1085,6 @@ def main(argv):
                     write_grids_to_dx_files(grid_prefix, grid, channels, center, resolution)
                     dx_groups.append(grid_prefix)
 
-
                 if args.fit_atoms or args.fit_atom_types and blob_name not in args.extra_blob_names:
 
                     xyz, c, bonds, grid, loss = \
@@ -1132,6 +1135,8 @@ def main(argv):
 
     metric_file = '{}.gen_metrics'.format(args.out_prefix)
     df.to_csv(metric_file, sep=' ')
+
+    del net
 
 
 if __name__ == '__main__':

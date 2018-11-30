@@ -146,7 +146,7 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
-            disc.net.blobs['lig'].data += noise
+            disc.net.blobs['lig'].data[...] += noise
 
         if args.disc_spectral_norm:
             spectral_norm_forward(disc.net, args.disc_spectral_norm)
@@ -175,7 +175,6 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             if train:
                 disc.apply_update()
-                disc.increment_iter()
 
     return {m: np.nanmean(metrics[m]) for m in metrics}
 
@@ -213,7 +212,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
-            disc.net.blobs['lig'].data += noise
+            disc.net.blobs['lig'].data[...] += noise
 
         if args.disc_spectral_norm:
             spectral_norm_forward(disc.net, args.disc_spectral_norm)
@@ -257,7 +256,6 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             if train:
                 gen.apply_update()
-                gen.increment_iter()
 
     if compute_metrics: # compute additional grid metrics
 
@@ -389,6 +387,9 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
                 train_gen = True
 
         train_times.append(time.time() - t_start)
+
+        disc.increment_iter()
+        gen.increment_iter()
 
 
 def get_train_and_test_files(data_prefix, fold_nums):
