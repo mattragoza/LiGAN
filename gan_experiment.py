@@ -20,42 +20,39 @@ if __name__ == '__main__':
     #_, params_file = sys.argv
     #params = [line.rstrip().split() for line in open(params_file)]
 
-    data_name = 'two_atoms'
-    data_root = '/net/pulsar/home/koes/mtr22/gan/data'
-    max_iter = 25000
-    #cont_iter = 0
+    data_name = 'lowrmsd'
+    data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
+    max_iter = 100000
     seed = 0
+    continue_ = False
 
     pbs_temps = [
-        'adam2_2_2_b_0.01.pbs',
-        'adam2_2_2_b_0.1.pbs',
-        'adam2_2_2_bg_0.01.pbs',
-        'adam2_2_2_bs_0.01.pbs',
+        'adam0_2_2_b_0.01.pbs',
+        'adam0_2_2_b_0.1.pbs',
     ]
 
-    data_model_file = 'data_12_0.5_cov_origin.model'
+    data_model_file = 'data_24_0.5_cov.model'
 
     gen_model_files = [
-        'models/_vr-le13_12_0.5_1_2lg_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_1_2lg_8_2_32_f.model',
-        'models/_vr-le13_12_0.5_1_2lg_16_2_32_f.model',
-        'models/_vr-le13_12_0.5_1_2lg_16_2_64_f.model',
-        'models/_vr-le13_12_0.5_1_2l_8_2_16_f.model',
-        'models/_vr-le13_12_0.5_1_2l_8_2_32_f.model',
-        'models/_vr-le13_12_0.5_1_2l_16_2_32_f.model',
-        'models/_vr-le13_12_0.5_1_2l_16_2_64_f.model',
-        'models/_vl-le13_12_0.5_1_2lg_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_1_2lg_8_2_32_e.model',
-        'models/_vl-le13_12_0.5_1_2lg_16_2_32_e.model',
-        'models/_vl-le13_12_0.5_1_2lg_16_2_64_e.model',
-        'models/_vl-le13_12_0.5_1_2l_8_2_16_e.model',
-        'models/_vl-le13_12_0.5_1_2l_8_2_32_e.model',
-        'models/_vl-le13_12_0.5_1_2l_16_2_32_e.model',
-        'models/_vl-le13_12_0.5_1_2l_16_2_64_e.model',
+        'models/_vl-le13_24_0.5_3_2lg_16_2_1024_e.model',
+        'models/_vl-le13_24_0.5_3_2lg_32_2_1024_e.model',
+
+        'models/_vl-le13_24_0.5_3_2lga_16_2_1024_e.model',
+        'models/_vl-le13_24_0.5_3_2lga_32_2_1024_e.model',
+
+        'models/_vr-le13_24_0.5_3_2lg_16_2_1024_e.model',
+        'models/_vr-le13_24_0.5_3_2lg_32_2_1024_e.model',
+        
+        'models/_vr-le13_24_0.5_3_2lga_16_2_1024_e.model',
+        'models/_vr-le13_24_0.5_3_2lga_32_2_1024_e.model',
     ]
 
     disc_model_files = [
-        'models/d11_12_2_1l_8_1_x.model',
+        'models/d11_24_3_1l_16_2_x.model',
+        'models/d11_24_3_1l_32_2_x.model',
+
+        'models/d11_24_3_1lb_16_2_x.model',
+        'models/d11_24_3_1lb_32_2_x.model',
     ]
 
     gan_names = []
@@ -78,7 +75,8 @@ if __name__ == '__main__':
                     if not os.path.isdir(gan_name):
                         os.makedirs(gan_name)
 
-                    cont_iter = get_cont_iter(gan_name)
+                    cont_iter = get_cont_iter(gan_name) if continue_ else 0
+
                     pbs_file = os.path.join(gan_name, pbs_template)
 
                     torque_util.write_pbs_file(pbs_file, pbs_template, gan_name,
@@ -95,9 +93,9 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('TWO_ATOMS_FIT2', 'w') as f:
+    with open('REFULL', 'w') as f:
         f.write('\n'.join(gan_names))
 
     for a in job_args:
-        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=5, poll_every=1)
+        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=3, queue='dept_gpu_12GB', poll_every=1)
 
