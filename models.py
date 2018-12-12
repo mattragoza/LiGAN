@@ -25,11 +25,11 @@ DISC_SEARCH_SPACES = {
         encode_type=['_d-'],
         data_dim=[24],
         resolution=[0.5],
-        n_levels=[2, 3],
-        conv_per_level=[1, 2],
+        n_levels=[3],
+        conv_per_level=[1],
         arch_options=['l' , 'lb'],
-        n_filters=[8, 16],
-        width_factor=[1, 2],
+        n_filters=[16, 32],
+        width_factor=[2],
         n_latent=[1],
         loss_types=['x'])
 }
@@ -81,12 +81,12 @@ GEN_SEARCH_SPACES = {
         encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
         data_dim=[24],
         resolution=[0.5],
-        n_levels=[1, 2, 3, 4],
-        conv_per_level=[1, 2],
-        arch_options=['l', 'lg', 'lga'],
-        n_filters=[8, 16],
-        width_factor=[1, 2],
-        n_latent=[16, 32, 64, 128, 256, 512],
+        n_levels=[3],
+        conv_per_level=[2, 3],
+        arch_options=['l', 'lg', 'la', 'lga'],
+        n_filters=[32, 64],
+        width_factor=[2],
+        n_latent=[1024],
         loss_types=['', 'e', 'F'])
 }
 
