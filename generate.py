@@ -976,6 +976,8 @@ def parse_args(argv=None):
     parser.add_argument('--random_translate', default=0.0, type=float)
     parser.add_argument('--instance_noise', default=0.0, type=float)
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true')
+    parser.add_argument('--use_covalent_radius', default=False, action='store_true')
+    parser.add_argument('--use_default_radius', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -989,9 +991,15 @@ def main(argv):
     data_param.random_translate = args.random_translate
     data_param.fix_center_to_origin = args.fix_center_to_origin
 
+    if args.use_covalent_radius:
+        data_param.use_covalent_radius = True
+    elif args.use_default_radius:
+        data_param.use_covalent_radius = False
+
     resolution = data_param.resolution
     radius_multiple = data_param.radius_multiple
     use_covalent_radius = data_param.use_covalent_radius
+
 
     rec_channels = atom_types.get_default_rec_channels(use_covalent_radius)
     lig_channels = atom_types.get_default_lig_channels(use_covalent_radius)
@@ -1017,6 +1025,7 @@ def main(argv):
     examples = read_examples_from_data_file(data_file, args.data_root)
     grids_from_net = generate_grids_from_net(net, args.blob_names + args.extra_blob_names,
                                              lig_gen_mode=args.lig_gen_mode)
+    print(data_param)
 
     dx_groups = []
     extra_files = []
@@ -1067,8 +1076,7 @@ def main(argv):
                     grid += np.random.normal(0, args.instance_noise, grid.shape)
 
                 if args.deconv_grids:
-                    grid = wiener_deconv_grids(grid, channels, center, resolution, radius_multiple, \
-                                               noise_ratio=args.noise_ratio, radius_factor=args.radius_factor)
+                    grid = wiener_deconv_grids(grid, channels, resolution, radius_multiple, args.noise_ratio)
 
                 if args.norm_grids:
                     norm = np.linalg.norm(grid.reshape(grid.shape[0], -1), axis=1)
