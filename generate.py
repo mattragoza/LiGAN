@@ -45,7 +45,7 @@ class AtomFittingLayer(caffe.Layer):
                     channels=self.channels,
                     center=np.zeros(3),
                     resolution=self.resolution,
-                    max_iter=10, lr=0.1, mo=0.0,
+                    max_iter=10, lr=0.01, mo=0.9,
                     fit_channels=self.c)
 
         top[0].data[...] = zip(*self.map(f, bottom[0].data))[3]
@@ -360,7 +360,7 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter,
     return xyz, density_pred, density_diff, loss
 
 
-def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0.0, lambda_E=0.0,
+def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.05, mo=0.1, lambda_E=0.0,
                       radius_multiple=1.5, bonded=False, max_init_bond_E=0.5, fit_channels=None,
                       verbose=0):
     '''
@@ -369,7 +369,7 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0
     and the density associated with the fitted atoms.
     '''
     n_channels, grid_shape = grid.shape[0], grid.shape[1:]
-    atomic_radii = np.array([ch.atomic_radius for ch in channels])
+    atomic_radii = np.array([c.atomic_radius for c in channels])
     max_n_bonds = np.array([atom_types.get_max_bonds(c.atomic_num) for c in channels])
 
     # convert grid to arrays of xyz points and channel density values
@@ -378,6 +378,10 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0
     density_pred = np.zeros_like(density)
     density_diff = np.zeros_like(density)
 
+    # init atom density kernels
+    kernels = [get_atom_density(center, r, points, radius_multiple).reshape(grid_shape) \
+               for r in atomic_radii]
+
     # iteratively add atoms, fit, and assess goodness-of-fit
     xyz = np.ndarray((0, 3))
     c = np.ndarray(0, dtype=int)
@@ -385,9 +389,6 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0
     loss = np.inf
 
     while True:
-        xyz_prev = xyz
-        density_pred_prev = density_pred
-        loss_prev = loss
 
         # optimize atom positions by gradient descent
         xyz, density_pred, density_diff, loss = \
@@ -396,41 +397,35 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.1, mo=0
                             density_pred=density_pred, density_diff=density_diff)
 
         # init next atom position on remaining density
+        xyz_new = []
+        c_new = []
         if fit_channels is not None:
             try:
-                c_new = fit_channels[len(c)]
-                if False:
-                    xyz_new = points[density_diff[:,c_new].argmax()]
-                else:
-                    kernel = get_atom_density(center, atomic_radii[c_new], points, radius_multiple)
-                    conv = conv_grid(density_diff[:,c_new].reshape(grid_shape), kernel.reshape(grid_shape))
-                    conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
-                    xyz_new = points[conv.argmax()]
-
+                i = fit_channels[len(c)]
+                conv = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
+                conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
+                xyz_new.append(points[conv.argmax()])
+                c_new.append(i)
             except IndexError:
-                xyz_new = None
+                pass
         else:
-            # revert if fit gets worse (loss increases)
-            if loss > loss_prev:
-                xyz = xyz_prev
-                c = c[:-1]
-                bonds = bonds[:-1,:-1]
-                loss = loss_prev
-                density_pred = density_pred_prev
-                density_diff = density - density_pred
-                break
+            c_new = []
+            for i in range(n_channels):
+                conv = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
+                conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
+                if np.any(conv > (kernels[i]**2).sum()/2): # check if L2 loss decreases
+                    xyz_new.append(points[conv.argmax()])
+                    c_new.append(i)
 
-            xyz_new, c_new, bonds_new = \
-                get_next_atom(points, density, xyz, c, atomic_radii, bonded, bonds, max_n_bonds, max_init_bond_E)
-        
         # stop if a new atom was not added
-        if xyz_new is None:
+        if not xyz_new:
             break
 
         xyz = np.vstack([xyz, xyz_new])
         c = np.append(c, c_new)
 
         if bonded: # add new bonds as row and column
+            raise NotImplementedError('TODO add bonds_new')
             bonds = np.vstack([bonds, bonds_new])
             bonds = np.hstack([bonds, np.append(bonds_new, 0)])
 
@@ -1132,7 +1127,7 @@ def main(argv):
                         centers.append(center)
 
     pymol_file = '{}.pymol'.format(args.out_prefix)
-    write_pymol_script(pymol_file, dx_groups, extra_files, centers)
+    write_pymol_script(pymol_file, dx_groups, extra_files, centers=[])
 
     blob_order = args.blob_names
     if args.fit_atoms or args.fit_atom_types:
