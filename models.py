@@ -87,7 +87,7 @@ GEN_SEARCH_SPACES = {
         n_filters=[32, 64],
         width_factor=[2],
         n_latent=[1024],
-        loss_types=['', 'e', 'F'])
+        loss_types=['', 'e', 'F', 'w'])
 }
 
 
@@ -626,6 +626,15 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
             net.log_loss = caffe.layers.SoftmaxWithLoss(curr_top, label_top, loss_weight=1.0)
         else:
             net.log_loss = caffe.layers.SigmoidCrossEntropyLoss(curr_top, label_top, loss_weight=1.0)
+
+    if 'w' in loss_types:
+
+        net.wass_sign = caffe.layers.Power(label_top, scale=-2, shift=1)
+        net.wass_prod = caffe.layers.Eltwise(net.wass_sign, curr_top,
+            operation=caffe.params.Eltwise.PROD)
+        net.wass_loss = caffe.layers.Reduction(net.wass_prod,
+            operation=caffe.params.Reduction.MEAN,
+            loss_weight=1.0)
 
     return net.to_proto()
 
