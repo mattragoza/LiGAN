@@ -22,37 +22,26 @@ if __name__ == '__main__':
 
     data_name = 'lowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 100000
+    max_iter = 20000
     seed = 0
     continue_ = False
 
     pbs_temps = [
-        'adam0_2_2_b_0.01.pbs',
-        'adam0_2_2_b_0.1.pbs',
+        'adam0_10_10_ab_0.0.pbs'
+        'adam0_10_10_b_0.0.pbs'
     ]
 
-    data_model_file = 'data_24_0.5_cov.model'
+    data_model_file = 'data_24_0.5.model'
 
     gen_model_files = [
-        'models/_vl-le13_24_0.5_3_2lg_16_2_1024_e.model',
-        'models/_vl-le13_24_0.5_3_2lg_32_2_1024_e.model',
-
-        'models/_vl-le13_24_0.5_3_2lga_16_2_1024_e.model',
-        'models/_vl-le13_24_0.5_3_2lga_32_2_1024_e.model',
-
-        'models/_vr-le13_24_0.5_3_2lg_16_2_1024_e.model',
-        'models/_vr-le13_24_0.5_3_2lg_32_2_1024_e.model',
-        
-        'models/_vr-le13_24_0.5_3_2lga_16_2_1024_e.model',
-        'models/_vr-le13_24_0.5_3_2lga_32_2_1024_e.model',
+        'models/_rvl-le13_24_0.5_3_2l_32_2_1024_.model',
+        'models/_rvl-le13_24_0.5_3_2l_32_2_1024_e.model',
+        'models/_vl-le13_24_0.5_3_2l_32_2_1024_.model',
+        'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
     ]
 
     disc_model_files = [
         'models/d11_24_3_1l_16_2_x.model',
-        'models/d11_24_3_1l_32_2_x.model',
-
-        'models/d11_24_3_1lb_16_2_x.model',
-        'models/d11_24_3_1lb_32_2_x.model',
     ]
 
     gan_names = []
@@ -93,7 +82,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('REFULL', 'w') as f:
+    with open('REPL', 'w') as f:
         f.write('\n'.join(gan_names))
 
     for a in job_args:

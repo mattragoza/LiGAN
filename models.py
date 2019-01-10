@@ -78,7 +78,7 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
+        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l', 'rvl-l', '_rvl-l'],
         data_dim=[24],
         resolution=[0.5],
         n_levels=[3],
