@@ -14,14 +14,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 sns.set_style('whitegrid')
-sns.set_context('notebook')
+sns.set_context('talk')
 sns.set_palette('Set1')
 
 import models
 import generate
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None):
+def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
 
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
@@ -112,7 +112,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
     plt.close(fig)
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=None, outlier_z=None, violin=False):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, violin=False):
 
     df = df.reset_index()
 
@@ -135,7 +135,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=N
 
         for x_ in x:
             ax = next(iter_axes)
-            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, markers='', ax=ax)
+            sns.pointplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, markers='.', ax=ax)
             alpha = 0.25
 
             if violin:
@@ -144,7 +144,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=3, width=3, ylim=N
                     if isinstance(c, matplotlib.collections.PolyCollection):
                         c.set_alpha(alpha)
             else:
-                sns.stripplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, jitter=0.2, size=5,alpha=alpha, ax=ax)
+                sns.stripplot(data=df, x=x_, y=y_, hue=hue, dodge=0.525, jitter=0.2, size=5, alpha=alpha, ax=ax)
 
             handles, labels = ax.get_legend_handles_labels()
             handles = handles[len(handles)//2:]
@@ -262,14 +262,14 @@ def fix_name(name, char, idx):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--dir_pattern', default=[], action='append')
-    parser.add_argument('-d', '--data_name', default='lowrmsd')
-    parser.add_argument('-s', '--seeds', default='0')
-    parser.add_argument('-f', '--folds', default='0,1,2')
-    parser.add_argument('-i', '--iteration', default=20000, type=int)
-    parser.add_argument('-o', '--out_prefix', default='')
-    parser.add_argument('-r', '--rename_col', default=[], action='append')
+    parser = argparse.ArgumentParser(description='Plot results of generative model experiments')
+    parser.add_argument('-m', '--dir_pattern', default=[], action='append', help='glob pattern of experiment directories')
+    parser.add_argument('-d', '--data_name', default='lowrmsd', help='base prefix of data used in experiment (default "lowrmsd")')
+    parser.add_argument('-s', '--seeds', default='0', help='comma-separated random seeds used in experiment (default 0)')
+    parser.add_argument('-f', '--folds', default='0,1,2', help='comma-separated train/test fold numbers used (default 0,1,2)')
+    parser.add_argument('-i', '--iteration', default=20000, type=int, help='max train iteration for results')
+    parser.add_argument('-o', '--out_prefix', help='common prefix for output files')
+    parser.add_argument('-r', '--rename_col', default=[], action='append', help='rename column in results (ex. before_name:after_name)')
     parser.add_argument('-x', '--x', default=[], action='append')
     parser.add_argument('-y', '--y', default=[], action='append')
     parser.add_argument('--log_y', default=[], action='append')
@@ -320,19 +320,28 @@ def main(argv):
     # add columns from parsing model name fields
     for model_name, model_df in agg_df.groupby(level=0):
 
+        print(model_name)
+
         # try to parse it as a GAN
-        m = re.match(r'^(.+)_(.+e(\d+)_.+)_(d([^_]+)_.+)$', model_name)
+        m = re.match(r'^(.+)_([^_]+e(\d+).+)_(d([^_]+).*)$', model_name)
         if m:
-            solver_name = fix_name(m.group(1), ' ', [3])
-            name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
+            solver_name = m.group(1)
+            gen_model_name = m.group(2)
+            disc_model_name = m.group(4)
+
+            try:
+                solver_name = fix_name(solver_name, ' ', [3])
+                name_fields = add_data_from_name_parse(agg_df, model_name, '', models.SOLVER_NAME_FORMAT, solver_name)
+            except IndexError:
+                agg_df.loc[model_name, 'solver_name'] = solver_name
+                agg_df.loc[model_name, 'train_options'] = re.match(r'^(.*)gan$', solver_name).group(1)
+                name_fields = ['solver_name', 'train_options']
 
             gen_v = tuple(int(c) for c in m.group(3))
             if gen_v == (1, 4):
-                gen_model_name = fix_name(m.group(2), ' ', [-1, -2])
+                gen_model_name = fix_name(gen_model_name, ' ', [-1, -2])
             elif gen_v == (1, 3):            
-                gen_model_name = fix_name(m.group(2), ' ', [-1, -5])
-            else:
-                gen_model_name = m.group(2)
+                gen_model_name = fix_name(gen_model_name, ' ', [-1, -5])
             agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
             name_fields.append('gen_model_version')
             name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
@@ -341,13 +350,21 @@ def main(argv):
                 disc_v = tuple(int(c) for c in m.group(5))
             except ValueError:
                 disc_v = (0, 1)
-            disc_model_name = fix_name(m.group(4), ' ', [-4])
             agg_df.loc[model_name, 'disc_model_version'] = str(disc_v)
             name_fields.append('disc_model_version')
-            name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
-
+            try:
+                disc_model_name = fix_name(disc_model_name, ' ', [-4])
+                name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
+            except IndexError:
+                if disc_model_name == 'disc':
+                    agg_df.loc[model_name, 'disc_conv_per_level'] = 1
+                elif disc_model_name == 'disc2':
+                    agg_df.loc[model_name, 'disc_conv_per_level'] = 2
+                else:
+                    raise NameError(disc_model_name)
+                name_fields.append('disc_conv_per_level')
         else:
-            m = re.match(r'.+e(\d+)_.+', model_name)
+            m = re.match(r'[^_]+e(\d+).+', model_name)
 
             gen_v = tuple(int(c) for c in m.group(1))
             if gen_v == (1, 4):
@@ -360,23 +377,29 @@ def main(argv):
             name_fields = ['gen_model_version']
             name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
 
-
-    # fill in default values so that different model versions may be compared
+    # fill in default values
     if 'resolution' in agg_df:
-        agg_df['resolution'] = agg_df['resolution'].fillna(0.5)
-
-    if 'conv_per_level' in agg_df:
-        agg_df = agg_df[agg_df['conv_per_level'] > 0]
-
-    if 'width_factor' in agg_df:
-        agg_df['width_factor'] = agg_df['width_factor'].fillna(1)
-        agg_df = agg_df[agg_df['width_factor'] < 3]
+        agg_df.loc[agg_df['resolution'].isnull()] = 0.5
 
     if 'n_latent' in agg_df:
-        agg_df['n_latent'] = agg_df['n_latent'].fillna(0)
+        agg_df.loc[agg_df['n_latent'].isnull()] = 0
 
-    if 'loss_types' in agg_df:
-        agg_df['loss_types'] = agg_df['loss_types'].fillna('e')
+    has_gan = ~agg_df['disc_model_version'].isnull()
+
+    if 'disc_loss_types' in agg_df:
+        agg_df.loc[has_gan & agg_df['disc_loss_types'].isnull()] = 'x'
+
+    if 'disc_n_levels' in agg_df:
+        agg_df.loc[has_gan & agg_df['disc_n_levels'].isnull()] = 3
+
+    if 'disc_conv_per_level' in agg_df:
+        agg_df.loc[has_gan & agg_df['disc_conv_per_level'].isnull()] = 1
+
+    if 'disc_n_filters' in agg_df:
+        agg_df.loc[has_gan & agg_df['disc_n_filters'].isnull()] = 16
+
+    if 'disc_width_factor' in agg_df:
+        agg_df.loc[has_gan & agg_df['disc_width_factor'].isnull()] = 2
 
     if args.masked: # treat rmsd_loss as masked loss; adjust for resolution
 
@@ -405,18 +428,20 @@ def main(argv):
         hue = '({})'.format(', '.join(args.hue))
         agg_df[hue] = agg_df[args.hue].apply(tuple, axis=1)
         print(agg_df[hue])
-        args.hue = hue
 
     elif len(args.hue) == 1:
-        args.hue = args.hue[0]
+        hue = args.hue[0]
+
+    else:
+        hue = None
 
     # by default, don't make separate plots for the hue variable or variables with 1 unique value
     if not args.x:
-        args.x = [n for n in name_fields if n != args.hue and agg_df[n].nunique() > 1]
+        args.x = [n for n in name_fields if n != hue and agg_df[n].nunique() > 1]
 
     if args.plot_lines: # plot training progress
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
-        plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=args.hue,
+        plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=hue,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
     final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
@@ -425,13 +450,13 @@ def main(argv):
     
     if args.plot_strips: # plot final loss distributions
         strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-        plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=args.hue,
+        plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
                     n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
     # display names of best models
     print('\nbest models')
     for y in args.y:
-        print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)].head(5))
+        print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)]) #.head(5))
 
 
 if __name__ == '__main__':

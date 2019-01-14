@@ -659,11 +659,11 @@ def parse_version(version_str):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--model_type', required=True)
-    parser.add_argument('-v', '--version', type=str)
-    parser.add_argument('-s', '--scaffold', action='store_true')
-    parser.add_argument('-o', '--out_prefix', default='models')
+    parser = argparse.ArgumentParser(description='Create model prototxt files')
+    parser.add_argument('-m', '--model_type', required=True, help='either "gen" or "disc"')
+    parser.add_argument('-v', '--version', type=str, help='model version (default 1.3)')
+    parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
+    parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
     return parser.parse_args(argv)
 
 
