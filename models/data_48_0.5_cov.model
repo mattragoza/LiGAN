@@ -10,7 +10,7 @@ layer {
   molgrid_data_param {
     source: "TRAINFILE"
     batch_size: 50
-    dimension: 11.5
+    dimension: 23.5
     resolution: 0.5
     shuffle: true
     balanced: false
@@ -19,7 +19,7 @@ layer {
     random_translate: 2.0
     radius_multiple: 1.5
     has_affinity: true
-    use_covalent_radius: false
+    use_covalent_radius: true
   }
 }
 layer {
@@ -34,7 +34,7 @@ layer {
   molgrid_data_param {
     source: "TESTFILE"
     batch_size: 50
-    dimension: 11.5
+    dimension: 23.5
     resolution: 0.5
     shuffle: false
     balanced: false
@@ -43,7 +43,7 @@ layer {
     random_translate: 0.0
     radius_multiple: 1.5
     has_affinity: true
-    use_covalent_radius: false
+    use_covalent_radius: true
   }
 }
 layer {

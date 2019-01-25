@@ -22,22 +22,52 @@ if __name__ == '__main__':
 
     data_name = 'lowrmsd'
     data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 20000
+    max_iter = 100000
     seed = 0
     continue_ = False
 
     pbs_temps = [
-        'adam0_10_10_ab_0.0.pbs'
-        'adam0_10_10_b_0.0.pbs'
+        'adam0_2_2_b_0.0.pbs',
+        'adam0_2_2_ab_0.0.pbs',
     ]
 
-    data_model_file = 'data_24_0.5.model'
+    data_model_files = 4*['data_24_0.5.model']     \
+                     + 4*['data_24_0.5_cov.model'] \
+                     + 4*['data_48_0.5.model']     \
+                     + 4*['data_48_0.5_cov.model'] \
+                     + 4*['data_48_0.25.model']    \
+                     + 4*['data_48_0.25_cov.model']
 
     gen_model_files = [
-        'models/_rvl-le13_24_0.5_3_2l_32_2_1024_.model',
-        'models/_rvl-le13_24_0.5_3_2l_32_2_1024_e.model',
         'models/_vl-le13_24_0.5_3_2l_32_2_1024_.model',
         'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_24_0.5_3_2l_32_2_1024_.model',
+        'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
+
+        'models/_vl-le13_24_0.5c_3_2l_32_2_1024_.model',
+        'models/_vl-le13_24_0.5c_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_24_0.5c_3_2l_32_2_1024_.model',
+        'models/_vr-le13_24_0.5c_3_2l_32_2_1024_e.model',
+
+        'models/_vl-le13_48_0.5_3_2l_32_2_1024_.model',
+        'models/_vl-le13_48_0.5_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_48_0.5_3_2l_32_2_1024_.model',
+        'models/_vr-le13_48_0.5_3_2l_32_2_1024_e.model',
+
+        'models/_vl-le13_48_0.5c_3_2l_32_2_1024_.model',
+        'models/_vl-le13_48_0.5c_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_48_0.5c_3_2l_32_2_1024_.model',
+        'models/_vr-le13_48_0.5c_3_2l_32_2_1024_e.model',
+
+        'models/_vl-le13_48_0.25_3_2l_32_2_1024_.model',
+        'models/_vl-le13_48_0.25_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_48_0.25_3_2l_32_2_1024_.model',
+        'models/_vr-le13_48_0.25_3_2l_32_2_1024_e.model',
+
+        'models/_vl-le13_48_0.25c_3_2l_32_2_1024_.model',
+        'models/_vl-le13_48_0.25c_3_2l_32_2_1024_e.model',
+        'models/_vr-le13_48_0.25c_3_2l_32_2_1024_.model',
+        'models/_vr-le13_48_0.25c_3_2l_32_2_1024_e.model',
     ]
 
     disc_model_files = [
@@ -47,7 +77,7 @@ if __name__ == '__main__':
     gan_names = []
     job_args = []
     for pbs_template in pbs_temps:
-        for gen_model_file in gen_model_files:
+        for data_model_file, gen_model_file in zip(data_model_files, gen_model_files):
             for disc_model_file in disc_model_files:
                 for fold in [3]:
 
@@ -82,7 +112,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('REPL', 'w') as f:
+    with open('TENT', 'w') as f:
         f.write('\n'.join(gan_names))
 
     for a in job_args:

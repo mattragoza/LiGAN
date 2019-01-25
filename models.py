@@ -42,7 +42,7 @@ GEN_NAME_FORMATS = {
     (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
             + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
-    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}{data_options}_{n_levels:d}_{conv_per_level:d}' \
+    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution}{data_options}_{n_levels:d}_{conv_per_level:d}' \
             + '{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
 }
 
@@ -75,17 +75,17 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['_l-l'],
-        data_dim=[24],
-        resolution=[0.5],
+        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
+        data_dim=[24, 48],
+        resolution=[0.5, 0.25],
         data_options=['', 'c'],
         n_levels=[3],
         conv_per_level=[2, 3],
-        arch_options=['l', 'lg', 'la', 'lga'],
-        n_filters=[32, 64],
+        arch_options=['l', 'lg'],
+        n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
-        loss_types=['e'])
+        loss_types=['', 'e'])
 }
 
 

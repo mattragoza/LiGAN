@@ -10,7 +10,7 @@ layer {
   molgrid_data_param {
     source: "TRAINFILE"
     batch_size: 50
-    dimension: 11.5
+    dimension: 23.5
     resolution: 0.5
     shuffle: true
     balanced: false
@@ -34,7 +34,7 @@ layer {
   molgrid_data_param {
     source: "TESTFILE"
     batch_size: 50
-    dimension: 11.5
+    dimension: 23.5
     resolution: 0.5
     shuffle: false
     balanced: false
