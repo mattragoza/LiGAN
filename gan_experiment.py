@@ -28,7 +28,7 @@ if __name__ == '__main__':
 
     pbs_temps = [
         'adam0_2_2_b_0.0.pbs',
-        'adam0_2_2_ab_0.0.pbs',
+        'adam0_2_2_b_0.1.pbs',
     ]
 
     data_model_files = 4*['data_24_0.5.model']     \
