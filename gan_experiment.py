@@ -112,7 +112,7 @@ if __name__ == '__main__':
                     gan_names.append(gan_name)
                     job_args.append((pbs_file, 4*seed + fold))
 
-    with open('TENT', 'w') as f:
+    with open('RADIUS', 'w') as f:
         f.write('\n'.join(gan_names))
 
     for a in job_args:
