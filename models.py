@@ -42,11 +42,8 @@ GEN_NAME_FORMATS = {
     (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
             + '_{n_filters:d}_{width_factor:d}_{loss_types}',
 
-    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}',
-
-    (1, 4): '{encode_type}e14_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '{arch_options}_{loss_types}'
+    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution:.1f}{data_options}_{n_levels:d}_{conv_per_level:d}' \
+            + '{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
 }
 
 
@@ -81,6 +78,7 @@ GEN_SEARCH_SPACES = {
         encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l', 'rvl-l', '_rvl-l'],
         data_dim=[24],
         resolution=[0.5],
+        data_options=['', 'c'],
         n_levels=[3],
         conv_per_level=[2, 3],
         arch_options=['l', 'lg', 'la', 'lga'],
@@ -118,11 +116,14 @@ def format_encode_type(molgrid_data, encoders, decoders):
     return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
 
 
-def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch_options='',
-               n_filters=32, width_factor=2, n_latent=1024, loss_types='', batch_size=50,
-               conv_kernel_size=3, pool_type='a', depool_type='n'):
+def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_per_level,
+               arch_options='', n_filters=32, width_factor=2, n_latent=1024, loss_types='',
+               batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n'):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
+
+    use_covalent_radius = 'c' in data_options
+
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
     self_attention = 'a' in arch_options
@@ -154,7 +155,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
             random_rotation=True,
             random_translate=2.0,
             radius_multiple=1.5,
-            use_covalent_radius=True)
+            use_covalent_radius=use_covalent_radius)
 
         net._ = caffe.layers.MolGridData(ntop=0, name='data', top=['data', 'label', 'aff'],
             include=dict(phase=caffe.TEST),
@@ -169,7 +170,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
             random_rotation=False,
             random_translate=0.0,
             radius_multiple=1.5,
-            use_covalent_radius=True)
+            use_covalent_radius=use_covalent_radius)
 
         net.no_label_aff = caffe.layers.Silence(net.label, net.aff, ntop=0)
 
