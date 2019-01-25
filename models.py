@@ -78,16 +78,16 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l', 'rvl-l', '_rvl-l'],
+        encode_type=['_l-l'],
         data_dim=[24],
         resolution=[0.5],
-        n_levels=[3],
-        conv_per_level=[2, 3],
-        arch_options=['l', 'lg', 'la', 'lga'],
-        n_filters=[32, 64],
+        n_levels=[2],
+        conv_per_level=[3],
+        arch_options=['d'],
+        n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
-        loss_types=['', 'e', 'F', 'w'])
+        loss_types=['e'])
 }
 
 
@@ -120,13 +120,15 @@ def format_encode_type(molgrid_data, encoders, decoders):
 
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch_options='',
                n_filters=32, width_factor=2, n_latent=1024, loss_types='', batch_size=50,
-               conv_kernel_size=3, pool_type='a', depool_type='n'):
+#               conv_kernel_size=3, pool_type='a', depool_type='n'):
+               conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):    #TM
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
+    dense_block_JCIM = 'd' in arch_options      #TM
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
@@ -203,12 +205,28 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
         curr_n_filters = nc[e]
         next_n_filters = n_filters
 
+
+        # initial conv and pooling layers
+
+
         pool_factors = []
         for i in range(n_levels):
 
             if i > 0: # pool before convolution
 
                 assert curr_dim > 1, 'nothing to pool at level {}'.format(i)
+
+                if dense_block_JCIM:
+                
+                    conv = '{}_level{}_bottleneck'.format(enc, i)
+                    net[conv] = caffe.layers.Convolution(curr_top,
+                        num_output=next_n_filters,
+                        weight_filler=dict(type='xavier'),
+                        kernel_size=1,
+                        pad=conv_kernel_size//2)
+
+                    curr_top = net[conv]
+                    curr_n_filters = next_n_filters
 
                 pool = '{}_level{}_pool'.format(enc, i)
                 for pool_factor in [2, 3, 5, curr_dim]:
@@ -282,6 +300,9 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
             for j in range(conv_per_level): # convolutions
 
+                if dense_block_JCIM:
+                    concat_tops = []
+
                 conv = '{}_level{}_conv{}'.format(enc, i, j)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     num_output=next_n_filters,
@@ -289,13 +310,25 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     kernel_size=conv_kernel_size,
                     pad=conv_kernel_size//2)
 
-                curr_top = net[conv]
+                if dense_block_JCIM:
+                    concat_tops.append(curr_top)
+                    curr_top = net[conv]
+                    concat_tops.append(curr_top)
+                else:
+                    curr_top = net[conv]
                 curr_n_filters = next_n_filters
 
                 relu = '{}_relu'.format(conv)
                 net[relu] = caffe.layers.ReLU(curr_top,
                     negative_slope=0.1*leaky_relu,
                     in_place=True)
+
+                if dense_block_JCIM:   #dense_block like JCIM
+
+                    concat = '{}_concat'.format(conv)
+                    net[concat] = caffe.layers.Concat(*concat_tops, axis=1)
+                    curr_top = net[concat]
+                    curr_n_filters = curr_n_filters + growth_rate
 
         if batch_disc:
 
@@ -642,7 +675,6 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 def keyword_product(**kwargs):
     for values in itertools.product(*kwargs.itervalues()):
         yield dict(itertools.izip(kwargs.iterkeys(), values))
-
 
 def percent_index(lst, pct):
     return lst[int(pct*len(lst))]
