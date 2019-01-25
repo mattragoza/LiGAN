@@ -1,9 +1,9 @@
 import sys, re, glob, fnmatch
 from collections import OrderedDict
 from pymol import cmd, stored
-import isoslider
 
 sys.path.insert(0, '.')
+import isoslider
 import atom_types
 
 
