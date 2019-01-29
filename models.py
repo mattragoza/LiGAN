@@ -27,7 +27,7 @@ DISC_SEARCH_SPACES = {
         resolution=[0.5],
         n_levels=[3],
         conv_per_level=[1],
-        arch_options=['l' , 'lb'],
+        arch_options=['l'],
         n_filters=[16, 32],
         width_factor=[2],
         n_latent=[1],
@@ -81,9 +81,9 @@ GEN_SEARCH_SPACES = {
         encode_type=['_l-l'],
         data_dim=[24],
         resolution=[0.5],
-        n_levels=[2],
+        n_levels=[3],
         conv_per_level=[3],
-        arch_options=['d'],
+        arch_options=['od','d'],
         n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
@@ -121,18 +121,25 @@ def format_encode_type(molgrid_data, encoders, decoders):
 def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch_options='',
                n_filters=32, width_factor=2, n_latent=1024, loss_types='', batch_size=50,
 #               conv_kernel_size=3, pool_type='a', depool_type='n'):
-               conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):    #TM
+               conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):    
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
-    dense_block_JCIM = 'd' in arch_options      #TM
+    dense_block_JCIM = 'd' in arch_options      
+    dense_ini_layers = 'od' in arch_options
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
     assert depool_type in ['c', 'n']
+
+    if dense_block_JCIM and pool_type not in ['m']:
+        print("check pooling type in encoder!") 
+
+    if dense_ini_layers:
+            print('1')
 
     dim = data_dim
     bsz = batch_size
@@ -207,6 +214,9 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
 
         # initial conv and pooling layers
+        # conpression rate is not defined
+        # default growth rate is defined as 16
+
 
 
         pool_factors = []
@@ -222,8 +232,8 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     net[conv] = caffe.layers.Convolution(curr_top,
                         num_output=next_n_filters,
                         weight_filler=dict(type='xavier'),
-                        kernel_size=1,
-                        pad=conv_kernel_size//2)
+                        kernel_size=1,                     #####Check########
+                        pad=conv_kernel_size//2)           #####Check########
 
                     curr_top = net[conv]
                     curr_n_filters = next_n_filters
@@ -300,15 +310,16 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
 
             for j in range(conv_per_level): # convolutions
 
-                if dense_block_JCIM:
+                if dense_block_JCIM:    #dense_block like JCIM
                     concat_tops = []
 
                 conv = '{}_level{}_conv{}'.format(enc, i, j)
                 net[conv] = caffe.layers.Convolution(curr_top,
-                    num_output=next_n_filters,
+#                    num_output=next_n_filters,
+                    num_output=growth_rate,
                     weight_filler=dict(type='xavier'),
-                    kernel_size=conv_kernel_size,
-                    pad=conv_kernel_size//2)
+                    kernel_size=conv_kernel_size,                     ######check#####
+                    pad=conv_kernel_size//2)                          ######check#####
 
                 if dense_block_JCIM:
                     concat_tops.append(curr_top)
@@ -316,6 +327,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     concat_tops.append(curr_top)
                 else:
                     curr_top = net[conv]
+
                 curr_n_filters = next_n_filters
 
                 relu = '{}_relu'.format(conv)
@@ -323,7 +335,7 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     negative_slope=0.1*leaky_relu,
                     in_place=True)
 
-                if dense_block_JCIM:   #dense_block like JCIM
+                if dense_block_JCIM:   
 
                     concat = '{}_concat'.format(conv)
                     net[concat] = caffe.layers.Concat(*concat_tops, axis=1)
@@ -485,6 +497,19 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     unpool = '{}_level{}_unpool'.format(dec, i)
                     pool_factor = pool_factors.pop(-1)
 
+                    if dense_block_JCIM:
+                        conv = '{}_level{}_bottleneck'.format(dec,i)
+                        net[conv] = caffe.layers.Deconvolution(curr_top,
+                                convolution_param=dict(
+                                    num_output=next_n_filters,
+                                    weight_filler=dict(type='xavier'),
+                                    kernel_size=1,                          ######check#####
+                                    pad=conv_kernel_size//2))               ######check#####
+
+                        curr_top = net[conv]
+                        curr_n_filters = next_n_filters
+
+
                     if depool_type == 'c': # deconvolution with stride
 
                         net[unpool] = caffe.layers.Deconvolution(curr_top,
@@ -513,27 +538,48 @@ def make_model(encode_type, data_dim, resolution, n_levels, conv_per_level, arch
                     curr_dim = int(pool_factor*curr_dim)
                     next_n_filters = int(curr_n_filters//width_factor)
 
+
                 for j in range(conv_per_level): # convolutions
 
                     last_conv = (i == 0) and (j+1 == conv_per_level)
                     if last_conv:
-                        next_n_filters = label_n_filters
+                        next_n_filters = label_n_filters       #final convolution has to produce thr desired number of output channel
+
+                    if dense_block_JCIM:
+                        deconcat_tops =[]
+                        next_n_filters = growth_rate                       ######check#####
 
                     deconv = '{}_level{}_deconv{}'.format(dec, i, j)
                     net[deconv] = caffe.layers.Deconvolution(curr_top,
                             convolution_param=dict(
                                 num_output=next_n_filters,
                                 weight_filler=dict(type='xavier'),
-                                kernel_size=conv_kernel_size,
-                                pad=1))
+                                kernel_size=conv_kernel_size,              ######check#####
+                                pad=1))                                    ######check#####
+
+                    if dense_block_JCIM:
+                        deconcat_tops.append(curr_top)
+                        curr_top = net[deconv]
+                        deconcat_tops.append(curr_top)
+                    else:
+                        curr_top = net[deconv]
+
+                    curr_n_filters = next_n_filters
 
                     relu = '{}_relu'.format(deconv)
-                    net[relu] = caffe.layers.ReLU(net[deconv],
+                    net[relu] = caffe.layers.ReLU(curr_top,
                         negative_slope=0.1*leaky_relu,
                         in_place=~last_conv)
 
-                    curr_top = net[relu] if last_conv else net[deconv]
-                    curr_n_filters = next_n_filters
+                    if dense_block_JCIM:
+                        deconcat = '{}_concat'.format(deconv)
+                        net[deconcat] = caffe.layers.Concat(*deconcat_tops,axis=1)
+                        curr_top = net[deconcat]
+                        curr_n_filters = next_n_filters + growth_rate
+                    else:
+                        curr_top = net[relu] if last_conv else net[deconv]
+                        curr_n_filters = next_n_filters
+
 
                 if self_attention and i == 1:
 
