@@ -78,12 +78,12 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['_l-l'],
+        encode_type=['_vl-l', 'vl-l', '_vr-l', 'vr-l'],
         data_dim=[24],
         resolution=[0.5],
-        n_levels=[2],
-        conv_per_level=[3],
-        arch_options=['id'],
+        n_levels=[3],
+        conv_per_level=[2, 3],
+        arch_options=['l', 'ld', 'li', 'lid'],
         n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
