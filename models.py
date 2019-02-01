@@ -11,8 +11,7 @@ caffe.set_device(0)
 import caffe_util
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:.1f}'
-
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
 
 DISC_NAME_FORMATS = {
     (0, 1): 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
@@ -75,17 +74,17 @@ GEN_SEARCH_SPACES = {
         depool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['vl-l', '_vl-l', 'vr-l', '_vr-l'],
-        data_dim=[24, 48],
-        resolution=[0.5, 0.25],
-        data_options=['', 'c'],
+        encode_type=['_vl-l'],
+        data_dim=[48],
+        resolution=[0.25],
+        data_options=['c'],
         n_levels=[3],
-        conv_per_level=[2, 3],
-        arch_options=['l', 'lg'],
+        conv_per_level=[3],
+        arch_options=['lg'],
         n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
-        loss_types=['', 'e'])
+        loss_types=['e'])
 }
 
 
@@ -118,7 +117,7 @@ def format_encode_type(molgrid_data, encoders, decoders):
 
 def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_per_level,
                arch_options='', n_filters=32, width_factor=2, n_latent=1024, loss_types='',
-               batch_size=50, conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):
+               batch_size=25, conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
