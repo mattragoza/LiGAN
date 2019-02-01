@@ -1,7 +1,34 @@
 import sys, os, re, glob
 import numpy as np
 
+from pbs_templates import fill_template
 import torque_util
+
+
+DATA_PREFIX = 'lowrmsd'
+DATA_ROOT   = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
+
+PBS_TEMPLATE_FILES = [
+    'pbs_templates/adam0_2_2_b_0.0.pbs'
+]
+
+SEED = 0
+FOLD = 3 # 3 for 'all'
+
+CONTINUE = False
+MAX_ITER = 0
+
+DATA_MODEL_FILES = [
+    'models/data_24_0.5.model'
+]
+
+GEN_MODEL_FILES  = [
+    'models/_vl-le13_24_0.5_3_2lg_32_2_1024_e.model'
+]
+
+DISC_MODEL_FILES = [
+    'models/d11_24_3_1l_16_2_x.model',
+]
 
 
 def get_cont_iter(dir_):
@@ -17,104 +44,41 @@ def get_cont_iter(dir_):
 
 if __name__ == '__main__':
 
-    #_, params_file = sys.argv
-    #params = [line.rstrip().split() for line in open(params_file)]
+    for pbs_template_file in PBS_TEMPLATE_FILES:
 
-    data_name = 'lowrmsd'
-    data_root = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
-    max_iter = 100000
-    seed = 0
-    continue_ = False
+        with open(pbs_template_file, 'r') as f:
+            pbs_template = f.read()
 
-    pbs_temps = [
-        'adam0_2_2_b_0.0.pbs',
-        'adam0_2_2_b_0.1.pbs',
-    ]
+        for data_model_file in DATA_MODEL_FILES:
+            for gen_model_file in GEN_MODEL_FILES:
+                for disc_model_file in DISC_MODEL_FILES:
 
-    data_model_files = 4*['data_24_0.5.model']     \
-                     + 4*['data_24_0.5_cov.model'] \
-                     + 4*['data_48_0.5.model']     \
-                     + 4*['data_48_0.5_cov.model'] \
-                     + 4*['data_48_0.25.model']    \
-                     + 4*['data_48_0.25_cov.model']
+                    pbs_name = os.path.splitext(os.path.basename(pbs_template_file))[0]
+                    data_model_name = os.path.splitext(os.path.basename(data_model_file))[0]
+                    gen_model_name  = os.path.splitext(os.path.basename(gen_model_file))[0]
+                    disc_model_name = os.path.splitext(os.path.basename(disc_model_file))[0]
 
-    gen_model_files = [
-        'models/_vl-le13_24_0.5_3_2l_32_2_1024_.model',
-        'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_24_0.5_3_2l_32_2_1024_.model',
-        'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
-
-        'models/_vl-le13_24_0.5c_3_2l_32_2_1024_.model',
-        'models/_vl-le13_24_0.5c_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_24_0.5c_3_2l_32_2_1024_.model',
-        'models/_vr-le13_24_0.5c_3_2l_32_2_1024_e.model',
-
-        'models/_vl-le13_48_0.5_3_2l_32_2_1024_.model',
-        'models/_vl-le13_48_0.5_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_48_0.5_3_2l_32_2_1024_.model',
-        'models/_vr-le13_48_0.5_3_2l_32_2_1024_e.model',
-
-        'models/_vl-le13_48_0.5c_3_2l_32_2_1024_.model',
-        'models/_vl-le13_48_0.5c_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_48_0.5c_3_2l_32_2_1024_.model',
-        'models/_vr-le13_48_0.5c_3_2l_32_2_1024_e.model',
-
-        'models/_vl-le13_48_0.25_3_2l_32_2_1024_.model',
-        'models/_vl-le13_48_0.25_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_48_0.25_3_2l_32_2_1024_.model',
-        'models/_vr-le13_48_0.25_3_2l_32_2_1024_e.model',
-
-        'models/_vl-le13_48_0.25c_3_2l_32_2_1024_.model',
-        'models/_vl-le13_48_0.25c_3_2l_32_2_1024_e.model',
-        'models/_vr-le13_48_0.25c_3_2l_32_2_1024_.model',
-        'models/_vr-le13_48_0.25c_3_2l_32_2_1024_e.model',
-    ]
-
-    disc_model_files = [
-        'models/d11_24_3_1l_16_2_x.model',
-    ]
-
-    gan_names = []
-    job_args = []
-    for pbs_template in pbs_temps:
-        for data_model_file, gen_model_file in zip(data_model_files, gen_model_files):
-            for disc_model_file in disc_model_files:
-                for fold in [3]:
-
-                    gan_type = os.path.splitext(os.path.basename(pbs_template))[0]
-
-                    data_model_name = os.path.splitext(os.path.split(data_model_file)[1])[0]
-                    gen_model_name = os.path.splitext(os.path.split(gen_model_file)[1])[0]
-                    disc_model_name = os.path.splitext(os.path.split(disc_model_file)[1])[0]
-
-                    seed, fold = int(seed), int(fold)
-                    gen_warmup_name = gen_model_name.lstrip('_')
-                    gan_name = '{}{}_{}'.format(gan_type, gen_model_name, disc_model_name)
-
+                    gan_name = '{}{}_{}'.format(pbs_name, gen_model_name, disc_model_name)
                     if not os.path.isdir(gan_name):
                         os.makedirs(gan_name)
 
-                    cont_iter = get_cont_iter(gan_name) if continue_ else 0
+                    cont_iter = get_cont_iter(gan_name) if CONTINUE else 0
 
-                    pbs_file = os.path.join(gan_name, pbs_template)
+                    pbs_file = os.path.join(gan_name, pbs_name + '.pbs')
+                    pbs_filled = fill_template(pbs_template,
+                        gan_name=gan_name,
+                        data_root=DATA_ROOT,
+                        data_prefix=DATA_PREFIX,
+                        max_iter=MAX_ITER,
+                        cont_iter=cont_iter,
+                        data_model_name=data_model_name,
+                        gen_model_name=gen_model_name,
+                        disc_model_name=disc_model_name,
+                    )
 
-                    torque_util.write_pbs_file(pbs_file, pbs_template, gan_name,
-                                               gan_name=gan_name,
-                                               data_model_name=data_model_name,
-                                               gen_model_name=gen_model_name,
-                                               disc_model_name=disc_model_name,
-                                               data_name=data_name,
-                                               data_root=data_root,
-                                               max_iter=max_iter,
-                                               cont_iter=cont_iter,
-                                               gen_warmup_name=gen_warmup_name)
-
-                    gan_names.append(gan_name)
-                    job_args.append((pbs_file, 4*seed + fold))
-
-    with open('RADIUS', 'w') as f:
-        f.write('\n'.join(gan_names))
-
-    for a in job_args:
-        torque_util.wait_for_free_gpus_and_submit_job(a, n_gpus_free=3, queue='dept_gpu_12GB', poll_every=1)
-
+                    with open(pbs_file, 'w') as f:
+                        f.write(pbs_filled)
+ 
+                    pbs_array_idx = 4*SEED + FOLD
+                    torque_util.wait_for_free_gpus_and_submit_job((pbs_file, pbs_array_idx), 
+                                                                  n_gpus_free=3, poll_every=2)
