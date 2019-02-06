@@ -105,8 +105,9 @@ def parse_encode_type(encode_type):
     m = re.match(full_pat, encode_type)
     assert m, 'encode_type did not match pattern {}'.format(full_pat)
     molgrid_data = not m.group(1)
-    encoders = re.findall(encode_pat, m.group('enc'))
-    decoders = re.findall(decode_pat, m.group('dec'))
+    map_ = dict(r='rec', l='lig', d='data')
+    encoders = [(bool(v), map_[e]) for v,e in re.findall(encode_pat, m.group('enc'))]
+    decoders = [map_[d] for d in re.findall(decode_pat, m.group('dec'))]
     return molgrid_data, encoders, decoders
 
 
@@ -140,9 +141,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
     assert unpool_type in ['c', 'n']
     assert conv_kernel_size%2 == 1
 
-    dim = data_dim
-    bsz = batch_size
-    nc = dict(r=16, l=19, d=16+19)
+    n_channels = dict(rec=16, lig=19, data=16+19)
 
     net = caffe.NetSpec()
 
@@ -183,17 +182,17 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
         if 'r' in encode_type or 'l' in encode_type:
             net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
-                                                  axis=1, slice_point=nc['r'])
+                                                  axis=1, slice_point=n_channels['rec'])
 
     else:
-        net.rec = caffe.layers.Input(shape=dict(dim=[bsz, nc['r'], dim, dim, dim]))
-        net.lig = caffe.layers.Input(shape=dict(dim=[bsz, nc['l'], dim, dim, dim]))
+        net.rec = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['rec']] + [data_dim]*3))
+        net.lig = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['lig']] + [data_dim]*3))
 
         if 'd' in encode_type:
             net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
         if not decoders:
-            net.label = caffe.layers.Input(shape=dict(dim=[bsz, n_latent]))
+            net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
 
         if 'r' not in encode_type and 'd' not in encode_type:
             net.no_rec = caffe.layers.Silence(net.rec, ntop=0)
@@ -203,12 +202,11 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
     # encoder(s)
     encoder_tops = []
-    for variational, e in encoders:
+    for variational, enc in encoders:
 
-        enc = dict(d='data', r='rec', l='lig')[e]
         curr_top = net[enc]
         curr_dim = data_dim
-        curr_n_filters = nc[e]
+        curr_n_filters = n_channels[enc]
         next_n_filters = n_filters
         pool_factors = []
 
@@ -241,8 +239,6 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             curr_dim = int(curr_dim//pool_factor)
 
         for i in range(n_levels):
-
-            scope = ''
 
             if i > 0: # pool between convolution blocks
 
@@ -422,7 +418,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                 noise = '{}_latent_noise'.format(enc)
                 net[noise] = caffe.layers.DummyData(
                     data_filler=dict(type='gaussian'),
-                    shape=dict(dim=[bsz, n_latent]))
+                    shape=dict(dim=[batch_size, n_latent]))
 
                 std_noise = '{}_latent_std_noise'.format(enc)
                 net[std_noise] = caffe.layers.Eltwise(net[noise], net[std],
@@ -447,7 +443,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                 one = '{}_latent_one'.format(enc)
                 net[one] = caffe.layers.DummyData(
                     data_filler=dict(type='constant', value=1),
-                    shape=dict(dim=[bsz, n_latent]))
+                    shape=dict(dim=[batch_size, n_latent]))
 
                 kldiv = '{}_latent_kldiv'.format(enc)
                 net[kldiv] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
@@ -457,7 +453,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                 loss = 'kldiv_loss' # TODO handle multiple K-L divergence losses
                 net[loss] = caffe.layers.Reduction(net[kldiv],
                     operation=caffe.params.Reduction.SUM,
-                    loss_weight=1.0/bsz)
+                    loss_weight=1.0/batch_size)
 
             else:
 
@@ -481,12 +477,11 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
         dec_init_n_filters = curr_n_filters
         decoder_tops = []
 
-        for d in decoders:
+        for dec in decoders:
 
-            dec = dict(d='data', r='rec', l='lig')[d]
             label_top = net[dec]
-            label_n_filters = nc[d]
-            next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
+            label_n_filters = n_channels[dec]
+            next_n_filters = dec_init_n_filters if conv_per_level else n_channels[dec]
 
             fc = '{}_dec_fc'.format(dec)
             net[fc] = caffe.layers.InnerProduct(curr_top,
@@ -500,7 +495,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
             reshape = '{}_reshape'.format(fc)
             net[reshape] = caffe.layers.Reshape(net[fc],
-                shape=dict(dim=[bsz, next_n_filters] + [dec_init_dim]*3))
+                shape=dict(dim=[batch_size, next_n_filters] + [dec_init_dim]*3))
 
             curr_top = net[reshape]
             curr_n_filters = dec_init_n_filters
@@ -658,11 +653,6 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                     weight_filler=dict(type='xavier'),
                     kernel_size=conv_kernel_size,
                     pad=1))
-
-                relu = '{}_relu'.format(conv)
-                net[relu] = caffe.layers.ReLU(curr_top,
-                    negative_slope=0.1*leaky_relu,
-                    in_place=True)
             
                 curr_top = net[deconv]
                 curr_n_filters = next_n_filters
