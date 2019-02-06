@@ -13,6 +13,7 @@ import caffe_util
 
 SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
 
+
 DISC_NAME_FORMATS = {
     (0, 1): 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
     (1, 1): 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
@@ -26,7 +27,7 @@ DISC_SEARCH_SPACES = {
         resolution=[0.5],
         n_levels=[3],
         conv_per_level=[1],
-        arch_options=['l' , 'lb'],
+        arch_options=['l'],
         n_filters=[16, 32],
         width_factor=[2],
         n_latent=[1],
@@ -36,7 +37,7 @@ DISC_SEARCH_SPACES = {
 
 GEN_NAME_FORMATS = {
     (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{pool_type}_{depool_type}',
+            + '_{n_filters:d}_{pool_type}_{unpool_type}',
 
     (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
             + '_{n_filters:d}_{width_factor:d}_{loss_types}',
@@ -58,7 +59,7 @@ GEN_SEARCH_SPACES = {
         n_latent=[None],
         loss_types=['e'],
         pool_type=['c', 'm', 'a'],
-        depool_type=['c', 'n']),
+        unpool_type=['c', 'n']),
 
     (1, 2): dict(
         encode_type=['c', 'a'],
@@ -71,18 +72,18 @@ GEN_SEARCH_SPACES = {
         n_latent=[None],
         loss_types=['e'],
         pool_type=['a'],
-        depool_type=['n']),
+        unpool_type=['n']),
 
     (1, 3): dict(
         encode_type=['_vl-l'],
-        data_dim=[48],
-        resolution=[0.25],
-        data_options=['c'],
+        data_dim=[24],
+        resolution=[0.5],
+        data_options=[''],
         n_levels=[3],
-        conv_per_level=[3],
-        arch_options=['lg'],
-        n_filters=[32],
-        width_factor=[2],
+        conv_per_level=[2],
+        arch_options=['l', 'li', 'ld', 'lid'],
+        n_filters=[16],
+        width_factor=[1],
         n_latent=[1024],
         loss_types=['e'])
 }
@@ -115,9 +116,13 @@ def format_encode_type(molgrid_data, encoders, decoders):
     return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
 
 
+def least_prime_factor(n):
+    return next(i for i in range(2, n+1) if n%i == 0)
+
+
 def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_per_level,
                arch_options='', n_filters=32, width_factor=2, n_latent=1024, loss_types='',
-               batch_size=25, conv_kernel_size=3, pool_type='a', depool_type='n', growth_rate=16):
+               batch_size=25, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
@@ -127,11 +132,13 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
     gaussian_output = 'g' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
-    dense_net = 'd' in arch_options
+    dense_net = 'd' in arch_options      
+    init_conv_pool = 'i' in arch_options
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
-    assert depool_type in ['c', 'n']
+    assert unpool_type in ['c', 'n']
+    assert conv_kernel_size%2 == 1
 
     dim = data_dim
     bsz = batch_size
@@ -203,33 +210,46 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
         curr_dim = data_dim
         curr_n_filters = nc[e]
         next_n_filters = n_filters
-
-        # initial conv and pooling layers
-        # TODO
-
         pool_factors = []
+
+        if init_conv_pool: # initial conv and pooling
+
+            conv = '{}_enc_init_conv'.format(enc)
+            net[conv] = caffe.layers.Convolution(curr_top,
+                    num_output=next_n_filters,                      
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=conv_kernel_size,
+                    pad=conv_kernel_size//2)
+
+            curr_top = net[conv]
+            curr_n_filters = next_n_filters
+
+            relu = '{}_relu'.format(conv)
+            net[relu] = caffe.layers.ReLU(curr_top,
+                negative_slope=0.1*leaky_relu,
+                in_place=True)
+
+            pool = '{}_enc_init_pool'.format(enc)
+            pool_factor = least_prime_factor(curr_dim)
+            pool_factors.append(pool_factor)
+            net[pool] = caffe.layers.Pooling(curr_top,
+                    pool=caffe.params.Pooling.AVE,
+                    kernel_size=pool_factor,
+                    stride=pool_factor)
+
+            curr_top = net[pool]
+            curr_dim = int(curr_dim//pool_factor)
+
         for i in range(n_levels):
 
-            if i > 0: # pool before convolution
+            scope = ''
+
+            if i > 0: # pool between convolution blocks
 
                 assert curr_dim > 1, 'nothing to pool at level {}'.format(i)
 
-                if dense_net:
-                
-                    conv = '{}_level{}_bottleneck'.format(enc, i)
-                    net[conv] = caffe.layers.Convolution(curr_top,
-                        num_output=next_n_filters,
-                        weight_filler=dict(type='xavier'),
-                        kernel_size=1,
-                        pad=0)
-
-                    curr_top = net[conv]
-                    curr_n_filters = next_n_filters
-
-                pool = '{}_level{}_pool'.format(enc, i)
-                for pool_factor in [2, 3, 5, curr_dim]:
-                    if curr_dim % pool_factor == 0:
-                        break
+                pool = '{}_enc_level{}_pool'.format(enc, i)
+                pool_factor = least_prime_factor(curr_dim)
                 pool_factors.append(pool_factor)
 
                 if pool_type == 'c': # convolution with stride
@@ -262,7 +282,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
             if self_attention and i == 1:
 
-                att = '{}_level{}_att'.format(enc, i)
+                att = '{}_enc_level{}_att'.format(enc, i)
                 att_f = '{}_f'.format(att)
                 net[att_f] = caffe.layers.Convolution(curr_top,
                     num_output=curr_n_filters//8,
@@ -298,7 +318,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
             for j in range(conv_per_level): # convolutions
 
-                conv = '{}_level{}_conv{}'.format(enc, i, j)
+                conv = '{}_enc_level{}_conv{}'.format(enc, i, j)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     num_output=next_n_filters,
                     weight_filler=dict(type='xavier'),
@@ -320,12 +340,26 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                     concat = '{}_concat'.format(conv)
                     net[concat] = caffe.layers.Concat(*concat_tops, axis=1)
+
                     curr_top = net[concat]
-                    curr_n_filters = curr_n_filters + growth_rate
+                    curr_n_filters += next_n_filters
+
+            if dense_net: # bottleneck conv
+
+                conv = '{}_enc_level{}_bottleneck'.format(enc, i)
+                next_n_filters = int(curr_n_filters//2)                 #TODO implement bottleneck_factor
+                net[conv] = caffe.layers.Convolution(curr_top,
+                    num_output=next_n_filters,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=1,
+                    pad=0)
+
+                curr_top = net[conv]
+                curr_n_filters = next_n_filters
 
         if batch_disc:
 
-            bd_f = '{}_bd_f'.format(enc)
+            bd_f = '{}_enc_bd_f'.format(enc)
             net[bd_f] = caffe.layers.Reshape(curr_top,
                 shape=dict(dim=[batch_size, 1, curr_n_filters*curr_dim**3]))
 
@@ -427,7 +461,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
             else:
 
-                fc = '{}_latent_fc'.format(enc)
+                fc = '{}_latent_defc'.format(enc)
                 net[fc] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
@@ -446,6 +480,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
         dec_init_dim = curr_dim
         dec_init_n_filters = curr_n_filters
         decoder_tops = []
+
         for d in decoders:
 
             dec = dict(d='data', r='rec', l='lig')[d]
@@ -453,7 +488,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             label_n_filters = nc[d]
             next_n_filters = dec_init_n_filters if conv_per_level else nc[d]
 
-            fc = '{}_latent_defc'.format(dec)
+            fc = '{}_dec_fc'.format(dec)
             net[fc] = caffe.layers.InnerProduct(curr_top,
                 num_output=next_n_filters*dec_init_dim**3,
                 weight_filler=dict(type='xavier'))
@@ -473,12 +508,12 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
             for i in reversed(range(n_levels)):
 
-                if i < n_levels-1: # upsample before convolution
+                if i < n_levels-1: # upsample between convolution blocks
 
-                    unpool = '{}_level{}_unpool'.format(dec, i)
+                    unpool = '{}_dec_level{}_unpool'.format(dec, i)
                     pool_factor = pool_factors.pop(-1)
 
-                    if depool_type == 'c': # deconvolution with stride
+                    if unpool_type == 'c': # deconvolution with stride
 
                         net[unpool] = caffe.layers.Deconvolution(curr_top,
                             convolution_param=dict(
@@ -489,7 +524,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                                 stride=pool_factor,
                                 engine=caffe.params.Convolution.CAFFE))
 
-                    elif depool_type == 'n': # nearest-neighbor interpolation
+                    elif unpool_type == 'n': # nearest-neighbor interpolation
 
                         net[unpool] = caffe.layers.Deconvolution(curr_top,
                             param=dict(lr_mult=0, decay_mult=0),
@@ -508,29 +543,62 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                 for j in range(conv_per_level): # convolutions
 
-                    last_conv = (i == 0) and (j+1 == conv_per_level)
+                    deconv = '{}_dec_level{}_deconv{}'.format(dec, i, j)
+
+                    # final convolution has to produce the desired number of output channels
+                    last_conv = (i == 0) and (j+1 == conv_per_level) and not (dense_net or init_conv_pool)
                     if last_conv:
                         next_n_filters = label_n_filters
 
-                    deconv = '{}_level{}_deconv{}'.format(dec, i, j)
                     net[deconv] = caffe.layers.Deconvolution(curr_top,
-                            convolution_param=dict(
-                                num_output=next_n_filters,
-                                weight_filler=dict(type='xavier'),
-                                kernel_size=conv_kernel_size,
-                                pad=1))
+                        convolution_param=dict(
+                            num_output=next_n_filters,
+                            weight_filler=dict(type='xavier'),
+                            kernel_size=conv_kernel_size,
+                            pad=1))
+
+                    if dense_net:
+                        concat_tops = [curr_top, net[deconv]]
+
+                    curr_top = net[deconv]
+                    curr_n_filters = next_n_filters
 
                     relu = '{}_relu'.format(deconv)
-                    net[relu] = caffe.layers.ReLU(net[deconv],
+                    net[relu] = caffe.layers.ReLU(curr_top,
                         negative_slope=0.1*leaky_relu,
-                        in_place=~last_conv)
+                        in_place=True)
 
-                    curr_top = net[relu] if last_conv else net[deconv]
+                    if dense_net:
+
+                        concat = '{}_concat'.format(deconv)
+                        net[concat] = caffe.layers.Concat(*concat_tops, axis=1)
+
+                        curr_top = net[concat]
+                        curr_n_filters += next_n_filters
+
+                if dense_net: # bottleneck conv
+
+                    conv = '{}_dec_level{}_bottleneck'.format(dec, i)
+
+                    last_conv = (i == 0) and not init_conv_pool
+                    if last_conv:
+                        next_n_filters = label_n_filters
+                    else:
+                        next_n_filters = int(curr_n_filters//2)         #TODO implement bottleneck_factor
+
+                    net[conv] = caffe.layers.Deconvolution(curr_top,
+                        convolution_param=dict(
+                            num_output=next_n_filters,
+                            weight_filler=dict(type='xavier'),
+                            kernel_size=1,
+                            pad=0))
+
+                    curr_top = net[conv]
                     curr_n_filters = next_n_filters
 
                 if self_attention and i == 1:
 
-                    att = '{}_level{}_deatt'.format(dec, i)
+                    att = '{}_dec_level{}_att'.format(dec, i)
                     att_f = '{}_f'.format(att)
                     net[att_f] = caffe.layers.Convolution(curr_top,
                         num_output=curr_n_filters//8,
@@ -564,11 +632,51 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                     curr_top = net[att_o_reshape]
 
+            if init_conv_pool: # final upsample and deconv
+
+                unpool = '{}_dec_final_unpool'.format(dec) 
+                pool_factor = pool_factors.pop(-1)
+                net[unpool] = caffe.layers.Deconvolution(curr_top,
+                    param=dict(lr_mult=0, decay_mult=0),
+                    convolution_param=dict(
+                        num_output=curr_n_filters,
+                        group=curr_n_filters,
+                        weight_filler=dict(type='constant', value=1),
+                        bias_term=False,
+                        kernel_size=pool_factor,
+                        stride=pool_factor,
+                        engine=caffe.params.Convolution.CAFFE))
+
+                curr_top = net[unpool]
+                curr_dim = int(pool_factor*curr_dim)
+
+                deconv = '{}_dec_final_deconv'.format(dec)
+                next_n_filters = label_n_filters
+                net[deconv] = caffe.layers.Deconvolution(curr_top,
+                convolution_param=dict(
+                    num_output=next_n_filters,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=conv_kernel_size,
+                    pad=1))
+
+                relu = '{}_relu'.format(conv)
+                net[relu] = caffe.layers.ReLU(curr_top,
+                    negative_slope=0.1*leaky_relu,
+                    in_place=True)
+            
+                curr_top = net[deconv]
+                curr_n_filters = next_n_filters
+
+                relu = '{}_relu'.format(deconv)
+                net[relu] = caffe.layers.ReLU(curr_top,
+                    negative_slope=0.1*leaky_relu,
+                    in_place=True)
+
             # output
             if gaussian_output:
 
                 gauss_kernel_size = 7
-                conv = '{}_gauss_conv'.format(dec)
+                conv = '{}_dec_gauss_conv'.format(dec)
                 net[conv] = caffe.layers.Convolution(curr_top,
                     param=dict(lr_mult=0, decay_mult=0),
                     num_output=label_n_filters,
@@ -581,6 +689,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                 curr_top = net[conv]
 
+            # separate output blob from the one used for gen loss is needed for GAN backprop
             gen = '{}_gen'.format(dec)
             net[gen] = caffe.layers.Power(curr_top)
 
