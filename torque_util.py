@@ -5,22 +5,6 @@ import subprocess as sp
 import pandas as pd
 
 
-def write_pbs_file(pbs_file, pbs_template_file, job_name, **kwargs):
-    '''
-    Make a copy of a pbs job script file that has -n JOB_NAME replaced
-    with job_name and any variable definitions whose names are all-
-    caps versions of keys in kwargs redefined as the arg value.
-    '''
-    with open(pbs_template_file) as f:
-        buf = f.read()
-    buf = re.sub(r'#PBS -N JOB_NAME', '#PBS -N {}'.format(job_name), buf)
-    for key, val in kwargs.items():
-        var = key.upper()
-        buf = re.sub(r'{}=.*'.format(var), '{}="{}"'.format(var, val), buf)
-    with open(pbs_file, 'w') as f:
-        f.write(buf)
-
-
 def parse_qstat(buf, job_delim='\n\n', field_delim='\n    ', index_name=None):
     '''
     Parse the stdout of either qstat -f or pbsnodes and return it in a
@@ -121,7 +105,7 @@ def submit_job(args):
     job_id = qsub_job(pbs_file, array_idx)
     if work_dir:
         os.chdir(orig_dir)
-    print('{} {}/{}'.format(job_id, work_dir, pbs_file))
+    print('{}/{} {}'.format(work_dir, pbs_file, job_id))
     return job_id
 
 

@@ -69,7 +69,7 @@ def fit_atom_types_to_grid(grid, channels, resolution, c, max_iter):
         out_grid[c_] = get_atom_density(xyz, r, points, 1.5).reshape(grid_shape)
 
         for i in range(max_iter):
-            xyz -= 0.1 * ((out_grid[c_] - grid[c_]).reshape(-1, 1) * \
+            xyz -= 0.01 * ((out_grid[c_] - grid[c_]).reshape(-1, 1) * \
                     get_atom_gradient(xyz, r, points, 1.5)).sum(axis=0)
             out_grid[c_] = get_atom_density(xyz, r, points, 1.5).reshape(grid_shape)
 
@@ -360,7 +360,7 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter,
     return xyz, density_pred, density_diff, loss
 
 
-def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.05, mo=0.1, lambda_E=0.0,
+def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.01, mo=0.1, lambda_E=0.0,
                       radius_multiple=1.5, bonded=False, max_init_bond_E=0.5, fit_channels=None,
                       verbose=0):
     '''
@@ -574,43 +574,23 @@ def find_blobs_in_net(net, blob_pattern):
     return blobs_found
 
 
-def generate_grids_from_net(net, blob_names, n_grids=np.inf, lig_gen_mode='', diff_rec=False):
+def generate_grids_from_net(net, blob_names, n_grids=np.inf, forward_from=None, **kwargs):
     '''
     Generate grids from a specific blob in net.
     '''
-    assert lig_gen_mode in {'', 'unit', 'mean', 'zero'}
-
     batch_size = net.blobs[blob_names[0]].shape[0]
     i = 0
     while i < n_grids:
 
         if (i % batch_size) == 0: # forward next batch up to latent vectors
 
-            if diff_rec or lig_gen_mode:
+            net.forward()
 
-                net.forward(end='latent_concat')
+            for blob_name, fill_value in kwargs.items():
+                net.blobs[blob_name].data[...] = float(fill_value)
 
-                if diff_rec: # roll rec latent vectors along batch axis by 1
-                    net.blobs['rec_latent_fc'].data[...] = \
-                        np.roll(net.blobs['rec_latent_fc'].data, shift=1, axis=0)
-
-                # set lig_gen_mode parameters if necessary
-                if lig_gen_mode == 'unit':
-                    net.blobs['lig_latent_mean'].data[...] = 0.0
-                    net.blobs['lig_latent_std'].data[...] = 1.0
-
-                elif lig_gen_mode == 'mean':
-                    net.blobs['lig_latent_std'].data[...] = 0.0
-
-                elif lig_gen_mode == 'zero':
-                    net.blobs['lig_latent_mean'].data[...] = 0.0
-                    net.blobs['lig_latent_std'].data[...] = 0.0
-
-                # forward from lig latent noise to output
-                net.forward(start='lig_latent_noise')
-
-            else:
-                net.forward()
+            if forward_from:
+                net.forward(start=forward_from)
 
         yield {n: np.array(net.blobs[n].data[i%batch_size]) for n in blob_names}
         i += 1
@@ -954,7 +934,8 @@ def parse_args(argv=None):
     parser.add_argument('--fit_GMM', action='store_true', help='fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='noise model for GMM atom fitting (d|p)')
     parser.add_argument('--combine_channels', action='store_true', help="combine channels with same element for atom fitting")
-    parser.add_argument('--lig_gen_mode', default='', help='alternate ligand generation method (|mean|unit|zero)')
+    parser.add_argument('--forward_from', default=None, help='name of blob to start forward pass from')
+    parser.add_argument('-f', '--fill_value', default=[], action='append', help='blob_name:fill_value pair(s) to initialize before forward pass')
     parser.add_argument('-r2', '--rec_file2', default='', help='alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="apply Wiener deconvolution to atom density grids")
@@ -1014,12 +995,14 @@ def main(argv):
     else:
         caffe.set_mode_cpu()
 
+    fill_values = dict(f.split(':') for f in args.fill_value)
+
     # create the net in caffe
     net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
 
     examples = read_examples_from_data_file(data_file, args.data_root)
     grids_from_net = generate_grids_from_net(net, args.blob_names + args.extra_blob_names,
-                                             lig_gen_mode=args.lig_gen_mode)
+                                             forward_from=args.forward_from, **fill_values)
     print(data_param)
 
     dx_groups = []
