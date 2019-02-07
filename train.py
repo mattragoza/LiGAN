@@ -189,6 +189,10 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
     metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
+    # set loss weights
+    for l in gen_loss_names:
+        gen.net.blobs[l].diff[...] = args.loss_weight
+
     for i in range(n_iter):
 
         # get real receptors and ligands
@@ -274,6 +278,8 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             grids = gen.net.blobs[g].data
             diffs = grids[np.newaxis,:,...] - grids[:,np.newaxis,...]
             metrics[g + '_' + g + '_dist'][-1] = ((diffs**2).sum(grid_axes)**0.5).mean()
+
+    metrics['gen_loss_weight'][-1] = args.loss_weight
 
     return {m: np.nanmean(metrics[m]) for m in metrics}
 
@@ -386,6 +392,10 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
             if not train_gen and train_loss_ratio > 2:
                 train_gen = True
 
+        # update non-GAN generator loss weight
+        if args.loss_weight_decay:
+            args.loss_weight *= (1.0 - args.loss_weight_decay)
+
         train_times.append(time.time() - t_start)
 
         disc.increment_iter()
@@ -433,6 +443,8 @@ def parse_args(argv):
     parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
     parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
+    parser.add_argument('--loss_weight', default=1.0 type=float, help='initial value for non-GAN generator loss weight')
+    parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
     return parser.parse_args(argv)
 
 
