@@ -132,8 +132,6 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
-    print(molgrid_data, encoders, decoders)
-
     use_covalent_radius = 'c' in data_options
 
     leaky_relu = 'l' in arch_options
@@ -781,7 +779,7 @@ def parse_version(version_str):
 
 
 def get_last_value(ord_dict):
-    return ord_dict[next(reversed(ord_dict))]
+    return ord_dict[sorted(ord_dict.keys())[-1]]
 
 
 def parse_args(argv):

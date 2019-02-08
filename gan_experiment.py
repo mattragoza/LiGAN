@@ -9,25 +9,7 @@ DATA_PREFIX = 'lowrmsd'
 DATA_ROOT   = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
 
 PBS_TEMPLATE_FILES = [
-    'pbs_templates/adam0_2_4__0.0_1.0_0.0.pbs',
-    'pbs_templates/adam0_2_4__0.0_0.5_0.0.pbs',
-    'pbs_templates/adam0_2_4__0.0_1.0_1e-05.pbs',
-    'pbs_templates/adam0_2_4__0.0_0.5_2e-05.pbs',
-
-    'pbs_templates/adam0_2_2__0.0_1.0_0.0.pbs',
-    'pbs_templates/adam0_2_2__0.0_0.5_0.0.pbs',
-    'pbs_templates/adam0_2_2__0.0_1.0_1e-05.pbs',
-    'pbs_templates/adam0_2_2__0.0_0.5_2e-05.pbs',
-
-    'pbs_templates/adam0_2_4_b_0.0_1.0_0.0.pbs',
-    'pbs_templates/adam0_2_4_b_0.0_0.5_0.0.pbs',
-    'pbs_templates/adam0_2_4_b_0.0_1.0_1e-05.pbs',
-    'pbs_templates/adam0_2_4_b_0.0_0.5_2e-05.pbs',
-
-    'pbs_templates/adam0_2_2_b_0.0_1.0_0.0.pbs',
-    'pbs_templates/adam0_2_2_b_0.0_0.5_0.0.pbs',
-    'pbs_templates/adam0_2_2_b_0.0_1.0_1e-05.pbs',
-    'pbs_templates/adam0_2_2_b_0.0_0.5_2e-05.pbs',
+    'pbs_templates/adam0_2_2_b_0.0.pbs'
 ]
 
 SEED = 0
@@ -37,15 +19,29 @@ CONTINUE = False
 MAX_ITER = 100000
 
 DATA_MODEL_FILES = [
-    'models/data_24_0.5.model'
+    'models/data_48_0.25c.model',
+    'models/data_48_0.25.model',
+    'models/data_48_0.5c.model',
+    'models/data_48_0.5.model',
+    'models/data_24_0.5c.model',
+    'models/data_24_0.5.model',
 ]
 
 GEN_MODEL_FILES  = [
+    'models/_vl-le13_48_0.25c_3_2l_32_2_1024_e.model',
+    'models/_vr-le13_48_0.25_3_2l_32_2_1024_e.model',
+    'models/_vl-le13_48_0.5c_3_2l_32_2_1024_e.model',
+    'models/_vr-le13_48_0.5_3_2l_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5c_3_2l_32_2_1024_e.model',
     'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
 ]
 
 DISC_MODEL_FILES = [
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_24_3_1l_16_2_x.model',
     'models/d11_24_3_1l_16_2_x.model',
 ]
 
@@ -68,9 +64,9 @@ if __name__ == '__main__':
         with open(pbs_template_file, 'r') as f:
             pbs_template = f.read()
 
-        for data_model_file in DATA_MODEL_FILES:
-            for gen_model_file in GEN_MODEL_FILES:
-                for disc_model_file in DISC_MODEL_FILES:
+        for data_model_file, gen_model_file, disc_model_file in zip(DATA_MODEL_FILES, GEN_MODEL_FILES, DISC_MODEL_FILES):
+            if True:
+                if True:
 
                     pbs_name = os.path.splitext(os.path.basename(pbs_template_file))[0]
                     data_model_name = os.path.splitext(os.path.basename(data_model_file))[0]
