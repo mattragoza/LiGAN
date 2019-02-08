@@ -3,7 +3,6 @@ import sys, os, re, argparse
 from itertools import product, izip
 from collections import OrderedDict
 import caffe
-caffe.set_mode_gpu()
 caffe.set_device(0)
 
 import caffe_util
@@ -25,7 +24,6 @@ NAME_FORMATS = dict(
     disc=OrderedDict({
         (0, 1): 'disc_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_in',
         (1, 1): 'd11_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_{loss_types}',
-
     }),
 )
 
@@ -67,23 +65,24 @@ SEARCH_SPACES = dict(
             unpool_type=['n']),
 
         (1, 3): dict(
-            encode_type=['_vl-l'],
-            data_dim=[24],
-            resolution=[0.5],
-            data_options=[''],
+            encode_type=['_vl-l', '_vr-l'],
+            data_dim=[24, 48],
+            resolution=[0.5, 0.25],
+            data_options=['', 'c'],
             n_levels=[3],
             conv_per_level=[2],
-            arch_options=['l', 'li', 'ld', 'lid'],
+            arch_options=['l'],
             n_filters=[16],
             width_factor=[1],
             n_latent=[1024],
-            loss_types=['e'])
+            loss_types=['', 'e'])
     }),
     disc=OrderedDict({
         (1, 1): dict(
             encode_type=['_d-'],
             data_dim=[24],
             resolution=[0.5],
+            data_options=[''],
             n_levels=[3],
             conv_per_level=[1],
             arch_options=['l'],
@@ -129,9 +128,11 @@ def least_prime_factor(n):
 
 def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv_per_level=0,
                arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
-               batch_size=25, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
+               batch_size=16, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
+
+    print(molgrid_data, encoders, decoders)
 
     use_covalent_radius = 'c' in data_options
 
@@ -191,8 +192,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
         net.rec = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['rec']] + [data_dim]*3))
         net.lig = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['lig']] + [data_dim]*3))
 
-        if 'data' in encoders:
-            net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
+        net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
         if not decoders:
             net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
@@ -790,11 +790,15 @@ def parse_args(argv):
     parser.add_argument('-v', '--version', type=parse_version, help='model version (e.g. 1.3, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
     parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
+    parser.add_argument('--gpu', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
+
+    if args.gpu:
+        caffe.set_mode_gpu()
 
     try:
         name_format = NAME_FORMATS[args.model_type][args.version]

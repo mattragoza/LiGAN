@@ -72,7 +72,7 @@ def get_job_state(job_id):
     try:
         return get_qstat_data().loc[job_id, 'job_state']
     except KeyError:
-        return 'C'
+        return None
 
 
 def qsub_job(pbs_file, array_idx=None):
@@ -117,7 +117,7 @@ def submit_job_and_wait_to_complete(args, poll_every='5'):
     '''
     job_id = submit_job(args)
     time.sleep(poll_every)
-    while get_job_state(job_id) != 'C':
+    while get_job_state(job_id) in {'Q', 'R'}:
         time.sleep(poll_every)
     return job_id
 

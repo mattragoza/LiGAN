@@ -42,8 +42,6 @@ DATA_MODEL_FILES = [
 
 GEN_MODEL_FILES  = [
     'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
     'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
 ]
 
@@ -102,4 +100,4 @@ if __name__ == '__main__':
  
                     pbs_array_idx = 4*SEED + FOLD
                     torque_util.wait_for_free_gpus_and_submit_job((pbs_file, pbs_array_idx), 
-                                                                  n_gpus_free=3, poll_every=2)
+                                                                  n_gpus_free=0, poll_every=1)
