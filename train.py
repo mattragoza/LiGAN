@@ -443,7 +443,7 @@ def parse_args(argv):
     parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
     parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
-    parser.add_argument('--loss_weight', default=1.0 type=float, help='initial value for non-GAN generator loss weight')
+    parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
     return parser.parse_args(argv)
 
