@@ -2,14 +2,16 @@ import sys, os, re, argparse
 import itertools
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}_{loss_weight}_{loss_weight_decay}'
 
 SOLVER_SEARCH_SPACE = dict(
     solver_name=['adam0'],
-    gen_train_iter=[2, 10],
-    disc_train_iter=[2, 10],
-    train_options=['', 'a', 'b', 'ab'],
-    instance_noise=[0.0, 0.01, 0.1],
+    gen_train_iter=[2],
+    disc_train_iter=[2, 4],
+    train_options=['', 'b'],
+    instance_noise=[0.0],
+    loss_weight=[1.0, 0.5],
+    loss_weight_decay=[0.0, 1e-5, 2e-5],
     memory=['24gb'],
     walltime=['672:00:00'],
     queue=['dept_gpu']

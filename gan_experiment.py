@@ -9,21 +9,42 @@ DATA_PREFIX = 'lowrmsd'
 DATA_ROOT   = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
 
 PBS_TEMPLATE_FILES = [
-    'pbs_templates/adam0_2_2_b_0.0.pbs'
+    'pbs_templates/adam0_2_4__0.0_1.0_0.0.pbs',
+    'pbs_templates/adam0_2_4__0.0_0.5_0.0.pbs',
+    'pbs_templates/adam0_2_4__0.0_1.0_1e-05.pbs',
+    'pbs_templates/adam0_2_4__0.0_0.5_2e-05.pbs',
+
+    'pbs_templates/adam0_2_2__0.0_1.0_0.0.pbs',
+    'pbs_templates/adam0_2_2__0.0_0.5_0.0.pbs',
+    'pbs_templates/adam0_2_2__0.0_1.0_1e-05.pbs',
+    'pbs_templates/adam0_2_2__0.0_0.5_2e-05.pbs',
+
+    'pbs_templates/adam0_2_4_b_0.0_1.0_0.0.pbs',
+    'pbs_templates/adam0_2_4_b_0.0_0.5_0.0.pbs',
+    'pbs_templates/adam0_2_4_b_0.0_1.0_1e-05.pbs',
+    'pbs_templates/adam0_2_4_b_0.0_0.5_2e-05.pbs',
+
+    'pbs_templates/adam0_2_2_b_0.0_1.0_0.0.pbs',
+    'pbs_templates/adam0_2_2_b_0.0_0.5_0.0.pbs',
+    'pbs_templates/adam0_2_2_b_0.0_1.0_1e-05.pbs',
+    'pbs_templates/adam0_2_2_b_0.0_0.5_2e-05.pbs',
 ]
 
 SEED = 0
-FOLD = 3 # 3 for 'all'
+FOLD = 0 # 3 for 'all'
 
 CONTINUE = False
-MAX_ITER = 0
+MAX_ITER = 100000
 
 DATA_MODEL_FILES = [
     'models/data_24_0.5.model'
 ]
 
 GEN_MODEL_FILES  = [
-    'models/_vl-le13_24_0.5_3_2lg_32_2_1024_e.model'
+    'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
 ]
 
 DISC_MODEL_FILES = [
