@@ -80,13 +80,13 @@ SEARCH_SPACES = dict(
     disc=OrderedDict({
         (1, 1): dict(
             encode_type=['_d-'],
-            data_dim=[24],
-            resolution=[0.5],
-            data_options=[''],
+            data_dim=[48, 24],
+            resolution=[0.5, 0.25],
+            data_options=['', 'c'],
             n_levels=[3],
             conv_per_level=[1],
             arch_options=['l'],
-            n_filters=[16, 32],
+            n_filters=[16],
             width_factor=[2],
             n_latent=[1],
             loss_types=['x'])
