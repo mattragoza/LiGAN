@@ -1,9 +1,7 @@
 from __future__ import print_function, division
-import sys
-import os
-import re
-import argparse
-import itertools
+import sys, os, re, argparse
+from itertools import product, izip
+from collections import OrderedDict
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
@@ -14,79 +12,87 @@ import caffe_util
 SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
 
 
-DISC_NAME_FORMATS = {
-    (0, 1): 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
-    (1, 1): 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
-}
+# format strings for mapping model params to unique names
+NAME_FORMATS = dict(
+    data=OrderedDict({
+        (1, 1): 'data_{data_dim}_{resolution}{data_options}'
+    }),
+    gen=OrderedDict({
+        (1, 1): '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}_{n_filters}_{pool_type}_{unpool_type}',
+        (1, 2): '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}_{n_filters}_{width_factor}_{loss_types}',
+        (1, 3): '{encode_type}e13_{data_dim}_{resolution}{data_options}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
+    }),
+    disc=OrderedDict({
+        (0, 1): 'disc_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_in',
+        (1, 1): 'd11_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_{loss_types}',
+
+    }),
+)
 
 
-DISC_SEARCH_SPACES = {
-    (1, 1): dict(
-        encode_type=['_d-'],
-        data_dim=[24],
-        resolution=[0.5],
-        n_levels=[3],
-        conv_per_level=[1],
-        arch_options=['l'],
-        n_filters=[16, 32],
-        width_factor=[2],
-        n_latent=[1],
-        loss_types=['x'])
-}
+# dimensions of the grid search space for model params
+SEARCH_SPACES = dict(
+    data=OrderedDict({
+        (1, 1): dict(
+            encode_type=['d-'],
+            data_dim=[24, 48],
+            resolution=[0.5, 0.25],
+            data_options=['', 'c'])
+    }),
+    gen=OrderedDict({
+        (1, 1): dict(
+            encode_type=['c', 'a'],
+            data_dim=[24],
+            resolution=[0.5],
+            n_levels=[1, 2, 3, 4, 5],
+            conv_per_level=[1, 2, 3],
+            n_filters=[16, 32, 64, 128],
+            width_factor=[1],
+            n_latent=[None],
+            loss_types=['e'],
+            pool_type=['c', 'm', 'a'],
+            unpool_type=['c', 'n']),
 
+        (1, 2): dict(
+            encode_type=['c', 'a'],
+            data_dim=[24],
+            resolution=[0.5, 1.0],
+            n_levels=[2, 3],
+            conv_per_level=[2, 3],
+            n_filters=[16, 32, 64, 128],
+            width_factor=[1, 2, 3],
+            n_latent=[None],
+            loss_types=['e'],
+            pool_type=['a'],
+            unpool_type=['n']),
 
-GEN_NAME_FORMATS = {
-    (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{pool_type}_{unpool_type}',
-
-    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{width_factor:d}_{loss_types}',
-
-    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution}{data_options}_{n_levels:d}_{conv_per_level:d}' \
-            + '{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
-}
-
-
-GEN_SEARCH_SPACES = {
-    (1, 1): dict(
-        encode_type=['c', 'a'],
-        data_dim=[24],
-        resolution=[0.5],
-        n_levels=[1, 2, 3, 4, 5],
-        conv_per_level=[1, 2, 3],
-        n_filters=[16, 32, 64, 128],
-        width_factor=[1],
-        n_latent=[None],
-        loss_types=['e'],
-        pool_type=['c', 'm', 'a'],
-        unpool_type=['c', 'n']),
-
-    (1, 2): dict(
-        encode_type=['c', 'a'],
-        data_dim=[24],
-        resolution=[0.5, 1.0],
-        n_levels=[2, 3],
-        conv_per_level=[2, 3],
-        n_filters=[16, 32, 64, 128],
-        width_factor=[1, 2, 3],
-        n_latent=[None],
-        loss_types=['e'],
-        pool_type=['a'],
-        unpool_type=['n']),
-
-    (1, 3): dict(
-        encode_type=['_vl-l'],
-        data_dim=[24],
-        resolution=[0.5],
-        data_options=[''],
-        n_levels=[3],
-        conv_per_level=[2],
-        arch_options=['l', 'li', 'ld', 'lid'],
-        n_filters=[16],
-        width_factor=[1],
-        n_latent=[1024],
-        loss_types=['e'])
-}
+        (1, 3): dict(
+            encode_type=['_vl-l'],
+            data_dim=[24],
+            resolution=[0.5],
+            data_options=[''],
+            n_levels=[3],
+            conv_per_level=[2],
+            arch_options=['l', 'li', 'ld', 'lid'],
+            n_filters=[16],
+            width_factor=[1],
+            n_latent=[1024],
+            loss_types=['e'])
+    }),
+    disc=OrderedDict({
+        (1, 1): dict(
+            encode_type=['_d-'],
+            data_dim=[24],
+            resolution=[0.5],
+            n_levels=[3],
+            conv_per_level=[1],
+            arch_options=['l'],
+            n_filters=[16, 32],
+            width_factor=[2],
+            n_latent=[1],
+            loss_types=['x'])
+    })
+)
 
 
 def parse_encode_type(encode_type):
@@ -121,8 +127,8 @@ def least_prime_factor(n):
     return next(i for i in range(2, n+1) if n%i == 0)
 
 
-def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_per_level,
-               arch_options='', n_filters=32, width_factor=2, n_latent=1024, loss_types='',
+def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv_per_level=0,
+               arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
                batch_size=25, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
@@ -178,27 +184,18 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             radius_multiple=1.5,
             use_covalent_radius=use_covalent_radius)
 
-        net.no_label_aff = caffe.layers.Silence(net.label, net.aff, ntop=0)
-
-        if 'r' in encode_type or 'l' in encode_type:
-            net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
-                                                  axis=1, slice_point=n_channels['rec'])
+        net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
+                                              axis=1, slice_point=n_channels['rec'])
 
     else:
         net.rec = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['rec']] + [data_dim]*3))
         net.lig = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['lig']] + [data_dim]*3))
 
-        if 'd' in encode_type:
+        if 'data' in encoders:
             net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
         if not decoders:
             net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
-
-        if 'r' not in encode_type and 'd' not in encode_type:
-            net.no_rec = caffe.layers.Silence(net.rec, ntop=0)
-
-        if 'l' not in encode_type and 'd' not in encode_type:
-            net.no_lig = caffe.layers.Silence(net.lig, ntop=0)
 
     # encoder(s)
     encoder_tops = []
@@ -683,7 +680,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             gen = '{}_gen'.format(dec)
             net[gen] = caffe.layers.Power(curr_top)
 
-    else:
+    elif loss_types:
         label_top = net.label
 
         # output
@@ -765,8 +762,9 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
 
 def keyword_product(**kwargs):
-    for values in itertools.product(*kwargs.itervalues()):
-        yield dict(itertools.izip(kwargs.iterkeys(), values))
+    for values in product(*kwargs.itervalues()):
+        yield dict(izip(kwargs.iterkeys(), values))
+
 
 def percent_index(lst, pct):
     return lst[int(pct*len(lst))]
@@ -779,13 +777,17 @@ def orthogonal_samples(n, **kwargs):
 
 
 def parse_version(version_str):
-    return tuple(map(int, version_str.split('.')))
+    return tuple(map(int, version_str.split('.'))) if version_str else None
+
+
+def get_last_value(ord_dict):
+    return ord_dict[next(reversed(ord_dict))]
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files')
     parser.add_argument('-m', '--model_type', required=True, help='either "gen" or "disc"')
-    parser.add_argument('-v', '--version', type=str, help='model version (default 1.3)')
+    parser.add_argument('-v', '--version', type=parse_version, help='model version (e.g. 1.3, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
     parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
     return parser.parse_args(argv)
@@ -794,28 +796,13 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
-    if args.model_type == 'gen':
+    try:
+        name_format = NAME_FORMATS[args.model_type][args.version]
+        search_space = SEARCH_SPACES[args.model_type][args.version]
 
-        if args.version is None:
-            version = (1, 3)
-        else:
-            version = parse_version(args.version)
-
-        search_space = GEN_SEARCH_SPACES[version]
-        name_format = GEN_NAME_FORMATS[version]
-
-    elif args.model_type == 'disc':
-
-        if args.version is None:
-            version = (1, 1)
-        else:
-            version = parse_version(args.version)
-
-        search_space = DISC_SEARCH_SPACES[version]
-        name_format = DISC_NAME_FORMATS[version]
-
-    else:
-        raise ValueError('--model_type must be "gen" or "disc"')
+    except KeyError:
+        name_format = get_last_value(NAME_FORMATS[args.model_type])
+        search_space = get_last_value(SEARCH_SPACES[args.model_type])
 
     model_data = []
     for kwargs in keyword_product(**search_space):
