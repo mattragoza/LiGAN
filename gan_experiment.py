@@ -16,14 +16,29 @@ SEED = 0
 FOLD = 3 # 3 for 'all'
 
 CONTINUE = False
-MAX_ITER = 0
+MAX_ITER = 50000
 
 DATA_MODEL_FILES = [
-    'models/data_24_0.5.model'
+    'models/data_24_0.5_batch25.model'
 ]
 
 GEN_MODEL_FILES  = [
-    'models/_vl-le13_24_0.5_3_2lg_32_2_1024_e.model'
+    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_2ld_32_2_1024_e.model',    
+    'models/_vl-le13_24_0.5_3_2li_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_2lid_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_3l_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_3ld_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_3li_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_3lid_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_2ld_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_2li_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_2lid_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_3l_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_3ld_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_3li_32_2_1024_e.model',
+    'models/_vr-le13_24_0.5_3_3lid_32_2_1024_e.model',
 ]
 
 DISC_MODEL_FILES = [
@@ -81,4 +96,5 @@ if __name__ == '__main__':
  
                     pbs_array_idx = 4*SEED + FOLD
                     torque_util.wait_for_free_gpus_and_submit_job((pbs_file, pbs_array_idx), 
-                                                                  n_gpus_free=3, poll_every=2)
+                                                                  n_gpus_free=0, poll_every=2)
+                    

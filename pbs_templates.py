@@ -10,7 +10,7 @@ SOLVER_SEARCH_SPACE = dict(
     disc_train_iter=[2, 10],
     train_options=['', 'a', 'b', 'ab'],
     instance_noise=[0.0, 0.01, 0.1],
-    memory=['24gb'],
+    memory=['12gb'],
     walltime=['672:00:00'],
     queue=['dept_gpu']
 )
