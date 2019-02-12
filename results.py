@@ -1,21 +1,15 @@
 from __future__ import print_function, division
 import matplotlib
 matplotlib.use('Agg')
-import sys, os, re, glob, argparse, parse, ast
+import sys, os, re, glob, argparse, parse, ast, shutil
 from collections import defaultdict
 import pandas as pd
-pd.set_option('display.max_columns', 100)
-pd.set_option('display.max_colwidth', 100)
-pd.set_option('display.width', 160)
 from pandas.api.types import is_numeric_dtype
 import numpy as np
 np.random.seed(0)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import random
-sns.set_style('whitegrid')
-sns.set_context('talk')
-sns.set_palette('Set1')
 
 import models
 import generate
@@ -205,12 +199,6 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
                     #file_df['data_name'] = data_name #TODO allow multiple data sets
                     train_df['seed'] = seed
                     train_df['fold'] = fold
-                    train_df['iteration'] = train_df['iteration'].astype(int)
-                    if 'base_lr' in train_df:
-                        del train_df['base_lr']
-                    max_iter = train_df['iteration'].max()
-                    #assert iteration in train_df['iteration'].unique(), \
-                    #    'No training output for iteration {} ({})'.format(iteration, max_iter)
 
                     if gen_metrics: #TODO these should be in the train output file
                         gen_file = '{}.{}.{}.{}.gen_metrics'.format(model_prefix, data_name, seed, fold)
@@ -227,7 +215,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
             all_model_dfs.extend(model_dfs)
         else:
             for f, e in model_errors.items():
-                print('{}: {}'.format(f, e))
+                print(e) #'{}: {}'.format(f, e))
 
     return pd.concat(all_model_dfs)
 
@@ -261,13 +249,24 @@ def fix_name(name, char, idx):
     return '_'.join(fields)
 
 
+def read_model_dirs(expt_file):
+    with open(expt_file, 'r') as f:
+        for line in f:
+            yield line.split()[0]
+
+
+def get_terminal_size():
+    with os.popen('stty size') as p:
+        return map(int, p.read().split())
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Plot results of generative model experiments')
-    parser.add_argument('-m', '--dir_pattern', default=[], action='append', help='glob pattern of experiment directories')
+    parser.add_argument('expt_file', help="file specifying experiment directories")
     parser.add_argument('-d', '--data_name', default='lowrmsd', help='base prefix of data used in experiment (default "lowrmsd")')
     parser.add_argument('-s', '--seeds', default='0', help='comma-separated random seeds used in experiment (default 0)')
     parser.add_argument('-f', '--folds', default='0,1,2', help='comma-separated train/test fold numbers used (default 0,1,2)')
-    parser.add_argument('-i', '--iteration', default=20000, type=int, help='max train iteration for results')
+    parser.add_argument('-i', '--iteration', required=True, type=int, help='max train iteration for results')
     parser.add_argument('-o', '--out_prefix', help='common prefix for output files')
     parser.add_argument('-r', '--rename_col', default=[], action='append', help='rename column in results (ex. before_name:after_name)')
     parser.add_argument('-x', '--x', default=[], action='append')
@@ -282,7 +281,7 @@ def parse_args(argv=None):
     parser.add_argument('--plot_ext', default='png')
     parser.add_argument('--aggregate', default=False, action='store_true')
     parser.add_argument('--test_data')
-    parser.add_argument('--ylim', default=[], action='append')
+    parser.add_argument('--ylim', type=ast.literal_eval, default=[], action='append')
     parser.add_argument('--gen_metrics', default=False, action='store_true')
     return parser.parse_args(argv)
 
@@ -290,37 +289,41 @@ def parse_args(argv=None):
 def main(argv):
     args = parse_args(argv)
 
-    args.ylim = [ast.literal_eval(yl) for yl in args.ylim]
+    # set up display and plotting options
+    pd.set_option('display.max_columns', 100)
+    pd.set_option('display.max_colwidth', 100)
+    pd.set_option('display.width', get_terminal_size()[1])
+    sns.set_style('whitegrid')
+    sns.set_context('talk')
+    sns.set_palette('Set1')
+
+    if args.out_prefix is None:
+        args.out_prefix = os.path.splitext(args.expt_file)[0]
+
     seeds = args.seeds.split(',')
     folds = args.folds.split(',')
 
-    if args.dir_pattern: # read training output files from found model directories
-        model_dirs = sorted(d for p in args.dir_pattern for d in glob.glob(p) if os.path.isdir(d))
-        df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
-        results_file = '{}.results'.format(args.out_prefix)
-        df.to_csv(results_file)
-    else:
-        results_file = '{}.results'.format(args.out_prefix)
-        df = pd.read_csv(results_file)
+    # get all training output data from experiment
+    model_dirs = read_model_dirs(args.expt_file)
+    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
 
     if args.test_data is not None:
         df = df[df['test_data'] == args.test_data]
 
-    # aggregate output values for each model across seeds and folds
     index_cols = ['model_name', 'iteration']
-    if args.aggregate:
-        f = {col: pd.Series.nunique if col in {'seed', 'fold'} else np.mean \
-                for col in df if col not in index_cols}
-        agg_df = df.groupby(index_cols).agg(f)
-        assert np.all(agg_df['seed'] == len(seeds))
-        assert np.all(agg_df['fold'] == len(folds))
+    if args.aggregate: # aggregate training output across different seeds and folds
+        agg_df = df.groupby(index_cols).agg({c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) \
+                                                for c in df if c not in index_cols})
+        assert all(agg_df['seed'] == set(seeds))
+        assert all(agg_df['fold'] == set(folds))
     else:
         agg_df = df.set_index(index_cols)
 
+    if not args.y: # use all training output metrics
+        args.y = [m for m in agg_df if m not in ['model_name', 'iteration', 'seed', 'fold', 'test_data']]
+
     # add columns from parsing model name fields
     for model_name, model_df in agg_df.groupby(level=0):
-
-        print(model_name)
 
         # try to parse it as a GAN
         m = re.match(r'^(.+)_([^_]+e(\d+).+)_(d([^_]+).*)$', model_name)
@@ -344,7 +347,7 @@ def main(argv):
                 gen_model_name = fix_name(gen_model_name, ' ', [-1, -5])
             agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
             name_fields.append('gen_model_version')
-            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
+            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.NAME_FORMATS['gen'][gen_v], gen_model_name)
 
             try:
                 disc_v = tuple(int(c) for c in m.group(5))
@@ -354,7 +357,7 @@ def main(argv):
             name_fields.append('disc_model_version')
             try:
                 disc_model_name = fix_name(disc_model_name, ' ', [-4])
-                name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.DISC_NAME_FORMATS[disc_v], disc_model_name)
+                name_fields += add_data_from_name_parse(agg_df, model_name, 'disc', models.NAME_FORMATS['disc'][disc_v], disc_model_name)
             except IndexError:
                 if disc_model_name == 'disc':
                     agg_df.loc[model_name, 'disc_conv_per_level'] = 1
@@ -375,7 +378,7 @@ def main(argv):
                 gen_model_name = m.group()
             agg_df.loc[model_name, 'gen_model_version'] = str(gen_v)
             name_fields = ['gen_model_version']
-            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.GEN_NAME_FORMATS[gen_v], gen_model_name)
+            name_fields += add_data_from_name_parse(agg_df, model_name, 'gen', models.NAME_FORMATS['gen'][gen_v], gen_model_name)
 
     # fill in default values
     if 'resolution' in agg_df:
