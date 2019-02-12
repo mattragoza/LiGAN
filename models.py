@@ -3,7 +3,6 @@ import sys, os, re, argparse
 from itertools import product, izip
 from collections import OrderedDict
 import caffe
-caffe.set_device(0)
 
 import caffe_util
 
@@ -795,7 +794,7 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
-    if args.gpu:
+    if args.scaffold and args.gpu:
         caffe.set_mode_gpu()
 
     try:
