@@ -76,13 +76,13 @@ GEN_SEARCH_SPACES = {
         unpool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['_vl-l'], # '_vr-l', 'vl-l', 'vr-l'],
+        encode_type=['_vl-l', '_vr-l', 'vl-l', 'vr-l'],
         data_dim=[24],
         resolution=[0.5],
         data_options=[''],
         n_levels=[3],
-        conv_per_level=[5],
-        arch_options=['lidk','l','li','lid','ld'],  # 'l', 'li', 'ld', 'lid'],
+        conv_per_level=[2,3],
+        arch_options=['ld', 'lid'],
         n_filters=[32],
         width_factor=[2],
         n_latent=[1024],
@@ -378,6 +378,11 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
                 curr_top = net[conv]
                 curr_n_filters = next_n_filters
 
+                relu = '{}_relu'.format(conv)
+                net[relu] = caffe.layers.ReLU(curr_top,
+                    negative_slope=0.1*leaky_relu,
+                    in_place=True)
+
         if batch_disc:
 
             bd_f = '{}_enc_bd_f'.format(enc)
@@ -563,7 +568,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                 for j in range(conv_per_level): # convolutions
 
-                    if bottle_in_denseblock:    #add 0208
+                    if bottle_in_denseblock:                    #add 0208
                         deconv = '{}_dec_level{}_bottle_conv{}'.format(dec, i, j)
                         net[deconv] = caffe.layers.Deconvolution(curr_top,
                             convolution_param=dict(
@@ -640,6 +645,11 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
                     curr_top = net[conv]
                     curr_n_filters = next_n_filters
+
+                    relu = '{}_relu'.format(conv)
+                    net[relu] = caffe.layers.ReLU(curr_top,
+                        negative_slope=0.1*leaky_relu,
+                        in_place=True)
 
                 if self_attention and i == 1:
 
