@@ -364,6 +364,9 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
                     print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
 
             write_and_plot_metrics(loss_df, loss_out, plot_out)
+
+        if i == arg.max_iter: # return after final test evaluation
+            return
         
         t_start = time.time()
 
@@ -510,9 +513,13 @@ def main(argv):
         # begin training GAN
         try:
             train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_out, args)
-        finally:
+
+        except:
             gen.snapshot()
             disc.snapshot()
+            raise
+
+        finally:
             loss_out.close()
             plot_out.close()
 
