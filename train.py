@@ -365,12 +365,12 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
 
             write_and_plot_metrics(loss_df, loss_out, plot_out)
 
-        if i == arg.max_iter: # return after final test evaluation
+        if i == args.max_iter: # return after final test evaluation
             return
-        
+
         t_start = time.time()
 
-        # train nets       
+        # train nets
         disc_step(train_data, gen, disc, args.disc_train_iter, args,
                   train=train_disc, compute_metrics=False)
 
