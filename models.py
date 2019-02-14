@@ -6,23 +6,22 @@ import caffe
 
 import caffe_util
 
-
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:f}'
 
 
 # format strings for mapping model params to unique names
 NAME_FORMATS = dict(
     data=OrderedDict({
-        (1, 1): 'data_{data_dim}_{resolution}{data_options}'
+        '11': 'data_{data_dim:d}_{resolution:f}{data_options}'
     }),
     gen=OrderedDict({
-        (1, 1): '{encode_type}e11_{data_dim}_{n_levels}_{conv_per_level}_{n_filters}_{pool_type}_{unpool_type}',
-        (1, 2): '{encode_type}e12_{data_dim}_{resolution}_{n_levels}_{conv_per_level}_{n_filters}_{width_factor}_{loss_types}',
-        (1, 3): '{encode_type}e13_{data_dim}_{resolution}{data_options}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_{n_latent}_{loss_types}'
+        '11': '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{pool_type}_{unpool_type}',
+        '12': '{encode_type}e12_{data_dim:d}_{resolution:f}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
+        '13': '{encode_type}e13_{data_dim:d}_{resolution:f}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
     }),
     disc=OrderedDict({
-        (0, 1): 'disc_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_in',
-        (1, 1): 'd11_{data_dim}_{n_levels}_{conv_per_level}{arch_options}_{n_filters}_{width_factor}_{loss_types}',
+        '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
+        '11': 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
     }),
 )
 
@@ -30,14 +29,14 @@ NAME_FORMATS = dict(
 # dimensions of the grid search space for model params
 SEARCH_SPACES = dict(
     data=OrderedDict({
-        (1, 1): dict(
+        '11': dict(
             encode_type=['d-'],
             data_dim=[24, 48],
             resolution=[0.5, 0.25],
             data_options=['', 'c'])
     }),
     gen=OrderedDict({
-        (1, 1): dict(
+        '11': dict(
             encode_type=['c', 'a'],
             data_dim=[24],
             resolution=[0.5],
@@ -50,7 +49,7 @@ SEARCH_SPACES = dict(
             pool_type=['c', 'm', 'a'],
             unpool_type=['c', 'n']),
 
-        (1, 2): dict(
+        '12': dict(
             encode_type=['c', 'a'],
             data_dim=[24],
             resolution=[0.5, 1.0],
@@ -63,7 +62,7 @@ SEARCH_SPACES = dict(
             pool_type=['a'],
             unpool_type=['n']),
 
-        (1, 3): dict(
+        '13': dict(
             encode_type=['_vl-l', '_vr-l'],
             data_dim=[24, 48],
             resolution=[0.5, 0.25],
@@ -77,7 +76,7 @@ SEARCH_SPACES = dict(
             loss_types=['', 'e'])
     }),
     disc=OrderedDict({
-        (1, 1): dict(
+        '11': dict(
             encode_type=['_d-'],
             data_dim=[48, 24],
             resolution=[0.5, 0.25],
@@ -91,6 +90,41 @@ SEARCH_SPACES = dict(
             loss_types=['x'])
     })
 )
+
+
+def parse_name(name, name_format, prefix=''):
+    pattern = '^' + name_format.replace('{',   r'(?P<{}'.format(prefix)) \
+                               .replace(':d}', r'>\d+)') \
+                               .replace(':f}', r'>\d+\.\d+)') \
+                               .replace('}',   r'>.*)') + '$'
+    try:
+        return re.match(pattern, name).groupdict()
+    except AttributeError:
+        raise Exception('failed to parse {} with format {}'.format(name, name_format))
+
+
+def parse_gan_name(gan_model_name):
+
+    m = re.match(r'^(.+)_([^_]+e(\d+).+)_((d(isc|(\d+)).*))$', gan_model_name)
+    params = dict(
+        solver_name=m.group(1),
+        gen_model_name=m.group(2),
+        gen_model_version=m.group(3),
+        disc_model_name=m.group(4),
+        disc_model_version='01' if m.group(5) == 'disc' else m.group(6)
+    )
+    params.update(parse_name(params['solver_name'], SOLVER_NAME_FORMAT))
+    params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
+    params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'disc_'))
+    return params
+
+
+def parse_gen_name(gen_model_name):
+
+    m = re.match(r'[^_]+e(\d+).+', gen_model_name)
+    params = dict(gen_model_verison=tuple(map(int, m.group(1))))
+    params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
+    return params
 
 
 def parse_encode_type(encode_type):
@@ -783,8 +817,8 @@ def get_last_value(ord_dict):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files')
-    parser.add_argument('-m', '--model_type', required=True, help='either "gen" or "disc"')
-    parser.add_argument('-v', '--version', type=parse_version, help='model version (e.g. 1.3, default most recent)')
+    parser.add_argument('-m', '--model_type', required=True, help='either "data", "gen", or "disc"')
+    parser.add_argument('-v', '--version', help='model version (e.g. 13, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
     parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
     parser.add_argument('--gpu', default=False, action='store_true')
