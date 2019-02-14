@@ -285,7 +285,7 @@ def get_atom_density_kernel(shape, resolution, atom_radius, radius_mult):
 
 
 def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter, 
-                    lr=0.1, mo=0.0, lambda_E=0.0, radius_multiple=1.5, verbose=0,
+                    lr, mo, lambda_E=0.0, radius_multiple=1.5, verbose=0,
                     density_pred=None, density_diff=None):
     '''
     Fit atom positions, provided by arrays xyz initial positions, c channel indices, 
@@ -360,7 +360,7 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter,
     return xyz, density_pred, density_diff, loss
 
 
-def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr=0.01, mo=0.1, lambda_E=0.0,
+def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr, mo, lambda_E=0.0,
                       radius_multiple=1.5, bonded=False, max_init_bond_E=0.5, fit_channels=None,
                       verbose=0):
     '''
@@ -640,7 +640,14 @@ def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
 
         for other_file in other_files:
             obj_name = os.path.splitext(os.path.basename(other_file))[0]
-            out.write('load {}, {}\n'.format(other_file, obj_name))
+
+            m = re.match(r'^(.*_fit)_(\d+)$', obj_name)
+            if m:
+                obj_name = m.group(1)
+                state = int(m.group(2)) + 1
+                out.write('load {}, {}, state={}\n'.format(other_file, obj_name, state))
+            else:
+                out.write('load {}, {}\n'.format(other_file, obj_name))
 
         for other_file, (x,y,z) in zip(other_files, centers):
             obj_name = os.path.splitext(os.path.basename(other_file))[0]
@@ -674,9 +681,9 @@ def read_mols_from_sdf_file(sdf_file):
 
 def get_mol_center(mol):
     '''
-    Compute the center of a molecule.
+    Compute the center of a molecule, ignoring hydrogen.
     '''
-    return np.mean([a.coords for a in mol.atoms], axis=0)
+    return np.mean([a.coords for a in mol.atoms if a.atomicnum != 1], axis=0)
 
 
 def get_n_atoms_from_sdf_file(sdf_file, idx=0):
@@ -954,6 +961,8 @@ def parse_args(argv=None):
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
+    parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate for atom fitting')
+    parser.add_argument('--momentum', type=float, default=0.5, help='momentum for atom fitting')
     return parser.parse_args(argv)
 
 
@@ -1081,7 +1090,8 @@ def main(argv):
                                           bonded=args.bonded,
                                           verbose=args.verbose,
                                           max_init_bond_E=args.max_init_bond_E,
-                                          fit_channels=lig_c if args.fit_atom_types else None)
+                                          fit_channels=lig_c if args.fit_atom_types else None,
+                                          lr=args.learning_rate, mo=args.momentum)
 
                     if args.verbose > 0:
                         print('{}\t{}\tn_atoms = {}\tloss = {}'.format(lig_name, blob_name, len(xyz), loss))
@@ -1116,8 +1126,10 @@ def main(argv):
     if args.fit_atoms or args.fit_atom_types:
         blob_order += [b + '_fit' for b in args.blob_names]
 
+    print('computing generative metrics')
     df = compute_generative_metrics(all_grids, all_xyzs, all_cs, blob_order)
-    df = df.groupby(level='lig_name').mean().mean()
+    #df = df.groupby(level='lig_name').mean().mean()
+    print('done')
 
     metric_file = '{}.gen_metrics'.format(args.out_prefix)
     df.to_csv(metric_file, sep=' ')
