@@ -1,6 +1,5 @@
 from __future__ import print_function, division
-import sys, os, re, argparse, itertools
-from ast import literal_eval
+import sys, os, re, argparse, itertools, ast
 from collections import OrderedDict
 import caffe
 
@@ -30,7 +29,11 @@ def write_file(file_, buf):
         f.write(buf)
 
 
-def write_model(model_file, params, net_param):
+def write_model(model_file, net_param, params={}):
+    '''
+    Write net_param to model_file. If params dict is given,
+    write the params as comments in the header of model_file.
+    '''
     buf = ''.join('# {} = {}\n'.format(p, repr(v)) for p, v in params.items())
     buf += str(net_param)
     write_file(model_file, buf)
@@ -41,35 +44,58 @@ def read_file(file_):
         return f.read()
 
 
-def parse_params(buf, line_start='', conv=literal_eval):
+def parse_params(buf, line_start='', converter=ast.literal_eval):
+    '''
+    Parse lines in buf as param = value pairs, filtering by an
+    optional line_start pattern. After parsing, a converter
+    function is applied to param values.
+    '''
     params = OrderedDict()
     line_pat = r'^{}(\S+)\s*=\s*(.+)$'.format(line_start)
     for p, v in re.findall(line_pat, buf, re.MULTILINE):
-        params[p] = conv(v)
+        params[p] = converter(v)
     return params
 
 
 def read_params(params_file):
+    '''
+    Read lines from params_file as param = value pairs.
+    '''
     buf = read_file(params_file)
     return parse_params(buf)
 
 
 def read_params_from_model(model_file):
+    '''
+    Read lines starting with # in model_file as param = value pairs.
+    '''
     buf = read_file(model_file)
     return parse_params(buf, line_start=r'#\s*')
 
 
 def read_param_space(params_file):
+    '''
+    Read lines from params_file as param = values pairs,
+    where all values are converted to lists.
+    '''
     buf = read_file(params_file)
-    conv = lambda v: as_list(literal_eval(v))
-    return parse_params(buf, conv=conv)
+    converter = lambda v: as_list(ast.literal_eval(v))
+    return parse_params(buf, converter=converter)
 
 
 def as_list(value):
+    '''
+    Return value as a list if it's not one already.
+    '''
     return value if isinstance(value, list) else [value]
 
 
 def param_space_product(param_space):
+    '''
+    Iterate over the Cartesian product of values in param_space.
+    Expects a dict mapping params to lists of possible values.
+    Produces dicts mapping params to specific values.
+    '''
     for values in itertools.product(*param_space.itervalues()):
         yield OrderedDict(itertools.izip(param_space.iterkeys(), values))
 
@@ -819,7 +845,7 @@ def main(argv):
         model_name = name_format.format(**params)
         model_file = os.path.join(args.out_prefix, model_name + '.model')
         net_param = make_model(**params)
-        write_model(model_file, params, net_param)
+        write_model(model_file, net_param, params)
 
         if args.scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
