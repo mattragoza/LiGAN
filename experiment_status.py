@@ -174,22 +174,25 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description='check status of GAN experiment')
     parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
     parser.add_argument('-u', '--update', default=False, action='store_true', help='update experiment status with latest jobs')
+    parser.add_argument('-o', '--out_file', help='alternate output file to write updated experiment status')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    pd.set_option('display.max_colwidth', 120)
-    pd.set_option('display.width', get_terminal_size()[1])
+    if not args.out_file:
+        args.out_file = args.expt_file
 
     expt = read_expt_file(args.expt_file)
 
     if args.update:
         qstat = torque_util.get_qstat_data()
         expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
-        write_expt_file(args.expt_file, expt)
+        write_expt_file(args.out_file, expt)
 
+    pd.set_option('display.max_colwidth', 120)
+    pd.set_option('display.width', get_terminal_size()[1])
     print(expt)
 
 
