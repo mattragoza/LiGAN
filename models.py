@@ -1,23 +1,22 @@
 from __future__ import print_function, division
-import sys, os, re, argparse
-from itertools import product, izip
+import sys, os, re, argparse, itertools
+from ast import literal_eval
 from collections import OrderedDict
 import caffe
 
 import caffe_util
-
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:f}'
+from pbs_templates import SOLVER_NAME_FORMAT
 
 
 # format strings for mapping model params to unique names
 NAME_FORMATS = dict(
     data=OrderedDict({
-        '11': 'data_{data_dim:d}_{resolution:f}{data_options}'
+        '11': 'data_{data_dim:d}_{resolution:g}{data_options}'
     }),
     gen=OrderedDict({
         '11': '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{pool_type}_{unpool_type}',
-        '12': '{encode_type}e12_{data_dim:d}_{resolution:f}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
-        '13': '{encode_type}e13_{data_dim:d}_{resolution:f}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
+        '12': '{encode_type}e12_{data_dim:d}_{resolution:g}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
+        '13': '{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
     }),
     disc=OrderedDict({
         '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
@@ -26,76 +25,70 @@ NAME_FORMATS = dict(
 )
 
 
-# dimensions of the grid search space for model params
-SEARCH_SPACES = dict(
-    data=OrderedDict({
-        '11': dict(
-            encode_type=['d-'],
-            data_dim=[24, 48],
-            resolution=[0.5, 0.25],
-            data_options=['', 'c'])
-    }),
-    gen=OrderedDict({
-        '11': dict(
-            encode_type=['c', 'a'],
-            data_dim=[24],
-            resolution=[0.5],
-            n_levels=[1, 2, 3, 4, 5],
-            conv_per_level=[1, 2, 3],
-            n_filters=[16, 32, 64, 128],
-            width_factor=[1],
-            n_latent=[None],
-            loss_types=['e'],
-            pool_type=['c', 'm', 'a'],
-            unpool_type=['c', 'n']),
+def write_file(file_, buf):
+    with open(file_, 'w') as f:
+        f.write(buf)
 
-        '12': dict(
-            encode_type=['c', 'a'],
-            data_dim=[24],
-            resolution=[0.5, 1.0],
-            n_levels=[2, 3],
-            conv_per_level=[2, 3],
-            n_filters=[16, 32, 64, 128],
-            width_factor=[1, 2, 3],
-            n_latent=[None],
-            loss_types=['e'],
-            pool_type=['a'],
-            unpool_type=['n']),
 
-        '13': dict(
-            encode_type=['_vl-l', '_vr-l'],
-            data_dim=[24, 48],
-            resolution=[0.5, 0.25],
-            data_options=['', 'c'],
-            n_levels=[3],
-            conv_per_level=[2],
-            arch_options=['l'],
-            n_filters=[16],
-            width_factor=[1],
-            n_latent=[1024],
-            loss_types=['', 'e'])
-    }),
-    disc=OrderedDict({
-        '11': dict(
-            encode_type=['_d-'],
-            data_dim=[48, 24],
-            resolution=[0.5, 0.25],
-            data_options=['', 'c'],
-            n_levels=[3],
-            conv_per_level=[1],
-            arch_options=['l'],
-            n_filters=[16],
-            width_factor=[2],
-            n_latent=[1],
-            loss_types=['x'])
-    })
-)
+def write_model(model_file, params, net_param):
+    buf = ''.join('# {} = {}\n'.format(p, repr(v)) for p, v in params.items())
+    buf += str(net_param)
+    write_file(model_file, buf)
+
+
+def read_file(file_):
+    with open(file_, 'r') as f:
+        return f.read()
+
+
+def parse_params(buf, line_start='', conv=literal_eval):
+    params = OrderedDict()
+    line_pat = r'^{}(\S+)\s*=\s*(.+)$'.format(line_start)
+    for p, v in re.findall(line_pat, buf, re.MULTILINE):
+        params[p] = conv(v)
+    return params
+
+
+def read_params(params_file):
+    buf = read_file(params_file)
+    return parse_params(buf)
+
+
+def read_params_from_model(model_file):
+    buf = read_file(model_file)
+    return parse_params(buf, line_start=r'#\s*')
+
+
+def read_param_space(params_file):
+    buf = read_file(params_file)
+    conv = lambda v: as_list(literal_eval(v))
+    return parse_params(buf, conv=conv)
+
+
+def as_list(value):
+    return value if isinstance(value, list) else [value]
+
+
+def param_space_product(param_space):
+    for values in itertools.product(*param_space.itervalues()):
+        yield OrderedDict(itertools.izip(param_space.iterkeys(), values))
+
+
+def percent_index(lst, pct):
+    return lst[int(pct*len(lst))]
+
+
+def param_space_latin_hypercube(n, param_space): #TODO fix this
+    for sample in pyDOE.lhs(len(param_space), n):
+        values = map(percent_index, zip(param_space, sample))
+        yield dict(zip(param_space, value))
 
 
 def parse_name(name, name_format, prefix=''):
     pattern = '^' + name_format.replace('{',   r'(?P<{}'.format(prefix)) \
                                .replace(':d}', r'>\d+)') \
-                               .replace(':f}', r'>\d+\.\d+)') \
+                               .replace(':f}', r'>[-+]?(\d*\.\d+|\d+)') \
+                               .replace(':g}', r'>[-+]?(\d*\.\d+|\d+)(e[-+]?\d+)?)') \
                                .replace('}',   r'>.*)') + '$'
     try:
         return re.match(pattern, name).groupdict()
@@ -792,21 +785,6 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
     return net.to_proto()
 
 
-def keyword_product(**kwargs):
-    for values in product(*kwargs.itervalues()):
-        yield dict(izip(kwargs.iterkeys(), values))
-
-
-def percent_index(lst, pct):
-    return lst[int(pct*len(lst))]
-
-
-def orthogonal_samples(n, **kwargs):
-    for sample in pyDOE.lhs(len(kwargs), n):
-        values = map(percent_index, zip(kwargs, sample))
-        yield dict(zip(kwargs, values))
-
-
 def parse_version(version_str):
     return tuple(map(int, version_str.split('.'))) if version_str else None
 
@@ -817,10 +795,11 @@ def get_last_value(ord_dict):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files')
-    parser.add_argument('-m', '--model_type', required=True, help='either "data", "gen", or "disc"')
-    parser.add_argument('-v', '--version', help='model version (e.g. 13, default most recent)')
+    parser.add_argument('params_file', help='file defining model params or dimensions of param space')
+    parser.add_argument('-m', '--model_type', required=True, help='model name format type (data, gen, or disc)')
+    parser.add_argument('-v', '--version', required=True, help='model name format version (e.g. 13, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
-    parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
+    parser.add_argument('-o', '--out_prefix', default='models', help='common output prefix for model files')
     parser.add_argument('--gpu', default=False, action='store_true')
     return parser.parse_args(argv)
 
@@ -831,21 +810,16 @@ def main(argv):
     if args.scaffold and args.gpu:
         caffe.set_mode_gpu()
 
-    try:
-        name_format = NAME_FORMATS[args.model_type][args.version]
-        search_space = SEARCH_SPACES[args.model_type][args.version]
-
-    except KeyError:
-        name_format = get_last_value(NAME_FORMATS[args.model_type])
-        search_space = get_last_value(SEARCH_SPACES[args.model_type])
+    name_format = NAME_FORMATS[args.model_type][args.version]
+    param_space = read_param_space(args.params_file)
 
     model_data = []
-    for kwargs in keyword_product(**search_space):
+    for params in param_space_product(param_space):
 
-        model_name = name_format.format(**kwargs)
+        model_name = name_format.format(**params)
         model_file = os.path.join(args.out_prefix, model_name + '.model')
-        net_param = make_model(**kwargs)
-        net_param.to_prototxt(model_file)
+        net_param = make_model(**params)
+        write_model(model_file, params, net_param)
 
         if args.scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
