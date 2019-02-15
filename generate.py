@@ -1,14 +1,12 @@
 from __future__ import print_function
-import sys, os, re, argparse, ast, time, glob, struct
+import sys, os, re, argparse, time, glob, struct
 import numpy as np
 import pandas as pd
 from collections import defaultdict, Counter
 from itertools import combinations, permutations
 import contextlib
 import tempfile
-import multiprocessing as mp
 from itertools import izip
-from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
 import openbabel as ob
@@ -16,42 +14,6 @@ import pybel
 import caffe_util
 import atom_types
 pd.set_option('display.width', 250)
-
-
-class AtomFittingLayer(caffe.Layer):
-
-    def setup(self, bottom, top):
-
-        if len(bottom) != 1:
-            raise Exception('AtomFittingLayer takes 1 bottom blob')
-
-        params = ast.literal_eval(self.param_str)
-        self.resolution = params['resolution']
-        self.channels = atom_types.get_default_lig_channels(params['use_covalent_radius'])
-        types_file = params.get('gninatypes_file', None)
-        if types_file:
-            self.c = read_gninatypes_file(types_file, self.channels)[1]
-        else:
-            self.c = None
-        self.map = mp.Pool().map
-
-    def reshape(self, bottom, top):
-
-        top[0].reshape(*bottom[0].shape)
-
-    def forward(self, bottom, top):
-
-        f = partial(fit_atoms_to_grid,
-                    channels=self.channels,
-                    center=np.zeros(3),
-                    resolution=self.resolution,
-                    max_iter=10, lr=0.01, mo=0.9,
-                    fit_channels=self.c)
-
-        top[0].data[...] = zip(*self.map(f, bottom[0].data))[3]
-
-    def backward(self, top, propagate_down, bottom):
-        pass
 
 
 def fit_atom_types_to_grid(grid, channels, resolution, c, max_iter):
@@ -501,8 +463,16 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_
     return xyz_new, c_new, bonds_new
 
 
-
 def min_rmsd(xyz1, xyz2, c):
+    '''
+    Compute an RMSD between two sets of positions of the same
+    atom types with no prior mapping between particular atom
+    positions of a given type. Returns the minimum RMSD across
+    all permutations of this mapping.
+    '''
+    xyz1 = np.array(xyz1)
+    xyz2 = np.array(xyz2)
+    c = np.array(c)
     ssd = 0.0
     for c_ in sorted(set(c)):
         xyz1_c = xyz1[c == c_]

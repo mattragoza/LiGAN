@@ -744,7 +744,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
 
         fit = '{}_gen_fit'.format(dec)
         net[fit] = caffe.layers.Python(curr_top,
-            module='generate',
+            module='layers',
             layer='AtomFittingLayer',
             param_str=str(dict(
                 resolution=resolution,
@@ -755,14 +755,14 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
     if 'c' in loss_types:
 
         net.chan_L2_loss = caffe.layers.Python(curr_top, label_top,
-            model='channel_euclidean_loss_layer',
+            module='layers',
             layer='ChannelEuclideanLossLayer',
             loss_weight=1.0)
 
     if 'm' in loss_types:
 
         net.mask_L2_loss = caffe.layers.Python(curr_top, label_top,
-            model='masked_euclidean_loss_layer',
+            model='layers',
             layer='MaskedEuclideanLossLayer',
             loss_weight=0.0)
 
