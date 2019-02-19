@@ -5,6 +5,11 @@ import subprocess as sp
 import pandas as pd
 
 
+def get_terminal_size():
+    with os.popen('stty size') as p:
+        return map(int, p.read().split())
+
+
 def parse_qstat(buf, job_delim='\n\n', field_delim='\n    ', index_name=None):
     '''
     Parse the stdout of either qstat -f or pbsnodes and return it in a

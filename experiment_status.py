@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import sys, os, re, glob, argparse, string
+import datetime as dt
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
@@ -31,7 +32,7 @@ def parse_output_file(out_file):
 def parse_stderr_file(stderr_file):
     buf = read_file(stderr_file)
     m = re.search(r'(([^\s]+(Error|Exception|Interrupt|Exit).*)|Segmentation fault|(Check failed.*))', buf)
-    return m.group(0) if m else None
+    return m.group(0)
 
 
 def update_job_fields(job, qstat):
@@ -73,18 +74,22 @@ def update_job_fields(job, qstat):
         out_file = os.path.join(work_dir, out_base)
 
     try: # get iteration from training output file
+        job['time_modified'] = dt.datetime.fromtimestamp(os.path.getmtime(out_file))
         job['iteration'] = parse_output_file(out_file)
 
     except IndexError: # training output file is empty
         job['iteration'] = None
 
-    except IOError: # couldn't find or read training output file
+    except (OSError, IOError): # couldn't find or read training output file
         pass
 
     try: # get error type from the stderr_file
         job_num, _ = parse_job_id(job['job_id'])
         stderr_file = os.path.join(work_dir, '{}.e{}-{}'.format(job_name, job_num, job['array_idx']))
         job['error'] = parse_stderr_file(stderr_file)
+
+    except AttributeError:
+        job['error'] = None
 
     except TypeError: # job_id is nan = job was never submitted
         pass
@@ -161,13 +166,8 @@ def write_expt_file(expt_file, df):
 
 
 def read_expt_file(expt_file):
-    names = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'error']
+    names = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'time_modified', 'error']
     return pd.read_csv(expt_file, sep=' ', names=names).apply(fix_job_fields, axis=1)
-
-
-def get_terminal_size():
-    with os.popen('stty size') as p:
-        return map(int, p.read().split())
 
 
 def parse_args(argv):
@@ -192,7 +192,7 @@ def main(argv):
         write_expt_file(args.out_file, expt)
 
     pd.set_option('display.max_colwidth', 120)
-    pd.set_option('display.width', get_terminal_size()[1])
+    pd.set_option('display.width', torque_util.get_terminal_size()[1])
     print(expt)
 
 
