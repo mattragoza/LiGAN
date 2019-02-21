@@ -4,7 +4,6 @@ from collections import OrderedDict
 import caffe
 
 import caffe_util
-from pbs_templates import SOLVER_NAME_FORMAT
 
 
 # format strings for mapping model params to unique names
@@ -20,6 +19,10 @@ NAME_FORMATS = dict(
     disc=OrderedDict({
         '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
         '11': 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
+    }),
+    solver=OrderedDict({
+        '11': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}',
+        '12': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}',
     }),
 )
 
@@ -132,7 +135,10 @@ def parse_gan_name(gan_model_name):
         disc_model_name=m.group(4),
         disc_model_version='01' if m.group(5) == 'disc' else m.group(6)
     )
-    params.update(parse_name(params['solver_name'], SOLVER_NAME_FORMAT))
+    try:
+        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['12']))
+    except:
+        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['11']))
     params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
     params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'disc_'))
     return params

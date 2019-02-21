@@ -17,7 +17,6 @@ import generate
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
 
-    df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
     if hue:
         df = df.set_index([hue, x])
@@ -244,7 +243,7 @@ def parse_args(argv=None):
     parser.add_argument('-d', '--data_name', default='lowrmsd', help='base prefix of data used in experiment (default "lowrmsd")')
     parser.add_argument('-s', '--seeds', default='0', help='comma-separated random seeds used in experiment (default 0)')
     parser.add_argument('-f', '--folds', default='0,1,2', help='comma-separated train/test fold numbers used (default 0,1,2)')
-    parser.add_argument('-i', '--iteration', required=True, type=int, help='max train iteration for results')
+    parser.add_argument('-i', '--iteration', type=int, help='iteration for plotting strips')
     parser.add_argument('-o', '--out_prefix', help='common prefix for output files')
     parser.add_argument('-r', '--rename_col', default=[], action='append', help='rename column in results (ex. before_name:after_name)')
     parser.add_argument('-x', '--x', default=[], action='append')
@@ -257,11 +256,13 @@ def parse_args(argv=None):
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
     parser.add_argument('--plot_ext', default='png')
-    parser.add_argument('--aggregate', default=False, action='store_true')
-    parser.add_argument('--test_data')
     parser.add_argument('--ylim', type=ast.literal_eval, default=[], action='append')
     parser.add_argument('--gen_metrics', default=False, action='store_true')
     parser.add_argument('--violin', default=False, action='store_true')
+    parser.add_argument('--test_data')
+    parser.add_argument('--avg_seeds', default=False, action='store_true')
+    parser.add_argument('--avg_folds', default=False, action='store_true')
+    parser.add_argument('--avg_iters', default=1, type=int, help='average over this many consecutive iterations')
     return parser.parse_args(argv)
 
 
@@ -289,14 +290,22 @@ def main(argv):
     if args.test_data is not None:
         df = df[df['test_data'] == args.test_data]
 
-    index_cols = ['model_name', 'iteration']
-    if args.aggregate: # aggregate training output across different seeds and folds
-        agg_df = df.groupby(index_cols).agg({c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) \
-                                                for c in df if c not in index_cols})
-        assert all(agg_df['seed'] == set(seeds))
-        assert all(agg_df['fold'] == set(folds))
-    else:
-        agg_df = df.set_index(index_cols)
+    group_cols = ['model_name']
+
+    if not args.avg_seeds:
+        group_cols.append('seed')
+
+    if not args.avg_folds:
+        group_cols.append('fold')
+
+    if args.avg_iters > 1:
+        df['iteration'] = args.avg_iters * (df['iteration']//args.avg_iters)
+    group_cols.append('iteration')
+
+    agg_df = df.groupby(group_cols).agg({c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) \
+                                            for c in df if c not in group_cols})
+    #assert all(agg_df['seed'] == set(seeds))
+    #assert all(agg_df['fold'] == set(folds))
 
     if not args.y: # use all training output metrics
         args.y = [m for m in agg_df if m not in ['model_name', 'iteration', 'seed', 'fold', 'test_data']]
@@ -344,20 +353,21 @@ def main(argv):
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=hue,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
-    final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
+    if args.iteration:
+        final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
 
-    print('\nFINAL DATA')
-    print(final_df)
-    
-    if args.plot_strips: # plot final loss distributions
-        strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-        plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
-                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
+        print('\nFINAL DATA')
+        print(final_df)
+        
+        if args.plot_strips: # plot final loss distributions
+            strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
+            plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
+                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
 
-    # display names of best models
-    print('\nBEST MODELS')
-    for y in args.y:
-        print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)]) #.head(5))
+        # display names of best models
+        print('\nBEST MODELS')
+        for y in args.y:
+            print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)]) #.head(5))
 
 
 if __name__ == '__main__':
