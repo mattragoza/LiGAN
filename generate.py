@@ -3,8 +3,8 @@ import sys, os, re, argparse, time, glob, struct, time
 import datetime as dt
 import numpy as np
 import pandas as pd
+import scipy as sp
 from collections import defaultdict, Counter
-from itertools import combinations, permutations
 import multiprocessing as mp
 import threading
 import contextlib
@@ -280,7 +280,7 @@ def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter,
         if verbose > 2:
             print('n_atoms = {}\titer = {}\tloss = {} ({})'.format(n_atoms, i, loss, delta_loss), file=sys.stderr)
 
-        if n_atoms == 0 or i == max_iter or abs(delta_loss)/(abs(loss_prev) + 1e-8) < 1e-3:
+        if n_atoms == 0 or i == max_iter or abs(delta_loss)/(abs(loss_prev) + 1e-8) < 1e-2:
             break
 
         # compute derivatives and descend loss gradient
@@ -772,13 +772,10 @@ def min_RMSD(xyz1, xyz2, c):
     ssd = 0.0
     for c_ in sorted(set(c)):
         xyz1_c = xyz1[c == c_]
-        min_ssd_c = np.inf
-        for xyz2_c in permutations(xyz2[c == c_]):
-            xyz2_c = np.array(xyz2_c)
-            ssd_c = ((xyz2_c - xyz1_c)**2).sum()
-            if ssd_c < min_ssd_c:
-                min_ssd_c = ssd_c
-        ssd += min_ssd_c
+        xyz2_c = xyz2[c == c_]
+        dist2_c = ((xyz1_c[:,np.newaxis,:] - xyz2_c[np.newaxis,:,:])**2).sum(axis=2)
+        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_c)
+        ssd += ((xyz1_c[idx1] - xyz2_c[idx2])**2).sum()
     return np.sqrt(ssd/len(c))
 
 
@@ -821,7 +818,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
 
     if args.fit_atoms: # fit atoms to grids in separate processes
         fit_procs = []
-        fit_queue = mp.Queue() # queue for atom fitting
+        fit_queue = mp.Queue(mp.cpu_count()) # queue for atom fitting
         fit_pool = mp.Pool(
             processes=mp.cpu_count(),
             initializer=fit_worker_main,
@@ -902,9 +899,12 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
 def fit_worker_main(fit_queue, out_queue):
 
     while True:
+        print('fit_worker waiting')
         lig_name, sample_idx, grid_name, center, grid, fit_atoms = fit_queue.get()
+        print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
         out_queue.put((lig_name, sample_idx, grid_name, center, grid, None, None))
         xyz, c, bonds, grid_fit, loss, t = fit_atoms(grid)
+        print('fit_worker produced {} {} {}'.format(lig_name, grid_name, sample_idx))
         out_queue.put((lig_name, sample_idx, grid_name + '_fit', center, grid_fit, xyz, c))
 
 
@@ -914,12 +914,15 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
     if args.fit_atoms:
         n_grids_per_ligand *= 2
 
+    print('out_worker expects {} grids per ligand'.format(n_grids_per_ligand))
     dx_prefixes = []
     struct_files = []
     centers = []
 
+    n_finished = 0
     all_data = defaultdict(list) # group by lig_name
-    while n_ligands > 0:
+    while n_finished < n_ligands:
+        print('out_worker waiting')
         lig_name, sample_idx, grid_name, center, grid, xyz, c = out_queue.get()
         all_data[lig_name].append((lig_name, sample_idx, grid_name, center, grid, xyz, c))
         print('out_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
@@ -955,7 +958,7 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
             if dx_prefixes or struct_files: # write pymol script
                 write_pymol_script(pymol_file, dx_prefixes, struct_files, centers)
 
-            print('out_worker computing metrics for {}'.format(lig_name))
+            print('out_worker computing metrics for {} ({} atoms)'.format(lig_name, len(c)))
 
             # compute generative metrics
             mean_grids = {n: np.mean(lig_grids[n], axis=0) for n in lig_grids}
@@ -997,8 +1000,12 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
             metric_df.to_csv(metric_file, sep=' ')
 
             print('out_worker finished processing {}'.format(lig_name))
+
             del all_data[lig_name] # free memory
-            n_ligands -= 1
+            n_finished += 1
+            print('[{}/{}] finished processing {}'.format(n_finished, n_ligands, lig_name))
+
+    print('out_worker exit')
 
 
 def parse_args(argv=None):
@@ -1071,8 +1078,8 @@ def main(argv):
         examples = zip(args.rec_file, args.lig_file)
 
     else: # use the examples in data_file
-        assert len(args.rec_file) == len(args.lig_file) == 0
-        examples = read_examples_from_data_file(data_file)
+        #assert len(args.rec_file) == len(args.lig_file) == 0
+        examples = read_examples_from_data_file(args.data_file)
 
     data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
     data_param.source = data_file
