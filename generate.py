@@ -817,10 +817,9 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
     out_thread.start()
 
     if args.fit_atoms: # fit atoms to grids in separate processes
-        fit_procs = []
-        fit_queue = mp.Queue(mp.cpu_count()) # queue for atom fitting
+        fit_queue = mp.Queue(args.n_fit_workers) # queue for atom fitting
         fit_pool = mp.Pool(
-            processes=mp.cpu_count(),
+            processes=args.n_fit_workers,
             initializer=fit_worker_main,
             initargs=(fit_queue, out_queue)
         )
@@ -1047,6 +1046,7 @@ def parse_args(argv=None):
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
+    parser.add_argument('--n_fit_workers', default=mp.cpu_count(), type=int, help='number of worker processes for async atom fitting')
     return parser.parse_args(argv)
 
 
@@ -1066,6 +1066,8 @@ def main(argv):
     data_param.random_rotation = args.random_rotation
     data_param.random_translate = args.random_translate
     data_param.fix_center_to_origin = args.fix_center_to_origin
+    data_param.shuffle = False
+    data_param.balanced = False
 
     assert not (args.use_covalent_radius and args.use_default_radius)
     if args.use_covalent_radius:
