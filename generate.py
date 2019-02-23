@@ -1,12 +1,16 @@
 from __future__ import print_function
-import sys, os, re, argparse, time, glob, struct
+import sys, os, re, argparse, time, glob, struct, time
+import datetime as dt
 import numpy as np
 import pandas as pd
 from collections import defaultdict, Counter
 from itertools import combinations, permutations
+import multiprocessing as mp
+import threading
 import contextlib
 import tempfile
 from itertools import izip
+from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
 import openbabel as ob
@@ -14,28 +18,6 @@ import pybel
 import caffe_util
 import atom_types
 pd.set_option('display.width', 250)
-
-
-def fit_atom_types_to_grid(grid, channels, resolution, c, max_iter):
-
-    out_grid = np.zeros_like(grid)
-    grid_shape = grid.shape[1:]
-    points = get_grid_points(grid_shape, 0, resolution)
-
-    for c_ in c:
-        r = channels[c_].atomic_radius
-        kernel = get_atom_density(resolution/2, r, points, 1.5).reshape(grid_shape)
-        kernel = np.roll(kernel, shift=[d//2 for d in grid_shape], axis=range(len(grid_shape)))
-
-        xyz = points[conv_grid(grid[c_], kernel).argmax()]
-        out_grid[c_] = get_atom_density(xyz, r, points, 1.5).reshape(grid_shape)
-
-        for i in range(max_iter):
-            xyz -= 0.01 * ((out_grid[c_] - grid[c_]).reshape(-1, 1) * \
-                    get_atom_gradient(xyz, r, points, 1.5)).sum(axis=0)
-            out_grid[c_] = get_atom_density(xyz, r, points, 1.5).reshape(grid_shape)
-
-    return out_grid
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -330,6 +312,7 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr, mo, lamb
     positions by gradient descent on L2 loss between the provided grid density
     and the density associated with the fitted atoms.
     '''
+    t_start = time.time()
     n_channels, grid_shape = grid.shape[0], grid.shape[1:]
     atomic_radii = np.array([c.atomic_radius for c in channels])
     max_n_bonds = np.array([atom_types.get_max_bonds(c.atomic_num) for c in channels])
@@ -357,6 +340,9 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr, mo, lamb
             fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii[c], max_iter, lr=lr, mo=mo,
                             lambda_E=lambda_E, radius_multiple=radius_multiple, verbose=verbose,
                             density_pred=density_pred, density_diff=density_diff)
+
+        if verbose > 1:
+            print('n_atoms = {}\t\t\tloss = {}'.format(len(xyz), loss))
 
         # init next atom position on remaining density
         xyz_new = []
@@ -392,7 +378,7 @@ def fit_atoms_to_grid(grid, channels, center, resolution, max_iter, lr, mo, lamb
             bonds = np.hstack([bonds, np.append(bonds_new, 0)])
 
     grid_pred = density_pred.T.reshape(grid.shape)
-    return xyz, c, bonds, grid_pred, loss
+    return xyz, c, bonds, grid_pred, loss, time.time() - t_start
 
 
 def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_n_bonds, max_init_bond_E=0.5):
@@ -463,29 +449,6 @@ def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_
     return xyz_new, c_new, bonds_new
 
 
-def min_rmsd(xyz1, xyz2, c):
-    '''
-    Compute an RMSD between two sets of positions of the same
-    atom types with no prior mapping between particular atom
-    positions of a given type. Returns the minimum RMSD across
-    all permutations of this mapping.
-    '''
-    xyz1 = np.array(xyz1)
-    xyz2 = np.array(xyz2)
-    c = np.array(c)
-    ssd = 0.0
-    for c_ in sorted(set(c)):
-        xyz1_c = xyz1[c == c_]
-        min_ssd_c = np.inf
-        for xyz2_c in permutations(xyz2[c == c_]):
-            xyz2_c = np.array(xyz2_c)
-            ssd_c = ((xyz2_c - xyz1_c)**2).sum()
-            if ssd_c < min_ssd_c:
-                min_ssd_c = ssd_c
-        ssd += min_ssd_c
-    return np.sqrt(ssd/len(c))
-
-
 def rec_and_lig_at_index_in_data_file(file, index):
     '''
     Read receptor and ligand names at a specific line number in a data file.
@@ -533,39 +496,6 @@ def best_loss_rec_and_lig(model_file, weights_file, data_file, data_root, loss_n
     return rec_and_lig_at_index_in_data_file(data_file, index)
 
 
-def find_blobs_in_net(net, blob_pattern):
-    '''
-    Return a list of blobs in a net whose names match a regex pattern.
-    '''
-    blobs_found = []
-    for blob_name, blob in net.blobs.items():
-        if re.match('(?:' + blob_pattern + r')\Z', blob_name): # match full string
-            blobs_found.append(blob)
-    return blobs_found
-
-
-def generate_grids_from_net(net, blob_names, n_grids=np.inf, forward_from=None, **kwargs):
-    '''
-    Generate grids from a specific blob in net.
-    '''
-    batch_size = net.blobs[blob_names[0]].shape[0]
-    i = 0
-    while i < n_grids:
-
-        if (i % batch_size) == 0: # forward next batch up to latent vectors
-
-            net.forward()
-
-            for blob_name, fill_value in kwargs.items():
-                net.blobs[blob_name].data[...] = float(fill_value)
-
-            if forward_from:
-                net.forward(start=forward_from)
-
-        yield {n: np.array(net.blobs[n].data[i%batch_size]) for n in blob_names}
-        i += 1
-
-
 def combine_element_grids_and_channels(grids, channels):
     '''
     Return new grids and channels by combining channels
@@ -596,32 +526,31 @@ def combine_element_grids_and_channels(grids, channels):
     return np.array(new_grid), new_channels
 
 
-def write_pymol_script(pymol_file, dx_groups, other_files, centers=[]):
+def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
     '''
     Write a pymol script with a map object for each of dx_files, a
     group of all map objects (if any), a rec_file, a lig_file, and
     an optional fit_file.
     '''
-    with open(pymol_file, 'w') as out:
-        for dx_prefix in dx_groups:
+    with open(pymol_file, 'w') as f:
+        for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            grid_name = '{}_grid'.format(dx_prefix)
-            out.write('load_group {}, {}\n'.format(dx_pattern, grid_name))
+            grid_name = '{}_grid'.format(os.path.basename(dx_prefix))
+            f.write('load_group {}, {}\n'.format(dx_pattern, grid_name))
 
-        for other_file in other_files:
-            obj_name = os.path.splitext(os.path.basename(other_file))[0]
-
+        for struct_file in struct_files: # load structures
+            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
             m = re.match(r'^(.*_fit)_(\d+)$', obj_name)
             if m:
                 obj_name = m.group(1)
                 state = int(m.group(2)) + 1
-                out.write('load {}, {}, state={}\n'.format(other_file, obj_name, state))
+                f.write('load {}, {}, state={}\n'.format(struct_file, obj_name, state))
             else:
-                out.write('load {}, {}\n'.format(other_file, obj_name))
+                f.write('load {}, {}\n'.format(struct_file, obj_name))
 
-        for other_file, (x,y,z) in zip(other_files, centers):
-            obj_name = os.path.splitext(os.path.basename(other_file))[0]
-            out.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
+        for struct_file, (x,y,z) in zip(struct_files, centers): # center structures
+            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
+            f.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
 
 
 def read_gninatypes_file(lig_file, channels):
@@ -830,281 +759,342 @@ def read_examples_from_data_file(data_file, data_root=''):
     return examples
 
 
-def compute_generative_metrics(all_grids, all_xyzs, all_cs, blob_order=None):
+def min_RMSD(xyz1, xyz2, c):
+    '''
+    Compute an RMSD between two sets of positions of the same
+    atom types with no prior mapping between particular atom
+    positions of a given type. Returns the minimum RMSD across
+    all permutations of this mapping.
+    '''
+    xyz1 = np.array(xyz1)
+    xyz2 = np.array(xyz2)
+    c = np.array(c)
+    ssd = 0.0
+    for c_ in sorted(set(c)):
+        xyz1_c = xyz1[c == c_]
+        min_ssd_c = np.inf
+        for xyz2_c in permutations(xyz2[c == c_]):
+            xyz2_c = np.array(xyz2_c)
+            ssd_c = ((xyz2_c - xyz1_c)**2).sum()
+            if ssd_c < min_ssd_c:
+                min_ssd_c = ssd_c
+        ssd += min_ssd_c
+    return np.sqrt(ssd/len(c))
 
-    columns = ['lig_name', 'index']
-    df = pd.DataFrame(columns=columns).set_index(columns)
 
-    if blob_order is None:
-        blob_order = sorted(lig_grids.keys())
+def find_blobs_in_net(net, blob_pattern):
+    '''
+    Find all blob_names in net that match blob_pattern.
+    '''
+    return re.findall('^{}$'.format(blob_pattern), '\n'.join(net.blobs), re.MULTILINE)
 
-    for lig_name, lig_grids in all_grids.items():
-        
-        # grid norm
-        for blob_name in blob_order:
-            metric_name = '{}_L2_norm'.format(blob_name)
-            for i, grid in enumerate(lig_grids[blob_name]):
-                df.loc[(lig_name, i), metric_name] = np.linalg.norm(grid)
 
-        # distance between grids from different blobs for same sample
-        for blob_name, blob_name2 in combinations(blob_order, 2):
-            metric_name = '{}_{}_L2_dist'.format(blob_name, blob_name2)
-            grid_pairs = zip(lig_grids[blob_name], lig_grids[blob_name2])
-            for i, (grid, grid2) in enumerate(grid_pairs):
-                df.loc[(lig_name, i), metric_name] = np.linalg.norm(grid2 - grid)
+def get_layer_index(net, layer_name):
+    return net._layer_names.index(layer_name)
 
-        # distance between grids from same blob for different samples 
-        for blob_name in blob_order:
-            metric_name = '{}_{}_L2_dist'.format(blob_name, blob_name)
-            grid_pairs = combinations(lig_grids[blob_name], 2)
-            for i, (grid, grid2) in enumerate(grid_pairs):
-                df.loc[(lig_name, i), metric_name] = np.linalg.norm(grid2 - grid)
 
-    blob_order = [b for b in blob_order if b.endswith('_fit')]
+def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metric_file, pymol_file, args):
+    '''
+    Generate grids from a specific blob in gen_net.
+    '''
+    batch_size = data_param.batch_size
+    resolution = data_param.resolution
+    fix_center_to_origin = data_param.fix_center_to_origin
+    radius_multiple = data_param.radius_multiple
+    use_covalent_radius = data_param.use_covalent_radius
+    channels = atom_types.get_default_lig_channels(use_covalent_radius)
 
-    for lig_name, lig_xyzs in all_xyzs.items():
+    if args.prior or args.mean: # find latent variable blobs
+        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
+        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
+        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
+        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+        gen_net.forward() # this is necessary for proper latent sampling
 
-        # distance from origin
-        for blob_name in blob_order:
-            metric_name = '{}_origin_dist'.format(blob_name)
-            for j, xyz in enumerate(lig_xyzs[blob_name]):
-                df.loc[(lig_name, j), metric_name] =  np.linalg.norm(xyz.mean(axis=0))
+    # compute metrics and write output in a separate thread
+    out_queue = mp.Queue()
+    out_thread = threading.Thread(
+        target=out_worker_main,
+        args=(out_queue, len(examples), channels, resolution, metric_df, metric_file, pymol_file, args)
+    )
+    out_thread.start()
 
-        # RMSD between fits to different blobs for same sample
-        c = all_cs[lig_name]
-        for blob_name, blob_name2 in combinations(blob_order, 2):
-            metric_name = '{}_{}_RMSD'.format(blob_name, blob_name2)
-            xyz_pairs = zip(lig_xyzs[blob_name], lig_xyzs[blob_name2])
-            for i, (xyz, xyz2) in enumerate(xyz_pairs):
-                df.loc[(lig_name, i), metric_name] = min_rmsd(xyz, xyz2, c)
+    if args.fit_atoms: # fit atoms to grids in separate processes
+        fit_procs = []
+        fit_queue = mp.Queue() # queue for atom fitting
+        fit_pool = mp.Pool(
+            processes=mp.cpu_count(),
+            initializer=fit_worker_main,
+            initargs=(fit_queue, out_queue)
+        )
 
-        # RMSD between fits to same blob for different samples
-        c = all_cs[lig_name]
-        for blob_name in blob_order:
-            metric_name = '{}_{}_RMSD'.format(blob_name, blob_name)
-            xyz_pairs = combinations(lig_xyzs[blob_name], 2)
-            for i, (xyz, xyz2) in enumerate(xyz_pairs):
-                df.loc[(lig_name, i), metric_name] = min_rmsd(xyz, xyz2, c)
+    # generate density grids from generative model in main thread
+    for example_idx, (rec_file, lig_file) in enumerate(examples):
 
-    return df
+        rec_file = os.path.join(args.data_root, rec_file)
+        lig_file = os.path.join(args.data_root, lig_file)
+
+        lig_prefix, lig_ext = os.path.splitext(lig_file)
+        lig_name = os.path.basename(lig_prefix)
+
+        lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', channels)
+
+        if fix_center_to_origin:
+            center = np.zeros(3)
+        else:
+            center = np.mean(lig_xyz, axis=0)
+
+        if args.fit_atoms: # set atom fitting parameters for the ligand
+            fit_atoms = partial(fit_atoms_to_grid,
+                                channels=channels,
+                                center=center,
+                                resolution=resolution,
+                                max_iter=args.max_iter,
+                                radius_multiple=radius_multiple,
+                                lambda_E=args.lambda_E,
+                                bonded=args.bonded,
+                                verbose=args.verbose,
+                                max_init_bond_E=args.max_init_bond_E,
+                                fit_channels=lig_c if args.fit_atom_types else None,
+                                lr=args.learning_rate,
+                                mo=args.momentum)
+
+        for sample_idx in range(args.n_samples):
+
+            batch_idx = (example_idx*args.n_samples + sample_idx) % batch_size
+
+            if batch_idx == 0: # forward next batch
+
+                data_net.forward()
+                gen_net.blobs['rec'].data[...] = data_net.blobs['rec'].data
+                gen_net.blobs['lig'].data[...] = data_net.blobs['lig'].data
+
+                if args.prior:
+                    if args.mean:
+                        gen_net.blobs[latent_mean].data[...] = 0.0
+                        gen_net.blobs[latent_std].data[...] = 0.0
+                        gen_net.forward(start=latent_noise)
+                    else:
+                        gen_net.blobs[latent_mean].data[...] = 0.0
+                        gen_net.blobs[latent_std].data[...] = 1.0
+                        gen_net.forward(start=latent_noise)
+                else:
+                    if args.mean:
+                        gen_net.forward(end=latent_mean)
+                        gen_net.blobs[latent_std].data[...] = 0.0
+                        gen_net.forward(start=latent_noise)
+                    else:
+                        gen_net.forward()
+
+            for blob_name in args.blob_name: # get grid from blob and add to appropriate queue
+
+                grid = np.array(gen_net.blobs[blob_name].data[batch_idx])
+                print('main_thread produced {} {} {}'.format(lig_name, blob_name, sample_idx))
+
+                if args.fit_atoms:
+                    fit_queue.put((lig_name, sample_idx, blob_name, center, grid, fit_atoms))
+                else:
+                    out_queue.put((lig_name, sample_idx, blob_name, center, grid, None, None))
+
+    out_thread.join()
+
+
+def fit_worker_main(fit_queue, out_queue):
+
+    while True:
+        lig_name, sample_idx, grid_name, center, grid, fit_atoms = fit_queue.get()
+        out_queue.put((lig_name, sample_idx, grid_name, center, grid, None, None))
+        xyz, c, bonds, grid_fit, loss, t = fit_atoms(grid)
+        out_queue.put((lig_name, sample_idx, grid_name + '_fit', center, grid_fit, xyz, c))
+
+
+def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metric_file, pymol_file, args):
+
+    n_grids_per_ligand = args.n_samples * len(args.blob_name)
+    if args.fit_atoms:
+        n_grids_per_ligand *= 2
+
+    dx_prefixes = []
+    struct_files = []
+    centers = []
+
+    all_data = defaultdict(list) # group by lig_name
+    while n_ligands > 0:
+        lig_name, sample_idx, grid_name, center, grid, xyz, c = out_queue.get()
+        all_data[lig_name].append((lig_name, sample_idx, grid_name, center, grid, xyz, c))
+        print('out_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
+
+        for lig_name, lig_data in all_data.items():
+
+            if len(lig_data) < n_grids_per_ligand: # waiting for grids
+                continue
+
+            print('out_worker unpacking/writing data for {}'.format(lig_name))
+
+            lig_grids = defaultdict(lambda: [None for _ in range(args.n_samples)])
+            lig_xyzs  = defaultdict(lambda: [None for _ in range(args.n_samples)])
+
+            for grid_data in lig_data: # unpack and write out grid data
+                lig_name, sample_idx, grid_name, center, grid, xyz, c = grid_data
+
+                grid_prefix = '{}_{}_{}_{}'.format(args.out_prefix, lig_name, grid_name, sample_idx)
+                lig_grids[grid_name][sample_idx] = grid
+                if args.output_dx:
+                    write_grids_to_dx_files(grid_prefix, grid, channels, center, resolution)
+                    dx_prefixes.append(grid_prefix)
+                
+                if xyz is not None:
+                    lig_xyzs[grid_name][sample_idx] = xyz
+
+                    if args.output_sdf:
+                        fit_file = '{}.sdf'.format(grid_prefix)
+                        write_ob_mols_to_sdf_file(fit_file, [make_ob_mol(xyz, c, [], channels)])
+                        struct_files.append(fit_file)
+                        centers.append(center)
+
+            if dx_prefixes or struct_files: # write pymol script
+                write_pymol_script(pymol_file, dx_prefixes, struct_files, centers)
+
+            print('out_worker computing metrics for {}'.format(lig_name))
+
+            # compute generative metrics
+            mean_grids = {n: np.mean(lig_grids[n], axis=0) for n in lig_grids}
+            for i in range(args.n_samples):
+
+                lig = lig_grids['lig'][i]
+                lig_gen = lig_grids['lig_gen'][i]
+                lig_mean = mean_grids['lig']
+                lig_gen_mean = mean_grids['lig_gen']
+
+                # density magnitude
+                metric_df.loc[(lig_name, i), 'lig_norm']     = np.linalg.norm(lig)
+                metric_df.loc[(lig_name, i), 'lig_gen_norm'] = np.linalg.norm(lig_gen)
+
+                # generated density quality
+                metric_df.loc[(lig_name, i), 'lig_gen_dist'] = np.linalg.norm(lig_gen - lig)
+
+                # generated density variability
+                metric_df.loc[(lig_name, i), 'lig_mean_dist'] = np.linalg.norm(lig - lig_mean)
+                metric_df.loc[(lig_name, i), 'lig_gen_mean_dist'] = np.linalg.norm(lig_gen - lig_gen_mean)
+
+                if args.fit_atom_types:
+
+                    lig_fit = lig_grids['lig_fit'][i]
+                    lig_gen_fit = lig_grids['lig_gen_fit'][i]
+                    lig_fit_xyz = lig_xyzs['lig_fit'][i]
+                    lig_gen_fit_xyz = lig_xyzs['lig_gen_fit'][i]
+
+                    # fit density quality
+                    metric_df.loc[(lig_name, i), 'lig_fit_dist']     = np.linalg.norm(lig_fit - lig)
+                    metric_df.loc[(lig_name, i), 'lig_gen_fit_dist'] = np.linalg.norm(lig_gen_fit - lig_gen)
+
+                    # fit structure quality
+                    metric_df.loc[(lig_name, i), 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
+
+            #print(metric_df.loc[lig_name])
+
+            # write out generative metrics
+            metric_df.to_csv(metric_file, sep=' ')
+
+            print('out_worker finished processing {}'.format(lig_name))
+            del all_data[lig_name] # free memory
+            n_ligands -= 1
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Generate atomic density grids from generative model with Caffe')
-    parser.add_argument('-m', '--model_file', required=True, help='prototxt file for generative model')
-    parser.add_argument('-w', '--weights_file', default=None, help='.caffemodel weights for generative model')
-    parser.add_argument('-b', '--blob_names', default=[], action='append', help='name of blob(s) in model to generate/fit')
-    parser.add_argument('-B', '--extra_blob_names', default=[], action='append', help='name of blob(s) in model to generate (no fit/metrics)')
+    parser.add_argument('-d', '--data_model_file', required=True, help='prototxt file for data model')
+    parser.add_argument('-g', '--gen_model_file', required=True, help='prototxt file for generative model')
+    parser.add_argument('-w', '--gen_weights_file', default=None, help='.caffemodel weights for generative model')
     parser.add_argument('-r', '--rec_file', default=[], action='append', help='receptor file (relative to data_root)')
     parser.add_argument('-l', '--lig_file', default=[], action='append', help='ligand file (relative to data_root)')
     parser.add_argument('--data_file', default='', help='path to data file (generate for every example)')
     parser.add_argument('--data_root', default='', help='path to root for receptor and ligand files')
-    parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each example')
+    parser.add_argument('-b', '--blob_name', default=[], action='append', help='blob(s) in model to generate from (default lig & lig_gen)')
+    parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
+    parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
+    parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--fit_atom_types', action='store_true', help='fit exact atom types of true ligands to density grids')
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of fit atom positions')
+    parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate for atom fitting')
+    parser.add_argument('--momentum', type=float, default=0.0, help='momentum for atom fitting')
     parser.add_argument('--max_iter', type=int, default=np.inf, help='maximum number of iterations for atom fitting')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')
-    parser.add_argument('--fine_tune', action='store_true', help='fine-tune final fit atom positions to summed grid channels')
+    parser.add_argument('--bonded', action='store_true', help="add atoms by creating bonds to existing atoms when atom fitting")
+    parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
     parser.add_argument('--fit_GMM', action='store_true', help='fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='noise model for GMM atom fitting (d|p)')
-    parser.add_argument('--combine_channels', action='store_true', help="combine channels with same element for atom fitting")
-    parser.add_argument('--forward_from', default=None, help='name of blob to start forward pass from')
-    parser.add_argument('-f', '--fill_value', default=[], action='append', help='blob_name:fill_value pair(s) to initialize before forward pass')
     parser.add_argument('-r2', '--rec_file2', default='', help='alternate receptor file (for receptor latent space)')
     parser.add_argument('-l2', '--lig_file2', default='', help='alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="apply Wiener deconvolution to atom density grids")
-    parser.add_argument('--scale_grids', type=float, default=1.0, help='scaling factor for atom density grids')
-    parser.add_argument('--norm_grids', action='store_true', help='divide non-zero atom density grid channels by their maximum')
     parser.add_argument('--deconv_fit', action='store_true', help="apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="noise-to-signal ratio for Wiener deconvolution")
-    parser.add_argument('--bonded', action='store_true', help="add atoms by creating bonds to existing atoms when atom fitting")
-    parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
     parser.add_argument('--all_iters_sdf', action='store_true', help="output a .sdf structure for each outer iteration of atom fitting")
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
-    parser.add_argument('--instance_noise', default=0.0, type=float, help='standard deviation of noise added to generated grids')
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
-    parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate for atom fitting')
-    parser.add_argument('--momentum', type=float, default=0.5, help='momentum for atom fitting')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    # read the net parameter file and get values relevant for atom gridding
-    net_param = caffe_util.NetParameter.from_prototxt(args.model_file)
-    data_param = net_param.get_molgrid_data_param(caffe.TEST)
+    if not args.blob_name:
+        args.blob_name += ['lig', 'lig_gen']
+
+    args.fit_atoms |= args.fit_atom_types or args.output_sdf
+
+    # read the model param files and set atom gridding params
+    data_net_param = caffe_util.NetParameter.from_prototxt(args.data_model_file)
+    gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
+
+    data_param = data_net_param.get_molgrid_data_param(caffe.TEST)
     data_param.random_rotation = args.random_rotation
     data_param.random_translate = args.random_translate
     data_param.fix_center_to_origin = args.fix_center_to_origin
 
+    assert not (args.use_covalent_radius and args.use_default_radius)
     if args.use_covalent_radius:
         data_param.use_covalent_radius = True
     elif args.use_default_radius:
         data_param.use_covalent_radius = False
 
-    resolution = data_param.resolution
-    radius_multiple = data_param.radius_multiple
-    use_covalent_radius = data_param.use_covalent_radius
-
-
-    rec_channels = atom_types.get_default_rec_channels(use_covalent_radius)
-    lig_channels = atom_types.get_default_lig_channels(use_covalent_radius)
-
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
-        data_file = get_temp_data_file(zip(args.rec_file, args.lig_file))
+        examples = zip(args.rec_file, args.lig_file)
 
-    else: # use the examples in the provided data_file
+    else: # use the examples in data_file
         assert len(args.rec_file) == len(args.lig_file) == 0
-        data_file = args.data_file
+        examples = read_examples_from_data_file(data_file)
 
-    net_param.set_molgrid_data_source(data_file, args.data_root, caffe.TEST)
+    data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
+    data_param.source = data_file
+    data_param.root_folder = args.data_root
 
+    # create the net in caffe
     if args.gpu:
         caffe.set_mode_gpu()
     else:
         caffe.set_mode_cpu()
 
-    fill_values = dict(f.split(':') for f in args.fill_value)
+    gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
 
-    # create the net in caffe
-    net = caffe_util.Net.from_param(net_param, args.weights_file, caffe.TEST)
+    data_param.batch_size = gen_net.blobs['lig'].shape[0]
+    data_net = caffe_util.Net.from_param(data_net_param, phase=caffe.TEST)
 
-    examples = read_examples_from_data_file(data_file, args.data_root)
-    grids_from_net = generate_grids_from_net(net, args.blob_names + args.extra_blob_names,
-                                             forward_from=args.forward_from, **fill_values)
-    print(data_param)
-
-    dx_groups = []
-    extra_files = []
-    centers = []
-    all_grids = defaultdict(lambda: defaultdict(list))
-    all_xyzs = defaultdict(lambda: defaultdict(list))
-    all_cs = dict()
-
-    for i in range(args.n_samples):
-
-        for (rec_file, lig_file), lig_grids in izip(examples, grids_from_net):
-
-            lig_prefix, lig_ext = os.path.splitext(lig_file)
-            lig_name = os.path.basename(lig_prefix)
-
-            m = re.match(r'(.*)_ligand_(\d+)$', lig_prefix)
-            if m:
-                lig_mol = read_mols_from_sdf_file(m.group(1) + '_docked.sdf.gz')[int(m.group(2))]
-            else:
-                lig_mol = read_mols_from_sdf_file(lig_prefix + '.sdf')[0]
-
-            if args.fit_atom_types and lig_name not in all_cs:
-                lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
-                all_cs[lig_name] = lig_c
-
-            if not args.fix_center_to_origin:
-                center = get_mol_center(lig_mol)
-            else:
-                center = np.zeros(3)
-
-            if i == 0:
-                extra_files += [rec_file, lig_file]
-                centers += [center, center]
-
-            for blob_name, grid in lig_grids.items():
-
-                if 'rec' in blob_name:
-                    channels = rec_channels
-                elif 'lig' in blob_name:
-                    channels = lig_channels
-                else:
-                    channels = rec_channels + lig_channels
-
-                if args.combine_channels:
-                    grid, channels = combine_element_grids_and_channels(grid, channels)
-
-                if args.instance_noise:
-                    grid += np.random.normal(0, args.instance_noise, grid.shape)
-
-                if args.deconv_grids:
-                    grid = wiener_deconv_grids(grid, channels, resolution, radius_multiple, args.noise_ratio)
-
-                if args.norm_grids:
-                    norm = np.linalg.norm(grid.reshape(grid.shape[0], -1), axis=1)
-                    grid /= norm[:,np.newaxis,np.newaxis,np.newaxis] + 1e-1
-
-                if args.scale_grids != 1:
-                    grid *= args.scale_grids
-
-                if blob_name not in args.extra_blob_names:
-                    all_grids[lig_name][blob_name].append(grid)
-
-                grid_prefix = '{}_{}_{}_{}'.format(args.out_prefix, lig_name, blob_name, i)
-                if args.output_dx:
-                    write_grids_to_dx_files(grid_prefix, grid, channels, center, resolution)
-                    dx_groups.append(grid_prefix)
-
-                if args.fit_atoms or args.fit_atom_types and blob_name not in args.extra_blob_names:
-
-                    xyz, c, bonds, grid, loss = \
-                        fit_atoms_to_grid(grid, channels, center, resolution,
-                                          max_iter=args.max_iter,
-                                          radius_multiple=radius_multiple,
-                                          lambda_E=args.lambda_E,
-                                          bonded=args.bonded,
-                                          verbose=args.verbose,
-                                          max_init_bond_E=args.max_init_bond_E,
-                                          fit_channels=lig_c if args.fit_atom_types else None,
-                                          lr=args.learning_rate, mo=args.momentum)
-
-                    if args.verbose > 0:
-                        print('{}\t{}\tn_atoms = {}\tloss = {}'.format(lig_name, blob_name, len(xyz), loss))
-
-                    all_grids[lig_name][blob_name + '_fit'].append(grid)
-
-                    grid_prefix = '{}_{}_{}_fit_{}'.format(args.out_prefix, lig_name, blob_name, i)
-                    if args.output_dx:
-                        write_grids_to_dx_files(grid_prefix, grid, channels, center, resolution)
-                        dx_groups.append(grid_prefix)
-
-                    if args.fit_atom_types:
-                        all_xyzs[lig_name][blob_name + '_fit'].append(xyz)
-
-                    if args.output_sdf:
-
-                        if args.all_iters_sdf:
-                            fit_mols = [make_ob_mol(*t, channels=channels) for t in zip(xyz, c, bonds)]
-                        else:
-                            fit_mols = [make_ob_mol(xyz, c, bonds, channels)]
-
-                        fit_file = '{}.sdf'.format(grid_prefix)
-                        write_ob_mols_to_sdf_file(fit_file, fit_mols)
-
-                        extra_files.append(fit_file)
-                        centers.append(center)
-
-    pymol_file = '{}.pymol'.format(args.out_prefix)
-    write_pymol_script(pymol_file, dx_groups, extra_files, centers=[])
-
-    blob_order = args.blob_names
-    if args.fit_atoms or args.fit_atom_types:
-        blob_order += [b + '_fit' for b in args.blob_names]
-
-    print('computing generative metrics')
-    df = compute_generative_metrics(all_grids, all_xyzs, all_cs, blob_order)
-    #df = df.groupby(level='lig_name').mean().mean()
-    print('done')
-
+    columns = ['lig_name', 'sample_idx']
+    metric_df = pd.DataFrame(columns=columns).set_index(columns)
     metric_file = '{}.gen_metrics'.format(args.out_prefix)
-    df.to_csv(metric_file, sep=' ')
+    pymol_file = '{}.pymol'.format(args.out_prefix)
 
-    del net
+    generate_from_model(data_net, gen_net, data_param, examples, metric_df, metric_file, pymol_file, args)
 
 
 if __name__ == '__main__':
