@@ -17,7 +17,9 @@ import generate
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
 
+    df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
+
     if hue:
         df = df.set_index([hue, x])
     elif df.index.name != x:

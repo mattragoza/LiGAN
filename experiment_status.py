@@ -35,6 +35,12 @@ def parse_stderr_file(stderr_file):
     return m.group(0)
 
 
+def submit_incomplete_jobs(job):
+
+    if job['job_state'] not in ['Q', 'R'] and job['error'] is not None:
+        torque_util.submit_job((job['pbs_file'], job['array_idx']))
+
+
 def update_job_fields(job, qstat):
     '''
     Update experiment status by parsing qstat command, training
@@ -173,22 +179,25 @@ def read_expt_file(expt_file):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='check status of GAN experiment')
     parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
-    parser.add_argument('-u', '--update', default=False, action='store_true', help='update experiment status with latest jobs')
-    parser.add_argument('-o', '--out_file', help='alternate output file to write updated experiment status')
+    parser.add_argument('-s', '--submit', default=False, action='store_true', help='submit jobs that aren\'t in queue or have errors')
+    parser.add_argument('-o', '--out_file', help='output file to write updated experiment status')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    if not args.out_file:
-        args.out_file = args.expt_file
-
     expt = read_expt_file(args.expt_file)
+    qstat = torque_util.get_qstat_data()
+    expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
 
-    if args.update:
+    if args.submit:
+        expt.apply(submit_incomplete_jobs, axis=1)
         qstat = torque_util.get_qstat_data()
         expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
+        qstat = torque_util.get_qstat_data()
+
+    if args.out_file:
         write_expt_file(args.out_file, expt)
 
     pd.set_option('display.max_colwidth', 120)
