@@ -957,7 +957,7 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
             if dx_prefixes or struct_files: # write pymol script
                 write_pymol_script(pymol_file, dx_prefixes, struct_files, centers)
 
-            print('out_worker computing metrics for {} ({} atoms)'.format(lig_name, len(c)))
+            print('out_worker computing metrics for {}'.format(lig_name))
 
             # compute generative metrics
             mean_grids = {n: np.mean(lig_grids[n], axis=0) for n in lig_grids}
