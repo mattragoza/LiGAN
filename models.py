@@ -150,7 +150,6 @@ def parse_gen_name(gen_model_name):
     params = dict(gen_model_verison=tuple(map(int, m.group(1))))
     params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
     return params
->>>>>>> master
 
 
 def parse_encode_type(encode_type):
