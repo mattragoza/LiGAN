@@ -68,13 +68,14 @@ def set_atom_level(level, selection='*'):
 
 
 def load_group(pattern, name):
-    group_files = []
-    for group_file in glob.glob(pattern):
-        cmd.load(group_file, group_file)
-        group_files.append(group_file)
-    print(name, pattern, len(group_files))
-    if group_files:
-        cmd.group(name, ' '.join(group_files))
+    group_objs = []
+    for file in glob.glob(pattern):
+        obj = os.path.basename(file)
+        cmd.load(file, obj)
+        group_objs.append(obj)
+    print(group_objs)
+    if group_objs:
+        cmd.group(name, ' '.join(group_objs))
 
 
 def my_rotate(name, axis, angle, states):

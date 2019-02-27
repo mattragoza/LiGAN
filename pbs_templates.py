@@ -2,7 +2,7 @@ import sys, os, re, argparse
 import itertools
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
+SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}'
 
 SOLVER_SEARCH_SPACE = dict(
     solver_name=['adam0'],

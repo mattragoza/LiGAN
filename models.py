@@ -1,93 +1,156 @@
 from __future__ import print_function, division
-import sys
-import os
-import re
-import argparse
-import itertools
+import sys, os, re, argparse, itertools, ast
+from collections import OrderedDict
 import caffe
-caffe.set_mode_gpu()
-caffe.set_device(0)
 
 import caffe_util
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise}'
+# format strings for mapping model params to unique names
+NAME_FORMATS = dict(
+    data=OrderedDict({
+        '11': 'data_{data_dim:d}_{resolution:g}{data_options}'
+    }),
+    gen=OrderedDict({
+        '11': '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{pool_type}_{unpool_type}',
+        '12': '{encode_type}e12_{data_dim:d}_{resolution:g}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
+        '13': '{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
+    }),
+    disc=OrderedDict({
+        '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
+        '11': 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
+    }),
+    solver=OrderedDict({
+        '11': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}',
+        '12': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}',
+    }),
+)
 
 
-DISC_NAME_FORMATS = {
-    (0, 1): 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
-    (1, 1): 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
-}
+def write_file(file_, buf):
+    with open(file_, 'w') as f:
+        f.write(buf)
 
 
-DISC_SEARCH_SPACES = {
-    (1, 1): dict(
-        encode_type=['_d-'],
-        data_dim=[24],
-        resolution=[0.5],
-        data_options=[''],
-        n_levels=[3],
-        conv_per_level=[1],
-        arch_options=['l'],
-        n_filters=[16, 32],
-        width_factor=[2],
-        n_latent=[1],
-        loss_types=['x'])
-}
+def write_model(model_file, net_param, params={}):
+    '''
+    Write net_param to model_file. If params dict is given,
+    write the params as comments in the header of model_file.
+    '''
+    buf = ''.join('# {} = {}\n'.format(p, repr(v)) for p, v in params.items())
+    buf += str(net_param)
+    write_file(model_file, buf)
 
 
-GEN_NAME_FORMATS = {
-    (1, 1): '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{pool_type}_{unpool_type}',
-
-    (1, 2): '{encode_type}e12_{data_dim:d}_{resolution:.1f}_{n_levels:d}_{conv_per_level:d}' \
-            + '_{n_filters:d}_{width_factor:d}_{loss_types}',
-
-    (1, 3): '{encode_type}e13_{data_dim:d}_{resolution}{data_options}_{n_levels:d}_{conv_per_level:d}' \
-            + '{arch_options}_{n_filters:d}_{width_factor}_{n_latent:d}_{loss_types}'
-}
+def read_file(file_):
+    with open(file_, 'r') as f:
+        return f.read()
 
 
-GEN_SEARCH_SPACES = {
-    (1, 1): dict(
-        encode_type=['c', 'a'],
-        data_dim=[24],
-        resolution=[0.5],
-        n_levels=[1, 2, 3, 4, 5],
-        conv_per_level=[1, 2, 3],
-        n_filters=[16, 32, 64, 128],
-        width_factor=[1],
-        n_latent=[None],
-        loss_types=['e'],
-        pool_type=['c', 'm', 'a'],
-        unpool_type=['c', 'n']),
+def parse_params(buf, line_start='', converter=ast.literal_eval):
+    '''
+    Parse lines in buf as param = value pairs, filtering by an
+    optional line_start pattern. After parsing, a converter
+    function is applied to param values.
+    '''
+    params = OrderedDict()
+    line_pat = r'^{}(\S+)\s*=\s*(.+)$'.format(line_start)
+    for p, v in re.findall(line_pat, buf, re.MULTILINE):
+        params[p] = converter(v)
+    return params
 
-    (1, 2): dict(
-        encode_type=['c', 'a'],
-        data_dim=[24],
-        resolution=[0.5, 1.0],
-        n_levels=[2, 3],
-        conv_per_level=[2, 3],
-        n_filters=[16, 32, 64, 128],
-        width_factor=[1, 2, 3],
-        n_latent=[None],
-        loss_types=['e'],
-        pool_type=['a'],
-        unpool_type=['n']),
 
-    (1, 3): dict(
-        encode_type=['_vl-l'], # 'vl-l'],
-        data_dim=[24],
-        resolution=[0.5],
-        data_options=[''],
-        n_levels=[3],
-        conv_per_level=[3],
-        arch_options=['ld'],
-        n_filters=[32],
-        width_factor=[1],
-        n_latent=[1024],
-        loss_types=['e'])
-}
+def read_params(params_file):
+    '''
+    Read lines from params_file as param = value pairs.
+    '''
+    buf = read_file(params_file)
+    return parse_params(buf)
+
+
+def read_params_from_model(model_file):
+    '''
+    Read lines starting with # in model_file as param = value pairs.
+    '''
+    buf = read_file(model_file)
+    return parse_params(buf, line_start=r'#\s*')
+
+
+def read_param_space(params_file):
+    '''
+    Read lines from params_file as param = values pairs,
+    where all values are converted to lists.
+    '''
+    buf = read_file(params_file)
+    converter = lambda v: as_list(ast.literal_eval(v))
+    return parse_params(buf, converter=converter)
+
+
+def as_list(value):
+    '''
+    Return value as a list if it's not one already.
+    '''
+    return value if isinstance(value, list) else [value]
+
+
+def param_space_product(param_space):
+    '''
+    Iterate over the Cartesian product of values in param_space.
+    Expects a dict mapping params to lists of possible values.
+    Produces dicts mapping params to specific values.
+    '''
+    for values in itertools.product(*param_space.itervalues()):
+        yield OrderedDict(itertools.izip(param_space.iterkeys(), values))
+
+
+def percent_index(lst, pct):
+    return lst[int(pct*len(lst))]
+
+
+def param_space_latin_hypercube(n, param_space): #TODO fix this
+    for sample in pyDOE.lhs(len(param_space), n):
+        values = map(percent_index, zip(param_space, sample))
+        yield dict(zip(param_space, value))
+
+
+def parse_name(name, name_format, prefix=''):
+    pattern = '^' + name_format.replace('{',   r'(?P<{}'.format(prefix)) \
+                               .replace(':d}', r'>\d+)') \
+                               .replace(':f}', r'>[-+]?(\d*\.\d+|\d+)') \
+                               .replace(':g}', r'>[-+]?(\d*\.\d+|\d+)(e[-+]?\d+)?)') \
+                               .replace('}',   r'>.*)') + '$'
+    try:
+        return re.match(pattern, name).groupdict()
+    except AttributeError:
+        raise Exception('failed to parse {} with format {}'.format(name, name_format))
+
+
+def parse_gan_name(gan_model_name):
+
+    m = re.match(r'^(.+)_([^_]+e(\d+).+)_((d(isc|(\d+)).*))$', gan_model_name)
+    params = dict(
+        solver_name=m.group(1),
+        gen_model_name=m.group(2),
+        gen_model_version=m.group(3),
+        disc_model_name=m.group(4),
+        disc_model_version='01' if m.group(5) == 'disc' else m.group(6)
+    )
+    try:
+        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['12']))
+    except:
+        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['11']))
+    params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
+    params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'disc_'))
+    return params
+
+
+def parse_gen_name(gen_model_name):
+
+    m = re.match(r'[^_]+e(\d+).+', gen_model_name)
+    params = dict(gen_model_verison=tuple(map(int, m.group(1))))
+    params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
+    return params
+>>>>>>> master
 
 
 def parse_encode_type(encode_type):
@@ -122,9 +185,9 @@ def least_prime_factor(n):
     return next(i for i in range(2, n+1) if n%i == 0)
 
 
-def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_per_level,
-               arch_options='', n_filters=32, width_factor=2, n_latent=1024, loss_types='',
-               batch_size=25, conv_kernel_size=3, pool_type='a', unpool_type='n',
+def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv_per_level=0,
+               arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
+               batch_size=16, conv_kernel_size=3, pool_type='a', unpool_type='n',
                growth_rate=32, n_filters_bottle_db=64):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
@@ -181,27 +244,17 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             radius_multiple=1.5,
             use_covalent_radius=use_covalent_radius)
 
-        net.no_label_aff = caffe.layers.Silence(net.label, net.aff, ntop=0)
-
-        if 'r' in encode_type or 'l' in encode_type:
-            net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
-                                                  axis=1, slice_point=n_channels['rec'])
+        net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
+                                              axis=1, slice_point=n_channels['rec'])
 
     else:
         net.rec = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['rec']] + [data_dim]*3))
         net.lig = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['lig']] + [data_dim]*3))
 
-        if 'd' in encode_type:
-            net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
+        net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
         if not decoders:
             net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
-
-        if 'r' not in encode_type and 'd' not in encode_type:
-            net.no_rec = caffe.layers.Silence(net.rec, ntop=0)
-
-        if 'l' not in encode_type and 'd' not in encode_type:
-            net.no_lig = caffe.layers.Silence(net.lig, ntop=0)
 
     # encoder(s)
     encoder_tops = []
@@ -743,7 +796,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
             gen = '{}_gen'.format(dec)
             net[gen] = caffe.layers.Power(curr_top)
 
-    else:
+    elif loss_types:
         label_top = net.label
 
         # output
@@ -783,7 +836,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
 
         fit = '{}_gen_fit'.format(dec)
         net[fit] = caffe.layers.Python(curr_top,
-            module='generate',
+            module='layers',
             layer='AtomFittingLayer',
             param_str=str(dict(
                 resolution=resolution,
@@ -794,14 +847,14 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
     if 'c' in loss_types:
 
         net.chan_L2_loss = caffe.layers.Python(curr_top, label_top,
-            model='channel_euclidean_loss_layer',
+            module='layers',
             layer='ChannelEuclideanLossLayer',
             loss_weight=1.0)
 
     if 'm' in loss_types:
 
         net.mask_L2_loss = caffe.layers.Python(curr_top, label_top,
-            model='masked_euclidean_loss_layer',
+            model='layers',
             layer='MaskedEuclideanLossLayer',
             loss_weight=0.0)
 
@@ -824,66 +877,41 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels, conv_p
     return net.to_proto()
 
 
-def keyword_product(**kwargs):
-    for values in itertools.product(*kwargs.itervalues()):
-        yield dict(itertools.izip(kwargs.iterkeys(), values))
-
-def percent_index(lst, pct):
-    return lst[int(pct*len(lst))]
-
-
-def orthogonal_samples(n, **kwargs):
-    for sample in pyDOE.lhs(len(kwargs), n):
-        values = map(percent_index, zip(kwargs, sample))
-        yield dict(zip(kwargs, values))
-
-
 def parse_version(version_str):
-    return tuple(map(int, version_str.split('.')))
+    return tuple(map(int, version_str.split('.'))) if version_str else None
+
+
+def get_last_value(ord_dict):
+    return ord_dict[sorted(ord_dict.keys())[-1]]
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files')
-    parser.add_argument('-m', '--model_type', required=True, help='either "gen" or "disc"')
-    parser.add_argument('-v', '--version', type=str, help='model version (default 1.3)')
+    parser.add_argument('params_file', help='file defining model params or dimensions of param space')
+    parser.add_argument('-m', '--model_type', required=True, help='model name format type (data, gen, or disc)')
+    parser.add_argument('-v', '--version', required=True, help='model name format version (e.g. 13, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
-    parser.add_argument('-o', '--out_prefix', default='models', help='common prefix for prototxt output files')
+    parser.add_argument('-o', '--out_prefix', default='models', help='common output prefix for model files')
+    parser.add_argument('--gpu', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    if args.model_type == 'gen':
+    if args.scaffold and args.gpu:
+        caffe.set_mode_gpu()
 
-        if args.version is None:
-            version = (1, 3)
-        else:
-            version = parse_version(args.version)
-
-        search_space = GEN_SEARCH_SPACES[version]
-        name_format = GEN_NAME_FORMATS[version]
-
-    elif args.model_type == 'disc':
-
-        if args.version is None:
-            version = (1, 1)
-        else:
-            version = parse_version(args.version)
-
-        search_space = DISC_SEARCH_SPACES[version]
-        name_format = DISC_NAME_FORMATS[version]
-
-    else:
-        raise ValueError('--model_type must be "gen" or "disc"')
+    name_format = NAME_FORMATS[args.model_type][args.version]
+    param_space = read_param_space(args.params_file)
 
     model_data = []
-    for kwargs in keyword_product(**search_space):
+    for params in param_space_product(param_space):
 
-        model_name = name_format.format(**kwargs)
+        model_name = name_format.format(**params)
         model_file = os.path.join(args.out_prefix, model_name + '.model')
-        net_param = make_model(**kwargs)
-        net_param.to_prototxt(model_file)
+        net_param = make_model(**params)
+        write_model(model_file, net_param, params)
 
         print(model_file)
         if args.scaffold:

@@ -14,7 +14,7 @@ PBS_TEMPLATE_FILES = [
 ]
 
 SEED = 0
-FOLD = 3 # 3 for 'all'
+FOLD = 0 # 3 for 'all'
 
 CONTINUE = False
 MAX_ITER = 50000
@@ -28,6 +28,11 @@ GEN_MODEL_FILES  = [
 ]
 
 DISC_MODEL_FILES = [
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_48_3_1l_16_2_x.model',
+    'models/d11_24_3_1l_16_2_x.model',
     'models/d11_24_3_1l_16_2_x.model',
 ]
 
@@ -50,9 +55,9 @@ if __name__ == '__main__':
         with open(pbs_template_file, 'r') as f:
             pbs_template = f.read()
 
-        for data_model_file in DATA_MODEL_FILES:
-            for gen_model_file in GEN_MODEL_FILES:
-                for disc_model_file in DISC_MODEL_FILES:
+        for data_model_file, gen_model_file, disc_model_file in zip(DATA_MODEL_FILES, GEN_MODEL_FILES, DISC_MODEL_FILES):
+            if True:
+                if True:
 
                     pbs_name = os.path.splitext(os.path.basename(pbs_template_file))[0]
                     data_model_name = os.path.splitext(os.path.basename(data_model_file))[0]
