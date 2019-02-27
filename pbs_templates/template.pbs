@@ -21,12 +21,12 @@ if [[ ! -e $SCR_DIR ]]; then
 	mkdir $SCR_DIR
 fi
 
-cp ../data/DATA_PREFIX*.types ${SCR_DIR}
-cp ../models/DATA_MODEL_NAME.model ${SCR_DIR}
-cp ../models/GEN_MODEL_NAME.model ${SCR_DIR}
-cp ../models/DISC_MODEL_NAME.model ${SCR_DIR}
-cp ../solvers/SOLVER_NAME.solver ${SCR_DIR}
-cp ../weights/lig_gauss_conv.caffemodel ${SCR_DIR}
+cp ../../data/DATA_PREFIX*.types ${SCR_DIR}
+cp ../../models/DATA_MODEL_NAME.model ${SCR_DIR}
+cp ../../models/GEN_MODEL_NAME.model ${SCR_DIR}
+cp ../../models/DISC_MODEL_NAME.model ${SCR_DIR}
+cp ../../solvers/SOLVER_NAME.solver ${SCR_DIR}
+cp ../../weights/lig_gauss_conv.caffemodel ${SCR_DIR}
 
 if ((CONT_ITER > 0)); then
 	cp GAN_NAME.*_iter_CONT_ITER.solverstate ${SCR_DIR}

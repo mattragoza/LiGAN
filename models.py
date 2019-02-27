@@ -76,15 +76,15 @@ GEN_SEARCH_SPACES = {
         unpool_type=['n']),
 
     (1, 3): dict(
-        encode_type=['_vl-l', '_vr-l', 'vl-l', 'vr-l'],
+        encode_type=['_vl-l'], # 'vl-l'],
         data_dim=[24],
         resolution=[0.5],
         data_options=[''],
         n_levels=[3],
-        conv_per_level=[2,3],
-        arch_options=['ld', 'lid'],
+        conv_per_level=[3],
+        arch_options=['ld'],
         n_filters=[32],
-        width_factor=[2],
+        width_factor=[1],
         n_latent=[1024],
         loss_types=['e'])
 }

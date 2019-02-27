@@ -4,6 +4,7 @@ import numpy as np
 from pbs_templates import fill_template
 import torque_util
 
+EXPT_DIR = ''
 
 DATA_PREFIX = 'lowrmsd'
 DATA_ROOT   = '/net/pulsar/home/koes/dkoes/PDBbind/refined-set/'
@@ -23,22 +24,7 @@ DATA_MODEL_FILES = [
 ]
 
 GEN_MODEL_FILES  = [
-    'models/_vl-le13_24_0.5_3_2l_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_2ld_32_2_1024_e.model',    
-    'models/_vl-le13_24_0.5_3_2li_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_2lid_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_3l_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_3ld_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_3li_32_2_1024_e.model',
-    'models/_vl-le13_24_0.5_3_3lid_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_2l_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_2ld_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_2li_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_2lid_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_3l_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_3ld_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_3li_32_2_1024_e.model',
-    'models/_vr-le13_24_0.5_3_3lid_32_2_1024_e.model',
+    'models/_vl-le13_24_0.5_3_3ld_32_1_1024_e.model',
 ]
 
 DISC_MODEL_FILES = [
@@ -74,12 +60,13 @@ if __name__ == '__main__':
                     disc_model_name = os.path.splitext(os.path.basename(disc_model_file))[0]
 
                     gan_name = '{}{}_{}'.format(pbs_name, gen_model_name, disc_model_name)
-                    if not os.path.isdir(gan_name):
-                        os.makedirs(gan_name)
-
                     cont_iter = get_cont_iter(gan_name) if CONTINUE else 0
 
-                    pbs_file = os.path.join(gan_name, pbs_name + '.pbs')
+		    model_dir = os.path.join(EXPT_DIR, gan_name)
+                    if not os.path.isdir(model_dir):
+                        os.makedirs(model_dir)
+
+                    pbs_file = os.path.join(model_dir, pbs_name + '.pbs')
                     pbs_filled = fill_template(pbs_template,
                         gan_name=gan_name,
                         data_root=DATA_ROOT,
@@ -96,5 +83,5 @@ if __name__ == '__main__':
  
                     pbs_array_idx = 4*SEED + FOLD
                     torque_util.wait_for_free_gpus_and_submit_job((pbs_file, pbs_array_idx), 
-                                                                  n_gpus_free=0, poll_every=2)
+                                                                 n_gpus_free=0, poll_every=2)
                     

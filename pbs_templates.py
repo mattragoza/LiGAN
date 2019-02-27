@@ -12,7 +12,7 @@ SOLVER_SEARCH_SPACE = dict(
     instance_noise=[0.0, 0.01, 0.1],
     memory=['12gb'],
     walltime=['672:00:00'],
-    queue=['dept_gpu']
+    queue=['dept_gpu_12GB']
 )
 
 
