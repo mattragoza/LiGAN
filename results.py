@@ -13,6 +13,7 @@ import random
 
 import models
 import generate
+import experiment_status
 
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
@@ -107,7 +108,8 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
     plt.close(fig)
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, violin=False):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, \
+    violin=False, box=False, jitter=0, alpha=0.5):
 
     df = df.reset_index()
 
@@ -137,7 +139,6 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
             #plt.setp(ax.lines, zorder=100)
             #plt.setp(ax.collections, zorder=100)
 
-            alpha = 0.5
             if violin: # plot the distributions
                 sns.violinplot(data=df, x=x_, y=y_, hue=hue, dodge=True, saturation=1.0, inner=None, ax=ax)
                 for c in ax.collections:
@@ -145,8 +146,11 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
                         c.set_alpha(alpha)
                         c.set_edgecolor(None)
 
+            elif box:
+                sns.boxplot(data=df, x=x_, y=y_, hue=hue, saturation=1.0, ax=ax)
+
             else: # plot the individual observations
-                sns.stripplot(data=df, x=x_, y=y_, hue=hue, marker='.', dodge=True, jitter=0, size=25, alpha=alpha, ax=ax)
+                sns.stripplot(data=df, x=x_, y=y_, hue=hue, marker='.', dodge=True, jitter=jitter, size=25, alpha=alpha, ax=ax)
 
             handles, labels = ax.get_legend_handles_labels()
             handles = handles[len(handles)//2:]
@@ -286,8 +290,9 @@ def main(argv):
     folds = args.folds.split(',')
 
     # get all training output data from experiment
-    model_dirs = read_model_dirs(args.expt_file)
-    df = read_training_output_files(model_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
+    expt = experiment_status.read_expt_file(args.expt_file)
+    work_dirs = expt['pbs_file'].apply(os.path.dirname)
+    df = read_training_output_files(work_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
 
     if args.test_data is not None:
         df = df[df['test_data'] == args.test_data]
