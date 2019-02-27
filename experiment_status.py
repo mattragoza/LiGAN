@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import sys, os, re, glob, argparse, string
+import datetime as dt
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
@@ -31,7 +32,13 @@ def parse_output_file(out_file):
 def parse_stderr_file(stderr_file):
     buf = read_file(stderr_file)
     m = re.search(r'(([^\s]+(Error|Exception|Interrupt|Exit).*)|Segmentation fault|(Check failed.*))', buf)
-    return m.group(0) if m else None
+    return m.group(0)
+
+
+def submit_incomplete_jobs(job):
+
+    if job['job_state'] not in ['Q', 'R'] and job['error'] is not None:
+        torque_util.submit_job((job['pbs_file'], job['array_idx']))
 
 
 def update_job_fields(job, qstat):
@@ -73,18 +80,22 @@ def update_job_fields(job, qstat):
         out_file = os.path.join(work_dir, out_base)
 
     try: # get iteration from training output file
+        job['time_modified'] = dt.datetime.fromtimestamp(os.path.getmtime(out_file))
         job['iteration'] = parse_output_file(out_file)
 
     except IndexError: # training output file is empty
         job['iteration'] = None
 
-    except IOError: # couldn't find or read training output file
+    except (OSError, IOError): # couldn't find or read training output file
         pass
 
     try: # get error type from the stderr_file
         job_num, _ = parse_job_id(job['job_id'])
         stderr_file = os.path.join(work_dir, '{}.e{}-{}'.format(job_name, job_num, job['array_idx']))
         job['error'] = parse_stderr_file(stderr_file)
+
+    except AttributeError:
+        job['error'] = None
 
     except TypeError: # job_id is nan = job was never submitted
         pass
@@ -161,38 +172,36 @@ def write_expt_file(expt_file, df):
 
 
 def read_expt_file(expt_file):
-    names = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'error']
+    names = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'time_modified', 'error']
     return pd.read_csv(expt_file, sep=' ', names=names).apply(fix_job_fields, axis=1)
-
-
-def get_terminal_size():
-    with os.popen('stty size') as p:
-        return map(int, p.read().split())
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='check status of GAN experiment')
     parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
-    parser.add_argument('-u', '--update', default=False, action='store_true', help='update experiment status with latest jobs')
-    parser.add_argument('-o', '--out_file', help='alternate output file to write updated experiment status')
+    parser.add_argument('-s', '--submit', default=False, action='store_true', help='submit jobs that aren\'t in queue or have errors')
+    parser.add_argument('-o', '--out_file', help='output file to write updated experiment status')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    if not args.out_file:
-        args.out_file = args.expt_file
-
     expt = read_expt_file(args.expt_file)
+    qstat = torque_util.get_qstat_data()
+    expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
 
-    if args.update:
+    if args.submit:
+        expt.apply(submit_incomplete_jobs, axis=1)
         qstat = torque_util.get_qstat_data()
         expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
+        qstat = torque_util.get_qstat_data()
+
+    if args.out_file:
         write_expt_file(args.out_file, expt)
 
     pd.set_option('display.max_colwidth', 120)
-    pd.set_option('display.width', get_terminal_size()[1])
+    pd.set_option('display.width', torque_util.get_terminal_size()[1])
     print(expt)
 
 
