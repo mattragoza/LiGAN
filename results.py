@@ -3,20 +3,53 @@ import matplotlib
 matplotlib.use('Agg')
 import sys, os, re, glob, argparse, parse, ast, shutil
 from collections import defaultdict
-import pandas as pd
-from pandas.api.types import is_numeric_dtype
 import numpy as np
 np.random.seed(0)
+import pandas as pd
+from pandas.api.types import is_numeric_dtype
+from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
-import random
 
 import models
 import generate
 import experiment_status
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
+def get_terminal_size():
+    with os.popen('stty size') as p:
+        return map(int, p.read().split())
+
+
+# set up display and plotting options
+pd.set_option('display.max_columns', 100)
+pd.set_option('display.max_colwidth', 100)
+pd.set_option('display.width', get_terminal_size()[1])
+sns.set_style('whitegrid')
+sns.set_context('talk')
+sns.set_palette('Set1')
+
+
+def annotate_pearson_r(x, y, **kwargs):
+    r, _ = stats.pearsonr(x, y)
+    ax = plt.gca()
+    ax.annotate("$\\rho = {:.2f}$".format(r), xy=(.1, .9), xycoords='axes fraction')
+
+
+def plot_corr(plot_file, df, x, y, height=4, width=4):
+
+    df = df.reset_index()
+    g = sns.PairGrid(df, x_vars=x, y_vars=y, height=height, aspect=width/float(height), despine=False)
+    g.map_diag(sns.kdeplot)
+    g.map_offdiag(plt.scatter, s=1.0, alpha=0.05)
+    g.map_offdiag(annotate_pearson_r)
+    fig = g.fig
+    fig.tight_layout()
+    fig.savefig(plot_file, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None):
 
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
@@ -108,7 +141,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
     plt.close(fig)
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, \
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None, \
     violin=False, box=False, jitter=0, alpha=0.5):
 
     df = df.reset_index()
@@ -238,10 +271,6 @@ def read_model_dirs(expt_file):
             yield line.split()[0]
 
 
-def get_terminal_size():
-    with os.popen('stty size') as p:
-        return map(int, p.read().split())
-
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Plot results of generative model experiments')
@@ -274,14 +303,6 @@ def parse_args(argv=None):
 
 def main(argv):
     args = parse_args(argv)
-
-    # set up display and plotting options
-    pd.set_option('display.max_columns', 100)
-    pd.set_option('display.max_colwidth', 100)
-    pd.set_option('display.width', get_terminal_size()[1])
-    sns.set_style('whitegrid')
-    sns.set_context('talk')
-    sns.set_palette('Set1')
 
     if args.out_prefix is None:
         args.out_prefix = os.path.splitext(args.expt_file)[0]
