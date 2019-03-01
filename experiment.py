@@ -6,12 +6,81 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
+import params
+import models
+import solvers
+import job_templates
 import torque_util
+
+
+class Experiment(object):
+    '''
+    An object for managing a jobs based on job_template_file
+    with placeholder values filled in from job_params.
+    '''
+    def __init__(self, expt_name, expt_dir, job_template_file, job_params):
+
+        self.name = expt_name
+        self.dir = os.path.abspath(expt_dir)
+
+        self.job_template_file = job_template_file
+        self.job_params = params.ParamSpace(job_params)
+
+    def setup(self):
+
+        job_template = read_file(self.job_template_file)
+        for job_params in self.job_params:
+
+            job_name = str(job_params)
+            job_dir = os.path.join(self.dir, job_name)
+            if not os.path.isdir(job_dir):
+                os.makedirs(job_dir)
+
+            job = job_templates.fill_template(job_template, job_name=job_name, **job_params)
+            job_file = os.path.join(job_dir, os.path.basename(self.job_template_file))
+            write_file(job_file, job)
+
+    def status(self):
+        raise NotImplementedError
+
+    def run(self, *array_idx):
+
+        for job_params in self.job_params:
+
+            job_dir = os.path.join(self.dir, job_name)
+            job_file = os.path.join(job_dir, self.name + '.sh')
+            os.chdir(job_dir)
+            print('submitting {} from {}'.format(job_file, os.getcwd()))
+            os.chdir(self.dir)
+
+    def main(self):
+
+        parser = argparse.ArgumentParser(description='Manage {} experiment in {}' \
+                                         .format(self.name, self.dir))
+        parser.add_argument('command', help='one of {setup, status, run}')
+        args = parser.parse_args()
+        getattr(self, args.command)()
+
+
+class TrainExperiment(Experiment):
+
+    def setup(self):
+
+        models.write_models('models', self.job_params['data_model_params'])
+        models.write_models('models', self.job_params['gen_model_params'])
+        models.write_models('models', self.job_params['disc_model_params'])
+        solvers.write_solvers('solvers', self.job_params['solver_params'])
+        super(TrainExperiment, self).setup()
 
 
 def read_file(file_):
     with open(file_, 'r') as f:
         return f.read()
+
+
+def write_file(file_, buf):
+    with open(file_, 'w') as f:
+        f.write(buf)
 
 
 def parse_pbs_file(pbs_file):
@@ -33,6 +102,17 @@ def parse_stderr_file(stderr_file):
     buf = read_file(stderr_file)
     m = re.search(r'(([^\s]+(Error|Exception|Interrupt|Exit).*)|Segmentation fault|(Check failed.*))', buf)
     return m.group(0)
+
+
+def get_cont_iter(dir_):
+    cont_iter = 0
+    states = glob.glob(os.path.join(dir_, '*.solverstate'))
+    for state in states:
+        m = re.match(dir_ + r'.*_iter_(\d+)\.solverstate', state)
+        if m:
+            iter_ = int(m.group(1))
+            cont_iter = max(cont_iter, iter_)
+    return cont_iter
 
 
 def submit_incomplete_jobs(job):
@@ -178,14 +258,25 @@ def read_expt_file(expt_file):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='check status of GAN experiment')
-    parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
-    parser.add_argument('-s', '--submit', default=False, action='store_true', help='submit jobs that aren\'t in queue or have errors')
-    parser.add_argument('-o', '--out_file', help='output file to write updated experiment status')
+    sub_parsers = parser.add_subparsers()
+
+    setup_parser = sub_parsers.add_parser('setup', help='setup new experiment')
+    setup_parser.add_argument()
+
+    status_parser = sub_parsers.add_parser('status', help='check experiment status')
+
+    run_parser = sub_parsers.add_parser('run', help='run experiment jobs')
+    #parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
+    #parser.add_argument('-s', '--submit', default=False, action='store_true', help='submit jobs that aren\'t in queue or have errors')
+    #parser.add_argument('-o', '--out_file', help='output file to write updated experiment status')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
+    print(args)
+
+if False:
 
     expt = read_expt_file(args.expt_file)
     qstat = torque_util.get_qstat_data()

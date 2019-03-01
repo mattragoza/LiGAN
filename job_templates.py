@@ -29,11 +29,13 @@ def fill_template(template, **kwargs):
     from kwargs replaced with their values.
     '''
     for key, val in kwargs.items():
+        if key == 'train_options':
+            val = expand_train_options(val)
         template = re.sub(key.upper(), str(val), template)
     return template
 
 
-def expand_train_options(*args):
+def expand_train_options(args):
     return ' '.join(dict(
         a='--alternate',
         b='--balance',
@@ -59,7 +61,7 @@ def main(argv):
         pbs_name = SOLVER_NAME_FORMAT.format(**kwargs)
 
         pbs_file = os.path.join(args.out_prefix, pbs_name + '.pbs')
-        kwargs['train_options'] = expand_train_options(*kwargs['train_options'])
+        kwargs['train_options'] = expand_train_options(kwargs['train_options'])
         pbs_filled = fill_template(pbs_template, **kwargs)
 
         with open(pbs_file, 'w') as f:

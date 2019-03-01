@@ -4,6 +4,7 @@ from collections import OrderedDict
 import caffe
 
 import caffe_util
+import params
 
 
 # format strings for mapping model params to unique names
@@ -27,102 +28,38 @@ NAME_FORMATS = dict(
 )
 
 
-def write_file(file_, buf):
-    with open(file_, 'w') as f:
-        f.write(buf)
-
-
-def write_model(model_file, net_param, params={}):
-    '''
-    Write net_param to model_file. If params dict is given,
-    write the params as comments in the header of model_file.
-    '''
-    buf = ''.join('# {} = {}\n'.format(p, repr(v)) for p, v in params.items())
-    buf += str(net_param)
-    write_file(model_file, buf)
-
-
 def read_file(file_):
     with open(file_, 'r') as f:
         return f.read()
 
 
-def parse_params(buf, line_start='', converter=ast.literal_eval):
+def write_file(file_, buf):
+    with open(file_, 'w') as f:
+        f.write(buf)
+
+
+def write_model(model_file, net_param, model_params={}):
     '''
-    Parse lines in buf as param = value pairs, filtering by an
-    optional line_start pattern. After parsing, a converter
-    function is applied to param values.
+    Write net_param to model_file. If params dict is given,
+    write the params as comments in the header of model_file.
     '''
-    params = OrderedDict()
-    line_pat = r'^{}(\S+)\s*=\s*(.+)$'.format(line_start)
-    for p, v in re.findall(line_pat, buf, re.MULTILINE):
-        params[p] = converter(v)
-    return params
+    buf = ''
+    if model_params:
+        buf += params.format_params(model_params, '# ')
+    buf += str(net_param)
+    write_file(model_file, buf)
 
 
-def read_params(params_file):
+def write_models(model_dir, param_space):
     '''
-    Read lines from params_file as param = value pairs.
+    Write a model in model_dir for every set of params in param_space.
     '''
-    buf = read_file(params_file)
-    return parse_params(buf)
+    if not os.path.isdir(model_dir):
+        os.makedirs(model_dir)
 
-
-def read_params_from_model(model_file):
-    '''
-    Read lines starting with # in model_file as param = value pairs.
-    '''
-    buf = read_file(model_file)
-    return parse_params(buf, line_start=r'#\s*')
-
-
-def read_param_space(params_file):
-    '''
-    Read lines from params_file as param = values pairs,
-    where all values are converted to lists.
-    '''
-    buf = read_file(params_file)
-    converter = lambda v: as_list(ast.literal_eval(v))
-    return parse_params(buf, converter=converter)
-
-
-def as_list(value):
-    '''
-    Return value as a list if it's not one already.
-    '''
-    return value if isinstance(value, list) else [value]
-
-
-def param_space_product(param_space):
-    '''
-    Iterate over the Cartesian product of values in param_space.
-    Expects a dict mapping params to lists of possible values.
-    Produces dicts mapping params to specific values.
-    '''
-    for values in itertools.product(*param_space.itervalues()):
-        yield OrderedDict(itertools.izip(param_space.iterkeys(), values))
-
-
-def percent_index(lst, pct):
-    return lst[int(pct*len(lst))]
-
-
-def param_space_latin_hypercube(n, param_space): #TODO fix this
-    for sample in pyDOE.lhs(len(param_space), n):
-        values = map(percent_index, zip(param_space, sample))
-        yield dict(zip(param_space, value))
-
-
-def parse_name(name, name_format, prefix=''):
-    pattern = '^' + name_format.replace('{',   r'(?P<{}'.format(prefix)) \
-                               .replace(':d}', r'>\d+)') \
-                               .replace(':f}', r'>[-+]?(\d*\.\d+|\d+)') \
-                               .replace(':g}', r'>[-+]?(\d*\.\d+|\d+)(e[-+]?\d+)?)') \
-                               .replace('}',   r'>.*)') + '$'
-    try:
-        return re.match(pattern, name).groupdict()
-    except AttributeError:
-        raise Exception('failed to parse {} with format {}'.format(name, name_format))
+    for model_params in param_space:
+        model_file = os.path.join(model_dir, '{}.model'.format(model_params))
+        write_model(model_file, make_model(**model_params), model_params)
 
 
 def parse_gan_name(gan_model_name):
@@ -152,26 +89,33 @@ def parse_gen_name(gen_model_name):
     return params
 
 
-def parse_encode_type(encode_type):
-    disc_pat = r'disc'
-    m = re.match(disc_pat, encode_type)
-    if m:
-        encode_type = '_d-'
-    old_pat = r'(_)?(v)?(a|c)'
-    m = re.match(old_pat, encode_type)
+def standardize_encode_type(encode_type):
+    if encode_type == 'data':
+        return 'd-'
+    if encode_type == 'disc':
+        return '_d-'
+    m = re.match(r'(_)?(v)?(a|c)', encode_type)
     if m:
         encode_type = encode_type.replace('a', 'd-d')
         encode_type = encode_type.replace('c', 'r-l')
-    encode_pat = r'(v)?(d|r|l)' 
-    decode_pat = r'(d|r|l|y)'
-    full_pat = r'(_)?(?P<enc>({})+)-(?P<dec>({})*)'.format(encode_pat, decode_pat)
-    m = re.match(full_pat, encode_type)
-    assert m, 'encode_type did not match pattern {}'.format(full_pat)
-    molgrid_data = not m.group(1)
-    map_ = dict(r='rec', l='lig', d='data')
-    encoders = [(bool(v), map_[e]) for v,e in re.findall(encode_pat, m.group('enc'))]
-    decoders = [map_[d] for d in re.findall(decode_pat, m.group('dec'))]
-    return molgrid_data, encoders, decoders
+    return encode_type
+
+
+def parse_encode_type(encode_type):
+    encode_type = standardize_encode_type(encode_type)
+    enc_pat = r'(v)?(d|r|l)' 
+    dec_pat = r'(d|r|l|y)'
+    pat = r'(_)?(?P<enc>({})+)-(?P<dec>({})*)'.format(enc_pat, dec_pat)
+    m = re.match(pat, encode_type)
+    try:
+        molgrid_data = not m.group(1)
+        map_ = dict(r='rec', l='lig', d='data')
+        encoders = [(bool(v), map_[e]) for v,e in re.findall(enc_pat, m.group('enc'))]
+        decoders = [map_[d] for d in re.findall(dec_pat, m.group('dec'))]
+        return molgrid_data, encoders, decoders
+    except AttributeError:
+        raise Exception('could not parse encode_type {} with pattern {}'.format(encode_type, pat))
+
 
 
 def format_encode_type(molgrid_data, encoders, decoders):
@@ -184,7 +128,7 @@ def least_prime_factor(n):
     return next(i for i in range(2, n+1) if n%i == 0)
 
 
-def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv_per_level=0,
+def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='', n_levels=0, conv_per_level=0,
                arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
                batch_size=16, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
 
