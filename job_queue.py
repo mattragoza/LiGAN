@@ -26,27 +26,57 @@ def get_job_queue(job_file):
     elif re.search(r'^#SBATCH ', buf, re.MULTILINE):
         return SlurmQueue()
     else:
-        raise ValueError('unknown queue type')
+        raise ValueError('unknown job queue type')
 
 
 class JobQueue(object):
 
-    def submit_job(self, job):
+    def _status_cmd(self, job_names):
         raise NotImplementedError
+
+    def _submit_cmd(self, job_file, array_idx):
+        raise NotImplementedError
+
+    def _parse_status(self, stdout):
+        raise NotImplementedError
+
+    def _parse_submit(self, stdout):
+        raise NotImplementedError
+
+    def get_status(self, job_names):
+        cmd = self._status_cmd(job_names)
+        stdout, stderr = run_subprocess(cmd)
+        if stderr:
+            raise Exception(stderr)
+        else:
+            return self._parse_status(stdout)
+
+    def submit_job(self, job_file, array_idx):
+        cmd = self._submit_cmd(job_file, array_idx)
+        stdout, stderr = run_subprocess(cmd)
+        if stderr:
+            raise Exception(stderr)
+        else:
+            return self._parse_submit(stdout)
 
 
 class TorqueQueue(JobQueue):
-
-    def submit_job(self, job):
-        cmd = 'qsub {} -t {}'.format(job['job_file'], job['array_idx'])
-        run_subprocess(cmd)
+    pass
 
 
 class SlurmQueue(JobQueue):
-    
-    def submit_job(self, job):
-        cmd = 'sbatch {} --array={}'.format(job['job_file'], job['array_idx'])
-        run_subprocess(cmd)
+
+    def _status_cmd(self, job_names):
+        return 'squeue --name={}'.format(','.join(job_names))
+
+    def _submit_cmd(self, job_file, array_idx):
+        return 'sbatch {} --array={}'.format(job_file, array_idx)
+
+    def _parse_status(self, stdout):
+        return stdout
+
+    def _parse_submit(self, stdout):
+        return int(re.match(r'^Submitted batch job (\d+) on cluster .+\n$', stdout).group(1))
 
 
 def get_terminal_size():

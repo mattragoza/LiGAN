@@ -6,6 +6,8 @@
 #SBATCH --qos=normal
 #SBATCH --cluster=gpu
 #SBATCH --partition=QUEUE
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
 JOB_PARAMS
 source ~/.bashrc
 cd ${SLURM_SUBMIT_DIR}

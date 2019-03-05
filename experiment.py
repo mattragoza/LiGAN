@@ -23,7 +23,7 @@ import job_queue
 
 class Experiment(object):
     '''
-    An object for managing a jobs based on job_template_file
+    An object for managing a collection of jobs based on job_template_file
     with placeholder values filled in from job_params.
     '''
     def __init__(self, expt_name, expt_dir, job_template_file, array_idx, job_params):
@@ -36,35 +36,37 @@ class Experiment(object):
         self.job_params = params.ParamSpace(job_params)
         self.job_queue = job_queue.get_job_queue(job_template_file)
 
-        self.df = pd.DataFrame(list(job_params.flatten()))
+        self.df = pd.DataFrame(list(job_params.flatten(scope='job_params')))
+        self.df['job_dir'] = self.df.apply(self._get_job_dir, axis=1)
         self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
         self.df['array_idx'] = array_idx
 
-        #self.file = os.path.join(expt_dir, '{}.expt_status'.format(self.name))
-        #try:
-        #    self.df = read_file(self.file)
-        #except IOError:
-        #    self.df = self.init_df()
-
-    def _init_df(self):
-
-        job_base = os.path.basename(self.job_template_file)
-        job_files = [os.path.join(self.dir, str(j), job_base) for j in self.job_params]
-        array_idx = params.as_non_string_iterable(self.array_idx)
-        index = pd.MultiIndex.from_product([job_files, array_idx], names=['job_file', 'array_idx'])
+    def _get_job_dir(self, job):
+        return os.path.join(self.dir, job['job_name'])
 
     def _get_job_file(self, job):
-        job_base = os.path.basename(self.job_template_file)
-        return os.path.join(self.dir, str(job), job_base)
+        return os.path.join(job['job_dir'], os.path.basename(self.job_template_file))
+
+    def _update_job_status(self, job, queue_df):
+        pass
+
+    def _submit_job(self, job):
+        os.chdir(job['job_dir'])
+        job_id = self.job_queue.submit_job(job['job_file'], job['array_idx'])
+        print(job_id)
+        return job_id
+        os.chdir(self.dir)
 
     def setup(self):
         job_templates.write_job_scripts(self.dir, self.job_template_file, self.job_params)
 
     def status(self):
-        print(self.df)
+        queue_df = self.job_queue.get_status(self.df['job_name'])
+        self.df.apply(self._update_job_status, axis=1, queue_df=queue_df)
+        print(queue_df)
 
     def run(self):
-        self.df.apply(self.job_queue.submit_job, axis=1)
+        self.df['job_id'] = self.df.apply(self._submit_job, axis=1)
 
     def main(self):
         parser = argparse.ArgumentParser(description='Manage {} experiment in {}'.format(self.name, self.dir))
