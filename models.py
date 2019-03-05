@@ -454,7 +454,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
             else:
 
-                fc = '{}_latent_defc'.format(enc)
+                fc = '{}_latent_fc'.format(enc)
                 net[fc] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
