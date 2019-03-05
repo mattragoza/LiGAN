@@ -1,5 +1,7 @@
 import sys, os, re, argparse
 import itertools
+import params
+import job_queue
 
 
 SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}'
@@ -23,16 +25,56 @@ def keyword_product(**kwargs):
         yield dict(itertools.izip(kwargs.iterkeys(), values))
 
 
-def fill_template(template, **kwargs):
+def read_file(file_):
+    with open(file_, 'r') as f:
+        return f.read()
+
+
+def write_file(file_, buf):
+    with open(file_, 'w') as f:
+        f.write(buf)
+
+
+def write_job_scripts(expt_dir, job_template_file, param_space):
     '''
-    Return a copy of template string with uppercase instance of keys 
-    from kwargs replaced with their values.
+    Write a job script in a separate sub dir of expt_dir for every
+    set of params in param_space, by filling in job_template_file.
     '''
-    for key, val in kwargs.items():
-        if key == 'train_options':
-            val = expand_train_options(val)
-        template = re.sub(key.upper(), str(val), template)
-    return template
+    job_template = read_file(job_template_file)
+    job_base = os.path.basename(job_template_file)
+
+    for job_params in param_space:
+
+        job_params['job_name'] = str(job_params)
+        job_dir = os.path.join(expt_dir, str(job_params))
+        if not os.path.isdir(job_dir):
+            os.makedirs(job_dir)
+
+        job_file = os.path.join(job_dir, job_base)
+        write_job_script(job_file, job_template, job_params)
+
+
+def write_job_script(job_file, job_template, job_params):
+    '''
+    Write a job script to job_file by filling in job_template with job_params.
+    '''
+    buf = params.format_params(job_params, '# ')
+    buf = fill_job_template(job_template, dict(job_params=buf))
+    buf = fill_job_template(buf, job_params)
+    write_file(job_file, buf)
+
+
+def fill_job_template(job_template, job_params):
+    '''
+    Return a copy of job_template string with uppercase instances
+    of keys from job_params replaced with their values.
+    '''
+    job = job_template
+    for param, value in job_params.items():
+        if param == 'train_options':
+            value = expand_train_options(value)
+        job = re.sub(param.upper(), str(value), job)
+    return job
 
 
 def expand_train_options(args):

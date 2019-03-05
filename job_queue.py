@@ -1,8 +1,52 @@
 from __future__ import print_function
 import sys, os, glob, time, re
 import shlex
-import subprocess as sp
+import subprocess
 import pandas as pd
+
+
+def run_subprocess(cmd, stdin=None):
+    '''
+    Run a subprocess with the given stdin and return (stdout, stderr).
+    '''
+    args = shlex.split(cmd)
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return proc.communicate(stdin)
+
+
+def read_file(file_):
+    with open(file_, 'r') as f:
+        return f.read()
+
+
+def get_job_queue(job_file):
+    buf = read_file(job_file)
+    if re.search(r'^#PBS ', buf, re.MULTILINE):
+        return TorqueQueue()
+    elif re.search(r'^#SBATCH ', buf, re.MULTILINE):
+        return SlurmQueue()
+    else:
+        raise ValueError('unknown queue type')
+
+
+class JobQueue(object):
+
+    def submit_job(self, job):
+        raise NotImplementedError
+
+
+class TorqueQueue(JobQueue):
+
+    def submit_job(self, job):
+        cmd = 'qsub {} -t {}'.format(job['job_file'], job['array_idx'])
+        run_subprocess(cmd)
+
+
+class SlurmQueue(JobQueue):
+    
+    def submit_job(self, job):
+        cmd = 'sbatch {} --array={}'.format(job['job_file'], job['array_idx'])
+        run_subprocess(cmd)
 
 
 def get_terminal_size():
@@ -35,15 +79,6 @@ def parse_qstat(buf, job_delim='\n\n', field_delim='\n    ', index_name=None):
 
 def parse_pbsnodes(buf):
     return parse_qstat(buf, field_delim='\n     ', index_name='Node Id')
-
-
-def run_subprocess(cmd, stdin=None):
-    '''
-    Run a subprocess with the given stdin and return (stdout, stderr).
-    '''
-    args = shlex.split(cmd)
-    proc = sp.Popen(args, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE)
-    return proc.communicate(stdin)
 
 
 def get_qstat_data():

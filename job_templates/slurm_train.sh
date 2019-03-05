@@ -6,7 +6,7 @@
 #SBATCH --qos=normal
 #SBATCH --cluster=gpu
 #SBATCH --partition=QUEUE
-
+JOB_PARAMS
 source ~/.bashrc
 cd ${SLURM_SUBMIT_DIR}
 

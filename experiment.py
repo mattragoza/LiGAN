@@ -6,11 +6,19 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
+def get_terminal_size():
+    with os.popen('stty size') as p:
+        return map(int, p.read().split())
+
+pd.set_option('display.max_columns', 100)
+pd.set_option('display.max_colwidth', 100)
+pd.set_option('display.width', get_terminal_size()[1])
+
 import params
 import models
 import solvers
 import job_templates
-import torque_util
+import job_queue
 
 
 class Experiment(object):
@@ -18,45 +26,48 @@ class Experiment(object):
     An object for managing a jobs based on job_template_file
     with placeholder values filled in from job_params.
     '''
-    def __init__(self, expt_name, expt_dir, job_template_file, job_params):
+    def __init__(self, expt_name, expt_dir, job_template_file, array_idx, job_params):
 
         self.name = expt_name
         self.dir = os.path.abspath(expt_dir)
 
         self.job_template_file = job_template_file
+        self.array_idx = array_idx
         self.job_params = params.ParamSpace(job_params)
+        self.job_queue = job_queue.get_job_queue(job_template_file)
+
+        self.df = pd.DataFrame(list(job_params.flatten()))
+        self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
+        self.df['array_idx'] = array_idx
+
+        #self.file = os.path.join(expt_dir, '{}.expt_status'.format(self.name))
+        #try:
+        #    self.df = read_file(self.file)
+        #except IOError:
+        #    self.df = self.init_df()
+
+    def _init_df(self):
+
+        job_base = os.path.basename(self.job_template_file)
+        job_files = [os.path.join(self.dir, str(j), job_base) for j in self.job_params]
+        array_idx = params.as_non_string_iterable(self.array_idx)
+        index = pd.MultiIndex.from_product([job_files, array_idx], names=['job_file', 'array_idx'])
+
+    def _get_job_file(self, job):
+        job_base = os.path.basename(self.job_template_file)
+        return os.path.join(self.dir, str(job), job_base)
 
     def setup(self):
-
-        job_template = read_file(self.job_template_file)
-        for job_params in self.job_params:
-
-            job_name = str(job_params)
-            job_dir = os.path.join(self.dir, job_name)
-            if not os.path.isdir(job_dir):
-                os.makedirs(job_dir)
-
-            job = job_templates.fill_template(job_template, job_name=job_name, **job_params)
-            job_file = os.path.join(job_dir, os.path.basename(self.job_template_file))
-            write_file(job_file, job)
+        job_templates.write_job_scripts(self.dir, self.job_template_file, self.job_params)
 
     def status(self):
-        raise NotImplementedError
+        print(self.df)
 
-    def run(self, *array_idx):
-
-        for job_params in self.job_params:
-
-            job_dir = os.path.join(self.dir, job_name)
-            job_file = os.path.join(job_dir, self.name + '.sh')
-            os.chdir(job_dir)
-            print('submitting {} from {}'.format(job_file, os.getcwd()))
-            os.chdir(self.dir)
+    def run(self):
+        self.df.apply(self.job_queue.submit_job, axis=1)
 
     def main(self):
-
-        parser = argparse.ArgumentParser(description='Manage {} experiment in {}' \
-                                         .format(self.name, self.dir))
+        parser = argparse.ArgumentParser(description='Manage {} experiment in {}'.format(self.name, self.dir))
         parser.add_argument('command', help='one of {setup, status, run}')
         args = parser.parse_args()
         getattr(self, args.command)()
@@ -66,10 +77,13 @@ class TrainExperiment(Experiment):
 
     def setup(self):
 
-        models.write_models('models', self.job_params['data_model_params'])
-        models.write_models('models', self.job_params['gen_model_params'])
-        models.write_models('models', self.job_params['disc_model_params'])
-        solvers.write_solvers('solvers', self.job_params['solver_params'])
+        model_dir = os.path.join(self.dir, 'models')
+        solver_dir = os.path.join(self.dir, 'solvers')
+
+        models.write_models(model_dir, self.job_params['data_model_params'])
+        models.write_models(model_dir, self.job_params['gen_model_params'])
+        models.write_models(model_dir, self.job_params['disc_model_params'])
+        solvers.write_solvers(solver_dir, self.job_params['solver_params'])
         super(TrainExperiment, self).setup()
 
 
@@ -291,8 +305,6 @@ if False:
     if args.out_file:
         write_expt_file(args.out_file, expt)
 
-    pd.set_option('display.max_colwidth', 120)
-    pd.set_option('display.width', torque_util.get_terminal_size()[1])
     print(expt)
 
 

@@ -4,7 +4,7 @@
 #PBS -l mem=MEMORY
 #PBS -l walltime=WALLTIME
 #PBS -q QUEUE
-
+JOB_PARAMS
 source ~/.bashrc
 cd ${PBS_O_WORKDIR}
 
