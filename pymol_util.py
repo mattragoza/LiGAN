@@ -7,16 +7,20 @@ import isoslider
 import atom_types
 
 
-def set_atom_level(level, selection='*'):
+def set_atom_level(level, selection='*', state=None):
 
     channels = atom_types.get_default_channels(True)
     channel_names = [c.name for c in channels]
     channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
 
     for channel in channels:
-        element = atom_types.get_name(channel.atomic_num)
-        color = atom_types.get_rgb(channel.atomic_num)
-        cmd.set_color(element, color)
+        if 'Aliphatic' in channel.name:
+            color = [1.0, 0.5, 1.0]
+        elif 'Aromatic' in channel.name:
+            color = [1.0, 0.0, 1.0]
+        else:
+            color = atom_types.get_rgb(channel.atomic_num)
+        cmd.set_color(channel.name+'$', color)
 
     # first identify .dx atom grid information
     dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
@@ -36,12 +40,13 @@ def set_atom_level(level, selection='*'):
         match = re.match(r'^(.*)_(\d+)$', dx_prefix)
         if match:
             surface_prefix = match.group(1)
-            state = int(match.group(2)) + 1
+            if state is None:
+                state_ = int(match.group(2)) + 1
+            else:
+                state_ = state
         else:
             surface_prefix = dx_prefix
-            state = 0
-
-        print(surface_prefix, state)
+            state_ = state or 0
 
         for dx_object in dx_groups[dx_prefix]:
 
@@ -53,8 +58,9 @@ def set_atom_level(level, selection='*'):
                 element = atom_types.get_name(channel.atomic_num)
 
                 surface_object = '{}_{}_surface'.format(surface_prefix, channel_name)
-                cmd.isosurface(surface_object, dx_object, level=level, state=state)
-                cmd.color(element, surface_object)
+                cmd.isosurface(surface_object, dx_object, level=level, state=state_)
+
+                cmd.color(channel.name+'$', surface_object)
 
                 if surface_prefix not in surface_groups:
                     surface_groups[surface_prefix] = []

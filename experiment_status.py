@@ -18,15 +18,27 @@ def parse_pbs_file(pbs_file):
     buf = read_file(pbs_file)
     job_name = re.search(r'#PBS -N (.+)', buf).group(1)
     try:
-        data_name = re.search(r'DATA_NAME="([^\s]+)"', buf).group(1)
+        data_name = re.search(r'DATA="([^\s]+)"', buf).group(1)
     except AttributeError:
-        data_name = re.search(r'.*train\.py.*-p ([^\s]+)', buf).group(1)
-    return job_name, data_name
+        try:
+            data_name = re.search(r'DATA_NAME="([^\s]+)"', buf).group(1)
+        except AttributeError:
+            data_name = re.search(r'.*train\.py.*-p ([^\s]+)', buf).group(1)
+    return job_name, os.path.basename(data_name)
 
 
-def parse_output_file(out_file):
-    buf = read_file(out_file)
-    return int(re.findall(r'^(\d+)\s+', buf, re.MULTILINE)[-1])
+def parse_output_file(out_file, metric):
+    df = pd.read_csv(out_file, sep=' ')
+    max_iter = df['iteration'].max()
+    value = np.nan
+    if metric == 'L2':
+        for m in ['gen_L2_loss', 'test_y_loss', 'test_loss']:
+            if m in df:
+                value = df[df['iteration'] == max_iter][m].mean()
+                break
+    else:
+        raise NotImplementedError(metric)
+    return max_iter, value # TODO determine test/train
 
 
 def parse_stderr_file(stderr_file):
@@ -41,7 +53,7 @@ def submit_incomplete_jobs(job):
         torque_util.submit_job((job['pbs_file'], job['array_idx']))
 
 
-def update_job_fields(job, qstat):
+def update_job_fields(job, qstat, metric):
     '''
     Update experiment status by parsing qstat command, training
     output, and stderr files. Expects pbs_file and array_idx fields
@@ -69,29 +81,34 @@ def update_job_fields(job, qstat):
     seed, fold = job['array_idx']//4, job['array_idx']%4
     if fold == 3:
         fold = 'all'
-    out_base = '{}.{}.{}.{}.training_output'.format(job_name, data_name, seed, fold)
+    out_name = '{}.{}.{}.{}'.format(job_name, data_name, seed, fold)
 
     if job['job_state'] == 'R': # if running, check scr_dir
         job['node_id'] = job_qstat['gpus_reserved'].split('.')[0]
         scr_dir = '/net/{}/scr/{}'.format(job['node_id'], job['job_id'])
-        out_file = os.path.join(scr_dir, out_base)
+        out_file = os.path.join(scr_dir, '{}.training_output'.format(out_name))
 
     else: # otherwise check work_dir
-        out_file = os.path.join(work_dir, out_base)
+        out_file = os.path.join(work_dir, '{}.training_output'.format(out_name))
+        if not os.path.isfile(out_file):
+            out_name = '{}.{}.{}'.format(job_name, seed, fold)
+            out_file = os.path.join(work_dir, '{}.training_output'.format(out_name))
 
     try: # get iteration from training output file
         job['time_modified'] = dt.datetime.fromtimestamp(os.path.getmtime(out_file))
-        job['iteration'] = parse_output_file(out_file)
+        job['iteration'], job['metric'] = parse_output_file(out_file, metric)
 
-    except IndexError: # training output file is empty
+    except ValueError: # training output file is empty
         job['iteration'] = None
 
     except (OSError, IOError): # couldn't find or read training output file
         pass
 
     try: # get error type from the stderr_file
-        job_num, _ = parse_job_id(job['job_id'])
-        stderr_file = os.path.join(work_dir, '{}.e{}-{}'.format(job_name, job_num, job['array_idx']))
+        stderr_file = os.path.join(work_dir, '{}.e'.format(out_name))
+        if not os.path.isfile(stderr_file):
+            job_num, _ = parse_job_id(job['job_id'])
+            stderr_file = os.path.join(work_dir, '{}.e{}-{}'.format(job_name, job_num, job['array_idx']))
         job['error'] = parse_stderr_file(stderr_file)
 
     except AttributeError:
@@ -133,7 +150,7 @@ def is_pbs_file(path):
     '''
     Test whether a path is a file with .pbs extension.
     '''
-    return os.path.isfile(path) and path.endswith('.pbs')
+    return path.endswith('.pbs')
 
 
 def find_pbs_file(job_num):
@@ -149,7 +166,7 @@ def find_job_ids(pbs_file, array_idx):
     job_num, by finding stdout and stderr files in work_dir.
     '''
     work_dir = os.path.dirname(pbs_file)
-    job_name, _ = parse_pbs_file(pbs_file)
+    job_name = parse_pbs_file(pbs_file)[0]
     job_nums = set()
     for f in os.listdir(work_dir):
         m = re.match(r'{}\.[oe](\d+)-{}'.format(job_name, array_idx), f)
@@ -168,7 +185,8 @@ def parse_job_id(job_id):
 
 
 def write_expt_file(expt_file, df):
-    df.to_csv(expt_file, sep=' ', index=False, header=False)
+    columns = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'time_modified', 'error']
+    df.to_csv(expt_file, sep=' ', index=False, header=False, columns=columns)
 
 
 def read_expt_file(expt_file):
@@ -179,8 +197,10 @@ def read_expt_file(expt_file):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='check status of GAN experiment')
     parser.add_argument('expt_file', help='file specifying experiment pbs scripts and job IDs')
+    parser.add_argument('-u', '--update', default=False, action='store_true')
     parser.add_argument('-s', '--submit', default=False, action='store_true', help='submit jobs that aren\'t in queue or have errors')
     parser.add_argument('-o', '--out_file', help='output file to write updated experiment status')
+    parser.add_argument('-m', '--metric', default='L2')
     return parser.parse_args(argv)
 
 
@@ -188,18 +208,23 @@ def main(argv):
     args = parse_args(argv)
 
     expt = read_expt_file(args.expt_file)
-    qstat = torque_util.get_qstat_data()
-    expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
+
+    if args.update:
+        qstat = torque_util.get_qstat_data()
+        expt = expt.apply(update_job_fields, axis=1, qstat=qstat, metric=args.metric)
 
     if args.submit:
         expt.apply(submit_incomplete_jobs, axis=1)
         qstat = torque_util.get_qstat_data()
-        expt = expt.apply(update_job_fields, axis=1, qstat=qstat)
+        expt = expt.apply(update_job_fields, axis=1, qstat=qstat, metric=args.metric)
         qstat = torque_util.get_qstat_data()
 
-    if args.out_file:
-        write_expt_file(args.out_file, expt)
+    if not args.out_file:
+        args.out_file = args.expt_file
 
+    write_expt_file(args.out_file, expt)
+
+    pd.set_option('display.max_rows', 2000)
     pd.set_option('display.max_colwidth', 120)
     pd.set_option('display.width', torque_util.get_terminal_size()[1])
     print(expt)

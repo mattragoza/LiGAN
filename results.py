@@ -21,35 +21,28 @@ def get_terminal_size():
         return map(int, p.read().split())
 
 
-# set up display and plotting options
-pd.set_option('display.max_columns', 100)
-pd.set_option('display.max_colwidth', 100)
-pd.set_option('display.width', get_terminal_size()[1])
-sns.set_style('whitegrid')
-sns.set_context('talk')
-sns.set_palette('Set1')
-
-
 def annotate_pearson_r(x, y, **kwargs):
     r, _ = stats.pearsonr(x, y)
     ax = plt.gca()
-    ax.annotate("$\\rho = {:.2f}$".format(r), xy=(.1, .9), xycoords='axes fraction')
+    ax.annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8), xycoords='axes fraction', ha='center')
 
 
-def plot_corr(plot_file, df, x, y, height=4, width=4):
+def plot_corr(plot_file, df, x, y, height=6, width=6, **kwargs):
 
     df = df.reset_index()
-    g = sns.PairGrid(df, x_vars=x, y_vars=y, height=height, aspect=width/float(height), despine=False)
-    g.map_diag(sns.kdeplot)
+    g = sns.PairGrid(df, x_vars=x, y_vars=y, height=height, aspect=width/float(height), **kwargs)
+    g.map_diag(sns.distplot, kde=False)
     g.map_offdiag(plt.scatter, s=1.0, alpha=0.05)
+    #g.map_upper(sns.kdeplot)
     g.map_offdiag(annotate_pearson_r)
     fig = g.fig
     fig.tight_layout()
+    plt.subplots_adjust(wspace=0.2, hspace=0.2)
     fig.savefig(plot_file, bbox_inches='tight')
     plt.close(fig)
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None):
+def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, lgd_title=True):
 
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
@@ -66,7 +59,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
     iter_axes = iter(axes.flatten())
 
     share_axes = defaultdict(list)
@@ -113,7 +106,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
                 ylim_ = share_ylim[name]
 
         ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
-        if y_.endswith('log_loss'):
+        if y_.endswith('log_loss') or 'GAN' in y_:
             r = -np.log(0.5)
             ax.hlines(r, *xlim, linestyle=':', linewidth=1.0)
 
@@ -131,8 +124,9 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
 
     extra = []
     if hue: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
-        lgd.set_title(hue, prop=dict(size='small'))
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(0.975, 0.9), ncol=1, frameon=False, borderpad=0.5)
+        if lgd_title:
+            lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
     for ax in iter_axes:
         ax.axis('off')
@@ -141,7 +135,32 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=No
     plt.close(fig)
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=None, outlier_z=None, \
+def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
+
+    df = df.reset_index()
+    if n_cols is None:
+        n_cols = len(x)
+
+    n_axes = len(x)
+    assert n_axes > 0
+    n_rows = (n_axes + n_cols-1)//n_cols
+    n_cols = min(n_axes, n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
+    iter_axes = iter(axes.flatten())
+
+    for x_ in x:
+        ax = next(iter_axes)
+        sns.distplot(df[x_], norm_hist=True, ax=ax)
+
+    for ax in iter_axes:
+        ax.axis('off')
+    fig.tight_layout()
+    fig.savefig(plot_file, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, \
     violin=False, box=False, jitter=0, alpha=0.5):
 
     df = df.reset_index()
@@ -153,7 +172,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=4, width=4, ylim=N
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
     iter_axes = iter(axes.flatten())
 
     for i, y_ in enumerate(y):
@@ -231,14 +250,17 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
     for model_dir in model_dirs:
 
         model_dfs = []
-        model_name = model_dir.rstrip('/\\')
+        model_name = os.path.split(model_dir.rstrip('/\\'))[-1]
         model_prefix = os.path.join(model_dir, model_name)
         model_errors = dict()
 
         for seed in seeds:
             for fold in folds: 
                 try:
-                    train_file = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
+                    if 'e11' in model_name:
+                        train_file = '{}.{}.{}.training_output'.format(model_prefix, seed, fold)
+                    else:
+                        train_file = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
                     train_df = pd.read_csv(train_file, sep=' ')
                     train_df['model_name'] = model_name
                     #file_df['data_name'] = data_name #TODO allow multiple data sets
@@ -260,8 +282,9 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
             all_model_dfs.extend(model_dfs)
         else:
             for f, e in model_errors.items():
-                print(e) #'{}: {}'.format(f, e))
+                print('{}: {}'.format(f, str(e).replace(' ' + f, '')))
 
+    print(len(all_model_dfs))
     return pd.concat(all_model_dfs)
 
 
@@ -301,8 +324,38 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def aggregate_data(df, group_cols):
+    f = {c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) for c in df if c not in group_cols}
+    return df.groupby(group_cols).agg(f)
+
+
+def add_param_columns(df):
+    for model_name, model_df in df.groupby(level=0):
+        try: # try to parse it as a GAN
+            model_params = models.parse_gan_name(model_name)
+        except AttributeError:
+            model_params = models.parse_gen_name(model_name)
+        for param, value in model_params.items():
+            df.loc[model_name, param] = value
+    return model_params
+
+
+def add_group_column(df, group_cols):
+    group = '({})'.format(', '.join(group_cols))
+    df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
+    return group
+
+
 def main(argv):
     args = parse_args(argv)
+
+    # set up display and plotting options
+    pd.set_option('display.max_columns', 100)
+    pd.set_option('display.max_colwidth', 100)
+    pd.set_option('display.width', get_terminal_size()[1])
+    sns.set_style('whitegrid')
+    sns.set_context('talk')
+    #sns.set_palette('Set1')
 
     if args.out_prefix is None:
         args.out_prefix = os.path.splitext(args.expt_file)[0]
@@ -330,8 +383,7 @@ def main(argv):
         df['iteration'] = args.avg_iters * (df['iteration']//args.avg_iters)
     group_cols.append('iteration')
 
-    agg_df = df.groupby(group_cols).agg({c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) \
-                                            for c in df if c not in group_cols})
+    agg_df = aggregate_data(df, group_cols)
     #assert all(agg_df['seed'] == set(seeds))
     #assert all(agg_df['fold'] == set(folds))
 
@@ -339,15 +391,7 @@ def main(argv):
         args.y = [m for m in agg_df if m not in ['model_name', 'iteration', 'seed', 'fold', 'test_data']]
 
     # parse model name to get model params and add columns
-    for model_name, model_df in agg_df.groupby(level=0):
-
-        try: # try to parse it as a GAN
-            model_params = models.parse_gan_name(model_name)
-        except AttributeError:
-            model_params = models.parse_gen_name(model_name)
-
-        for param, value in model_params.items():
-            agg_df.loc[model_name, param] = value
+    model_params = add_param_columns(agg_df)
 
     print('\nAGGREGATED DATA')
     print(agg_df)
@@ -365,8 +409,7 @@ def main(argv):
         args.y.append(log_y)
 
     if len(args.hue) > 1: # add column for hue tuple
-        hue = '({})'.format(', '.join(args.hue))
-        agg_df[hue] = agg_df[args.hue].apply(tuple, axis=1)
+        hue = add_group_column(agg_df, args.hue)
     elif len(args.hue) == 1:
         hue = args.hue[0]
     else:
@@ -375,6 +418,8 @@ def main(argv):
     # by default, don't make plots for the hue variable or variables with 1 unique value
     if not args.x:
         args.x = [c for c in model_params if c != hue and agg_df[c].nunique() > 1]
+
+    agg_df.to_csv('{}_agg_data.csv'.format(args.out_prefix))
 
     if args.plot_lines: # plot training progress
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
