@@ -26,24 +26,35 @@ class Experiment(object):
     An object for managing a collection of jobs based on job_template_file
     with placeholder values filled in from job_params.
     '''
+    _status_cols = ['job_name', 'job_id', 'job_state', 'error']
+
     def __init__(self, expt_name, expt_dir, job_template_file, job_params):
 
         self.name = expt_name
         self.dir = os.path.abspath(expt_dir)
 
-        self.job_template_file = job_template_file
-        self.job_params = params.ParamSpace(job_params)
         self.job_queue = job_queue.get_job_queue(job_template_file)
+        self.job_template = read_file(job_template_file)
+        self.job_base = os.path.basename(job_template_file)
+        self.job_params = params.ParamSpace(job_params)
 
         self.df = pd.DataFrame(list(job_params.flatten(scope='job_params')))
-        self.df['work_dir'] = self.df.apply(self._get_job_dir, axis=1)
+        self.df['work_dir'] = self.df.apply(self._get_work_dir, axis=1)
         self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
+        self.df['array_idx'] = self.df.apply(self._get_array_idx, axis=1)
 
-    def _get_job_dir(self, job):
+    @classmethod
+    def from_file(cls, expt_file):
+        raise NotImplementedError('TODO')
+
+    def _get_work_dir(self, job):
         return os.path.join(self.dir, job['job_name'])
 
     def _get_job_file(self, job):
-        return os.path.join(job['work_dir'], os.path.basename(self.job_template_file))
+        return os.path.join(job['work_dir'], self.job_base)
+
+    def _get_array_idx(self, job):
+        return job['job_params.array_idx']
 
     def _find_job_id(self, job):
         job_ids = set()
@@ -57,12 +68,12 @@ class Experiment(object):
             return -1
 
     def _parse_error(self, job):
-        stderr_file = os.path.join(job['work_dir'], 'slurm-{}.err'.format(job['job_id']))
+        stderr_file = os.path.join(job['curr_dir'], 'slurm-{}.err'.format(job['job_id']))
         return parse_stderr_file(stderr_file)
 
     def _update_job_status(self, job, qstat):
        
-        if job['job_name'] in qstat['job_name']:
+        if job['job_name'] in qstat['job_name'].values:
             job_qstat = qstat.loc[qstat['job_name'] == job['job_name']].iloc[-1]
             job['job_state'] = job_qstat['job_state']
             job['job_id'] = job_qstat['job_id']
@@ -70,23 +81,36 @@ class Experiment(object):
             job['job_state'] = '-'
             job['job_id'] = self._find_job_id(job)
 
-        if job['job_id'] != -1:
-            job['error'] = self._parse_error(job)
+        if job['job_state'] == 'R':
+            job['curr_dir'] = self.job_queue.get_scr_dir(job['job_id'])
         else:
+            job['curr_dir'] = job['work_dir']
+
+        try:
+            job['error'] = self._parse_error(job)
+        except IOError:
             job['error'] = None
 
         return job
 
-    def _update_status(self):
+    def status(self):
         qstat = self.job_queue.get_status(self.df['job_name'])
         self.df = self.df.apply(self._update_job_status, axis=1, qstat=qstat)
+        print(self.df[self._status_cols])
 
-    def _print_status(self):
-        print(self.df[['job_name', 'job_id', 'job_state', 'error']])
+    def _setup_job(self, job):
+        
+        if not os.path.isdir(job['work_dir']):
+            os.makedirs(job['work_dir'])
 
-    def status(self):
-        self._update_status()
-        self._print_status()
+        job_params = params.Params((p.replace('job_params.', ''), v) for p, v in job.items() if p.startswith('job_params'))
+        job_params.name = job['job_name']
+
+        job_templates.write_job_script(job['job_file'], self.job_template, job_params)
+        print(job['job_file'])
+
+    def setup(self):
+        self.df.apply(self._setup_job, axis=1)
 
     def _submit_job(self, job):
         os.chdir(job['work_dir'])
@@ -94,14 +118,11 @@ class Experiment(object):
         print(job_id)
         return job_id
 
-    def setup(self):
-        job_templates.write_job_scripts(self.dir, self.job_template_file, self.job_params)
-
     def run(self):
         self.df['job_id'] = self.df.apply(self._submit_job, axis=1)
 
     def main(self):
-        parser = argparse.ArgumentParser(description='Manage {} experiment in {}'.format(self.name, self.dir))
+        parser = argparse.ArgumentParser('Manage the experiment')
         parser.add_argument('command', help='one of {setup, status, run}')
         args = parser.parse_args()
         getattr(self, args.command)()
@@ -109,16 +130,19 @@ class Experiment(object):
 
 class TrainExperiment(Experiment):
 
-    def setup(self):
+    _status_cols = ['job_name', 'job_id', 'job_state', 'last_iter', 'error']
 
+    def _get_array_idx(self, job):
+        return 4*job['job_params.seed'] + job['job_params.fold']
+
+    def _setup_job(self, job):
         model_dir = os.path.join(self.dir, 'models')
         solver_dir = os.path.join(self.dir, 'solvers')
-
         models.write_models(model_dir, self.job_params['data_model_params'])
         models.write_models(model_dir, self.job_params['gen_model_params'])
         models.write_models(model_dir, self.job_params['disc_model_params'])
         solvers.write_solvers(solver_dir, self.job_params['solver_params'])
-        Experiment.setup(self)
+        Experiment._setup_job(self, job)
 
     def _parse_last_iter(self, job):
         out_file = os.path.join(job['work_dir'], '{}.{}.{}.{}.training_output' \
@@ -130,8 +154,6 @@ class TrainExperiment(Experiment):
         job['last_iter'] = self._parse_last_iter(job)
         return job
 
-    def _print_status(self):
-        print(self.df[['job_name', 'job_id', 'job_state', 'last_iter', 'error']])
 
 
 def read_file(file_):

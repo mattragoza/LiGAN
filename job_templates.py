@@ -59,7 +59,7 @@ def write_job_script(job_file, job_template, job_params):
     Write a job script to job_file by filling in job_template with job_params.
     '''
     buf = params.format_params(job_params, '# ')
-    buf = fill_job_template(job_template, dict(job_params=buf))
+    buf = fill_job_template(job_template, dict(job_name=job_params.name, job_params=buf))
     buf = fill_job_template(buf, job_params)
     write_file(job_file, buf)
 

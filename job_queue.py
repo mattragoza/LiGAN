@@ -110,6 +110,10 @@ class SlurmQueue(JobQueue):
     def _parse_submit(stdout):
         return int(re.match(r'^Submitted batch job (\d+) on cluster .+\n$', stdout).group(1))
 
+    @staticmethod
+    def get_scr_dir(self, job_id):
+        return '/scratch/slumr-{}'.format(job_id)
+
 
 def get_terminal_size():
     with os.popen('stty size') as p:
