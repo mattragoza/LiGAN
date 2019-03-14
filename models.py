@@ -215,7 +215,7 @@ def least_prime_factor(n):
     return next(i for i in range(2, n+1) if n%i == 0)
 
 
-def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv_per_level=0,
+def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, conv_per_level=0,
                arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
                batch_size=16, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
 
@@ -252,7 +252,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
             binary_occupancy=binary_atoms,
-            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2,
+            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=True,
             balanced=False,
             random_rotation=True,
@@ -269,7 +269,7 @@ def make_model(encode_type, data_dim, resolution, data_options, n_levels=0, conv
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
             binary_occupancy=binary_atoms,
-            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2,
+            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=False,
             balanced=False,
             random_rotation=False,

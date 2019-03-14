@@ -37,7 +37,7 @@ def parse_output_file(out_file, metric):
                 value = df[df['iteration'] == max_iter][m].mean()
                 break
     else:
-        raise NotImplementedError(metric)
+        value = df[df['iteration'] == max_iter][metric].mean()
     return max_iter, value # TODO determine test/train
 
 
