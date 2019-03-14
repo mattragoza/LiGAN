@@ -81,8 +81,11 @@ class Experiment(object):
             job['job_state'] = '-'
             job['job_id'] = self._find_job_id(job)
 
+        if job['job_id'] != -1:
+            job['scr_dir'] = self.job_queue.get_scr_dir(job['job_id'])
+
         if job['job_state'] == 'R':
-            job['curr_dir'] = self.job_queue.get_scr_dir(job['job_id'])
+            job['curr_dir'] = job['scr_dir']
         else:
             job['curr_dir'] = job['work_dir']
 
@@ -121,16 +124,22 @@ class Experiment(object):
     def run(self):
         self.df['job_id'] = self.df.apply(self._submit_job, axis=1)
 
+    def _sync_job(self, job):
+        pass
+
+    def sync(self):
+        self.df.apply(self._sync_job, axis=1)
+
     def main(self):
         parser = argparse.ArgumentParser('Manage the experiment')
-        parser.add_argument('command', help='one of {setup, status, run}')
+        parser.add_argument('command', help='one of {setup, status, run, sync}')
         args = parser.parse_args()
         getattr(self, args.command)()
 
 
 class TrainExperiment(Experiment):
 
-    _status_cols = ['job_name', 'job_id', 'job_state', 'last_iter', 'error']
+    _status_cols = ['job_name', 'job_id', 'job_state', 'test_iter', 'save_iter', 'error']
 
     def _get_array_idx(self, job):
         return 4*job['job_params.seed'] + job['job_params.fold']
@@ -144,16 +153,22 @@ class TrainExperiment(Experiment):
         solvers.write_solvers(solver_dir, self.job_params['solver_params'])
         Experiment._setup_job(self, job)
 
-    def _parse_last_iter(self, job):
+    def _parse_test_iter(self, job):
         out_file = os.path.join(job['work_dir'], '{}.{}.{}.{}.training_output' \
             .format(job['job_name'], job['job_params.data_prefix'], job['job_params.seed'], job['job_params.fold']))
         return parse_output_file(out_file)
 
+    def _find_save_iter(self, job):
+        return find_save_iter(job['work_dir'])
+
     def _update_job_status(self, job, qstat):
         job = Experiment._update_job_status(self, job, qstat)     
-        job['last_iter'] = self._parse_last_iter(job)
+        job['test_iter'] = self._parse_test_iter(job)
+        job['save_iter'] = self._find_save_iter(job)
         return job
 
+    def _sync_job(self):
+        pass
 
 
 def read_file(file_):
@@ -192,15 +207,15 @@ def parse_stderr_file(stderr_file):
     return m.group(0) if m else None
 
 
-def get_cont_iter(dir_):
-    cont_iter = 0
+def find_save_iter(dir_):
+    save_iter = 0
     states = glob.glob(os.path.join(dir_, '*.solverstate'))
-    for state in states:
-        m = re.match(dir_ + r'.*_iter_(\d+)\.solverstate', state)
+    for s in states:
+        m = re.match(dir_ + r'.*_iter_(\d+)\.solverstate', s)
         if m:
             iter_ = int(m.group(1))
-            cont_iter = max(cont_iter, iter_)
-    return cont_iter
+            save_iter = max(save_iter, iter_)
+    return save_iter
 
 
 def submit_incomplete_jobs(job):
