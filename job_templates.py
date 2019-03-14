@@ -73,7 +73,7 @@ def fill_job_template(job_template, job_params):
     for param, value in job_params.items():
         if param == 'train_options':
             value = expand_train_options(value)
-        job = re.sub(param.upper(), str(value), job)
+        job = re.sub('<'+param.upper()+'>', str(value), job)
     return job
 
 

@@ -1,8 +1,9 @@
 from __future__ import print_function
 import sys, os, glob, time, re
 import shlex
-import subprocess
+from subprocess import Popen, PIPE
 import pandas as pd
+from io import StringIO
 
 
 def run_subprocess(cmd, stdin=None):
@@ -10,7 +11,7 @@ def run_subprocess(cmd, stdin=None):
     Run a subprocess with the given stdin and return (stdout, stderr).
     '''
     args = shlex.split(cmd)
-    proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = Popen(args, stdin=PIPE, stdout=PIPE, stderr=PIPE)
     return proc.communicate(stdin)
 
 
@@ -22,60 +23,91 @@ def read_file(file_):
 def get_job_queue(job_file):
     buf = read_file(job_file)
     if re.search(r'^#PBS ', buf, re.MULTILINE):
-        return TorqueQueue()
+        return TorqueQueue
     elif re.search(r'^#SBATCH ', buf, re.MULTILINE):
-        return SlurmQueue()
+        return SlurmQueue
     else:
         raise ValueError('unknown job queue type')
 
 
 class JobQueue(object):
 
-    def _status_cmd(self, job_names):
+    @staticmethod
+    def _status_cmd(job_names):
         raise NotImplementedError
 
-    def _submit_cmd(self, job_file, array_idx):
+    @staticmethod
+    def _submit_cmd(job_file, array_idx):
         raise NotImplementedError
 
-    def _parse_status(self, stdout):
+    @staticmethod
+    def _parse_status(stdout):
         raise NotImplementedError
 
-    def _parse_submit(self, stdout):
+    @staticmethod
+    def _parse_submit(stdout):
         raise NotImplementedError
 
-    def get_status(self, job_names):
-        cmd = self._status_cmd(job_names)
+    @classmethod
+    def get_status(cls, job_names):
+        cmd = cls._status_cmd(job_names)
         stdout, stderr = run_subprocess(cmd)
         if stderr:
             raise Exception(stderr)
         else:
-            return self._parse_status(stdout)
+            return cls._parse_status(stdout)
 
-    def submit_job(self, job_file, array_idx):
-        cmd = self._submit_cmd(job_file, array_idx)
+    @classmethod
+    def submit_job(cls, job_file, array_idx):
+        cmd = cls._submit_cmd(job_file, array_idx)
         stdout, stderr = run_subprocess(cmd)
         if stderr:
             raise Exception(stderr)
         else:
-            return self._parse_submit(stdout)
+            return cls._parse_submit(stdout)
 
 
 class TorqueQueue(JobQueue):
-    pass
+    
+    pass #TODO
 
 
 class SlurmQueue(JobQueue):
 
-    def _status_cmd(self, job_names):
-        return 'squeue --name={}'.format(','.join(job_names))
+    @staticmethod
+    def _status_cmd(job_names):
+        out_format = r'%i %P %j %u %t %M %l %R %Z'
+        return 'squeue --cluster=gpu --name={} --format="{}"'.format(','.join(job_names), out_format)
 
-    def _submit_cmd(self, job_file, array_idx):
+    @staticmethod
+    def _submit_cmd(job_file, array_idx):
         return 'sbatch {} --array={}'.format(job_file, array_idx)
 
-    def _parse_status(self, stdout):
-        return stdout
+    @staticmethod
+    def _parse_status(stdout):
 
-    def _parse_submit(self, stdout):
+        lines = stdout.split('\n')
+        columns = lines[1].split(' ')
+        col_data = {c: [] for c in columns}
+        for line in filter(len, lines[2:]):
+            fields = line.split(' ')
+            for i, field in enumerate(fields):
+                col_data[columns[i]].append(field)
+
+        return pd.DataFrame(col_data).rename(columns={
+            'JOBID': 'job_id',
+            'PARTITION': 'queue',
+            'NAME': 'job_name',
+            'USER': 'user',
+            'ST': 'job_state',
+            'TIME': 'runtime',
+            'TIME_LIMIT': 'walltime',
+            'NODELIST(REASON)': 'node_id',
+            'WORK_DIR': 'work_dir'
+        })
+
+    @staticmethod
+    def _parse_submit(stdout):
         return int(re.match(r'^Submitted batch job (\d+) on cluster .+\n$', stdout).group(1))
 
 

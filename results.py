@@ -13,7 +13,7 @@ import random
 
 import models
 import generate
-import experiment_status
+import experiment
 
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None):
@@ -290,7 +290,7 @@ def main(argv):
     folds = args.folds.split(',')
 
     # get all training output data from experiment
-    expt = experiment_status.read_expt_file(args.expt_file)
+    expt = experiment.read_expt_file(args.expt_file)
     work_dirs = expt['pbs_file'].apply(os.path.dirname)
     df = read_training_output_files(work_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
 
