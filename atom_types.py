@@ -67,12 +67,12 @@ def get_smina_type_channels(idx, use_covalent_radius):
     return channels
 
 
-def get_default_rec_channels(use_covalent_radius):
+def get_default_rec_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 24, 25, 21, 6, 9, 7, 8, 13, 12, 16, 14, 23]
     return get_smina_type_channels(idx, use_covalent_radius)
 
 
-def get_default_lig_channels(use_covalent_radius):
+def get_default_lig_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 19, 18, 17, 6, 9, 7, 8, 10, 13, 12, 16, 14, 15, 20, 27]
     return get_smina_type_channels(idx, use_covalent_radius) 
 
