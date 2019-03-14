@@ -480,23 +480,25 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             label_n_filters = n_channels[dec]
             next_n_filters = dec_init_n_filters if conv_per_level else n_channels[dec]
 
-            fc = '{}_dec_fc'.format(dec)
-            net[fc] = caffe.layers.InnerProduct(curr_top,
-                num_output=next_n_filters*dec_init_dim**3,
-                weight_filler=dict(type='xavier'))
+            if n_latent is not None:
 
-            relu = '{}_relu'.format(fc)
-            net[relu] = caffe.layers.ReLU(net[fc],
-                negative_slope=0.1*leaky_relu,
-                in_place=True)
+                fc = '{}_dec_fc'.format(dec)
+                net[fc] = caffe.layers.InnerProduct(curr_top,
+                    num_output=next_n_filters*dec_init_dim**3,
+                    weight_filler=dict(type='xavier'))
 
-            reshape = '{}_reshape'.format(fc)
-            net[reshape] = caffe.layers.Reshape(net[fc],
-                shape=dict(dim=[batch_size, next_n_filters] + [dec_init_dim]*3))
+                relu = '{}_relu'.format(fc)
+                net[relu] = caffe.layers.ReLU(net[fc],
+                    negative_slope=0.1*leaky_relu,
+                    in_place=True)
 
-            curr_top = net[reshape]
-            curr_n_filters = dec_init_n_filters
-            curr_dim = dec_init_dim
+                reshape = '{}_reshape'.format(fc)
+                net[reshape] = caffe.layers.Reshape(net[fc],
+                    shape=dict(dim=[batch_size, next_n_filters] + [dec_init_dim]*3))
+
+                curr_top = net[reshape]
+                curr_n_filters = dec_init_n_filters
+                curr_dim = dec_init_dim
 
             for i in reversed(range(n_levels)):
 
