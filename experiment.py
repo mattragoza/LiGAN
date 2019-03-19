@@ -10,10 +10,6 @@ def get_terminal_size():
     with os.popen('stty size') as p:
         return map(int, p.read().split())
 
-pd.set_option('display.max_columns', 100)
-pd.set_option('display.max_colwidth', 100)
-pd.set_option('display.width', get_terminal_size()[1])
-
 import params
 import models
 import solvers
@@ -94,12 +90,19 @@ class Experiment(object):
         except IOError:
             job['error'] = None
 
+        try:
+            job['metric'] = self._parse_output(job)
+        except IOError:
+            job['metric'] = None
+
         return job
 
     def status(self):
         qstat = self.job_queue.get_status(self.df['job_name'])
         self.df = self.df.apply(self._update_job_status, axis=1, qstat=qstat)
         print(self.df[self._status_cols])
+        expt_file = os.path.join(self.dir, self.name + '.expt_status')
+        self.df.to_csv(expt_file, sep=' ', index=False, header=False, columns=self._status_cols)
 
     def _setup_job(self, job):
         
@@ -139,7 +142,7 @@ class Experiment(object):
 
 class TrainExperiment(Experiment):
 
-    _status_cols = ['job_name', 'job_id', 'job_state', 'test_iter', 'save_iter', 'error']
+    _status_cols = ['job_name', 'job_id', 'job_state', 'test_iter', 'test_metric', 'save_iter', 'error']
 
     def _get_array_idx(self, job):
         return 4*job['job_params.seed'] + job['job_params.fold']
@@ -153,17 +156,23 @@ class TrainExperiment(Experiment):
         solvers.write_solvers(solver_dir, self.job_params['solver_params'])
         Experiment._setup_job(self, job)
 
-    def _parse_test_iter(self, job):
-        out_file = os.path.join(job['work_dir'], '{}.{}.{}.{}.training_output' \
-            .format(job['job_name'], job['job_params.data_prefix'], job['job_params.seed'], job['job_params.fold']))
-        return parse_output_file(out_file)
+    def _find_output_file(self, job):
+        base_pat = '*.{}.{}.training_output'.format(job['job_params.seed'], job['job_params.fold'])
+        return glob.glob(os.path.join(job['work_dir'], base_pat))[-1]
+
+    def _parse_output(self, job):
+        try:
+            output_file = self._find_output_file(job)
+            return parse_output_file(output_file)
+        except (IndexError, IOError, OSError, pd.errors.EmptyDataError):
+            return -1, -1
 
     def _find_save_iter(self, job):
         return find_save_iter(job['work_dir'])
 
     def _update_job_status(self, job, qstat):
-        job = Experiment._update_job_status(self, job, qstat)     
-        job['test_iter'] = self._parse_test_iter(job)
+        job = Experiment._update_job_status(self, job, qstat)
+        job['test_iter'], job['test_metric'] = self._parse_output(job)
         job['save_iter'] = self._find_save_iter(job)
         return job
 
@@ -191,14 +200,18 @@ def parse_pbs_file(pbs_file):
     return job_name, data_name
 
 
-def parse_output_file(out_file):
-    try:
-        buf = read_file(out_file)
-        return int(re.findall(r'^(\d+)\s+', buf, re.MULTILINE)[-1])
-    except IOError: # file does not exist
-        return -1
-    except IndexError: # file exists but is empty
-        return -1
+def parse_output_file(out_file, metric='L2'):
+    df = pd.read_csv(out_file, sep=' ')
+    max_iter = df['iteration'].max()
+    value = np.nan
+    if metric == 'L2':
+        for m in ['gen_L2_loss', 'test_y_loss', 'test_loss']:
+            if m in df:
+                value = df[df['iteration'] == max_iter][m].mean()
+                break
+    else:
+        value = df[df['iteration'] == max_iter][metric].mean()
+    return max_iter, value # TODO determine test/train
 
 
 def parse_stderr_file(stderr_file):
@@ -355,8 +368,8 @@ def write_expt_file(expt_file, df):
 
 
 def read_expt_file(expt_file):
-    names = ['pbs_file', 'array_idx', 'job_id', 'node_id', 'job_state', 'iteration', 'time_modified', 'error']
-    return pd.read_csv(expt_file, sep=' ', names=names).apply(fix_job_fields, axis=1)
+    names = TrainExperiment._status_cols
+    return pd.read_csv(expt_file, sep=' ', names=names)
 
 
 def parse_args(argv):
@@ -398,4 +411,8 @@ if False:
 
 
 if __name__ == '__main__':
+    pd.set_option('display.max_columns', 100)
+    pd.set_option('display.max_colwidth', 100)
+    pd.set_option('display.width', get_terminal_size()[1])
+
     main(sys.argv[1:])
