@@ -223,9 +223,11 @@ def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, c
 
     use_covalent_radius = 'c' in data_options
     binary_atoms = 'b' in data_options
+    fixed_radius = 'f' in data_options
 
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
+    sigmoid_output = 's' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
     dense_net = 'd' in arch_options      
@@ -252,7 +254,7 @@ def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, c
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
             binary_occupancy=binary_atoms,
-            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2 + 1e-6,
+            fixed_radius=fixed_radius and np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=True,
             balanced=False,
             random_rotation=True,
@@ -269,7 +271,7 @@ def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, c
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
             binary_occupancy=binary_atoms,
-            fixed_radius=binary_atoms * np.sqrt(3)*resolution/2 + 1e-6,
+            fixed_radius=fixed_radius and np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=False,
             balanced=False,
             random_rotation=False,
@@ -769,7 +771,7 @@ def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, c
                 curr_top = net[conv]
 
             # separate output blob from the one used for gen loss is needed for GAN backprop
-            if 'x' in loss_types:
+            if sigmoid_output:
                 gen = '{}_gen'.format(dec)
                 net[gen] = caffe.layers.Sigmoid(curr_top)
             else:
@@ -780,10 +782,13 @@ def make_model(encode_type, data_dim, resolution, data_options='', n_levels=0, c
         label_top = net.label
 
         # output
-        if n_latent > 1:
-            net.output = caffe.layers.Softmax(curr_top)
+        if sigmoid_output:
+            if n_latent > 1:
+                net.output = caffe.layers.Softmax(curr_top)
+            else:
+                net.output = caffe.layers.Sigmoid(curr_top)
         else:
-            net.output = caffe.layers.Sigmoid(curr_top)
+            net.output = caffe.layers.Power(curr_top)
 
     # loss
     if 'e' in loss_types:
