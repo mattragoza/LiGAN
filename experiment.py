@@ -19,29 +19,38 @@ import job_queue
 
 class Experiment(object):
     '''
-    An object for managing a collection of jobs based on job_template_file
+    An object for managing a collection of jobs based on a job_template_file
     with placeholder values filled in from job_params.
     '''
-    _status_cols = ['job_name', 'job_id', 'job_state', 'error']
+    _status_cols = ['job_file', 'job_id', 'job_state', 'error']
 
-    def __init__(self, expt_name, expt_dir, job_template_file, job_params):
+    def __init__(self, expt_name, expt_dir, job_template_file=None, job_params=None, expt_file=None):
 
         self.name = expt_name
         self.dir = os.path.abspath(expt_dir)
 
-        self.job_queue = job_queue.get_job_queue(job_template_file)
-        self.job_template = read_file(job_template_file)
-        self.job_base = os.path.basename(job_template_file)
-        self.job_params = params.ParamSpace(job_params)
+        if not (job_template_file and job_params or expt_file):
+            raise ValueError('Experiment must be init from job_template_file and job_params, or expt_file')
 
-        self.df = pd.DataFrame(list(job_params.flatten(scope='job_params')))
+        if job_template_file and job_params:
+            self.job_queue = job_queue.get_job_queue(job_template_file)
+            self.job_template = read_file(job_template_file)
+            self.job_base = os.path.basename(job_template_file)
+
+            self.job_params = params.ParamSpace(job_params)
+            self.df = pd.DataFrame(list(job_params.flatten(scope='job_params')))
+
+        elif expt_file:
+            self.df = pd.read_csv(expt_file, sep=' ', index_col=None)
+
         self.df['work_dir'] = self.df.apply(self._get_work_dir, axis=1)
         self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
         self.df['array_idx'] = self.df.apply(self._get_array_idx, axis=1)
 
     @classmethod
     def from_file(cls, expt_file):
-        raise NotImplementedError('TODO')
+        expt_dir, expt_name = os.path.split(os.path.splitext(expt_file)[0])
+        return cls(expt_name, expt_dir, expt_file=expt_file)
 
     def _get_work_dir(self, job):
         return os.path.join(self.dir, job['job_name'])
@@ -102,7 +111,7 @@ class Experiment(object):
         self.df = self.df.apply(self._update_job_status, axis=1, qstat=qstat)
         print(self.df[self._status_cols])
         expt_file = os.path.join(self.dir, self.name + '.expt_status')
-        self.df.to_csv(expt_file, sep=' ', index=False, header=False, columns=self._status_cols)
+        self.df.to_csv(expt_file, sep=' ', index=False, header=True)
 
     def _setup_job(self, job):
         
@@ -128,14 +137,17 @@ class Experiment(object):
         self.df['job_id'] = self.df.apply(self._submit_job, axis=1)
 
     def _sync_job(self, job):
-        pass
+        raise NotImplementedError
 
     def sync(self):
         self.df.apply(self._sync_job, axis=1)
 
+    def plot(self):
+        raise NotImplementedError
+
     def main(self):
         parser = argparse.ArgumentParser('Manage the experiment')
-        parser.add_argument('command', help='one of {setup, status, run, sync}')
+        parser.add_argument('command', help='one of {setup, status, run, sync, plot}')
         args = parser.parse_args()
         getattr(self, args.command)()
 
@@ -165,7 +177,7 @@ class TrainExperiment(Experiment):
             output_file = self._find_output_file(job)
             return parse_output_file(output_file)
         except (IndexError, IOError, OSError, pd.errors.EmptyDataError):
-            return -1, -1
+            return np.nan, np.nan
 
     def _find_save_iter(self, job):
         return find_save_iter(job['work_dir'])
@@ -176,8 +188,8 @@ class TrainExperiment(Experiment):
         job['save_iter'] = self._find_save_iter(job)
         return job
 
-    def _sync_job(self):
-        pass
+    def plot(self):
+        print('TODO plot train')
 
 
 def read_file(file_):
@@ -205,7 +217,8 @@ def parse_output_file(out_file, metric='L2'):
     max_iter = df['iteration'].max()
     value = np.nan
     if metric == 'L2':
-        for m in ['gen_L2_loss', 'test_y_loss', 'test_loss']:
+        #for m in ['gen_L2_loss', 'test_y_loss', 'test_loss']:
+        for m in ['gen_adv_log_loss']:
             if m in df:
                 value = df[df['iteration'] == max_iter][m].mean()
                 break
