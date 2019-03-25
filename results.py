@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 
+import params
 import models
 import generate
 import experiment
@@ -192,13 +193,14 @@ def replace_outliers(x, value, z=3):
     return np.where(x > x_max, value, np.where(x < x_min, value, x))
 
 
-def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, check, gen_metrics):
+def read_training_output_files(job_files, data_name, seeds, folds, iteration, check, gen_metrics):
 
     all_model_dfs = []
-    for model_dir in model_dirs:
+    for job_file in job_files:
 
         model_dfs = []
-        model_name = model_dir.rstrip('/\\')
+        model_dir = os.path.dirname(job_file)
+        model_name = os.path.split(model_dir.rstrip('/\\'))[-1]
         model_prefix = os.path.join(model_dir, model_name)
         model_errors = dict()
 
@@ -207,6 +209,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
                 try:
                     train_file = '{}.{}.{}.{}.training_output'.format(model_prefix, data_name, seed, fold)
                     train_df = pd.read_csv(train_file, sep=' ')
+                    train_df['job_file'] = job_file
                     train_df['model_name'] = model_name
                     #file_df['data_name'] = data_name #TODO allow multiple data sets
                     train_df['seed'] = seed
@@ -227,7 +230,7 @@ def read_training_output_files(model_dirs, data_name, seeds, folds, iteration, c
             all_model_dfs.extend(model_dfs)
         else:
             for f, e in model_errors.items():
-                print(e) #'{}: {}'.format(f, e))
+                print('{}: {}'.format(f, str(e).replace(' ' + f, '')))
 
     return pd.concat(all_model_dfs)
 
@@ -290,14 +293,13 @@ def main(argv):
     folds = args.folds.split(',')
 
     # get all training output data from experiment
-    expt = experiment.read_expt_file(args.expt_file)
-    work_dirs = expt['pbs_file'].apply(os.path.dirname)
-    df = read_training_output_files(work_dirs, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
+    job_files = pd.read_csv(args.expt_file, sep=' ', index_col=None)['job_file']
+    df = read_training_output_files(job_files, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
 
     if args.test_data is not None:
         df = df[df['test_data'] == args.test_data]
 
-    group_cols = ['model_name']
+    group_cols = ['job_file', 'model_name']
 
     if not args.avg_seeds:
         group_cols.append('seed')
@@ -315,18 +317,23 @@ def main(argv):
     #assert all(agg_df['fold'] == set(folds))
 
     if not args.y: # use all training output metrics
-        args.y = [m for m in agg_df if m not in ['model_name', 'iteration', 'seed', 'fold', 'test_data']]
+        args.y = [m for m in agg_df if m not in ['job_file', 'model_name', 'iteration', 'seed', 'fold', 'test_data']]
 
     # parse model name to get model params and add columns
-    for model_name, model_df in agg_df.groupby(level=0):
+    for job_file, model_df in agg_df.groupby(level=0):
 
-        try: # try to parse it as a GAN
-            model_params = models.parse_gan_name(model_name)
-        except AttributeError:
-            model_params = models.parse_gen_name(model_name)
+        job_params = params.read_params(job_file, line_start='# ')
+        del job_params['seed']
+        del job_params['fold']
 
-        for param, value in model_params.items():
-            agg_df.loc[model_name, param] = value
+        if False:
+            try: # try to parse model name as a GAN
+                model_params = models.parse_gan_name(model_name)
+            except AttributeError:
+                model_params = models.parse_gen_name(model_name)
+
+        for param, value in job_params.items():
+            agg_df.loc[job_file, param] = value
 
     print('\nAGGREGATED DATA')
     print(agg_df)
@@ -336,7 +343,7 @@ def main(argv):
     col_name_map = {col: col for col in agg_df}
     col_name_map.update(dict(r.split(':') for r in args.rename_col))
     agg_df.rename(columns=col_name_map, inplace=True)
-    model_params = {col_name_map[c]: v for c, v in model_params.items()}
+    job_params = {col_name_map[c]: v for c, v in job_params.items()}
 
     for y in args.log_y: # add log y columns
         log_y = 'log({})'.format(y)
@@ -353,28 +360,41 @@ def main(argv):
 
     # by default, don't make plots for the hue variable or variables with 1 unique value
     if not args.x:
-        args.x = [c for c in model_params if c != hue and agg_df[c].nunique() > 1]
+        args.x = [c for c in job_params if c not in {'job_file', 'model_name', 'gen_model_name', 'disc_model_name'} and agg_df[c].nunique() > 1]
+
 
     if args.plot_lines: # plot training progress
+
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
-        plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=hue,
+        plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=None,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
+
+        for hue in args.x:
+            line_plot_file = '{}_lines_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
+            plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=hue,
+                       n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
     if args.iteration:
         final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
 
         print('\nFINAL DATA')
         print(final_df)
-        
-        if args.plot_strips: # plot final loss distributions
-            strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
-            plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
-                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
-
+            
         # display names of best models
         print('\nBEST MODELS')
         for y in args.y:
             print(final_df.sort_values(y).loc[:, (col_name_map['model_name'], y)]) #.head(5))
+
+        if args.plot_strips: # plot final loss distributions
+
+            strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
+            plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=None,
+                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
+
+            for hue in args.x:
+                strip_plot_file = '{}_strips_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
+                plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
+                            n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
 
 
 if __name__ == '__main__':
