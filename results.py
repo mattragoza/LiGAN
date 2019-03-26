@@ -362,14 +362,13 @@ def main(argv):
     if not args.x:
         args.x = [c for c in job_params if c not in {'job_file', 'model_name', 'gen_model_name', 'disc_model_name'} and agg_df[c].nunique() > 1]
 
-
     if args.plot_lines: # plot training progress
 
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
         plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=None,
                    n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
-        for hue in args.x:
+        for hue in args.x + ['model_name']:
             line_plot_file = '{}_lines_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
             plot_lines(line_plot_file, agg_df, x=col_name_map['iteration'], y=args.y, hue=hue,
                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
@@ -391,7 +390,7 @@ def main(argv):
             plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=None,
                         n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
 
-            for hue in args.x:
+            for hue in args.x + ['model_name']:
                 strip_plot_file = '{}_strips_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
                 plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
                             n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
