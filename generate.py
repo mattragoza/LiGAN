@@ -554,7 +554,6 @@ def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
 
 
 def read_gninatypes_file(lig_file, channels):
-
     channel_names = [c.name for c in channels]
     channel_name_idx = {n: i for i, n in enumerate(channel_names)}
     xyz, c = [], []
@@ -563,11 +562,13 @@ def read_gninatypes_file(lig_file, channels):
         while atom_bytes:
             x, y, z, t = struct.unpack('fffi', atom_bytes)
             smina_type = atom_types.smina_types[t]
-            if smina_type.name in channel_name_idx:
-                c_ = channel_names.index(smina_type.name)
+            channel_name = 'Ligand' + smina_type.name
+            if channel_name in channel_name_idx:
+                c_ = channel_names.index(channel_name)
                 xyz.append([x, y, z])
                 c.append(c_)
             atom_bytes = f.read(16)
+    assert xyz and c, lig_file
     return np.array(xyz), np.array(c)
 
 
@@ -670,21 +671,25 @@ def write_grid_to_dx_file(dx_file, grid, center, resolution):
     '''
     Write a grid with a center and resolution to a .dx file.
     '''
+    if len(grid.shape) != 3 or len(set(grid.shape)) != 1:
+        raise ValueError('grid must have three equal dimensions')
+    if len(center) != 3:
+        raise ValueError('center must be a vector of length 3')
     dim = grid.shape[0]
     origin = np.array(center) - resolution*(dim-1)/2.
     with open(dx_file, 'w') as f:
-        f.write('object 1 class gridpositions counts %d %d %d\n' % (dim, dim, dim))
-        f.write('origin %.5f %.5f %.5f\n' % tuple(origin))
-        f.write('delta %.5f 0 0\n' % resolution)
-        f.write('delta 0 %.5f 0\n' % resolution)
-        f.write('delta 0 0 %.5f\n' % resolution)
-        f.write('object 2 class gridconnections counts %d %d %d\n' % (dim, dim, dim))
-        f.write('object 3 class array type double rank 0 items [ %d ] data follows\n' % (dim**3))
+        f.write('object 1 class gridpositions counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
+        f.write('origin {:.5f} {:.5f} {:.5f}\n'.format(*origin))
+        f.write('delta {:.5f} 0 0\n'.format(resolution))
+        f.write('delta 0 {:.5f} 0\n'.format(resolution))
+        f.write('delta 0 0 {:.5f}\n'.format(resolution))
+        f.write('object 2 class gridconnections counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
+        f.write('object 3 class array type double rank 0 items [ {:d} ] data follows\n'.format(dim**3))
         total = 0
         for i in range(dim):
             for j in range(dim):
                 for k in range(dim):
-                    f.write('%.10f' % grid[i][j][k])
+                    f.write('{:.10f}'.format(grid[i][j][k]))
                     total += 1
                     if total % 3 == 0:
                         f.write('\n')
@@ -799,7 +804,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
     fix_center_to_origin = data_param.fix_center_to_origin
     radius_multiple = data_param.radius_multiple
     use_covalent_radius = data_param.use_covalent_radius
-    channels = atom_types.get_default_lig_channels(use_covalent_radius)
+    rec_channels = atom_types.get_default_rec_channels(use_covalent_radius)
+    lig_channels = atom_types.get_default_lig_channels(use_covalent_radius)
 
     if args.prior or args.mean: # find latent variable blobs
         latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
@@ -812,7 +818,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
     out_queue = mp.Queue()
     out_thread = threading.Thread(
         target=out_worker_main,
-        args=(out_queue, len(examples), channels, resolution, metric_df, metric_file, pymol_file, args)
+        args=(out_queue, len(examples), rec_channels, lig_channels, resolution,
+              metric_df, metric_file, pymol_file, args)
     )
     out_thread.start()
 
@@ -833,7 +840,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
         lig_prefix, lig_ext = os.path.splitext(lig_file)
         lig_name = os.path.basename(lig_prefix)
 
-        lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', channels)
+        lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
 
         if fix_center_to_origin:
             center = np.zeros(3)
@@ -842,7 +849,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
 
         if args.fit_atoms: # set atom fitting parameters for the ligand
             fit_atoms = partial(fit_atoms_to_grid,
-                                channels=channels,
+                                channels=lig_channels,
                                 center=center,
                                 resolution=resolution,
                                 max_iter=args.max_iter,
@@ -887,7 +894,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
                 grid = np.array(gen_net.blobs[blob_name].data[batch_idx])
                 print('main_thread produced {} {} {}'.format(lig_name, blob_name, sample_idx))
 
-                if args.fit_atoms:
+                if args.fit_atoms and 'lig' in blob_name:
                     fit_queue.put((lig_name, sample_idx, blob_name, center, grid, fit_atoms))
                 else:
                     out_queue.put((lig_name, sample_idx, blob_name, center, grid, None, None))
@@ -907,11 +914,14 @@ def fit_worker_main(fit_queue, out_queue):
         out_queue.put((lig_name, sample_idx, grid_name + '_fit', center, grid_fit, xyz, c))
 
 
-def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metric_file, pymol_file, args):
+def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution, metric_df, metric_file,
+                    pymol_file, args):
 
-    n_grids_per_ligand = args.n_samples * len(args.blob_name)
-    if args.fit_atoms:
-        n_grids_per_ligand *= 2
+    n_grids_per_ligand = 0 
+    for b in args.blob_name:
+        n_grids_per_ligand += args.n_samples
+        if args.fit_atoms and 'lig' in b:
+            n_grids_per_ligand += args.n_samples
 
     print('out_worker expects {} grids per ligand'.format(n_grids_per_ligand))
     dx_prefixes = []
@@ -938,11 +948,17 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
 
             for grid_data in lig_data: # unpack and write out grid data
                 lig_name, sample_idx, grid_name, center, grid, xyz, c = grid_data
+                print('out_worker writing out {} {} {}'.format(lig_name, grid_name, sample_idx))
+
+                if 'lig' in grid_name:
+                    lig_grids[grid_name][sample_idx] = grid
 
                 grid_prefix = '{}_{}_{}_{}'.format(args.out_prefix, lig_name, grid_name, sample_idx)
-                lig_grids[grid_name][sample_idx] = grid
                 if args.output_dx:
-                    write_grids_to_dx_files(grid_prefix, grid, channels, center, resolution)
+                    if 'lig' in grid_name:
+                        write_grids_to_dx_files(grid_prefix, grid, lig_channels, center, resolution)
+                    else:
+                        write_grids_to_dx_files(grid_prefix, grid, rec_channels, center, resolution)
                     dx_prefixes.append(grid_prefix)
                 
                 if xyz is not None:
@@ -950,7 +966,7 @@ def out_worker_main(out_queue, n_ligands, channels, resolution, metric_df, metri
 
                     if args.output_sdf:
                         fit_file = '{}.sdf'.format(grid_prefix)
-                        write_ob_mols_to_sdf_file(fit_file, [make_ob_mol(xyz, c, [], channels)])
+                        write_ob_mols_to_sdf_file(fit_file, [make_ob_mol(xyz, c, [], lig_channels)])
                         struct_files.append(fit_file)
                         centers.append(center)
 

@@ -7,18 +7,39 @@ import isoslider
 import atom_types
 
 
-def set_atom_level(level, selection='*'):
+def interp(v1, v2, k):
+    return [(1 - k)*x1 + k*x2 for x1, x2 in zip(v1, v2)]
+
+
+def get_channel_color(channel):
+    if 'LigandAliphatic' in channel.name:
+        return [1.0, 0.5, 1.0]
+    elif 'LigandAromatic' in channel.name:
+        return [1.0, 0.0, 1.0]
+    elif 'ReceptorAliphatic' in channel.name:
+        return [1.0, 1.0, 1.0]
+    elif 'ReceptorAromatic' in channel.name:
+        return [0.7, 0.7, 0.7]
+    else:
+        elem_color = atom_types.get_rgb(channel.atomic_num)
+        if 'Donor' in channel.name and 'Acceptor' not in channel.name:
+            return interp(elem_color, [1.0, 1.0, 1.0], 0.33)
+        elif 'Acceptor' in channel.name and 'Donor' not in channel.name:
+            return interp(elem_color, [0.0, 0.0, 0.0], 0.33)
+        else:
+            return elem_color
+
+
+def set_atom_level(level, selection='*', state=None):
 
     channels = atom_types.get_default_channels(True)
     channel_names = [c.name for c in channels]
     channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
 
     for channel in channels:
-        element = atom_types.get_name(channel.atomic_num)
-        color = atom_types.get_rgb(channel.atomic_num)
-        cmd.set_color(element, color)
+        cmd.set_color(channel.name+'$', get_channel_color(channel))
 
-    # first identify .dx atom grid information
+    # first identify .dx atom density grids
     dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
     dx_groups = OrderedDict()
     for obj in sorted(cmd.get_names('objects')):
@@ -36,12 +57,13 @@ def set_atom_level(level, selection='*'):
         match = re.match(r'^(.*)_(\d+)$', dx_prefix)
         if match:
             surface_prefix = match.group(1)
-            state = int(match.group(2)) + 1
+            if state is None:
+                state_ = int(match.group(2)) + 1
+            else:
+                state_ = state
         else:
             surface_prefix = dx_prefix
-            state = 0
-
-        print(surface_prefix, state)
+            state_ = state or 0
 
         for dx_object in dx_groups[dx_prefix]:
 
@@ -53,8 +75,9 @@ def set_atom_level(level, selection='*'):
                 element = atom_types.get_name(channel.atomic_num)
 
                 surface_object = '{}_{}_surface'.format(surface_prefix, channel_name)
-                cmd.isosurface(surface_object, dx_object, level=level, state=state)
-                cmd.color(element, surface_object)
+                cmd.isosurface(surface_object, dx_object, level=level, state=state_)
+
+                cmd.color(channel.name+'$', surface_object)
 
                 if surface_prefix not in surface_groups:
                     surface_groups[surface_prefix] = []
@@ -73,7 +96,6 @@ def load_group(pattern, name):
         obj = os.path.basename(file)
         cmd.load(file, obj)
         group_objs.append(obj)
-    print(group_objs)
     if group_objs:
         cmd.group(name, ' '.join(group_objs))
 
