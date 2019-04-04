@@ -1059,6 +1059,7 @@ def parse_args(argv=None):
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
+    parser.add_argument('--batch_rotate', default=False, action='store_true')
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
@@ -1112,6 +1113,18 @@ def main(argv):
     gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
 
     data_param.batch_size = gen_net.blobs['lig'].shape[0]
+    if args.batch_rotate_yaw:
+        data_param.batch_rotate = True
+        data_param.batch_rotate_yaw = 2*np.pi/data_param.batch_size
+
+    if args.batch_rotate_ptich:
+        data_param.batch_rotate = True
+        data_param.batch_rotate_ptich = 2*np.pi/data_param.batch_size
+
+    if args.batch_rotate_roll:
+        data_param.batch_rotate = True
+        data_param.batch_rotate_roll = 2*np.pi/data_param.batch_size
+
     data_net = caffe_util.Net.from_param(data_net_param, phase=caffe.TEST)
 
     columns = ['lig_name', 'sample_idx']
