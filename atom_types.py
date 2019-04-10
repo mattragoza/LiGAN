@@ -53,31 +53,44 @@ smina_types = [
 channel = namedtuple('channel', ['name', 'atomic_num', 'symbol', 'atomic_radius'])
 
 
-def get_smina_type_channels(idx, use_covalent_radius):
+def get_channel_color(channel):
+    if 'LigandAliphatic' in channel.name:
+        return [1.00, 0.50, 1.00]
+    elif 'LigandAromatic' in channel.name:
+        return [1.00, 0.00, 1.00]
+    elif 'ReceptorAliphatic' in channel.name:
+        return [1.00, 1.00, 1.00]
+    elif 'ReceptorAromatic' in channel.name:
+        return [0.83, 0.83, 0.83]
+    else:
+        return get_rgb(channel.atomic_num)
+
+
+def get_smina_type_channels(idx, use_covalent_radius, name_prefix):
     channels = []
     for i in idx:
-        name = smina_types[i].name
-        atomic_num = smina_types[i].atomic_num
-        symbol = smina_types[i].symbol
-        if use_covalent_radius:
-            atomic_radius = smina_types[i].covalent_radius
-        else:
-            atomic_radius = smina_types[i].xs_radius
-        channels.append(channel(name, atomic_num, symbol, atomic_radius))
+        t = smina_types[i]
+        c = channel(
+            name=name_prefix + t.name,
+            atomic_num=t.atomic_num,
+            symbol=t.symbol,
+            atomic_radius=t.covalent_radius if use_covalent_radius else t.xs_radius,
+        )
+        channels.append(c)
     return channels
 
 
 def get_default_rec_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 24, 25, 21, 6, 9, 7, 8, 13, 12, 16, 14, 23]
-    return get_smina_type_channels(idx, use_covalent_radius)
+    return get_smina_type_channels(idx, use_covalent_radius, 'Receptor')
 
 
 def get_default_lig_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 19, 18, 17, 6, 9, 7, 8, 10, 13, 12, 16, 14, 15, 20, 27]
-    return get_smina_type_channels(idx, use_covalent_radius) 
+    return get_smina_type_channels(idx, use_covalent_radius, 'Ligand') 
 
 
-def get_default_channels(use_covalent_radius):
+def get_default_channels(use_covalent_radius=False):
     rec_channels = get_default_rec_channels(use_covalent_radius)
     lig_channels = get_default_lig_channels(use_covalent_radius)
     return rec_channels + lig_channels

@@ -14,15 +14,9 @@ def set_atom_level(level, selection='*', state=None):
     channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
 
     for channel in channels:
-        if 'Aliphatic' in channel.name:
-            color = [1.0, 0.5, 1.0]
-        elif 'Aromatic' in channel.name:
-            color = [1.0, 0.0, 1.0]
-        else:
-            color = atom_types.get_rgb(channel.atomic_num)
-        cmd.set_color(channel.name+'$', color)
+        cmd.set_color(channel.name+'$', atom_types.get_channel_color(channel))
 
-    # first identify .dx atom grid information
+    # first identify .dx atom density grids
     dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
     dx_groups = OrderedDict()
     for obj in sorted(cmd.get_names('objects')):
@@ -79,7 +73,6 @@ def load_group(pattern, name):
         obj = os.path.basename(file)
         cmd.load(file, obj)
         group_objs.append(obj)
-    print(group_objs)
     if group_objs:
         cmd.group(name, ' '.join(group_objs))
 

@@ -89,6 +89,8 @@ def update_job_fields(job, qstat, metric):
         out_file = os.path.join(scr_dir, '{}.training_output'.format(out_name))
 
     else: # otherwise check work_dir
+        if job['job_state'] == 'C':
+            job['node_id'] = job_qstat['gpus_reserved'].split('.')[0]
         out_file = os.path.join(work_dir, '{}.training_output'.format(out_name))
         if not os.path.isfile(out_file):
             out_name = '{}.{}.{}'.format(job_name, seed, fold)
