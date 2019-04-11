@@ -6,6 +6,7 @@ from collections import defaultdict
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 import numpy as np
+import scipy.stats as stats
 np.random.seed(0)
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -109,8 +110,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
     plt.close(fig)
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, \
-    violin=False, box=False, jitter=0, alpha=0.5):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, violin=False, box=False, jitter=0, alpha=0.5, outlier_z=None):
 
     df = df.reset_index()
 
@@ -125,11 +125,6 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
     iter_axes = iter(axes.flatten())
 
     for i, y_ in enumerate(y):
-
-        if outlier_z is not None:
-            n_y = len(df[y_])
-            df[y_] = replace_outliers(df[y_], np.nan, z=outlier_z)
-            print('dropped {} outliers from {}'.format(n_y - len(df[y_]), y_))
 
         for x_ in x:
             ax = next(iter_axes)
@@ -157,12 +152,21 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
             handles = handles[len(handles)//2:]
             labels = labels[len(labels)//2:]
 
+            xlim = ax.get_xlim()
+            ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
+            if y_.endswith('log_loss'):
+                r = -np.log(0.5)
+                ax.hlines(r, *xlim, linestyle=':', linewidth=1.0)
+
             if ylim:
                 if len(ylim) > 1:
                     ylim_ = ylim[i]
                 else:
                     ylim_ = ylim[0]
-                ax.set_ylim(ylim_)
+            else:
+            	ylim_ = ax.get_ylim()
+
+            ax.set_ylim(ylim_)
 
             if hue:
                 ax.legend_.remove()
@@ -175,22 +179,35 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
 
     for ax in iter_axes:
         ax.axis('off')
+
     fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
     plt.close(fig)
 
 
-def get_z_bounds(x, z):
-    x_mean = np.mean(x)
-    x_std = np.std(x)
-    x_max = x_mean + z*x_std
-    x_min = x_mean - z*x_std
-    return x_min, x_max
+def get_z_bounds(x, z=3):
+    m, s = np.nanmean(x), np.nanstd(x)
+    return m - z*s, m + z*s
 
 
-def replace_outliers(x, value, z=3):
-    x_min, x_max = get_z_bounds(x, z)
-    return np.where(x > x_max, value, np.where(x < x_min, value, x))
+def get_iqr_bounds(x, k=1.5):
+    q1, q3 = np.nanquantile(x, [0.25, 0.75])
+    iqr = q3 - q1
+    return q1 - k*iqr, q3 + k*iqr
+
+
+def remove_outliers(x, bounds):   
+    lower_bound, upper_bound = bounds
+    outlier = (x < lower_bound) | (x > upper_bound)
+    return np.where(outlier, np.nan, x)
+
+
+def get_y_key(col):
+    return col.endswith('loss'), col.startswith('lig'), col
+
+
+def get_x_key(col):
+    return col.startswith('gen'), col.startswith('disc'), col
 
 
 def read_training_output_files(job_files, data_name, seeds, folds, iteration, check, gen_metrics):
@@ -259,7 +276,8 @@ def parse_args(argv=None):
     parser.add_argument('-y', '--y', default=[], action='append')
     parser.add_argument('--hue', default=[], action='append')
     parser.add_argument('--log_y', default=[], action='append')
-    parser.add_argument('--outlier_z', default=None, type=float)
+    parser.add_argument('--outlier_z', default=np.inf, type=float, help='remove outliers beyond this number of SDs from the mean')
+    parser.add_argument('--outlier_iqr', default=np.inf, type=float, help='remove outliers beyond this multiple of the IQR from [Q1, Q3]')
     parser.add_argument('--n_cols', default=None, type=int)
     parser.add_argument('--masked', default=False, action='store_true')
     parser.add_argument('--plot_lines', default=False, action='store_true')
@@ -313,11 +331,20 @@ def main(argv):
 
     agg_df = df.groupby(group_cols).agg({c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) \
                                             for c in df if c not in group_cols})
-    #assert all(agg_df['seed'] == set(seeds))
-    #assert all(agg_df['fold'] == set(folds))
+    exclude_cols = [
+        'job_file',
+        'model_name',
+        'gen_model_name',
+        'disc_model_name',
+        'iteration',
+        'seed',
+        'fold',
+        'test_data'
+    ]
 
     if not args.y: # use all training output metrics
-        args.y = [m for m in agg_df if m not in ['job_file', 'model_name', 'iteration', 'seed', 'fold', 'test_data']]
+        args.y = [m for m in agg_df if m not in exclude_cols]
+        args.y = sorted(args.y, key=get_y_key, reverse=True)
 
     # parse model name to get model params and add columns
     for job_file, model_df in agg_df.groupby(level=0):
@@ -360,7 +387,8 @@ def main(argv):
 
     # by default, don't make plots for the hue variable or variables with 1 unique value
     if not args.x:
-        args.x = [c for c in job_params if c not in {'job_file', 'model_name', 'gen_model_name', 'disc_model_name'} and agg_df[c].nunique() > 1]
+        args.x = [c for c in job_params if c not in exclude_cols and agg_df[c].nunique() > 1]
+        args.x = sorted(args.x, key=get_x_key, reverse=True)
 
     if args.plot_lines: # plot training progress
 
@@ -376,9 +404,16 @@ def main(argv):
     if args.iteration:
         final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
 
+        for y in args.y:
+            z_bounds = get_z_bounds(final_df[y], args.outlier_z)
+            iqr_bounds = get_iqr_bounds(final_df[y], args.outlier_iqr)
+            print(y, z_bounds, iqr_bounds)
+            final_df[y] = remove_outliers(final_df[y], z_bounds)
+            final_df[y] = remove_outliers(final_df[y], iqr_bounds)
+
         print('\nFINAL DATA')
         print(final_df)
-            
+
         # display names of best models
         print('\nBEST MODELS')
         for y in args.y:
