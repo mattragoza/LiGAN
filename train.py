@@ -384,7 +384,10 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
         elif args.balance: # dynamically balance G/D training
 
             # how much better is D than G?
-            train_loss_ratio = gen_metrics['gen_adv_log_loss'] / disc_metrics['disc_log_loss']
+            if 'disc_wass_loss' in disc_metrics:
+                train_loss_ratio = gen_metrics['gen_adv_wass_loss'] / disc_metrics['disc_wass_loss']
+            else:
+                train_loss_ratio = gen_metrics['gen_adv_log_loss'] / disc_metrics['disc_log_loss']
 
             if train_disc and train_loss_ratio > 10:
                 train_disc = False

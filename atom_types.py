@@ -55,13 +55,13 @@ channel = namedtuple('channel', ['name', 'atomic_num', 'symbol', 'atomic_radius'
 
 def get_channel_color(channel):
     if 'LigandAliphatic' in channel.name:
-        return [1.0, 0.5, 1.0]
+        return [1.00, 0.50, 1.00]
     elif 'LigandAromatic' in channel.name:
-        return [1.0, 0.0, 1.0]
+        return [1.00, 0.00, 1.00]
     elif 'ReceptorAliphatic' in channel.name:
-        return [1.0, 1.0, 1.0]
+        return [1.00, 1.00, 1.00]
     elif 'ReceptorAromatic' in channel.name:
-        return [0.7, 0.7, 0.7]
+        return [0.83, 0.83, 0.83]
     else:
         return get_rgb(channel.atomic_num)
 
@@ -87,7 +87,7 @@ def get_default_rec_channels(use_covalent_radius=False):
 
 def get_default_lig_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 19, 18, 17, 6, 9, 7, 8, 10, 13, 12, 16, 14, 15, 20, 27]
-    return get_smina_type_channels(idx, use_covalent_radius, name_prefix='Ligand') 
+    return get_smina_type_channels(idx, use_covalent_radius, name_prefix='Ligand')
 
 
 def get_default_channels(use_covalent_radius=False):

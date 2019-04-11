@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 import sys, os, re, argparse, itertools, ast
 from collections import OrderedDict
+import numpy as np
 import caffe
 
 import caffe_util
@@ -13,15 +14,18 @@ NAME_FORMATS = dict(
         '11': 'data_{data_dim:d}_{resolution:g}{data_options}'
     }),
     gen=OrderedDict({
+        '110': '{encode_type}e11_{data_dim:d}_0',
         '11': '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{pool_type}_{unpool_type}',
         '12': '{encode_type}e12_{data_dim:d}_{resolution:g}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
         '13': '{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
     }),
     disc=OrderedDict({
+        '00': 'disc{arch_options}',
         '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
         '11': 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
     }),
     solver=OrderedDict({
+        '10': '{solver_name}',
         '11': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}',
         '12': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}',
     }),
@@ -62,7 +66,92 @@ def write_models(model_dir, param_space):
         write_model(model_file, make_model(**model_params), model_params)
 
 
+def parse_params(buf, line_start='', delim='=', prefix='', converter=ast.literal_eval):
+    '''
+    Parse lines in buf as param = value pairs, filtering by an
+    optional line_start pattern. After parsing, a converter
+    function is applied to param values.
+    '''
+    params = OrderedDict()
+    line_pat = r'^{}(\S+)\s*{}\s*(.+)$'.format(line_start, delim)
+    for p, v in re.findall(line_pat, buf, re.MULTILINE):
+        params[prefix+p] = converter(v)
+    return params
+
+
+def read_params(params_file):
+    '''
+    Read lines from params_file as param = value pairs.
+    '''
+    buf = read_file(params_file)
+    return parse_params(buf)
+
+
+def read_params_from_model(model_file, prefix=''):
+    '''
+    Read lines starting with # in model_file as param = value pairs.
+    '''
+    buf = read_file(model_file)
+    return parse_params(buf, line_start=r'#\s*', prefix=prefix)
+
+
+def read_param_space(params_file):
+    '''
+    Read lines from params_file as param = values pairs,
+    where all values are converted to lists.
+    '''
+    buf = read_file(params_file)
+    converter = lambda v: as_list(ast.literal_eval(v))
+    return parse_params(buf, converter=converter)
+
+
+def read_params_from_solver(solver_file, prefix=''):
+    buf = read_file(solver_file)
+    return parse_params(buf, delim=':', prefix=prefix)
+
+
+def as_list(value):
+    '''
+    Return value as a list if it's not one already.
+    '''
+    return value if isinstance(value, list) else [value]
+
+
+def param_space_product(param_space):
+    '''
+    Iterate over the Cartesian product of values in param_space.
+    Expects a dict mapping params to lists of possible values.
+    Produces dicts mapping params to specific values.
+    '''
+    for values in itertools.product(*param_space.itervalues()):
+        yield OrderedDict(itertools.izip(param_space.iterkeys(), values))
+
+
+def percent_index(lst, pct):
+    return lst[int(pct*len(lst))]
+
+
+def param_space_latin_hypercube(n, param_space): #TODO fix this
+    for sample in pyDOE.lhs(len(param_space), n):
+        values = map(percent_index, zip(param_space, sample))
+        yield dict(zip(param_space, value))
+
+
+def parse_name(name, name_format, prefix=''):
+    pattern = '^' + name_format.replace('{',   r'(?P<') \
+                               .replace(':d}', r'>\d+)') \
+                               .replace(':f}', r'>[-+]?(\d*\.\d+|\d+)') \
+                               .replace(':g}', r'>[-+]?(\d*\.\d+|\d+)(e[-+]?\d+)?)') \
+                               .replace('}',   r'>.*)') + '$'
+    try:
+        return OrderedDict((prefix+p, v) for p,v in re.match(pattern, name).groupdict().items())
+    except AttributeError:
+        raise Exception('failed to parse {} with format {}'.format(repr(name), name_format))
+
+
 def parse_gan_name(gan_model_name):
+
+    print('Parsing GAN model name {}'.format(gan_model_name))
 
     m = re.match(r'^(.+)_([^_]+e(\d+).+)_((d(isc|(\d+)).*))$', gan_model_name)
     params = dict(
@@ -70,22 +159,42 @@ def parse_gan_name(gan_model_name):
         gen_model_name=m.group(2),
         gen_model_version=m.group(3),
         disc_model_name=m.group(4),
-        disc_model_version='01' if m.group(5) == 'disc' else m.group(6)
+        disc_model_version='00' if m.group(4) in {'disc', 'disc2'} else \
+            ('01' if m.group(5) == 'disc' else m.group(6))
     )
     try:
-        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['12']))
+        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['12'], 'job_params.'))
     except:
-        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['11']))
-    params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
-    params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'disc_'))
+        try:
+            params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['11'], 'job_params.'))
+        except:
+            params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['10'], 'job_params.'))
+    try:
+        solver_file = 'solvers/{}.solver'.format(params['job_params.solver_name'])
+        params.update(**read_params_from_solver(solver_file, 'job_params.solver_params.'))
+    except IOError:
+        params.update(**read_params_from_solver('solvers/adam0.solver', 'job_params.solver_params.'))
+    params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'job_params.gen_model_params.'))
+    params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'job_params.disc_model_params.'))
+    params['job_params.gen_model_params.loss_types'] += 'g'
     return params
 
 
 def parse_gen_name(gen_model_name):
 
     m = re.match(r'[^_]+e(\d+).+', gen_model_name)
-    params = dict(gen_model_verison=tuple(map(int, m.group(1))))
-    params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'gen_'))
+    params = dict(gen_model_version=m.group(1))
+    try:
+        params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'job_params.gen_model_params.'))
+    except Exception as e:
+        if params['gen_model_version'] == '11':
+            try:
+                params.update(parse_name(gen_model_name, NAME_FORMATS['gen']['110'], 'job_params.gen_model_params.'))
+            except:
+                raise e
+        else:
+            raise e
+    params.update(**read_params_from_solver('solvers/adam0.solver', 'job_params.solver_params.'))
     return params
 
 
@@ -135,9 +244,12 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
     use_covalent_radius = 'c' in data_options
+    binary_atoms = 'b' in data_options
+    fixed_radius = 'f' in data_options
 
     leaky_relu = 'l' in arch_options
     gaussian_output = 'g' in arch_options
+    sigmoid_output = 's' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
     dense_net = 'd' in arch_options      
@@ -163,6 +275,8 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             batch_size=batch_size,
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
+            binary_occupancy=binary_atoms,
+            fixed_radius=fixed_radius and np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=True,
             balanced=False,
             random_rotation=True,
@@ -178,6 +292,8 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             batch_size=batch_size,
             dimension=(data_dim - 1)*resolution,
             resolution=resolution,
+            binary_occupancy=binary_atoms,
+            fixed_radius=fixed_radius and np.sqrt(3)*resolution/2 + 1e-6,
             shuffle=False,
             balanced=False,
             random_rotation=False,
@@ -679,17 +795,24 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
                 curr_top = net[conv]
 
             # separate output blob from the one used for gen loss is needed for GAN backprop
-            gen = '{}_gen'.format(dec)
-            net[gen] = caffe.layers.Power(curr_top)
+            if sigmoid_output:
+                gen = '{}_gen'.format(dec)
+                net[gen] = caffe.layers.Sigmoid(curr_top)
+            else:
+                gen = '{}_gen'.format(dec)
+                net[gen] = caffe.layers.Power(curr_top)
 
-    elif loss_types:
+    elif loss_types: # discriminative model
         label_top = net.label
 
         # output
-        if n_latent > 1:
-            net.output = caffe.layers.Softmax(curr_top)
+        if sigmoid_output:
+            if n_latent > 1:
+                net.output = caffe.layers.Softmax(curr_top)
+            else:
+                net.output = caffe.layers.Sigmoid(curr_top)
         else:
-            net.output = caffe.layers.Sigmoid(curr_top)
+            net.output = caffe.layers.Power(curr_top)
 
     # loss
     if 'e' in loss_types:
@@ -746,7 +869,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
     if 'x' in loss_types:
 
-        if n_latent > 1:
+        if n_latent > 1 and not decoders:
             net.log_loss = caffe.layers.SoftmaxWithLoss(curr_top, label_top, loss_weight=1.0)
         else:
             net.log_loss = caffe.layers.SigmoidCrossEntropyLoss(curr_top, label_top, loss_weight=1.0)

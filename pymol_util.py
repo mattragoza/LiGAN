@@ -7,29 +7,6 @@ import isoslider
 import atom_types
 
 
-def interp(v1, v2, k):
-    return [(1 - k)*x1 + k*x2 for x1, x2 in zip(v1, v2)]
-
-
-def get_channel_color(channel):
-    if 'LigandAliphatic' in channel.name:
-        return [1.0, 0.5, 1.0]
-    elif 'LigandAromatic' in channel.name:
-        return [1.0, 0.0, 1.0]
-    elif 'ReceptorAliphatic' in channel.name:
-        return [1.0, 1.0, 1.0]
-    elif 'ReceptorAromatic' in channel.name:
-        return [0.7, 0.7, 0.7]
-    else:
-        elem_color = atom_types.get_rgb(channel.atomic_num)
-        if 'Donor' in channel.name and 'Acceptor' not in channel.name:
-            return interp(elem_color, [1.0, 1.0, 1.0], 0.33)
-        elif 'Acceptor' in channel.name and 'Donor' not in channel.name:
-            return interp(elem_color, [0.0, 0.0, 0.0], 0.33)
-        else:
-            return elem_color
-
-
 def set_atom_level(level, selection='*', state=None):
 
     channels = atom_types.get_default_channels(True)
@@ -37,7 +14,7 @@ def set_atom_level(level, selection='*', state=None):
     channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
 
     for channel in channels:
-        cmd.set_color(channel.name+'$', get_channel_color(channel))
+        cmd.set_color(channel.name+'$', atom_types.get_channel_color(channel))
 
     # first identify .dx atom density grids
     dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
