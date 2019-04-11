@@ -90,7 +90,8 @@ class SlurmQueue(JobQueue):
         columns = lines[1].split(' ')
         col_data = {c: [] for c in columns}
         for line in filter(len, lines[2:]):
-            fields = line.split(' ')
+            fields = paren_split(line, sep=' ')
+            print(zip(columns, fields))
             for i, field in enumerate(fields):
                 col_data[columns[i]].append(field)
 
@@ -113,6 +114,32 @@ class SlurmQueue(JobQueue):
     @staticmethod
     def get_scr_dir(job_id):
         return '/scratch/slumr-{}'.format(job_id)
+
+
+def paren_split(string, sep):
+    '''
+    Split string by instances of sep character that are
+    outside of balanced parentheses.
+    '''
+    fields = []
+    last_sep = -1
+    esc_level = 0
+    for i, char in enumerate(string):
+        if char in sep and esc_level == 0:
+            fields.append(string[last_sep+1:i])
+            last_sep = i
+        elif char == '(':
+            esc_level += 1
+        elif char == ')':
+            if esc_level > 0:
+                esc_level -= 1
+            else:
+                raise ValueError('missing open parentheses')
+    if esc_level == 0:
+        fields.append(string[last_sep+1:])
+    else:
+        raise ValueError('missing close parentheses')
+    return fields
 
 
 def get_terminal_size():

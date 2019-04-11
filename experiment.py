@@ -39,13 +39,12 @@ class Experiment(object):
 
             self.job_params = params.ParamSpace(job_params)
             self.df = pd.DataFrame(list(job_params.flatten(scope='job_params')))
+            self.df['work_dir'] = self.df.apply(self._get_work_dir, axis=1)
+            self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
+            self.df['array_idx'] = self.df.apply(self._get_array_idx, axis=1)
 
         elif expt_file:
             self.df = pd.read_csv(expt_file, sep=' ', index_col=None)
-
-        self.df['work_dir'] = self.df.apply(self._get_work_dir, axis=1)
-        self.df['job_file'] = self.df.apply(self._get_job_file, axis=1)
-        self.df['array_idx'] = self.df.apply(self._get_array_idx, axis=1)
 
     @classmethod
     def from_file(cls, expt_file):

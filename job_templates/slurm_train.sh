@@ -1,11 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=<JOB_NAME>
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --cluster=gpu
+#SBATCH --partition=<QUEUE>
 #SBATCH --gres=gpu:1
 #SBATCH --mem=<MEMORY>
 #SBATCH --time=<WALLTIME>
 #SBATCH --qos=normal
-#SBATCH --cluster=gpu
-#SBATCH --partition=<QUEUE>
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 <JOB_PARAMS>
