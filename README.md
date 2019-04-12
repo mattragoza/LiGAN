@@ -66,12 +66,34 @@ This allows models to be differentiated by their name. If a custom name format i
 
 The following command will create the model file described by the params file in the previous section:
 
-`python models.py tutorial/gen_model.params -n example_gen -o tutorial`
+`python models.py tutorial/model.params -n example -o tutorial`
 
 
 ### Creating solvers
 
-todo
+Training hyperparameters must be listed in a solver file, which can be created with solvers.py.
+
+```
+usage: solvers.py [-h] -n SOLVER_NAME [-o OUT_PREFIX] params_file
+
+Create solver prototxt files
+
+positional arguments:
+  params_file           file defining solver params or dimensions of param
+                        space
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -n SOLVER_NAME, --solver_name SOLVER_NAME
+                        solver name format
+  -o OUT_PREFIX, --out_prefix OUT_PREFIX
+                        common output prefix for model files
+```
+Similar to models.py, this script creates a solver file for each parameter assignment in the params file, and again the files are named according to a name format.
+
+The following command will create a solver file from an example params file:
+
+`python solvers.py tutorial/solver.params -n example -o tutorial`
 
 ### Creating job scripts
 
