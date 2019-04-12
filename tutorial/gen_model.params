@@ -1,11 +1,9 @@
-encode_type = ['vl-l', 'vr-l']
+encode_type = '_vl-l'
 data_dim = 24
-resolution = 0.5
-data_options = ''
 n_levels = 3
 conv_per_level = 2
 arch_options = 'l'
 n_filters = 32
 width_factor = 2
 n_latent = 1024
-loss_types = ['', 'e']
+loss_types = 'e'

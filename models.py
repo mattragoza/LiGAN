@@ -897,8 +897,9 @@ def get_last_value(ord_dict):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files')
     parser.add_argument('params_file', help='file defining model params or dimensions of param space')
-    parser.add_argument('-m', '--model_type', required=True, help='model name format type (data, gen, or disc)')
-    parser.add_argument('-v', '--version', required=True, help='model name format version (e.g. 13, default most recent)')
+    parser.add_argument('-n', '--model_name', help='custom model name format')
+    parser.add_argument('-m', '--model_type', default=None, help='model name format type (data, gen, or disc)')
+    parser.add_argument('-v', '--version', default=None, help='model name format version (e.g. 13, default most recent)')
     parser.add_argument('-s', '--scaffold', action='store_true', help='do Caffe model scaffolding')
     parser.add_argument('-o', '--out_prefix', default='models', help='common output prefix for model files')
     parser.add_argument('--gpu', default=False, action='store_true')
@@ -908,19 +909,33 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
+    if not args.model_name and not args.model_type:
+        raise ValueError('must specify a custom model name format or a model type to use the default name format')
+
+    if not args.model_name: # use a default name format
+
+        if args.version is None:
+            if args.model_type == 'data':
+                args.version = '11'
+            elif args.model_type == 'gen':
+                args.version = '11'
+            elif args.model_type == 'disc':
+                args.version = '13'
+
+        args.model_name = NAME_FORMATS[args.model_type][args.version]
+
     if args.scaffold and args.gpu:
         caffe.set_mode_gpu()
 
-    name_format = NAME_FORMATS[args.model_type][args.version]
-    param_space = read_param_space(args.params_file)
+    param_space = params.ParamSpace(args.params_file, format=args.model_name.format)
 
     model_data = []
-    for params in param_space_product(param_space):
+    for model_params in param_space:
 
-        model_name = name_format.format(**params)
+        model_name = model_params.name
         model_file = os.path.join(args.out_prefix, model_name + '.model')
-        net_param = make_model(**params)
-        write_model(model_file, net_param, params)
+        net_param = make_model(**model_params)
+        write_model(model_file, net_param, model_params)
 
         if args.scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
