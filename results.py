@@ -362,7 +362,9 @@ def add_param_columns(df):
             except AttributeError:
                 model_params = models.parse_gen_name(model_name)
         for param, value in job_params.items():
-            agg_df.loc[job_file, param] = value
+            df.loc[job_file, param] = value
+    return job_params
+
 
 
 def add_group_column(df, group_cols):
@@ -427,7 +429,7 @@ def main(argv):
         args.y = sorted(args.y, key=get_y_key, reverse=True)
 
     # parse model name to get model params and add columns
-    model_params = add_param_columns(agg_df)
+    job_params = add_param_columns(agg_df)
 
     print('\nAGGREGATED DATA')
     print(agg_df)
