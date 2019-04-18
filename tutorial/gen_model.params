@@ -1,5 +1,7 @@
 encode_type = '_vl-l'
 data_dim = 24
+resolution = 0.5
+data_options = ''
 n_levels = 3
 conv_per_level = 2
 arch_options = 'l'
