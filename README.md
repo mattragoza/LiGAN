@@ -9,7 +9,6 @@ liGAN is a python environment for training and evaluating deep generative models
 A few scripts in this project take a "params file" as an argument. These are simple text files where each line assigns a value to a parameter in Python-like syntax. The values must be Python literals, and the meaning of the parameters depends on which script the params file is created for.
 
 Here is an example params file that creates a particular model architecture when provided to the models.py script:
-
 ```
 encode_type = '_vl-l'
 data_dim = 24
@@ -18,13 +17,12 @@ conv_per_level = 2
 arch_options = 'l'
 n_filters = 32
 width_factor = 2
-n_latent = 1024
+n_latent = [1024, 2048]
 loss_types = 'e'
 ```
-Any parameter can instead be assigned a list of values instead of a single value. In that case, the params file represents the set of parameter assignments formed by taking the Cartesian product of the values assigned to each parameter.
+Any parameter can instead be assigned a list of values instead of a single value. In that case, the params file represents the every possible combination of parameter assignments.
 
-For example, in the above file, the second to last line could be changed to `n_latent = [1024, 2048]`. Then the file represents a parameter space consisting of two model architectures, each with a different latent space size (and all other parameters identical).
-
+For example, in the above file, the `n_latent` parameter is assigned two values, so two model architectures can be created from the file- each with a different latent space size and all other parameters identical.
 
 ### Creating models
 
@@ -54,21 +52,21 @@ optional arguments:
                         common output directory for model files
   --gpu
 ```
-This script creates a model architecture file for each parameter assignment in the params file. The created files are named according to a name format, which can either be set explicitly with the -n argument, or a default format for a certain model type can be used with the -m argument.
+This script creates a model architecture file for each parameter assignment in the params file. The created files are named according to a name format, which can either be set explicitly with the -n argument, or a default format for a certain model type can be used by passing the -m argument.
 
 Name formats are simply strings that are formatted with the parameters used to create the model. For example, the current default format for the 'gen' model type is as follows:
 
 `{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}`
 
-This allows models to be differentiated by their name. If a custom name format is used instead, one should be careful not to underspecify the parameters- otherwise multiple models with the same name might be created, overwriting each other.
+This allows models to be differentiated by their name. If a custom name format is used, be careful not to underspecify the parameters- otherwise multiple models with the same name might be created, overwriting each other.
 
-The following command will create the model file described by the params file in the previous section:
+The following command will create the two models described by the params file in the previous section:
 
-`python models.py tutorial/model.params -o tutorial/models -n example`
+`python models.py tutorial/model.params -o tutorial/models -n gen{n_latent}`
 
 ### Creating solvers
 
-Training hyperparameters must be listed in a solver file, which can be created with solvers.py.
+To train a model with Caffe, training hyperparameters must be listed in a solver file. These can be created with solvers.py.
 
 ```
 usage: solvers.py [-h] -n SOLVER_NAME -o OUT_DIR params_file
@@ -90,7 +88,7 @@ Similar to models.py, this script creates a solver file for each parameter assig
 
 The following command will create a solver file from an example params file:
 
-`python solvers.py tutorial/solver.params -o tutorial/solvers -n example`
+`python solvers.py tutorial/solver.params -o tutorial/solvers -n adam0`
 
 ### Creating job scripts
 
@@ -113,11 +111,11 @@ optional arguments:
   -o OUT_DIR, --out_dir OUT_DIR
                         common directory for job working directories
 ```
-This script works by filling in placeholder values in a template job script with a set of parameter assignments. Just as in the models and solvers scripts, the parameter ranges are provided as a params file and the invidiual jobs are named according to a name format. Some basic job template scripts are included in the job_templates sub directory, or they can be tailored to your needs.
+This fills in placeholder values in a template job script with each set of parameter assignments. Just as in the models and solvers scripts, the parameter ranges are provided as a params file, and the individual jobs are named according to a name format. Some basic job template scripts are included in the job_templates sub directory, or they can be tailored to your needs.
 
-A slight difference in this script is that the name format string is used to create a working directory for the job to run in rather than to name the job script itself.
+A slight difference in this script is that the name format string is used to create a working directory for the job to run in rather than to name the job script itself. The parameterized job scripts are each created in their own working directory.
 
-The following command will create a job script in a working directory from an example params file:
+The following command will create a job script from an example params file:
 
 `python job_scripts.py tutorial/job.params -b job_templates/slurm_train.sh -o tutorial -n test`
 

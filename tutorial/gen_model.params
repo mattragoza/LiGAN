@@ -5,5 +5,5 @@ conv_per_level = 2
 arch_options = 'l'
 n_filters = 32
 width_factor = 2
-n_latent = 1024
+n_latent = [1024, 2048]
 loss_types = 'e'
