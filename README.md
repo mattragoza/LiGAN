@@ -93,7 +93,7 @@ optional arguments:
 ```
 Similar to models.py, this script creates a solver file for each parameter assignment in the params file, and again the files are named according to a name format.
 
-The following command will create a solver file from an example params file:
+Run this command to create a solver file for training with the Adam optimizer:
 
 `python solvers.py tutorial/solver.params -o tutorial/solvers -n adam0`
 
@@ -122,12 +122,13 @@ This fills in placeholder values in a template job script with each set of param
 
 A slight difference in this script is that the name format string is used to create a working directory for the job to run in rather than to name the job script itself. The parameterized job scripts are each created in their own working directory.
 
-The following command will create a job script from an example params file:
+This command creates a job script to train each of the two generative models we've created so far:
 
-`python job_scripts.py tutorial/job.params -b job_templates/slurm_train.sh -o tutorial -n {gen_model_name}_{solver_name}`
+`python job_scripts.py tutorial/job.params -b job_templates/slurm_train.sh -o tutorial -n {gen_model_name}`
 
 ### Submitting jobs
-todo
+
+Once you've created a set of job scripts, you can easily submit them to a queue:
 
 ### Monitoring job status
 

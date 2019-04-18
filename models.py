@@ -925,9 +925,9 @@ def main(argv):
             if args.model_type == 'data':
                 args.version = '11'
             elif args.model_type == 'gen':
-                args.version = '11'
-            elif args.model_type == 'disc':
                 args.version = '13'
+            elif args.model_type == 'disc':
+                args.version = '11'
 
         args.model_name = NAME_FORMATS[args.model_type][args.version]
 
