@@ -44,17 +44,17 @@ def make_solver(**solver_params):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description='Create solver prototxt files')
+    parser = argparse.ArgumentParser(description='Create solver prototxt files from solver params')
     parser.add_argument('params_file', help='file defining solver params or dimensions of param space')
     parser.add_argument('-n', '--solver_name', required=True, help='solver name format')
-    parser.add_argument('-o', '--out_prefix', default='models', help='common output prefix for model files')
+    parser.add_argument('-o', '--out_dir', required=True, help='common output directory for solver files')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
     param_space = params.ParamSpace(args.params_file, format=args.solver_name.format)
-    write_solvers(args.out_prefix, param_space, print_=True)
+    write_solvers(args.out_dir, param_space, print_=True)
 
 
 if __name__ == '__main__':

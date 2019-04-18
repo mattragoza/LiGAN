@@ -35,7 +35,7 @@ def write_file(file_, buf):
         f.write(buf)
 
 
-def write_job_scripts(expt_dir, job_template_file, param_space):
+def write_job_scripts(expt_dir, job_template_file, param_space, print_=False):
     '''
     Write a job script in a separate sub dir of expt_dir for every
     set of params in param_space, by filling in job_template_file.
@@ -45,20 +45,21 @@ def write_job_scripts(expt_dir, job_template_file, param_space):
 
     for job_params in param_space:
 
-        job_params['job_name'] = str(job_params)
-        job_dir = os.path.join(expt_dir, str(job_params))
+        job_dir = os.path.join(expt_dir, job_params.name)
         if not os.path.isdir(job_dir):
             os.makedirs(job_dir)
 
         job_file = os.path.join(job_dir, job_base)
         write_job_script(job_file, job_template, job_params)
+        if print_:
+            print(job_file)
 
 
 def write_job_script(job_file, job_template, job_params):
     '''
     Write a job script to job_file by filling in job_template with job_params.
     '''
-    buf = params.format_params(job_params, '# ')
+    buf = params.format_params(job_params, line_start='# ')
     buf = fill_job_template(job_template, dict(job_name=job_params.name, job_params=buf))
     buf = fill_job_template(buf, job_params)
     write_file(job_file, buf)
@@ -87,28 +88,18 @@ def expand_train_options(args):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description='Create pbs script templates with GAN solver parameters')
-    parser.add_argument('-o', '--out_prefix', default='pbs_templates', help='common prefix for pbs output files')
+    parser = argparse.ArgumentParser(description='Create job scripts from a template and job params')
+    parser.add_argument('params_file', help='file defining job params or dimensions of param space')
+    parser.add_argument('-n', '--job_name', required=True, help='job name format')
+    parser.add_argument('-b', '--job_template', required=True, help='job script template file')
+    parser.add_argument('-o', '--out_dir', required=True, help='common directory for job working directories')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
-
-    with open('pbs_templates/template.pbs', 'r') as f:
-        pbs_template = f.read()
-
-    for kwargs in keyword_product(**SOLVER_SEARCH_SPACE):
-
-        pbs_name = SOLVER_NAME_FORMAT.format(**kwargs)
-
-        pbs_file = os.path.join(args.out_prefix, pbs_name + '.pbs')
-        kwargs['train_options'] = expand_train_options(kwargs['train_options'])
-        pbs_filled = fill_template(pbs_template, **kwargs)
-
-        with open(pbs_file, 'w') as f:
-            f.write(pbs_filled)
-            print(pbs_file)
+    param_space = params.ParamSpace(args.params_file, format=args.job_name.format)
+    write_job_scripts(args.out_dir, args.job_template, param_space, print_=True)
 
 
 if __name__ == '__main__':
