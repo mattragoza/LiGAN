@@ -46,8 +46,8 @@ def make_solver(**solver_params):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create solver prototxt files from solver params')
     parser.add_argument('params_file', help='file defining solver params or dimensions of param space')
-    parser.add_argument('-n', '--solver_name', required=True, help='solver name format')
     parser.add_argument('-o', '--out_dir', required=True, help='common output directory for solver files')
+    parser.add_argument('-n', '--solver_name', required=True, help='solver name format')
     return parser.parse_args(argv)
 
 

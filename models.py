@@ -904,12 +904,12 @@ def get_last_value(ord_dict):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create model prototxt files from model params')
     parser.add_argument('params_file', help='file defining model params or dimensions of param space')
-    parser.add_argument('-n', '--model_name', help='custom model name format')
-    parser.add_argument('-m', '--model_type', default=None, help='model name format type (data, gen, or disc)')
-    parser.add_argument('-v', '--version', default=None, help='model name format version (e.g. 13, default most recent)')
-    parser.add_argument('-s', '--scaffold', action='store_true', help='attempt to scaffold models in Caffe')
     parser.add_argument('-o', '--out_dir', required=True, help='common output directory for model files')
-    parser.add_argument('--gpu', default=False, action='store_true')
+    parser.add_argument('-n', '--model_name', help='custom model name format')
+    parser.add_argument('-m', '--model_type', default=None, help='model type, for default model name format (e.g. data, gen, or disc)')
+    parser.add_argument('-v', '--version', default=None, help='version, for default model name format (e.g. 13, default most recent)')
+    parser.add_argument('-s', '--scaffold', action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--gpu', default=False, action='store_true', help='if scaffolding, use the GPU')
     return parser.parse_args(argv)
 
 
