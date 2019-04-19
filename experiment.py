@@ -13,7 +13,7 @@ def get_terminal_size():
 import params
 import models
 import solvers
-import job_templates
+import job_scripts
 import job_queue
 
 
@@ -120,7 +120,7 @@ class Experiment(object):
         job_params = params.Params((p.replace('job_params.', ''), v) for p, v in job.items() if p.startswith('job_params'))
         job_params.name = job['job_name']
 
-        job_templates.write_job_script(job['job_file'], self.job_template, job_params)
+        job_scripts.write_job_script(job['job_file'], self.job_template, job_params)
         print(job['job_file'])
 
     def setup(self):
