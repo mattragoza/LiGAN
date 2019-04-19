@@ -58,9 +58,19 @@ class JobQueue(object):
             return cls._parse_status(stdout)
 
     @classmethod
-    def submit_job(cls, job_file, array_idx):
+    def submit_job(cls, job_file, array_idx=None, work_dir=None):
+
+        job_file = os.path.abspath(job_file)
+        if work_dir is not None:
+            orig_dir = os.getcwd()
+            os.chdir(work_dir)
+
         cmd = cls._submit_cmd(job_file, array_idx)
         stdout, stderr = run_subprocess(cmd)
+
+        if work_dir is  not None:
+            os.chdir(orig_dir)
+
         if stderr:
             raise Exception(stderr)
         else:
@@ -80,8 +90,11 @@ class SlurmQueue(JobQueue):
         return 'squeue --cluster=gpu --name={} --format="{}"'.format(','.join(job_names), out_format)
 
     @staticmethod
-    def _submit_cmd(job_file, array_idx):
-        return 'sbatch {} --array={}'.format(job_file, array_idx)
+    def _submit_cmd(job_file, array_idx=None):
+        cmd = 'sbatch {}'.format(job_file)
+        if array_idx is not None:
+            cmd += ' --array={}'.format(array_idx)
+        return cmd
 
     @staticmethod
     def _parse_status(stdout):
@@ -91,7 +104,6 @@ class SlurmQueue(JobQueue):
         col_data = {c: [] for c in columns}
         for line in filter(len, lines[2:]):
             fields = paren_split(line, sep=' ')
-            print(zip(columns, fields))
             for i, field in enumerate(fields):
                 col_data[columns[i]].append(field)
 

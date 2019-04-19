@@ -93,6 +93,7 @@ def parse_args(argv):
     parser.add_argument('-b', '--job_template', required=True, help='job script template file')
     parser.add_argument('-o', '--out_dir', required=True, help='common directory for job working directories')
     parser.add_argument('-n', '--job_name', required=True, help='job name format')
+    parser.add_argument('-e', '--expt_name', help='experiment name, for status file')
     return parser.parse_args(argv)
 
 
