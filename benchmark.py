@@ -42,10 +42,13 @@ def benchmark_net(net, n):
     df['t_backward'] = pd.Series(dtype=float)
     df['gpu_mem_usage'] = pd.Series(dtype=int)
     df['gpu_mem_limit'] = pd.Series(dtype=int)
-    gpu_id = 0 #check_gpu_ids(os.getpid())[0]
+    gpu_id = check_gpu_ids(os.getpid())[0]
 
     for i in range(n):
         df.loc[i, 'model_file'] = model_file
+        df.loc[i, 'n_params'] = net.get_n_params()
+        df.loc[i, 'n_activs'] = net.get_n_activs()
+        df.loc[i, 'approx_size'] = net.get_approx_size()
         df.loc[i, 't_forward']  = time_function_call(net.forward)
         df.loc[i, 't_backward'] = time_function_call(net.backward)
         df.loc[i, ('gpu_mem_usage', 'gpu_mem_limit')] = check_gpu_memory(gpu_id)
@@ -55,12 +58,11 @@ def benchmark_net(net, n):
 
 if __name__ == '__main__':
 
-    _, model_file = sys.argv
+    _, model_file, n = sys.argv
 
     net = caffe_util.Net(model_file, caffe.TEST)
-    print('{:.2f} MiB'.format(net.get_size()/float(2**20)))
+    df = benchmark_net(net, n=int(n))
 
-    df = benchmark_net(net, n=50)
     print(df)
     print('MEAN')
     print(df.mean())

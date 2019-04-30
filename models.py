@@ -2,6 +2,7 @@ from __future__ import print_function, division
 import sys, os, re, argparse, itertools, ast
 from collections import OrderedDict
 import numpy as np
+import pandas as pd
 import caffe
 
 import caffe_util
@@ -61,16 +62,36 @@ def write_models(model_dir, param_space, scaffold=False, print_=False):
     if not os.path.isdir(model_dir):
         os.makedirs(model_dir)
 
-    for model_params in param_space:
-        model_file = os.path.join(model_dir, '{}.model'.format(model_params))
+    if scaffold:
+        df = pd.DataFrame(index=range(len(param_space)))
+
+    model_names = []
+    for i, model_params in enumerate(param_space):
+
+        model_file = os.path.join(model_dir, '{}.model'.format(model_params.name))
         net_param = make_model(**model_params)
         write_model(model_file, net_param, model_params)
+        model_names.append(model_params.name)
 
         if scaffold:
             net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
+            df.loc[i, 'model_file'] = model_file
+            df.loc[i, 'n_params'] = net.get_n_params()
+            df.loc[i, 'n_activs'] = net.get_n_activs()
+            df.loc[i, 'size'] = net.get_approx_size()
 
-        if print_:
+            if print_:
+                print(df.loc[i])
+
+        elif print_:
             print(model_file)
+
+    if scaffold:
+        print('MODELS')
+        print(df)
+
+    if print_:
+        print(model_names)
 
 
 def parse_params(buf, line_start='', delim='=', prefix='', converter=ast.literal_eval):
@@ -908,8 +929,8 @@ def parse_args(argv):
     parser.add_argument('-n', '--model_name', help='custom model name format')
     parser.add_argument('-m', '--model_type', default=None, help='model type, for default model name format (e.g. data, gen, or disc)')
     parser.add_argument('-v', '--version', default=None, help='version, for default model name format (e.g. 13, default most recent)')
-    parser.add_argument('-s', '--scaffold', action='store_true', help='attempt to scaffold models in Caffe')
-    parser.add_argument('--gpu', default=False, action='store_true', help='if scaffolding, use the GPU')
+    parser.add_argument('--scaffold', action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--gpu', default=False, action='store_true', help='if benchmarking, use the GPU')
     return parser.parse_args(argv)
 
 
@@ -931,8 +952,10 @@ def main(argv):
 
         args.model_name = NAME_FORMATS[args.model_type][args.version]
 
-    if args.scaffold and args.gpu:
+    if args.gpu:
         caffe.set_mode_gpu()
+    else:
+        caffe.set_mode_cpu()
 
     param_space = params.ParamSpace(args.params_file, format=args.model_name.format)
     write_models(args.out_dir, param_space, args.scaffold, print_=True)
