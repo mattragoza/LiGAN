@@ -317,7 +317,7 @@ def read_model_dirs(expt_file):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Plot results of generative model experiments')
-    parser.add_argument('expt_file', help="file specifying experiment directories")
+    parser.add_argument('job_script', nargs='+', help="submission scripts for jobs to plot reuslts for")
     parser.add_argument('-d', '--data_name', default='lowrmsd', help='base prefix of data used in experiment (default "lowrmsd")')
     parser.add_argument('-s', '--seeds', default='0', help='comma-separated random seeds used in experiment (default 0)')
     parser.add_argument('-f', '--folds', default='0,1,2', help='comma-separated train/test fold numbers used (default 0,1,2)')
@@ -350,12 +350,30 @@ def aggregate_data(df, group_cols):
     return df.groupby(group_cols).agg(f)
 
 
+def prepend_keys(dct, prefix):
+    return type(dct)((prefix+k, v) for (k, v) in dct.items())
+
+
 def add_param_columns(df):
     for job_file, job_df in df.groupby(level=0):
         try: # try to parse it as a GAN
             job_params = params.read_params(job_file, line_start='# ')
+
+            data_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['data_model_name'] + '.model')
+            data_model_params = params.read_params(data_model_file, line_start='# ')
+            job_params.update(prepend_keys(data_model_params, prefix='data_model_params.'))
+
+            gen_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['gen_model_name'] + '.model')
+            gen_model_params = params.read_params(gen_model_file, line_start='# ')
+            job_params.update(prepend_keys(gen_model_params, prefix='gen_model_params.'))
+
+            disc_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['disc_model_name'] + '.model')
+            disc_model_params = params.read_params(disc_model_file, line_start='# ')
+            job_params.update(prepend_keys(disc_model_params, prefix='disc_model_params.'))
+
             del job_params['seed'] # these already exist
             del job_params['fold']
+
         except AttributeError:
             try: # try to parse model name as a GAN
                 model_params = models.parse_gan_name(model_name)
@@ -391,7 +409,7 @@ def main(argv):
     folds = args.folds.split(',')
 
     # get all training output data from experiment
-    job_files = pd.read_csv(args.expt_file, sep=' ', index_col=None)['job_file']
+    job_files = args.job_script
     df = read_training_output_files(job_files, args.data_name, seeds, folds, args.iteration, True, args.gen_metrics)
 
     if args.test_data is not None:
