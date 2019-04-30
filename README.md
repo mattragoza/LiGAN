@@ -130,6 +130,8 @@ This command creates a job script to train each of the two generative models we'
 
 Once you've created a set of job scripts, you can easily submit them to a queue:
 
+`python submit_job.py tutorial/*/slurm_train.sh`
+
 ### Monitoring job status
 
 todo
