@@ -78,8 +78,29 @@ class JobQueue(object):
 
 
 class TorqueQueue(JobQueue):
-    
-    pass #TODO
+
+    @staticmethod
+    def _status_cmd(job_names):
+        return 'qstat'
+
+    @staticmethod
+    def _submit_cmd(job_file, array_idx=None):
+        cmd = 'qsub {}'.format(job_file)
+        if array_idx is not None:
+            cmd += ' -t {}'.format(array_idx)
+        return cmd
+
+    @staticmethod
+    def _parse_status(stdout):
+        raise NotImplementedError('TODO')
+
+    @staticmethod
+    def _parse_submit(stdout):
+        try:
+            return int(re.match(r'^(\d+)\.n198\.dcb\.private\.net\n$', stdout).group(1))
+        except Exception as e:
+            print(stdout)
+            raise
 
 
 class SlurmQueue(JobQueue):
