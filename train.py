@@ -434,7 +434,7 @@ def parse_args(argv):
     parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
     parser.add_argument('--random_seed', default=0, type=int, help='random seed for Caffe initialization and training (default 0)')
     parser.add_argument('--max_iter', default=10000, type=int, help='total number of train iterations (default 10000)')
-    parser.add_argument('--snapshot', default=1000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
+    parser.add_argument('--snapshot', default=5000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
     parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
     parser.add_argument('--gen_train_iter', default=20, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
