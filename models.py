@@ -266,8 +266,8 @@ def least_prime_factor(n):
 
 
 def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='', n_levels=0, conv_per_level=0,
-               arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='',
-               batch_size=16, conv_kernel_size=3, pool_type='a', unpool_type='n', growth_rate=16):
+               arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='', batch_size=16,
+               conv_kernel_size=3, latent_kernel_size=None, pool_type='a', unpool_type='n', growth_rate=16):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
@@ -282,11 +282,13 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
     batch_disc = 'b' in arch_options
     dense_net = 'd' in arch_options      
     init_conv_pool = 'i' in arch_options
+    fully_conv = 'c' in arch_options
 
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
     assert unpool_type in ['c', 'n']
     assert conv_kernel_size%2 == 1
+    assert not latent_kernel_size or latent_kernel_size%2 == 1
 
     n_channels = dict(rec=16, lig=19, data=16+19)
 
@@ -538,10 +540,26 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
             curr_top = net[bd_o]
 
-        # latent
-        if n_latent is not None:
+        # latent space
+        if variational:
 
-            if variational:
+            if fully_conv: # convolutional latent variables
+
+                mean = '{}_latent_mean'.format(enc)
+                net[mean] = caffe.layers.Convolution(curr_top,
+                    num_output=n_latent,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=latent_kernel_size,
+                    pad=latent_kernel_size//2)
+
+                log_std = '{}_latent_log_std'.format(enc)
+                net[log_std] = caffe.layers.Convolution(curr_top,
+                    num_output=n_latent,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=latent_kernel_size,
+                    pad=latent_kernel_size//2)
+
+            else:
 
                 mean = '{}_latent_mean'.format(enc)
                 net[mean] = caffe.layers.InnerProduct(curr_top,
@@ -553,59 +571,86 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
 
-                std = '{}_latent_std'.format(enc)
-                net[std] = caffe.layers.Exp(net[log_std])
+            std = '{}_latent_std'.format(enc)
+            net[std] = caffe.layers.Exp(net[log_std])
 
-                noise = '{}_latent_noise'.format(enc)
-                net[noise] = caffe.layers.DummyData(
-                    data_filler=dict(type='gaussian'),
-                    shape=dict(dim=[batch_size, n_latent]))
+            noise = '{}_latent_noise'.format(enc)
+            noise_shape = [batch_size, n_latent]
+            if fully_conv:
+                noise_shape += [1]
+            net[noise] = caffe.layers.DummyData(
+                data_filler=dict(type='gaussian'),
+                shape=dict(dim=noise_shape))
+            noise_top = net[noise]
 
-                std_noise = '{}_latent_std_noise'.format(enc)
-                net[std_noise] = caffe.layers.Eltwise(net[noise], net[std],
-                    operation=caffe.params.Eltwise.PROD)
+            if fully_conv: # broadcast noise sample along spatial axes
 
-                sample = '{}_latent_sample'.format(enc)
-                net[sample] = caffe.layers.Eltwise(net[std_noise], net[mean],
-                    operation=caffe.params.Eltwise.SUM)
+                noise_tile = '{}_latent_noise_tile'.format(enc)
+                net[noise_tile] = caffe.layers.Tile(net[noise], axis=2, tiles=curr_dim**3)
 
-                curr_top = net[sample]
+                noise_reshape = '{}_latent_noise_reshape'.format(enc)
+                net[noise_reshape] = caffe.layers.Reshape(net[noise_tile],
+                    shape=dict(dim=[batch_size, n_latent, curr_dim, curr_dim, curr_dim]))
 
-                # K-L divergence
+                noise_top = net[noise_reshape]
 
-                mean2 = '{}_latent_mean2'.format(enc)
-                net[mean2] = caffe.layers.Eltwise(net[mean], net[mean],
-                    operation=caffe.params.Eltwise.PROD)
+            std_noise = '{}_latent_std_noise'.format(enc)
+            net[std_noise] = caffe.layers.Eltwise(noise_top, net[std],
+                operation=caffe.params.Eltwise.PROD)
 
-                var = '{}_latent_var'.format(enc)
-                net[var] = caffe.layers.Eltwise(net[std], net[std],
-                    operation=caffe.params.Eltwise.PROD)
+            sample = '{}_latent_sample'.format(enc)
+            net[sample] = caffe.layers.Eltwise(net[std_noise], net[mean],
+                operation=caffe.params.Eltwise.SUM)
 
-                one = '{}_latent_one'.format(enc)
-                net[one] = caffe.layers.DummyData(
-                    data_filler=dict(type='constant', value=1),
-                    shape=dict(dim=[batch_size, n_latent]))
+            curr_top = net[sample]
 
-                kldiv = '{}_latent_kldiv'.format(enc)
-                net[kldiv] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
-                    operation=caffe.params.Eltwise.SUM,
-                    coeff=[-0.5, -1.0, 0.5, 0.5])
+            # K-L divergence
 
-                loss = 'kldiv_loss' # TODO handle multiple K-L divergence losses
-                net[loss] = caffe.layers.Reduction(net[kldiv],
-                    operation=caffe.params.Reduction.SUM,
-                    loss_weight=1.0/batch_size)
+            mean2 = '{}_latent_mean2'.format(enc)
+            net[mean2] = caffe.layers.Eltwise(net[mean], net[mean],
+                operation=caffe.params.Eltwise.PROD)
+
+            var = '{}_latent_var'.format(enc)
+            net[var] = caffe.layers.Eltwise(net[std], net[std],
+                operation=caffe.params.Eltwise.PROD)
+
+            one = '{}_latent_one'.format(enc)
+            one_shape = [batch_size, n_latent]
+            if fully_conv:
+                one_shape += [curr_dim]*3
+            net[one] = caffe.layers.DummyData(
+                data_filler=dict(type='constant', value=1),
+                shape=dict(dim=one_shape))
+
+            kldiv = '{}_latent_kldiv'.format(enc)
+            net[kldiv] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
+                operation=caffe.params.Eltwise.SUM,
+                coeff=[-0.5, -1.0, 0.5, 0.5])
+
+            loss = 'kldiv_loss' # TODO handle multiple K-L divergence losses
+            net[loss] = caffe.layers.Reduction(net[kldiv],
+                operation=caffe.params.Reduction.SUM,
+                loss_weight=1.0/batch_size)
+
+        else:
+
+            if fully_conv:
+                conv = '{}_latent_conv'.format(enc)
+                net[conv] = caffe.layers.Convolution(curr_top,
+                    num_output=n_latent,
+                    weight_filler=dict(type='xavier'),
+                    kernel_size=latent_kernel_size,
+                    pad=latent_kernel_size//2)
+                curr_top = net[conv]
 
             else:
-
                 fc = '{}_latent_fc'.format(enc)
                 net[fc] = caffe.layers.InnerProduct(curr_top,
                     num_output=n_latent,
                     weight_filler=dict(type='xavier'))
-
                 curr_top = net[fc]
 
-            encoder_tops.append(curr_top)
+        encoder_tops.append(curr_top)
 
     if len(encoder_tops) > 1: # concat latent vectors
 
@@ -624,7 +669,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             label_n_filters = n_channels[dec]
             next_n_filters = dec_init_n_filters if conv_per_level else n_channels[dec]
 
-            if n_latent is not None:
+            if not fully_conv:
 
                 fc = '{}_dec_fc'.format(dec)
                 net[fc] = caffe.layers.InnerProduct(curr_top,
