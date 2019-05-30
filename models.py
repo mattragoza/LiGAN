@@ -55,6 +55,25 @@ def write_model(model_file, net_param, model_params={}):
     write_file(model_file, buf)
 
 
+def scaffold_model(model_file, force=True):
+
+    scaff_out_file = model_file + '.scaffold_output'
+    try:
+        assert not force
+        scaff_params = params.read_params(scaff_out_file)
+        print(scaff_out_file)
+    except (IOError, AssertionError):
+        net = caffe_util.Net(model_file, phase=caffe.TRAIN)
+        scaff_params = params.Params()
+        scaff_params['n_params'] = net.get_n_params()
+        scaff_params['n_activs'] = net.get_n_activs()
+        scaff_params['size'] = net.get_approx_size()
+        scaff_params['min_width'] = net.get_min_width()
+        params.write_params(scaff_out_file, scaff_params)
+
+    return scaff_params
+
+
 def write_models(model_dir, param_space, scaffold=False, print_=False):
     '''
     Write a model in model_dir for every set of params in param_space.
@@ -74,12 +93,9 @@ def write_models(model_dir, param_space, scaffold=False, print_=False):
         model_names.append(model_params.name)
 
         if scaffold:
-            net = caffe_util.Net.from_param(net_param, phase=caffe.TRAIN)
             df.loc[i, 'model_file'] = model_file
-            df.loc[i, 'n_params'] = net.get_n_params()
-            df.loc[i, 'n_activs'] = net.get_n_activs()
-            df.loc[i, 'size'] = net.get_approx_size()
-
+            for k, v in scaffold_model(model_file).items():
+                df.loc[i, k] = v
             if print_:
                 print(df.loc[i])
 
@@ -340,7 +356,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
         net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
-        if not decoders:
+        if not (molgrid_data or decoders):
             net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
 
     # encoder(s)

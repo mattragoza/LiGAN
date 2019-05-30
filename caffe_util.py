@@ -122,6 +122,17 @@ class Net(caffe.Net):
     def get_approx_size(self):
         return 2*(self.get_n_params() + self.get_n_activs())*4
 
+    def get_min_width(self):
+        min_width = float('inf')
+        min_width_name = None
+        for blob_name, activ_blob in self.blobs.iteritems():
+            if '_latent_mean' in blob_name:
+                width = activ_blob.data.size / activ_blob.shape[0]
+                if width < min_width:
+                    min_width = width
+                    min_width_name = blob_name
+        return min_width
+
 
 class Solver(caffe._caffe.Solver):
 

@@ -29,12 +29,18 @@ def annotate_pearson_r(x, y, **kwargs):
     ax.annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8), xycoords='axes fraction', ha='center')
 
 
-def plot_corr(plot_file, df, x, y, height=6, width=6, **kwargs):
+def my_dist_plot(a, **kwargs):
+    if 'label' in kwargs:
+        kwargs['label'] = str(kwargs['label'])
+    return sns.distplot(a.dropna(), **kwargs)
+
+
+def plot_corr(plot_file, df, x, y, height=4, width=4, **kwargs):
 
     df = df.reset_index()
-    g = sns.PairGrid(df, x_vars=x, y_vars=y, height=height, aspect=width/float(height), **kwargs)
-    g.map_diag(sns.distplot, kde=False)
-    g.map_offdiag(plt.scatter, s=1.0, alpha=0.05)
+    g = sns.PairGrid(df, x_vars=x, y_vars=y, size=height, aspect=width/float(height), **kwargs)
+    g.map_diag(my_dist_plot, kde=False)
+    g.map_offdiag(plt.scatter) #, s=1.0, alpha=0.05)
     #g.map_upper(sns.kdeplot)
     g.map_offdiag(annotate_pearson_r)
     fig = g.fig
@@ -314,7 +320,6 @@ def read_model_dirs(expt_file):
             yield line.split()[0]
 
 
-
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Plot results of generative model experiments')
     parser.add_argument('job_script', nargs='+', help="submission scripts for jobs to plot reuslts for")
@@ -334,6 +339,7 @@ def parse_args(argv=None):
     parser.add_argument('--masked', default=False, action='store_true')
     parser.add_argument('--plot_lines', default=False, action='store_true')
     parser.add_argument('--plot_strips', default=False, action='store_true')
+    parser.add_argument('--plot_corr', default=False, action='store_true')
     parser.add_argument('--plot_ext', default='png')
     parser.add_argument('--ylim', type=ast.literal_eval, default=[], action='append')
     parser.add_argument('--gen_metrics', default=False, action='store_true')
@@ -342,6 +348,7 @@ def parse_args(argv=None):
     parser.add_argument('--avg_seeds', default=False, action='store_true')
     parser.add_argument('--avg_folds', default=False, action='store_true')
     parser.add_argument('--avg_iters', default=1, type=int, help='average over this many consecutive iterations')
+    parser.add_argument('--scaffold', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -354,9 +361,9 @@ def prepend_keys(dct, prefix):
     return type(dct)((prefix+k, v) for (k, v) in dct.items())
 
 
-def add_param_columns(df):
+def add_param_columns(df, scaffold=False):
     for job_file, job_df in df.groupby(level=0):
-        try: # try to parse it as a GAN
+        if True: # try to parse it as a GAN
             job_params = params.read_params(job_file, line_start='# ')
 
             data_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['data_model_name'] + '.model')
@@ -365,15 +372,22 @@ def add_param_columns(df):
 
             gen_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['gen_model_name'] + '.model')
             gen_model_params = params.read_params(gen_model_file, line_start='# ')
+            if scaffold:
+                for k, v in models.scaffold_model(gen_model_file).items():
+                    df.loc[job_file, 'gen_'+k] = v
             job_params.update(prepend_keys(gen_model_params, prefix='gen_model_params.'))
 
             disc_model_file = os.path.join(os.path.dirname(job_file), job_params['model_dir'], job_params['disc_model_name'] + '.model')
             disc_model_params = params.read_params(disc_model_file, line_start='# ')
+            if scaffold:
+                for k, v in models.scaffold_model(disc_model_file).items():
+                    df.loc[job_file, 'disc_'+k] = v
             job_params.update(prepend_keys(disc_model_params, prefix='disc_model_params.'))
 
             del job_params['seed'] # these already exist
             del job_params['fold']
-
+        try:
+            pass
         except AttributeError:
             try: # try to parse model name as a GAN
                 model_params = models.parse_gan_name(model_name)
@@ -382,7 +396,6 @@ def add_param_columns(df):
         for param, value in job_params.items():
             df.loc[job_file, param] = value
     return job_params
-
 
 
 def add_group_column(df, group_cols):
@@ -399,7 +412,7 @@ def main(argv):
     pd.set_option('display.max_colwidth', 100)
     pd.set_option('display.width', get_terminal_size()[1])
     sns.set_style('whitegrid')
-    sns.set_context('talk')
+    sns.set_context('poster')
     #sns.set_palette('Set1')
 
     if args.out_prefix is None:
@@ -444,10 +457,12 @@ def main(argv):
 
     if not args.y: # use all training output metrics
         args.y = [m for m in agg_df if m not in exclude_cols]
+        if args.scaffold:
+            args.y += [p+x for p in ['gen_', 'disc_'] for x in ['n_params', 'n_activs', 'size', 'min_width']]
         args.y = sorted(args.y, key=get_y_key, reverse=True)
 
     # parse model name to get model params and add columns
-    job_params = add_param_columns(agg_df)
+    job_params = add_param_columns(agg_df, scaffold=args.scaffold)
 
     print('\nAGGREGATED DATA')
     print(agg_df)
@@ -478,6 +493,13 @@ def main(argv):
 
     agg_df.to_csv('{}_agg_data.csv'.format(args.out_prefix))
 
+    for y in args.y:
+        z_bounds = get_z_bounds(agg_df[y], args.outlier_z)
+        iqr_bounds = get_iqr_bounds(agg_df[y], args.outlier_iqr)
+        print(y, z_bounds, iqr_bounds)
+        agg_df[y] = remove_outliers(agg_df[y], z_bounds)
+        agg_df[y] = remove_outliers(agg_df[y], iqr_bounds)
+
     if args.plot_lines: # plot training progress
 
         line_plot_file = '{}_lines.{}'.format(args.out_prefix, args.plot_ext)
@@ -491,13 +513,6 @@ def main(argv):
 
     if args.iteration:
         final_df = agg_df.set_index(col_name_map['iteration']).loc[args.iteration]
-
-        for y in args.y:
-            z_bounds = get_z_bounds(final_df[y], args.outlier_z)
-            iqr_bounds = get_iqr_bounds(final_df[y], args.outlier_iqr)
-            print(y, z_bounds, iqr_bounds)
-            final_df[y] = remove_outliers(final_df[y], z_bounds)
-            final_df[y] = remove_outliers(final_df[y], iqr_bounds)
 
         print('\nFINAL DATA')
         print(final_df)
@@ -517,6 +532,17 @@ def main(argv):
                 strip_plot_file = '{}_strips_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
                 plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
                             n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
+
+        if args.plot_corr:
+
+            corr_y = [y for y in args.y if final_df[y].nunique() > 1]
+
+            corr_plot_file = '{}_corr.{}'.format(args.out_prefix, args.plot_ext)
+            plot_corr(corr_plot_file, final_df, x=corr_y, y=corr_y)
+
+            for hue in args.x + ['model_name']:
+                corr_plot_file = '{}_corr_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
+                plot_corr(corr_plot_file, final_df, x=corr_y, y=corr_y, hue=hue)
 
 
 if __name__ == '__main__':
