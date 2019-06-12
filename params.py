@@ -1,7 +1,6 @@
 import re, ast
 import itertools
 import collections
-from types import StringTypes
 
 
 def non_string_iterable(obj):
@@ -9,7 +8,7 @@ def non_string_iterable(obj):
     Check whether obj is a non-string iterable.
     '''
     iterable = isinstance(obj, collections.Iterable)
-    string = isinstance(obj, StringTypes)
+    string = isinstance(obj, str)
     return not string and iterable
 
 
@@ -109,7 +108,7 @@ class ParamSpace(object):
                 arg_dims = arg.dims
                 if self.format is None:
                     self.format = arg.format
-            elif isinstance(arg, StringTypes):
+            elif isinstance(arg, str):
                 arg_dims = read_params(arg)
             else:
                 arg_dims = collections.OrderedDict(arg)
@@ -147,7 +146,7 @@ class ParamSpace(object):
     def __iter__(self):
         params = self.dims.keys()
         for values in itertools.product(*self.dims.values()):
-            yield self.Params(itertools.izip(params, values))
+            yield self.Params(zip(params, values))
 
     def __len__(self):
         values = self.dims.values()

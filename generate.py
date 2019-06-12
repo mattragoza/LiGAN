@@ -9,7 +9,10 @@ import multiprocessing as mp
 import threading
 import contextlib
 import tempfile
-from itertools import izip
+try:
+    from itertools import izip
+except ImportError:
+    izip = zip
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
@@ -795,6 +798,22 @@ def get_layer_index(net, layer_name):
     return net._layer_names.index(layer_name)
 
 
+def lazy_forward(net, layer):
+    '''
+    Compute the forward pass of a layer by recursively
+    calling forward on each input layer.
+    '''
+    raise NotImplementedError
+
+    stack = [layer]
+    visited = set()
+    for bottom in net.layer_dict[layer].layer_param.bottom:
+        for layer in input_map[bottom]:
+            if layer not in visited:
+                lazy_forward(net, layer)
+                visited.add(layer)
+
+
 def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metric_file, pymol_file, args):
     '''
     Generate grids from a specific blob in gen_net.
@@ -1036,6 +1055,7 @@ def parse_args(argv=None):
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
+    parser.add_argument('--condition', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
@@ -1049,8 +1069,6 @@ def parse_args(argv=None):
     parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
     parser.add_argument('--fit_GMM', action='store_true', help='fit atoms by a Gaussian mixture model instead of gradient descent')
     parser.add_argument('--noise_model', default='', help='noise model for GMM atom fitting (d|p)')
-    parser.add_argument('-r2', '--rec_file2', default='', help='alternate receptor file (for receptor latent space)')
-    parser.add_argument('-l2', '--lig_file2', default='', help='alternate ligand file (for receptor latent space)')
     parser.add_argument('--deconv_grids', action='store_true', help="apply Wiener deconvolution to atom density grids")
     parser.add_argument('--deconv_fit', action='store_true', help="apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="noise-to-signal ratio for Wiener deconvolution")

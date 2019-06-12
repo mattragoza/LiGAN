@@ -21,8 +21,8 @@ SOLVER_SEARCH_SPACE = dict(
 
 
 def keyword_product(**kwargs):
-    for values in itertools.product(*kwargs.itervalues()):
-        yield dict(itertools.izip(kwargs.iterkeys(), values))
+    for values in itertools.product(*kwargs.values()):
+        yield dict(zip(kwargs.keys(), values))
 
 
 def read_file(file_):

@@ -12,7 +12,12 @@ def run_subprocess(cmd, stdin=None):
     '''
     args = shlex.split(cmd)
     proc = Popen(args, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    return proc.communicate(stdin)
+    stdout, stderr = proc.communicate(stdin)
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode()
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode()
+    return stdout, stderr
 
 
 def read_file(file_):

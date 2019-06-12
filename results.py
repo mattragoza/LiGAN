@@ -11,6 +11,7 @@ from pandas.api.types import is_numeric_dtype
 from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
+import io
 
 import params
 import models
@@ -32,7 +33,7 @@ def annotate_pearson_r(x, y, **kwargs):
 def my_dist_plot(a, **kwargs):
     if 'label' in kwargs:
         kwargs['label'] = str(kwargs['label'])
-    return sns.distplot(a.dropna(), **kwargs)
+    return sns.distplot(a, **kwargs)
 
 
 def plot_corr(plot_file, df, x, y, height=4, width=4, **kwargs):
@@ -139,7 +140,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
     for ax in iter_axes:
         ax.axis('off')
     fig.tight_layout()
-    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
+    fig.savefig(str(plot_file), format='png', bbox_extra_artists=extra, bbox_inches='tight')
     plt.close(fig)
 
 

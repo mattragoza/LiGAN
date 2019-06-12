@@ -80,7 +80,7 @@ def get_molgrid_data_param(net_param, phase=None):
 
 
 # can't inherit from protobuf message, so just add methods to the generated classes
-for name, cls in caffe_pb2.__dict__.iteritems():
+for name, cls in caffe_pb2.__dict__.items():
     if isinstance(cls, type) and issubclass(cls, message.Message):
         cls.from_prototxt = classmethod(from_prototxt)
         cls.to_prototxt = write_prototxt
@@ -108,14 +108,14 @@ class Net(caffe.Net):
 
     def get_n_params(self):
         n_params = 0
-        for layer_name, param_blobs in self.params.iteritems():
+        for layer_name, param_blobs in self.params.items():
             for param_blob in param_blobs:
                 n_params += param_blob.data.size
         return n_params
 
     def get_n_activs(self):
         n_activs = 0
-        for blob_name, activ_blob in self.blobs.iteritems():
+        for blob_name, activ_blob in self.blobs.items():
             n_activs += activ_blob.data.size
         return n_activs
 
@@ -125,9 +125,9 @@ class Net(caffe.Net):
     def get_min_width(self):
         min_width = float('inf')
         min_width_name = None
-        for blob_name, activ_blob in self.blobs.iteritems():
+        for blob_name, activ_blob in self.blobs.items():
             if '_latent_mean' in blob_name:
-                width = activ_blob.data.size / activ_blob.shape[0]
+                width = activ_blob.data.size // activ_blob.shape[0]
                 if width < min_width:
                     min_width = width
                     min_width_name = blob_name

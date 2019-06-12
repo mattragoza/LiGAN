@@ -15,6 +15,7 @@
 source ~/.bashrc
 cd $SLURM_SUBMIT_DIR
 
+cp /zfs1/dkoes/mtr22/liGAN/my_*_map $SLURM_SCRATCH
 cp <DATA_DIR>/<DATA_PREFIX>*.types $SLURM_SCRATCH
 cp <MODEL_DIR>/<DATA_MODEL_NAME>.model $SLURM_SCRATCH
 cp <MODEL_DIR>/<GEN_MODEL_NAME>.model $SLURM_SCRATCH
