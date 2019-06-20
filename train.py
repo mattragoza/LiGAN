@@ -187,6 +187,14 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
     lig_grid_names = ['lig', 'lig_gen']
 
+    if args.alternate: # find latent variable blob names for prior sampling
+        latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
+        latent_std = generate.find_blobs_in_net(gen.net, r'.+_latent_std')[0]
+        latent_noise = generate.find_blobs_in_net(gen.net, r'.+_latent_noise')[0]
+
+        # train on prior samples every other iteration
+        n_iter *= 2
+
     metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
     # set loss weights
@@ -194,20 +202,43 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         gen.net.blobs[l].diff[...] = args.loss_weight
 
     for i in range(n_iter):
-
-        # get real receptors and ligands
-        data.forward()
-        rec = data.blobs['rec'].data
-        lig = data.blobs['lig'].data
+        prior = args.alternate and i%2
 
         # generate fake ligands
-        gen.net.blobs['rec'].data[...] = rec
-        gen.net.blobs['lig'].data[...] = lig
+        if not prior: # from posterior
 
-        if args.gen_spectral_norm:
-            spectral_norm_forward(gen.net, args.gen_spectral_norm)
+            # get real receptors and ligands
+            data.forward()
+            rec = data.blobs['rec'].data
+            lig = data.blobs['lig'].data
 
-        gen.net.forward()
+            gen.net.blobs['rec'].data[...] = rec
+            gen.net.blobs['lig'].data[...] = lig
+
+            if args.gen_spectral_norm:
+                spectral_norm_forward(gen.net, args.gen_spectral_norm)
+
+            gen.net.forward()
+
+        else: # from prior
+
+            # for prior sampling, set the latent mean to 0.0 and std to 1.0
+            # and then call net.forward() from the noise source onwards
+
+            # this assumes only one variational latent space in the net
+            # and only samples the prior on the first one if there are multiple
+
+            # for CVAEs, reuse the same recs as the last posterior forward pass
+            # this will unnecessarily forward the conditional branch again if
+            # it's located after the encoder branch in the model file
+
+            if args.gen_spectral_norm:
+                spectral_norm_forward(gen.net, args.gen_spectral_norm)
+
+            gen.net.blobs[latent_mean].data[...] = 0.0
+            gen.net.blobs[latent_std].data[...] = 1.0
+            gen.net.forward(start=latent_noise)
+
         lig_gen = gen.net.blobs['lig_gen'].data
 
         disc.net.blobs['rec'].data[...] = rec
@@ -231,6 +262,12 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         for l in disc_loss_names:
             metrics['gen_adv_' + l][i] = float(disc.net.blobs[l].data)
 
+            if args.alternate: # also record separate prior and posterior GAN losses
+                if args.prior:
+                    metrics['gen_adv_prior_' + l][i] = float(disc.net.blobs[l].data)
+                else:
+                    metrics['gen_adv_post_' + l][i] = float(disc.net.blobs[l].data)
+
         metrics['gen_iter'][i] = gen.iter
 
         if train or compute_metrics: # compute gradient
@@ -246,7 +283,11 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             gen.net.blobs['lig_gen'].diff[...] = disc.net.blobs['lig'].diff
             gen.net.clear_param_diffs()
-            gen.net.backward()
+
+            if prior: # only backprop gradient to noise source (what about cond branch??)
+                gen.net.backward(end=latent_noise)
+            else:
+                gen.net.backward()
 
             if args.gen_spectral_norm:
                 spectral_norm_backward(gen.net, args.gen_spectral_norm)
