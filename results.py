@@ -21,7 +21,7 @@ import experiment
 
 def get_terminal_size():
     with os.popen('stty size') as p:
-        return map(int, p.read().split())
+        return [int(i) for i in p.read().split()]
 
 
 def annotate_pearson_r(x, y, **kwargs):
