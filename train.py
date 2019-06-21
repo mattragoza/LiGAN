@@ -115,11 +115,22 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
     '''
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
 
+    if args.alternate: # find latent variable blob names for prior sampling
+        latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
+        latent_std = generate.find_blobs_in_net(gen.net, r'.+_latent_std')[0]
+        latent_noise = generate.find_blobs_in_net(gen.net, r'.+_latent_noise')[0]
+
+        # train on prior samples every 4th iteration (real, posterior, real, prior)
+        n_iter *= 2
+
     metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
     for i in range(n_iter):
 
-        if i % 2 == 0: # get real receptors and ligands
+        real = i%2 == 0
+        prior = args.alternate and i%4 == 3
+
+        if real: # get real receptors and ligands
 
             data.forward()
             rec = data.blobs['rec'].data
@@ -131,13 +142,26 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
         else: # generate fake ligands
 
+            # reuse rec and lig from last real forward pass
             gen.net.blobs['rec'].data[...] = rec
             gen.net.blobs['lig'].data[...] = lig
 
-            if args.gen_spectral_norm:
-                spectral_norm_forward(gen.net, args.gen_spectral_norm)
+            if not prior: # posterior
 
-            gen.net.forward()
+                if args.gen_spectral_norm:
+                    spectral_norm_forward(gen.net, args.gen_spectral_norm)
+
+                gen.net.forward()
+
+            else: # prior
+
+                if args.gen_spectral_norm:
+                    spectral_norm_forward(gen.net, args.gen_spectral_norm)
+
+                gen.net.blobs[latent_mean].data[...] = 0.0
+                gen.net.blobs[latent_std].data[...] = 1.0
+                gen.net.forward(start=latent_noise) # assumes cond branch is after latent space
+
             lig_gen = gen.net.blobs['lig_gen'].data
 
             disc.net.blobs['rec'].data[...] = rec
@@ -156,6 +180,12 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
         # record discriminator loss
         for l in disc_loss_names:
             metrics['disc_' + l][i] = float(disc.net.blobs[l].data)
+
+            if args.alternate: # also record separate prior and posterior GAN losses
+                if args.prior:
+                    metrics['disc_prior_' + l][i] = float(disc.net.blobs[l].data)
+                else:
+                    metrics['disc_post_' + l][i] = float(disc.net.blobs[l].data)
         
         metrics['disc_iter'][i] = disc.iter
 
@@ -183,9 +213,9 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     '''
     Train or test the GAN generator for n_iter iterations.
     '''
+    # find loss blob names for recording loss output
     gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
-    lig_grid_names = ['lig', 'lig_gen']
 
     if args.alternate: # find latent variable blob names for prior sampling
         latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
@@ -202,7 +232,8 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         gen.net.blobs[l].diff[...] = args.loss_weight
 
     for i in range(n_iter):
-        prior = args.alternate and i%2
+
+        prior = args.alternate and i%2 == 1
 
         # generate fake ligands
         if not prior: # from posterior
@@ -302,9 +333,11 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if train:
                 gen.apply_update()
 
-    if compute_metrics: # compute additional grid metrics
+    if compute_metrics: # compute additional ligand grid metrics
 
+        lig_grid_names = ['lig', 'lig_gen']
         grid_axes = (1, 2, 3, 4)
+
         for g in lig_grid_names:
             grids = gen.net.blobs[g].data
             metrics[g + '_norm'][-1] = ((grids**2).sum(grid_axes)**0.5).mean()
