@@ -16,6 +16,7 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
+import generate
 from caffe_util import NetParameter, SolverParameter, Net, Solver
 from results import plot_lines
 
@@ -146,17 +147,14 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
             gen.net.blobs['rec'].data[...] = rec
             gen.net.blobs['lig'].data[...] = lig
 
-            if not prior: # posterior
+            if args.gen_spectral_norm:
+                spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
-                if args.gen_spectral_norm:
-                    spectral_norm_forward(gen.net, args.gen_spectral_norm)
+            if not prior: # posterior
 
                 gen.net.forward()
 
             else: # prior
-
-                if args.gen_spectral_norm:
-                    spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
                 gen.net.blobs[latent_mean].data[...] = 0.0
                 gen.net.blobs[latent_std].data[...] = 1.0
@@ -179,13 +177,15 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
         # record discriminator loss
         for l in disc_loss_names:
-            metrics['disc_' + l][i] = float(disc.net.blobs[l].data)
+
+            loss = float(disc.net.blobs[l].data)
+            metrics['disc_' + l][i] = loss
 
             if args.alternate: # also record separate prior and posterior GAN losses
-                if args.prior:
-                    metrics['disc_prior_' + l][i] = float(disc.net.blobs[l].data)
+                if prior:
+                    metrics['disc_prior_' + l][i] = loss
                 else:
-                    metrics['disc_post_' + l][i] = float(disc.net.blobs[l].data)
+                    metrics['disc_post_' + l][i] = loss
         
         metrics['disc_iter'][i] = disc.iter
 
@@ -227,10 +227,6 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
     metrics = collections.defaultdict(lambda: np.full(n_iter, np.nan))
 
-    # set loss weights
-    for l in gen_loss_names:
-        gen.net.blobs[l].diff[...] = args.loss_weight
-
     for i in range(n_iter):
 
         prior = args.alternate and i%2 == 1
@@ -260,7 +256,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             # and only samples the prior on the first one if there are multiple
 
             # for CVAEs, reuse the same recs as the last posterior forward pass
-            # this will unnecessarily forward the conditional branch again if
+            # this will forward the conditional branch again if and only if
             # it's located after the encoder branch in the model file
 
             if args.gen_spectral_norm:
@@ -271,6 +267,10 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             gen.net.forward(start=latent_noise)
 
         lig_gen = gen.net.blobs['lig_gen'].data
+
+        # cross_entropy_loss(y_t, y_p) = -[y_t*log(y_p) + (1 - y_t)*log(1 - y_p)]
+        # for original minmax GAN loss, set lig_gen label = 0.0 and ascend gradient
+        # for non-saturating GAN loss, set lig_gen label = 1.0 and descend gradient
 
         disc.net.blobs['rec'].data[...] = rec
         disc.net.blobs['lig'].data[...] = lig_gen
@@ -286,18 +286,22 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         disc.net.forward()
 
         # record generator loss
-        for l in gen_loss_names:
-            metrics['gen_' + l][i] = float(gen.net.blobs[l].data)
+        if not prior:
+            for l in gen_loss_names:
+                loss = float(gen.net.blobs[l].data)
+                metrics['gen_' + l][i] = loss
 
         # record discriminator loss
         for l in disc_loss_names:
-            metrics['gen_adv_' + l][i] = float(disc.net.blobs[l].data)
 
-            if args.alternate: # also record separate prior and posterior GAN losses
-                if args.prior:
-                    metrics['gen_adv_prior_' + l][i] = float(disc.net.blobs[l].data)
+            loss = float(disc.net.blobs[l].data)
+            metrics['gen_adv_' + l][i] = loss
+
+            if args.alternate: # also record separate prior and posterior loss
+                if prior:
+                    metrics['gen_adv_prior_' + l][i] = loss
                 else:
-                    metrics['gen_adv_post_' + l][i] = float(disc.net.blobs[l].data)
+                    metrics['gen_adv_post_' + l][i] = loss
 
         metrics['gen_iter'][i] = gen.iter
 
@@ -314,6 +318,10 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             gen.net.blobs['lig_gen'].diff[...] = disc.net.blobs['lig'].diff
             gen.net.clear_param_diffs()
+
+            # set non-GAN loss weights
+            for l in gen_loss_names:
+                gen.net.blobs[l].diff[...] = (not prior) * args.loss_weight
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
