@@ -170,7 +170,9 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
 
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, violin=False, box=False, jitter=0, alpha=0.5, outlier_z=None):
+def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None,
+                strip=False, violin=False, box=False, grouped=False,
+                jitter=0, alpha=0.5, outlier_z=None):
     df = df.reset_index()
 
     if n_cols is None:
@@ -188,6 +190,14 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
         for x_ in x:
             ax = next(iter_axes)
 
+            if grouped:
+                hue = '({})'.format(', '.join([c for c in x if c not in {x_, 'memory'}]))
+
+            #print('CALLING POINT PLOT')
+            #print('  x = {}'.format(x_))
+            #print('  y = {}'.format(y_))
+            #print('  hue = {}'.format(hue))
+
             # plot the means and 95% confidence intervals
             color = 'black' if hue is None else None
             sns.pointplot(data=df, x=x_, y=y_, hue=hue, markers='.', dodge=0.399, color=color, zorder=10, ax=ax)
@@ -201,15 +211,16 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
                         c.set_alpha(alpha)
                         c.set_edgecolor(None)
 
-            elif box:
+            if box:
                 sns.boxplot(data=df, x=x_, y=y_, hue=hue, saturation=1.0, ax=ax)
 
-            else: # plot the individual observations
+            if strip: # plot the individual observations
                 sns.stripplot(data=df, x=x_, y=y_, hue=hue, marker='.', dodge=True, jitter=jitter, size=25, alpha=alpha, ax=ax)
 
+            n_plot_types = 1 + strip + violin + box
             handles, labels = ax.get_legend_handles_labels()
-            handles = handles[len(handles)//2:]
-            labels = labels[len(labels)//2:]
+            handles = handles[len(handles)//n_plot_types:]
+            labels = labels[len(labels)//n_plot_types:]
 
             xlim = ax.get_xlim()
             ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
@@ -231,7 +242,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
                 ax.legend_.remove()
 
     extra = []
-    if hue: # add legend
+    if hue and not grouped: # add legend
         lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
         lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
@@ -344,12 +355,15 @@ def parse_args(argv=None):
     parser.add_argument('--plot_ext', default='png')
     parser.add_argument('--ylim', type=ast.literal_eval, default=[], action='append')
     parser.add_argument('--gen_metrics', default=False, action='store_true')
-    parser.add_argument('--violin', default=False, action='store_true')
     parser.add_argument('--test_data')
     parser.add_argument('--avg_seeds', default=False, action='store_true')
     parser.add_argument('--avg_folds', default=False, action='store_true')
     parser.add_argument('--avg_iters', default=1, type=int, help='average over this many consecutive iterations')
     parser.add_argument('--scaffold', default=False, action='store_true')
+    parser.add_argument('--strip', default=False, action='store_true')
+    parser.add_argument('--violin', default=False, action='store_true')
+    parser.add_argument('--box', default=False, action='store_true')
+    parser.add_argument('--grouped', default=False, action='store_true')
     return parser.parse_args(argv)
 
 
@@ -401,6 +415,7 @@ def add_param_columns(df, scaffold=False):
 
 def add_group_column(df, group_cols):
     group = '({})'.format(', '.join(group_cols))
+    print('adding group column {}'.format(group))
     df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
     return group
 
@@ -492,6 +507,11 @@ def main(argv):
         args.x = [c for c in job_params if c not in exclude_cols and agg_df[c].nunique() > 1]
         args.x = sorted(args.x, key=get_x_key, reverse=True)
 
+    if args.grouped: # add "all but one" group columns
+        for col in args.x:
+            all_but_col = [c for c in args.x if c not in {col, 'memory'}]
+            add_group_column(agg_df, all_but_col)
+
     agg_df.to_csv('{}_agg_data.csv'.format(args.out_prefix))
 
     for y in args.y:
@@ -527,12 +547,17 @@ def main(argv):
 
             strip_plot_file = '{}_strips.{}'.format(args.out_prefix, args.plot_ext)
             plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=None,
-                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
+                        n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
+
+            if args.grouped:
+                strip_plot_file = '{}_grouped_strips.{}'.format(args.out_prefix, args.plot_ext)
+                plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=None, grouped=True,
+                            n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
             for hue in args.x + ['model_name']:
                 strip_plot_file = '{}_strips_{}.{}'.format(args.out_prefix, hue, args.plot_ext)
                 plot_strips(strip_plot_file, final_df, x=args.x, y=args.y, hue=hue,
-                            n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim, violin=args.violin)
+                            n_cols=args.n_cols, outlier_z=args.outlier_z, ylim=args.ylim)
 
         if args.plot_corr:
 
