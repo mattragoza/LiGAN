@@ -888,8 +888,24 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
             if batch_idx == 0: # forward next batch
 
                 data_net.forward()
-                gen_net.blobs['rec'].data[...] = data_net.blobs['rec'].data
-                gen_net.blobs['lig'].data[...] = data_net.blobs['lig'].data
+                rec = data_net.blobs['rec'].data
+                lig = data_net.blobs['lig'].data
+
+                if (args.encode_first or args.condition_first) and sample_idx == 0:
+                    first_rec = rec[0]
+                    first_lig = lig[0]
+
+                if args.encode_first:
+                    gen_net.blobs['rec'].data[...] = first_rec[np.newaxis,...]
+                    gen_net.blobs['lig'].data[...] = first_lig[np.newaxis,...]
+                else:
+                    gen_net.blobs['rec'].data[...] = rec
+                    gen_net.blobs['lig'].data[...] = lig
+
+                if args.condition_first:
+                    gen_net.blobs['cond_rec'].data[...] = first_rec[np.newaxis,...]
+                else:
+                    gen_net.blobs['cond_rec'].data[...] = rec
 
                 if args.prior:
                     if args.mean:
@@ -1055,7 +1071,8 @@ def parse_args(argv=None):
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
-    parser.add_argument('--condition', default=False, action='store_true', help='condition all generated output on first example')
+    parser.add_argument('--encode_first', default=False, action='store_true', help='generate all output from encoding first example')
+    parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
