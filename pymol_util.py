@@ -77,10 +77,10 @@ def load_group(pattern, name):
         cmd.group(name, ' '.join(group_objs))
 
 
-def my_rotate(name, axis, angle, states):
+def my_rotate(name, axis, angle, states, **kwargs):
     for i in range(int(states)):
         cmd.create(name, name, 1, i+1)
-        cmd.rotate(axis, float(angle)*i/int(states), name, state=i+1, camera=0)
+        cmd.rotate(axis, float(angle)*i/int(states), name, state=i+1, camera=0, **kwargs)
 
 
 cmd.extend('set_atom_level', set_atom_level)
