@@ -213,6 +213,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     '''
     Train or test the GAN generator for n_iter iterations.
     '''
+
     # find loss blob names for recording loss output
     gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
@@ -241,6 +242,9 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             gen.net.blobs['rec'].data[...] = rec
             gen.net.blobs['lig'].data[...] = lig
+
+            if 'cond_rec' in gen.net.blobs:
+                gen.net.blobs['cond_rec'].data[...] = rec
 
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
@@ -321,10 +325,17 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             # set non-GAN loss weights
             for l in gen_loss_names:
-                gen.net.blobs[l].diff[...] = (not prior) * args.loss_weight
+                gen.net.blobs[l].diff[...] = 0.0 if prior else args.loss_weight
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
+                gen.net.blobs[latent_mean].diff[...] = 0.0
+                gen.net.blobs[latent_std].diff[...] = 0.0
+                gen.net.backward(start=latent_std)
+
+                lig_grad_norm = np.linalg.norm(gen.net.blobs['lig'].diff)
+                assert np.isclose(lig_grad_norm, 0), lig_grad_norm
+    
             else:
                 gen.net.backward()
 
