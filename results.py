@@ -33,7 +33,7 @@ def annotate_pearson_r(x, y, **kwargs):
 def my_dist_plot(a, **kwargs):
     if 'label' in kwargs:
         kwargs['label'] = str(kwargs['label'])
-    return sns.distplot(a, **kwargs)
+    return sns.distplot(a[~np.isnan(a)], **kwargs)
 
 
 def plot_corr(plot_file, df, x, y, height=4, width=4, **kwargs):
