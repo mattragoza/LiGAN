@@ -891,9 +891,9 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
                 rec = data_net.blobs['rec'].data
                 lig = data_net.blobs['lig'].data
 
-                if (args.encode_first or args.condition_first) and sample_idx == 0:
-                    first_rec = rec[0]
-                    first_lig = lig[0]
+                if (args.encode_first or args.condition_first) and not (example_idx or sample_idx):
+                    first_rec = np.array(rec[0])
+                    first_lig = np.array(lig[0])
 
                 if args.encode_first:
                     gen_net.blobs['rec'].data[...] = first_rec[np.newaxis,...]
@@ -902,10 +902,11 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
                     gen_net.blobs['rec'].data[...] = rec
                     gen_net.blobs['lig'].data[...] = lig
 
-                if args.condition_first:
-                    gen_net.blobs['cond_rec'].data[...] = first_rec[np.newaxis,...]
-                else:
-                    gen_net.blobs['cond_rec'].data[...] = rec
+                if 'cond_rec' in gen_net.blobs:
+                    if args.condition_first:
+                        gen_net.blobs['cond_rec'].data[...] = first_rec[np.newaxis,...]
+                    else:
+                        gen_net.blobs['cond_rec'].data[...] = rec
 
                 if args.prior:
                     if args.mean:
@@ -927,7 +928,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
             for blob_name in args.blob_name: # get grid from blob and add to appropriate queue
 
                 grid = np.array(gen_net.blobs[blob_name].data[batch_idx])
-                print('main_thread produced {} {} {}'.format(lig_name, blob_name, sample_idx))
+                print('main_thread produced {} {} {} {}'.format(lig_name, blob_name, sample_idx, np.linalg.norm(grid)))
 
                 if args.fit_atoms and 'lig' in blob_name:
                     fit_queue.put((lig_name, sample_idx, blob_name, center, grid, fit_atoms))
@@ -1044,7 +1045,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
                     # fit structure quality
                     metric_df.loc[(lig_name, i), 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
 
-            #print(metric_df.loc[lig_name])
+            print(metric_df.loc[lig_name])
 
             # write out generative metrics
             metric_df.to_csv(metric_file, sep=' ')
