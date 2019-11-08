@@ -953,7 +953,8 @@ def fit_worker_main(fit_queue, out_queue):
 def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution, metric_df, metric_file,
                     pymol_file, args):
 
-    n_grids_per_ligand = 0 
+    # compute number of grids to expect for each ligand
+    n_grids_per_ligand = 0
     for b in args.blob_name:
         n_grids_per_ligand += args.n_samples
         if args.fit_atoms and 'lig' in b:
@@ -967,6 +968,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
     n_finished = 0
     all_data = defaultdict(list) # group by lig_name
     while n_finished < n_ligands:
+
         print('out_worker waiting')
         lig_name, sample_idx, grid_name, center, grid, xyz, c = out_queue.get()
         all_data[lig_name].append((lig_name, sample_idx, grid_name, center, grid, xyz, c))
@@ -983,6 +985,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
             lig_xyzs  = defaultdict(lambda: [None for _ in range(args.n_samples)])
 
             for grid_data in lig_data: # unpack and write out grid data
+
                 lig_name, sample_idx, grid_name, center, grid, xyz, c = grid_data
                 print('out_worker writing out {} {} {}'.format(lig_name, grid_name, sample_idx))
 
@@ -996,7 +999,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
                     else:
                         write_grids_to_dx_files(grid_prefix, grid, rec_channels, center, resolution)
                     dx_prefixes.append(grid_prefix)
-                
+
                 if xyz is not None:
                     lig_xyzs[grid_name][sample_idx] = xyz
 
@@ -1014,6 +1017,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
             # compute generative metrics
             mean_grids = {n: np.mean(lig_grids[n], axis=0) for n in lig_grids}
             for i in range(args.n_samples):
+                idx = (lig_name, i)
 
                 lig = lig_grids['lig'][i]
                 lig_gen = lig_grids['lig_gen'][i]
@@ -1021,29 +1025,32 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
                 lig_gen_mean = mean_grids['lig_gen']
 
                 # density magnitude
-                metric_df.loc[(lig_name, i), 'lig_norm']     = np.linalg.norm(lig)
-                metric_df.loc[(lig_name, i), 'lig_gen_norm'] = np.linalg.norm(lig_gen)
+                metric_df.loc[idx, 'lig_norm']     = np.linalg.norm(lig)
+                metric_df.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen)
 
                 # generated density quality
-                metric_df.loc[(lig_name, i), 'lig_gen_dist'] = np.linalg.norm(lig_gen - lig)
+                metric_df.loc[idx, 'lig_gen_dist'] = np.linalg.norm(lig_gen - lig)
 
                 # generated density variability
-                metric_df.loc[(lig_name, i), 'lig_mean_dist'] = np.linalg.norm(lig - lig_mean)
-                metric_df.loc[(lig_name, i), 'lig_gen_mean_dist'] = np.linalg.norm(lig_gen - lig_gen_mean)
+                metric_df.loc[idx, 'lig_mean_dist']     = np.linalg.norm(lig - lig_mean)
+                metric_df.loc[idx, 'lig_gen_mean_dist'] = np.linalg.norm(lig_gen - lig_gen_mean)
 
-                if args.fit_atom_types:
+                if args.fit_atoms:
 
                     lig_fit = lig_grids['lig_fit'][i]
                     lig_gen_fit = lig_grids['lig_gen_fit'][i]
+
+                    # fit density quality
+                    metric_df.loc[idx, 'lig_fit_dist']     = np.linalg.norm(lig_fit - lig)
+                    metric_df.loc[idx, 'lig_gen_fit_dist'] = np.linalg.norm(lig_gen_fit - lig_gen)
+
+                if args.fit_atom_types:
+
                     lig_fit_xyz = lig_xyzs['lig_fit'][i]
                     lig_gen_fit_xyz = lig_xyzs['lig_gen_fit'][i]
 
-                    # fit density quality
-                    metric_df.loc[(lig_name, i), 'lig_fit_dist']     = np.linalg.norm(lig_fit - lig)
-                    metric_df.loc[(lig_name, i), 'lig_gen_fit_dist'] = np.linalg.norm(lig_gen_fit - lig_gen)
-
                     # fit structure quality
-                    metric_df.loc[(lig_name, i), 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
+                    metric_df.loc[idx, 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
 
             print(metric_df.loc[lig_name])
 
@@ -1054,6 +1061,7 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
 
             del all_data[lig_name] # free memory
             n_finished += 1
+
             print('[{}/{}] finished processing {}'.format(n_finished, n_ligands, lig_name))
 
     print('out_worker exit')
