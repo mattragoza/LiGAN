@@ -946,7 +946,7 @@ def fit_worker_main(fit_queue, out_queue):
         print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
         out_queue.put((lig_name, sample_idx, grid_name, center, grid, None, None))
         xyz, c, bonds, grid_fit, loss, t = fit_atoms(grid)
-        print('fit_worker produced {} {} {}'.format(lig_name, grid_name, sample_idx))
+        print('fit_worker produced {} {} {} ({} atoms)'.format(lig_name, grid_name, sample_idx, len(xyz)))
         out_queue.put((lig_name, sample_idx, grid_name + '_fit', center, grid_fit, xyz, c))
 
 
@@ -1037,6 +1037,9 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
 
                 if args.fit_atoms:
 
+                    lig_fit_xyz = lig_xyzs['lig_fit'][i]
+                    lig_gen_fit_xyz = lig_xyzs['lig_gen_fit'][i]
+
                     lig_fit = lig_grids['lig_fit'][i]
                     lig_gen_fit = lig_grids['lig_gen_fit'][i]
 
@@ -1044,10 +1047,11 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
                     metric_df.loc[idx, 'lig_fit_dist']     = np.linalg.norm(lig_fit - lig)
                     metric_df.loc[idx, 'lig_gen_fit_dist'] = np.linalg.norm(lig_gen_fit - lig_gen)
 
-                if args.fit_atom_types:
+                    # num fit atoms
+                    metric_df.loc[idx, 'lig_fit_n_atoms']     = len(lig_fit_xyz)
+                    metric_df.loc[idx, 'lig_gen_fit_n_atoms'] = len(lig_gen_fit_xyz)
 
-                    lig_fit_xyz = lig_xyzs['lig_fit'][i]
-                    lig_gen_fit_xyz = lig_xyzs['lig_gen_fit'][i]
+                if args.fit_atom_types:
 
                     # fit structure quality
                     metric_df.loc[idx, 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
