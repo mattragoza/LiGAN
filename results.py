@@ -14,9 +14,11 @@ import seaborn as sns
 import io
 
 import params
-import models
-import generate
-import experiment
+try:
+    import models
+    import generate
+except ImportError as e:
+    print('Warning: ignoring the following {}: {}'.format(type(e), e), file=sys.stderr)
 
 
 def get_terminal_size():
@@ -137,8 +139,10 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
         if lgd_title:
             lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
+
     for ax in iter_axes:
         ax.axis('off')
+
     fig.tight_layout()
     fig.savefig(str(plot_file), format='png', bbox_extra_artists=extra, bbox_inches='tight')
     plt.close(fig)
@@ -170,10 +174,11 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
 
 
 
-def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None,
-                strip=False, violin=False, box=False, grouped=False,
-                jitter=0, alpha=0.5, outlier_z=None):
+def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
+                point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={},
+                box=False, box_kws={}, grouped=False, outlier_z=None):
     df = df.reset_index()
+    assert len(df) > 0, 'empty data frame'
 
     if n_cols is None:
         n_cols = len(x)
@@ -197,30 +202,34 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
             #print('  x = {}'.format(x_))
             #print('  y = {}'.format(y_))
             #print('  hue = {}'.format(hue))
+            #print(df.columns)
 
-            # plot the means and 95% confidence intervals
-            color = 'black' if hue is None else None
-            sns.pointplot(data=df, x=x_, y=y_, hue=hue, markers='.', dodge=0.399, color=color, zorder=10, ax=ax)
+            if violin: # plot the distributions
+                sns.violinplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **violin_kws)
+                for c in ax.collections:
+                    if isinstance(c, matplotlib.collections.PolyCollection):
+                        if 'alpha' in violin_kws:
+                            c.set_alpha(violin_kws['alpha'])
+                        c.set_edgecolor(None)
+
+            if box: # box plots
+                sns.boxplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **box_kws)
+
+            if strip: # plot the individual observations
+                sns.stripplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **strip_kws)
+
+            if point: # plot the means and 95% confidence intervals
+                sns.pointplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **point_kws, )
+
             #plt.setp(ax.lines, zorder=100)
             #plt.setp(ax.collections, zorder=100)
 
-            if violin: # plot the distributions
-                sns.violinplot(data=df, x=x_, y=y_, hue=hue, dodge=True, saturation=1.0, inner=None, ax=ax)
-                for c in ax.collections:
-                    if isinstance(c, matplotlib.collections.PolyCollection):
-                        c.set_alpha(alpha)
-                        c.set_edgecolor(None)
-
-            if box:
-                sns.boxplot(data=df, x=x_, y=y_, hue=hue, saturation=1.0, ax=ax)
-
-            if strip: # plot the individual observations
-                sns.stripplot(data=df, x=x_, y=y_, hue=hue, marker='.', dodge=True, jitter=jitter, size=25, alpha=alpha, ax=ax)
-
-            n_plot_types = 1 + strip + violin + box
-            handles, labels = ax.get_legend_handles_labels()
-            handles = handles[len(handles)//n_plot_types:]
-            labels = labels[len(labels)//n_plot_types:]
+            # if more than one plot type, need to remove excess legend handles and labels
+            if hue and not grouped:
+                n_plot_types = point + strip + violin + box
+                handles, labels = ax.get_legend_handles_labels()
+                handles = handles[:len(handles)//n_plot_types]
+                labels  = labels[:len(labels)//n_plot_types]
 
             xlim = ax.get_xlim()
             ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
@@ -252,7 +261,7 @@ def plot_strips(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=N
 
     fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
-    plt.close(fig)
+    #plt.close(fig)
 
 
 def get_z_bounds(x, z=3):
@@ -413,9 +422,14 @@ def add_param_columns(df, scaffold=False):
     return job_params
 
 
-def add_group_column(df, group_cols):
+def add_group_column(df, group_cols, do_print=False):
+    '''
+    Add a new column to df that combines the values
+    in group_cols columns into tuple strings.
+    '''
     group = '({})'.format(', '.join(group_cols))
-    print('adding group column {}'.format(group))
+    if do_print:
+        print('adding group column {}'.format(group))
     df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
     return group
 
@@ -496,7 +510,7 @@ def main(argv):
         args.y.append(log_y)
 
     if len(args.hue) > 1: # add column for hue tuple
-        hue = add_group_column(agg_df, args.hue)
+        hue = add_group_column(agg_df, args.hue, do_print=True)
     elif len(args.hue) == 1:
         hue = args.hue[0]
     else:
@@ -509,8 +523,8 @@ def main(argv):
 
     if args.grouped: # add "all but one" group columns
         for col in args.x:
-            all_but_col = [c for c in args.x if c not in {col, 'memory'}]
-            add_group_column(agg_df, all_but_col)
+            other_cols = [c for c in args.x if c not in {col, 'memory'}]
+            add_group_column(agg_df, other_cols, do_print=True)
 
     agg_df.to_csv('{}_agg_data.csv'.format(args.out_prefix))
 
