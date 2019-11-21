@@ -840,26 +840,6 @@ def read_examples_from_data_file(data_file, data_root=''):
     return examples
 
 
-def min_RMSD(xyz1, xyz2, c):
-    '''
-    Compute an RMSD between two sets of positions of the same
-    atom types with no prior mapping between particular atom
-    positions of a given type. Returns the minimum RMSD across
-    all permutations of this mapping.
-    '''
-    xyz1 = np.array(xyz1)
-    xyz2 = np.array(xyz2)
-    c = np.array(c)
-    ssd = 0.0
-    for c_ in sorted(set(c)):
-        xyz1_c = xyz1[c == c_]
-        xyz2_c = xyz2[c == c_]
-        dist2_c = ((xyz1_c[:,np.newaxis,:] - xyz2_c[np.newaxis,:,:])**2).sum(axis=2)
-        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_c)
-        ssd += ((xyz1_c[idx1] - xyz2_c[idx2])**2).sum()
-    return np.sqrt(ssd/len(c))
-
-
 def find_blobs_in_net(net, blob_pattern):
     '''
     Find all blob_names in net that match blob_pattern.
@@ -1060,6 +1040,8 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
     struct_files = []
     centers = []
 
+    n_types = len(atom_types.get_default_lig_channels())
+
     n_finished = 0
     all_data = defaultdict(list) # group by lig_name
     while n_finished < n_ligands:
@@ -1079,18 +1061,22 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
 
             print('out_worker unpacking/writing data for {}'.format(lig_name))
 
-            lig_grids = defaultdict(lambda: [None for _ in range(args.n_samples)])
-            lig_xyzs  = defaultdict(lambda: [None for _ in range(args.n_samples)])
-            fit_times = defaultdict(lambda: [None for _ in range(args.n_samples)])
+            # create data structures for unpacking data
+            lig_grids     = defaultdict(lambda: [None for i in range(args.n_samples)])
+            lig_xyzs      = defaultdict(lambda: [None for i in range(args.n_samples)])
+            lig_cs        = defaultdict(lambda: [None for i in range(args.n_samples)])
+            lig_fit_times = defaultdict(lambda: [None for i in range(args.n_samples)])
 
-            for grid_data in lig_data: # unpack and write out grid data
+            for grid_data in lig_data: # unpack and write out data
 
                 lig_name, sample_idx, grid_name, center, grid, xyz, c, fit_time = grid_data
                 print('out_worker writing out {} {} {}'.format(lig_name, grid_name, sample_idx))
 
+                # unpack density grid
                 if 'lig' in grid_name:
                     lig_grids[grid_name][sample_idx] = grid
 
+                # write out density grid
                 grid_prefix = '{}_{}_{}_{}'.format(args.out_prefix, lig_name, grid_name, sample_idx)
                 if args.output_dx:
                     if 'lig' in grid_name:
@@ -1099,10 +1085,15 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
                         write_grids_to_dx_files(grid_prefix, grid, rec_channels, center, resolution)
                     dx_prefixes.append(grid_prefix)
 
-                if xyz is not None:
-                    lig_xyzs[grid_name][sample_idx] = xyz
-                    fit_times[grid_name][sample_idx] = fit_time
+                if xyz is not None: # this should only be true for lig grids
+                    assert 'lig' in grid_name
 
+                    # unpack fit structure
+                    lig_xyzs[grid_name][sample_idx]      = xyz
+                    lig_cs[grid_name][sample_idx]        = c
+                    lig_fit_times[grid_name][sample_idx] = fit_time
+
+                    # write out fit structure
                     if args.output_sdf:
                         fit_file = '{}.sdf'.format(grid_prefix)
                         write_ob_mols_to_sdf_file(fit_file, [make_ob_mol(xyz, c, [], lig_channels)])
@@ -1115,58 +1106,11 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
             print('out_worker computing metrics for {}'.format(lig_name))
 
             # compute generative metrics
-            mean_grids = {n: np.mean(lig_grids[n], axis=0) for n in lig_grids}
-            for i in range(args.n_samples):
-                idx = (lig_name, i)
+            compute_generative_metrics(metric_df, lig_name, lig_grids, lig_xyzs, lig_cs, lig_fit_times,
+                                       args.n_samples, n_types)
 
-                lig = lig_grids['lig'][i]
-                lig_gen = lig_grids['lig_gen'][i]
-                lig_mean = mean_grids['lig']
-                lig_gen_mean = mean_grids['lig_gen']
-
-                # density magnitude
-                metric_df.loc[idx, 'lig_norm']     = np.linalg.norm(lig)
-                metric_df.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen)
-
-                # generated density quality
-                metric_df.loc[idx, 'lig_gen_dist'] = np.linalg.norm(lig_gen - lig)
-
-                # generated density variability
-                metric_df.loc[idx, 'lig_mean_dist']     = np.linalg.norm(lig - lig_mean)
-                metric_df.loc[idx, 'lig_gen_mean_dist'] = np.linalg.norm(lig_gen - lig_gen_mean)
-
-                if args.fit_atoms:
-
-                    lig_fit     = lig_grids['lig_fit'][i]
-                    lig_gen_fit = lig_grids['lig_gen_fit'][i]
-
-                    lig_fit_xyz     = lig_xyzs['lig_fit'][i]
-                    lig_gen_fit_xyz = lig_xyzs['lig_gen_fit'][i]
-
-                    # fit density quality
-                    metric_df.loc[idx, 'lig_fit_dist']     = np.linalg.norm(lig_fit - lig)
-                    metric_df.loc[idx, 'lig_gen_fit_dist'] = np.linalg.norm(lig_gen_fit - lig_gen)
-
-                    # num fit atoms
-                    metric_df.loc[idx, 'lig_fit_n_atoms']     = len(lig_fit_xyz)
-                    metric_df.loc[idx, 'lig_gen_fit_n_atoms'] = len(lig_gen_fit_xyz)
-
-                    # fit structure radius
-                    metric_df.loc[idx, 'lig_fit_radius']     = np.linalg.norm(lig_fit_xyz - lig_fit_xyz.mean(0)).max()
-                    metric_df.loc[idx, 'lig_gen_fit_radius'] = np.linalg.norm(lig_fit_xyz - lig_fit_xyz.mean(0)).max()
-
-                    # fit time
-                    metric_df.loc[idx, 'lig_fit_time']     = fit_times['lig_fit'][i]
-                    metric_df.loc[idx, 'lig_gen_fit_time'] = fit_times['lig_gen_fit'][i]
-
-                if args.fit_atom_types:
-
-                    # fit structure quality
-                    metric_df.loc[idx, 'lig_gen_RMSD'] = min_RMSD(lig_gen_fit_xyz, lig_fit_xyz, c)
-
+            # display and write out generative metrics
             print(metric_df.loc[lig_name])
-
-            # write out generative metrics
             metric_df.to_csv(metric_file, sep=' ')
 
             print('out_worker finished processing {}'.format(lig_name))
@@ -1177,6 +1121,122 @@ def out_worker_main(out_queue, n_ligands, rec_channels, lig_channels, resolution
             print('[{}/{}] finished processing {}'.format(n_finished, n_ligands, lig_name))
 
     print('out_worker exit')
+
+
+def count_types(c, n_types):
+    count = np.zeros(n_types)
+    for i in c:
+        count[i] += 1
+    return count
+
+
+def get_min_rmsd(xyz1, c1, xyz2, c2):
+    '''
+    Compute an RMSD between two sets of positions of the same
+    atom types with no prior mapping between particular atom
+    positions of a given type. Returns the minimum RMSD across
+    all permutations of this mapping.
+    '''
+    # check that structs are same size
+    if len(c1) != len(c2):
+        raise ValueError('structs must have same num atoms')
+    n_atoms = len(c1)
+
+    # copy everything into arrays
+    xyz1 = np.array(xyz1)
+    xyz2 = np.array(xyz2)
+    c1 = np.array(c1)
+    c2 = np.array(c2)
+
+    # check that types are compatible
+    idx1 = np.argsort(c1)
+    idx2 = np.argsort(c2)
+    c1 = c1[idx1]
+    c2 = c2[idx2]
+    if any(c1 != c2):
+        raise ValueError('structs must have same num atoms of each type')
+    xyz1 = xyz1[idx1]
+    xyz2 = xyz2[idx2]
+
+    # find min rmsd by solving linear sum assignment
+    # problem on squared dist matrix for each type
+    ssd = 0.0
+    nax = np.newaxis
+    for c in set(c1): 
+        xyz1_c = xyz1[c1 == c]
+        xyz2_c = xyz2[c2 == c]
+        dist2_c = ((xyz1_c[:,nax,:] - xyz2_c[nax,:,:])**2).sum(axis=2)
+        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_c)
+        ssd += dist2_c[idx1, idx2].sum()
+
+    return np.sqrt(ssd/n_atoms)
+
+
+def compute_generative_metrics(df, lig_name, grids, xyzs, cs, fit_times, n_samples, n_types):
+
+    # use mean grids to evaluate variability
+    lig_mean_grid     = np.mean(grids['lig'], axis=0)
+    lig_gen_mean_grid = np.mean(grids['lig_gen'], axis=0)
+
+    for i in range(n_samples):
+        idx = (lig_name, i)
+
+        lig_grid     = grids['lig'][i]
+        lig_gen_grid = grids['lig_gen'][i]
+
+        # density magnitude
+        df.loc[idx, 'lig_norm']     = np.linalg.norm(lig_grid)
+        df.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen_grid)
+
+        # density loss
+        df.loc[idx, 'lig_gen_loss'] = ((lig_grid - lig_gen_grid)**2).sum()/2
+
+        # density variance
+        df.loc[idx, 'lig_var']     = ((lig_grid     - lig_mean_grid)**2).sum()
+        df.loc[idx, 'lig_gen_var'] = ((lig_gen_grid - lig_gen_mean_grid)**2).sum()
+
+        if not xyzs: # start of atom fitting metrics
+            continue
+
+        lig_fit_grid     = grids['lig_fit'][i]
+        lig_gen_fit_grid = grids['lig_gen_fit'][i]
+
+        lig_fit_xyz     = xyzs['lig_fit'][i]
+        lig_gen_fit_xyz = xyzs['lig_gen_fit'][i]
+
+        lig_fit_center     = np.mean(lig_fit_xyz, axis=0, keepdims=True)
+        lig_gen_fit_center = np.mean(lig_gen_fit_xyz, axis=0, keepdims=True)
+
+        lig_fit_c     = cs['lig_fit'][i]
+        lig_gen_fit_c = cs['lig_gen_fit'][i]
+
+        lig_fit_type_count     = count_types(lig_fit_c, n_types)
+        lig_gen_fit_type_count = count_types(lig_gen_fit_c, n_types)
+
+        # density quality
+        df.loc[idx, 'lig_fit_loss']     = ((lig_grid     - lig_fit_grid)**2).sum()/2
+        df.loc[idx, 'lig_gen_fit_loss'] = ((lig_gen_grid - lig_gen_fit_grid)**2).sum()/2
+
+        # number of fit atoms
+        df.loc[idx, 'lig_fit_n_atoms']     = len(lig_fit_c)
+        df.loc[idx, 'lig_gen_fit_n_atoms'] = len(lig_gen_fit_c)
+
+        # fit structure radius
+        df.loc[idx, 'lig_fit_radius']     = max(np.linalg.norm(lig_fit_xyz - lig_fit_center, axis=1))
+        df.loc[idx, 'lig_gen_fit_radius'] = max(np.linalg.norm(lig_fit_xyz - lig_gen_fit_center, axis=1))
+
+        # fit type count absolute difference
+        df.loc[idx, 'lig_gen_fit_type_diff'] = np.linalg.norm(lig_fit_type_count - lig_gen_fit_type_count, ord=1)
+
+        # fit type count variance
+        #TODO
+
+        # fit time
+        df.loc[idx, 'lig_fit_time']     = fit_times['lig_fit'][i]
+        df.loc[idx, 'lig_gen_fit_time'] = fit_times['lig_gen_fit'][i]
+
+        # fit structure quality
+        df.loc[idx, 'lig_gen_fit_RMSD'] = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
 
 
 def parse_args(argv=None):
