@@ -11,7 +11,6 @@ from pandas.api.types import is_numeric_dtype
 from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
 
 import params
 try:
@@ -28,8 +27,8 @@ def get_terminal_size():
 
 def annotate_pearson_r(x, y, **kwargs):
     r, _ = stats.pearsonr(x, y)
-    ax = plt.gca()
-    ax.annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8), xycoords='axes fraction', ha='center')
+    plt.gca().annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8),
+        xycoords='axes fraction', ha='center', fontsize='large')
 
 
 def my_dist_plot(a, **kwargs):
@@ -38,19 +37,20 @@ def my_dist_plot(a, **kwargs):
     return sns.distplot(a[~np.isnan(a)], **kwargs)
 
 
-def plot_corr(plot_file, df, x, y, height=4, width=4, **kwargs):
+def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, dist_kws={}, scatter_kws={}, **kwargs):
 
     df = df.reset_index()
-    g = sns.PairGrid(df, x_vars=x, y_vars=y, size=height, aspect=width/float(height), **kwargs)
-    g.map_diag(my_dist_plot, kde=False)
-    g.map_offdiag(plt.scatter) #, s=1.0, alpha=0.05)
-    #g.map_upper(sns.kdeplot)
+    g = sns.PairGrid(df, x_vars=x, y_vars=y, hue=hue, height=height, aspect=width/float(height), **kwargs)
+    g.map_diag(my_dist_plot, **dist_kws)
+    g.map_offdiag(plt.scatter, **scatter_kws)
+    #g.map_upper(sns.kdeplot, shade=True)
     g.map_offdiag(annotate_pearson_r)
     fig = g.fig
     fig.tight_layout()
     plt.subplots_adjust(wspace=0.2, hspace=0.2)
     fig.savefig(plot_file, bbox_inches='tight')
-    plt.close(fig)
+    #plt.close(fig)
+    return fig
 
 
 def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, lgd_title=True):
@@ -190,6 +190,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
     iter_axes = iter(axes.flatten())
 
+    extra = []
     for i, y_ in enumerate(y):
 
         for x_ in x:
@@ -225,11 +226,14 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
             #plt.setp(ax.collections, zorder=100)
 
             # if more than one plot type, need to remove excess legend handles and labels
-            if hue and not grouped:
+            if hue:
                 n_plot_types = point + strip + violin + box
                 handles, labels = ax.get_legend_handles_labels()
                 handles = handles[:len(handles)//n_plot_types]
                 labels  = labels[:len(labels)//n_plot_types]
+                if grouped:
+                    lgd = ax.legend(handles, labels)
+                    lgd.set_visible(False)
 
             xlim = ax.get_xlim()
             ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
@@ -250,7 +254,6 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
             if hue:
                 ax.legend_.remove()
 
-    extra = []
     if hue and not grouped: # add legend
         lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
         lgd.set_title(hue, prop=dict(size='small'))
@@ -261,7 +264,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
     fig.tight_layout()
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
-    #plt.close(fig)
+    return fig
 
 
 def get_z_bounds(x, z=3):
@@ -441,8 +444,8 @@ def main(argv):
     pd.set_option('display.max_columns', 100)
     pd.set_option('display.max_colwidth', 100)
     pd.set_option('display.width', get_terminal_size()[1])
-    sns.set_style('whitegrid')
-    sns.set_context('poster')
+    #sns.set_style('whitegrid')
+    #sns.set_context('poster')
     #sns.set_palette('Set1')
 
     if args.out_prefix is None:
