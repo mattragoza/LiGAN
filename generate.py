@@ -1,5 +1,5 @@
 from __future__ import print_function
-import sys, os, re, argparse, time, glob, struct, time
+import sys, os, re, argparse, time, glob, struct
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -227,6 +227,10 @@ def grid_to_points_and_values(grid, center, resolution):
 
 
 def get_atom_density_kernel(shape, resolution, atom_radius, radius_mult):
+    '''
+    Return atom density function as a grid with the
+    given shape, resolution, and atom radius.
+    '''
     center = np.zeros(len(shape))
     points = get_grid_points(shape, center, resolution)
     density = get_atom_density(center, atom_radius, points, radius_mult)
@@ -318,8 +322,20 @@ def get_top_n_index(array, n):
     return np.unravel_index(idx, array.shape)
 
 
+def add_mol_density(xyz, t, r, density, points): # TODO replace with molgrid!!!!!!!!!
+    for xyz_, t_, r_ in zip(xyz, t, r):
+        density[:,t_] += get_atom_density(xyz_, r_, points)
 
-def fit_atoms_to_grid(grid, channels, center, resolution, beam_size, init_func,
+
+def fit_L2_loss(xyz, t, r, density): # TODO!!!!!!!!!!!!!!!!
+    return np.sum((density_true - density_pred)**2)
+
+
+def grad_fit_L2_loss(xyz_pred, density_true): # TODO!!!!!!!!!!!!!!!!
+    return density_true - density_pred
+
+
+def fit_atoms_to_grid(grid, channels, center, resolution, beam_size, atom_init,
                       interm_iters, final_iters, lr, mo, lambda_E, radius_multiple,
                       bonded, max_init_bond_E, fit_channels, verbose):
     '''
@@ -378,11 +394,37 @@ def fit_atoms_to_grid(grid, channels, center, resolution, beam_size, init_func,
                                     interm_iters, lr=lr, mo=mo, lambda_E=lambda_E,
                                     radius_multiple=radius_multiple, verbose=verbose)
 
+                if False:
+                    res = sp.optimize.minimize(fun, x0, args, method='BFGS', jac=asdf, 
+                                               options=dict(maxiter=interm_iters))
+                    xyz_new = res.x
+                    loss_new = res.fun
+                    density_diff = res.jac
+                    density_pred = density_true
+
                 # check if the structure is one of the best
                 if any(loss_new < x[2] for x in best_structs):
 
+                    # get next atom init locations
+                    if atom_init == 'conv':
+                        conv = np.zeros_like(grid)
+                        for i in range(n_channels):
+                            conv[i] = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
+                            conv[i] = np.roll(conv[i], np.array(grid_shape)//2, range(len(grid_shape)))
+                        score = conv.reshape((n_channels, -1)).T
+
+                    elif atom_init == 'deconv':
+                        deconv = np.zeros_like(grid)
+                        for i in range(n_channels):
+                            deconv[i] = wiener_deconv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
+                            deconv[i] = np.roll(deconv[i], np.array(grid_shape)//2, range(len(grid_shape)))
+                        score = deconv.reshape((n_channels, -1)).T
+
+                    else:
+                        score = density_diff
+                    next_idx_new = get_top_n_index(score, beam_size)
+
                     # keep track of the new structure
-                    next_idx_new = get_top_n_index(density_diff, beam_size)
                     new_structs.append((xyz_new, c_new, loss_new, next_idx_new))
 
         # determine new set of best structures
@@ -699,6 +741,20 @@ def make_ob_mol(xyz, c, bonds, channels):
     return mol
 
 
+def ob_mol_to_rd_mol(mol):
+    raise NotImplementedError('TODO')
+
+
+def check_mol_validity(xyz, c, bonds, channels):
+    raise NotImplementedError('TODO')
+
+    mol = make_ob_mol(xyz, c, bonds, channels)
+    mol.ConnectTheDots()
+    mol.PerceiveBondOrders()
+    mol = ob_mol_to_rd_mol(mol)
+    ret = chem.SanitizeMol(mol)
+
+
 def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv = ob.OBConversion()
     conv.SetOutFormat('sdf')
@@ -927,7 +983,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, metric_df, metr
                                     center=center,
                                     resolution=resolution,
                                     beam_size=args.beam_size,
-                                    init_func=args.init_func,
+                                    atom_init=args.atom_init,
                                     interm_iters=args.interm_iters,
                                     final_iters=args.final_iters,
                                     radius_multiple=radius_multiple,
@@ -1262,7 +1318,7 @@ def parse_args(argv=None):
     parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate for atom fitting')
     parser.add_argument('--momentum', type=float, default=0.0, help='momentum for atom fitting')
     parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
-    parser.add_argument('--init_func', type=str, default=None, help='function to apply to remaining density before atom init (|conv|deconv)')
+    parser.add_argument('--atom_init', type=str, default=None, help='function to apply to remaining density before atom init (|conv|deconv)')
     parser.add_argument('--interm_iters', type=int, default=0, help='maximum number of iterations for atom fitting between atom inits')
     parser.add_argument('--final_iters', type=int, default=np.inf, help='maximum number of iterations for atom fitting after atom inits')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')
