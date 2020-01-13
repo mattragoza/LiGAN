@@ -18,7 +18,7 @@ import caffe
 import torch
 import torch.multiprocessing as mp
 import openbabel as ob
-import pybel
+from openbabel import pybel
 import molgrid
 
 import caffe_util
@@ -32,7 +32,7 @@ class MolGrid(object):
     '''
     def __init__(self, values, channels, center, resolution, device=None):
 
-        self.values = torch.as_tensor(values, device=device)
+        self.values = torch.tensor(values, device=device)
 
         if len(self.values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
@@ -44,9 +44,10 @@ class MolGrid(object):
             raise ValueError('last 3 dims of MolGrid values must be equal')
 
         self.channels = channels
-        self.center = center
+        self.center = torch.tensor(center, device=device)
         self.resolution = resolution
-        self.dimension = self.compute_dimension(self.values.shape[0], resolution)
+        self.size = self.values.shape[1]
+        self.dimension = self.compute_dimension(self.size, resolution)
 
     @classmethod
     def from_struct(cls, gmaker, struct, device=None):
@@ -56,11 +57,43 @@ class MolGrid(object):
     def compute_dimension(cls, size, resolution):
         return (size-1)*resolution
 
+    @classmethod
+    def compute_size(cls, dimension, resolution):
+        return int(np.ceil(dimension/resolution+1))
+
     def to_dx(self, dx_prefix):
         write_grids_to_dx_files(dx_prefix, self.values,
                                 channels=self.channels,
                                 center=self.center,
                                 resolution=self.resolution)
+
+    def _compat(self, other):
+        if isinstance(other, MolGrid):
+            assert self.channels is other.channels
+            assert np.allclose(self.center, other.center)
+            assert self.resolution == other.resolution
+            return other.values
+        return other
+
+    def copy(self, values=None):
+        if values is None:
+            values = self.values
+        return MolGrid(values, self.channels, self.center, self.resolution)
+
+    def __add__(self, other):
+        return self.copy(self.values + self._compat(other))
+
+    def __sub__(self, other):
+        return self.copy(self.values - self._compat(other))
+
+    def __mul__(self, other):
+        return self.copy(self.values * self._compat(other))
+
+    def __pow__(self, other):
+        return self.copy(self.values ** self._compat(other))
+
+    def sum(self):
+        return self.values.sum()
 
 
 class MolStruct(object):
@@ -92,10 +125,10 @@ class MolStruct(object):
         raise NotImplementedError('TODO')
 
 
-def make_one_hot(x, n, device):
-    y = torch.zeros(x.shape + (n,), device=device).long()
+def make_one_hot(x, n, dtype, device):
+    y = torch.zeros(x.shape + (n,), dtype=dtype, device=device)
     for idx, last_idx in np.ndenumerate(x):
-        y[idx + (last_idx,)] = 1
+        y[idx + (int(last_idx),)] = 1
     return y
 
 
@@ -115,48 +148,37 @@ class AtomFitter(object):
         self.verbose = verbose
 
         self.gmaker = molgrid.GridMaker()
-        self.gmaker.set_radii_type_indexed(False)
         self.c2grid = molgrid.Coords2Grid(self.gmaker)
 
-        if self.atom_init:
-            self.kernel = None
-
-    def init_kernel(self, channels, resolution):
+    def init_kernel(self, channels, resolution, deconv=False):
         '''
         Initialize the convolution kernel that is used
-        to rank next atom initializations on grids.
+        to propose next atom initializations on grids.
         '''
-        if not self.atom_init or self.kernel is not None \
-            and self.kernel.channels == channels \
-            and self.kernel.resolution == resolution:
-            return # no need to initialize
-
         n_channels = len(channels)
 
-        # kernel is created by computing a molgrid from
-        # a struct with one atom of each type at the origin
+        # kernel is created by computing a molgrid from a
+        # struct with one atom of each type at the origin
         xyz = torch.zeros((n_channels, 3), device=self.device)
-        c = torch.eye(n_channels, device=self.device)
-        radii = torch.tensor([ch.atomic_radius for ch in channels],
-                             device=self.device)
+        c = torch.eye(n_channels, device=self.device) # one-hot vector types
+        r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
 
-        dimension = (2*1.5*max(radii)).item()
-        self.gmaker.set_dimension(dimension)
+        self.gmaker.set_radii_type_indexed(True)
+        self.gmaker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
         self.gmaker.set_resolution(resolution)
 
-        self.kernel = MolGrid(self.c2grid(xyz, c, radii),
-                              channels=channels,
-                              center=torch.zeros(3),
-                              resolution=resolution)
+        kernel = self.c2grid(xyz, c, r)
 
-        if self.atom_init == 'deconv':
-            raise NotImplemented('TODO transform kernel for Wiener deconv')
+        if deconv:
+            kernel = weiner_invert_kernel(kernel)
 
-    def init_atoms(self, grids, center, resolution):
+        return kernel
+
+    def init_atoms(self, grids, center, resolution, kernel):
         '''
         Apply atom initialization kernel if needed and
         then return best next atom initializations on a
-        grids or batch of grids.
+        grids or batch of grids (tensors).
         '''
         if len(grids.shape) == 4:
             grids = grids.unsqueeze(0)
@@ -166,9 +188,9 @@ class AtomFitter(object):
         grid_dim = grids.shape[2]
 
         if self.atom_init: # apply atom init function to grids
-            grids = torch.nn.functional.conv3d(grids, self.kernel.values.unsqueeze(1),
-                                              padding=self.kernel.values.shape[2]//2,
-                                              groups=len(self.kernel.channels))
+            grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
+                                              padding=kernel.shape[-1]//2,
+                                              groups=n_channels)
 
         # get indices of next atom positions and channels
         idx_flat = grids.reshape(n_grids, -1).topk(self.beam_size).indices
@@ -177,6 +199,8 @@ class AtomFitter(object):
         idx_c = idx_grid[0]
 
         # transform to xyz coordiates and type vectors
+        print(center.device)
+        print(idx_xyz.device)
         xyz = center + resolution*(idx_xyz - (grid_dim-1)/2.)
         c = make_one_hot(idx_c, n_channels, device=self.device)
 
@@ -186,53 +210,52 @@ class AtomFitter(object):
         return xyz, c
 
     def fit(self, grid, types=None):
+        '''
+        Fit atomic structure to mol grid.
+        '''
         t_start = time.time()
 
         if self.atom_init:
-            self.init_kernel(grid.channels, grid.resolution)
+            kernel = self.init_kernel(grid.channels, grid.resolution, self.atom_init == 'deconv')
+        else:
+            kernel = None
 
-        # get true grid as tensor
-        grid_true = torch.as_tensor(grid.values, device=self.device)
-        channels = grid.channels
-        center = torch.tensor(grid.center, device=self.device).float()
-        resolution = grid.resolution
-
-        # configure the grid maker
-        self.c2grid.gmaker.set_dimension(grid.dimension)
-        self.c2grid.gmaker.set_resolution(grid.resolution)
+        # get true grid on appropriate device
+        grid_true = MolGrid(grid.values, grid.channels, grid.center,
+                            grid.resolution).to(device)
+        print(grid.values.device)
+        print(grid.center.device)
 
         # empty initial struct
         n_channels = len(grid.channels)
-        xyz  = torch.zeros((0, 3), device=self.device)
-        c    = torch.zeros((0, n_channels), dtype=int, device=self.device)
+        xyz = torch.zeros((0, 3), device=self.device)
+        c = torch.zeros((0, n_channels), dtype=int, device=self.device)
         loss = ((grid_true)**2).sum()/2.
 
         # get next atom init locations and channels
-        xyz_next, c_next = self.init_atoms(grid_true, center, resolution)
+        xyz_next, c_next = self.init_atoms(grid_true.values, grid.center, grid.resolution, kernel)
 
         # batch of best structures so far
         best_structs = [(loss, 0, xyz, c, xyz_next, c_next)]
         found_new_best_struct = True
         visited = set()
-        count = 1
+        struct_count = 1
 
         # search until we can't find a better structure
         while found_new_best_struct:
 
             new_best_structs = []
-            new_grid_diffs = []
+            new_best_grid_diffs = []
             found_new_best_struct = False
 
             # try to expand each current best structure
-            for loss, id_, xyz, c, xyz_next, c_next in best_structs:
+            for loss, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
-                if id_ in visited:
+                if struct_id in visited:
                     continue
 
                 # evaluate each possible next atom
                 for xyz_next_, c_next_ in zip(xyz_next, c_next):
-
-                    print(xyz.shape, xyz_next_.shape)
 
                     # add next atom to structure
                     xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
@@ -240,49 +263,128 @@ class AtomFitter(object):
 
                     # compute diff and loss after gradient descent
                     xyz_new, grid_pred, grid_diff, loss_new = \
-                        self.fit_gd(grid_true, channels, xyz_new, c_new, self.interm_iters)
+                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters)
 
                     # check if new structure is one of the best
-                    if any(loss_new < loss for loss, _, _ in best_structs):
-                        new_best_structs.append((loss_new, count, xyz_new, c_new))
-                        new_grid_diffs.append(grid_diff)
+                    if any(loss_new < tup[0] for tup in best_structs):
+                        new_best_structs.append((loss_new, struct_count, xyz_new, c_new))
+                        new_best_grid_diffs.append(grid_diff)
                         found_new_best_struct = True
-                        count += 1
+                        struct_count += 1
 
                 if self.interm_iters: # also try GD without adding atom
 
                     xyz_new, grid_pred, grid_diff, loss_new = \
-                        self.fit_gd(grid_true, channels, xyz, c, self.interm_iters)
+                        self.fit_gd(grid, xyz, c, self.interm_iters)
 
-                    if any(loss_new < loss for loss, _, _ in best_structs):
+                    if any(loss_new < tup[0] for tup in best_structs):
                         new_best_structs.append((loss_new, count, xyz_new, c))
                         new_grid_diffs.append(grid_diff)
                         found_new_best_struct = True
-                        count += 1
+                        struct_count += 1
 
-                visited.add(id_)
+                visited.add(struct_id)
 
             # get atom init locations and channels for new best structures (batched)
-            xyz_next, c_next = self.init_atoms(torch.stack(new_grid_diffs),
-                                               center, resolution)
+            xyz_next, c_next = self.init_atoms(torch.stack(new_best_grid_diffs),
+                                               grid.center, grid.resolution, kernel)
 
-            for i, (loss, id_, xyz, c) in enumerate(new_best_structs):
-                best_structs.append((loss, id_, xyz, c, xyz_next[i], c_next[i]))
+            # determine new limited set of best structures
+            for i, (loss, struct_id, xyz, c) in enumerate(new_best_structs):
+                best_structs.append((loss, struct_id, xyz, c, xyz_next[i], c_next[i]))
 
-            # determine new set of best structures
             if found_new_best_struct:
                 best_structs = sorted(best_structs)[:self.beam_size]
 
-    def fit_gd(self, grid, channels, xyz, c, n_iters):
+        loss_best, _, xyz_best, c_best, _, _ = best_structs[0]
 
-        r = torch.tensor([channels[torch.argmax(c_)] for c_ in c],
-                         device=self.device)
+        xyz_best, grid_pred, grid_diff, loss_best = \
+            self.fit_gd(grid_true, xyz_best, c_best, self.final_iters)
 
-        grid_pred = self.c2grid(xyz, c, r)
-        grid_diff = grid - grid_pred
-        loss = (grid_diff**2).sum()/2.
+        struct_best = MolStruct(xyz_best, c_best, grid.channels, self.device,
+                                loss=loss_best, time=time.time()-t_start)
+        return grid_pred, struct_best
+
+    def fit_gd(self, grid, xyz, c, n_iters):
+
+        xyz = torch.tensor(xyz, device=self.device)
+        solver = torch.optim.Adam(xyz)
+
+        for i in range(n_iters+1):
+            solver.zero_grad()
+
+            self.c2gf.apply(self.gmaker, grid.center, grid.size, xyz, c, grid_pred.values)
+            grid_diff = grid - grid_pred
+            loss = (grid_diff**2).sum()/2.
+
+            if i == n_iters: # or converged
+                break
+
+            loss.backward()
+            solver.step()
 
         return xyz, grid_pred, grid_diff, loss
+
+
+class Struct2GridFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, gmaker, channels, center, resolution, size, xyz, c):
+        if len(xyz.shape) != 2:
+            raise RuntimeError('xyz must have 2 dimensions')
+        if xyz.shape[0] != c.shape[0]:
+            raise RuntimeError('xyz and c must have same first dimension')
+        if len(c.shape) == 1: # scalar types
+            r = torch.tensor([channels[i].atomic_radius for i in c],
+                             device=xyz.device)
+            vector_types = False
+        elif len(c.shape) == 2: # vector types
+            r = torch.tensor([ch.atomic_radius for ch in channels],
+                             device=xyz.device)
+            vector_types = True
+        else:
+            raise RuntimeError('c must have 1 or 2 dimensions')
+
+        ctx.save_for_backward(xyz, c, r)
+        ctx.gmaker = gmaker
+        ctx.center = center
+        ctx.vector_types = vector_types
+        ctx.resolution = resolution
+        dimension = MolGrid.compute_dimension(size, resolution)
+        ctx.dimension = dimension
+
+        gmaker.set_radii_type_indexed(vector_types)
+        gmaker.set_resolution(resolution)
+        gmaker.set_dimension(dimension)
+
+        n_channels = len(channels)
+        shape = gmaker.grid_dimensions(n_channels)
+
+        grid = MolGrid(torch.empty(*shape, dtype=xyz.dtype),
+                       channels=channels, center=center,
+                       resolution=resolution,
+                       device=xyz.device)
+
+        print(center.shape, center.dtype, center.device)
+        print(xyz.shape, xyz.dtype, xyz.device)
+        print(c.shape, c.dtype, c.device)
+        print(r.shape, r.dtype, r.device)
+        print(grid.values.shape, grid.values.dtype, grid.values.device)
+
+        gmaker.forward(center, xyz, c, r, grid.values)
+        return grid
+
+    @staticmethod
+    def backward(ctx, d_grid):
+        xyz, c, r = ctx.saved_tensors
+
+        ctx.gmaker.set_radii_type_indexed(ctx.vector_types)
+        ctx.gmaker.set_resolution(ctx.resolution)
+        ctx.gmaker.set_dimension(ctx.dimension)
+
+        d_xyz = torch.empty(*xyz.shape, dtype=xyz.dtype, device=xyz.device)
+        ctx.gmaker.backward(ctx.center, xyz, c, r, d_grid, d_xyz)
+        return None, None, None, None, None, d_xyz, None
 
 
 class OutputWriter(object):
@@ -590,6 +692,13 @@ def conv_grid(grid, kernel):
     F_h = np.fft.fftn(kernel)
     F_grid = np.fft.fftn(grid)
     return np.real(np.fft.ifftn(F_grid * F_h))
+
+
+def weiner_invert_kernel(kernel, noise_ratio=0.0):
+    F_h = np.fft.fftn(kernel)
+    conj_F_h = np.conj(F_h)
+    F_g = conj_F_h / (F_h*conj_F_h + noise_ratio)
+    return np.real(np.fft.ifftn(F_g))
 
 
 def wiener_deconv_grid(grid, kernel, noise_ratio=0.0):
@@ -1524,10 +1633,11 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                     grid = MolGrid(gen_net.blobs[blob_name].data[batch_idx],
                                    channels=lig_channels,
                                    center=center,
-                                   resolution=resolution)
+                                   resolution=resolution,
+                                   device='cuda' if args.gpu else 'cpu')
 
                     grid_name = blob_name
-                    grid_norm = np.linalg.norm(grid.values)
+                    grid_norm = torch.norm(grid.values)
 
                     if args.verbose:
                         print('main_thread produced {} {} {} (norm={})'
