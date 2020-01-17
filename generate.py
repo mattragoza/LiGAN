@@ -30,28 +30,23 @@ class MolGrid(object):
     '''
     An atomic density grid.
     '''
-    def __init__(self, values, channels, center, resolution, device=None):
+    def __init__(self, values, channels, center, resolution):
 
-        self.values = torch.tensor(values, device=device)
-
-        if len(self.values.shape) != 4:
+        if len(values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
 
-        if self.values.shape[0] != len(channels):
+        if values.shape[0] != len(channels):
             raise ValueError('MolGrid values have wrong number of channels')
 
-        if not (self.values.shape[1] == self.values.shape[2] == self.values.shape[3]):
+        if not (values.shape[1] == values.shape[2] == values.shape[3]):
             raise ValueError('last 3 dims of MolGrid values must be equal')
 
+        self.values = values
         self.channels = channels
-        self.center = torch.tensor(center, device=device)
+        self.center = center
         self.resolution = resolution
         self.size = self.values.shape[1]
         self.dimension = self.compute_dimension(self.size, resolution)
-
-    @classmethod
-    def from_struct(cls, gmaker, struct, device=None):
-        raise NotImplementedError('TODO')
 
     @classmethod
     def compute_dimension(cls, size, resolution):
@@ -67,69 +62,38 @@ class MolGrid(object):
                                 center=self.center,
                                 resolution=self.resolution)
 
-    def _compat(self, other):
-        if isinstance(other, MolGrid):
-            assert self.channels is other.channels
-            assert np.allclose(self.center, other.center)
-            assert self.resolution == other.resolution
-            return other.values
-        return other
-
-    def copy(self, values=None):
-        if values is None:
-            values = self.values
-        return MolGrid(values, self.channels, self.center, self.resolution)
-
-    def __add__(self, other):
-        return self.copy(self.values + self._compat(other))
-
-    def __sub__(self, other):
-        return self.copy(self.values - self._compat(other))
-
-    def __mul__(self, other):
-        return self.copy(self.values * self._compat(other))
-
-    def __pow__(self, other):
-        return self.copy(self.values ** self._compat(other))
-
-    def sum(self):
-        return self.values.sum()
-
 
 class MolStruct(object):
     '''
     An atomic structure.
     '''
-    def __init__(self, xyz, c, channels, device=None, **kwargs):
+    def __init__(self, xyz, c, channels, **info):
 
-        self.xyz = torch.tensor(xyz, device=device)
-        self.c = torch.tensor(c, device=device)
-
-        if len(self.xyz.shape) != 2:
+        if len(xyz.shape) != 2:
             raise ValueError('MolStruct xyz must have 2 dims')
 
-        if len(self.c.shape) != 1:
+        if len(c.shape) != 1:
             raise ValueError('MolStruct c must have 1 dimension')
 
-        if self.xyz.shape[0] != self.c.shape[0]:
+        if xyz.shape[0] != c.shape[0]:
             raise ValueError('first dim of MolStruct xyz and c must be equal')
 
-        if self.xyz.shape[1] != 3:
-            raise ValueError('')
+        if xyz.shape[1] != 3:
+            raise ValueError('second dim of MolStruct xyz must be 3')
 
+        if any(c < 0) or any(c >= len(channels)):
+            raise ValueError('invalid value in MolStruct c')
+
+        self.xyz = xyz
+        self.c = c
         self.channels = channels
+        self.center = self.xyz.mean(0)
         self.n_atoms = self.xyz.shape[0]
-        self.info = kwargs
+        self.info = info
 
     def to_sdf(self, sdf_file):
-        raise NotImplementedError('TODO')
-
-
-def make_one_hot(x, n, dtype, device):
-    y = torch.zeros(x.shape + (n,), dtype=dtype, device=device)
-    for idx, last_idx in np.ndenumerate(x):
-        y[idx + (int(last_idx),)] = 1
-    return y
+        mol = make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
+        write_ob_mols_to_sdf_file(sdf_file, [mol])
 
 
 class AtomFitter(object):
@@ -180,17 +144,14 @@ class AtomFitter(object):
         then return best next atom initializations on a
         grids or batch of grids (tensors).
         '''
-        if len(grids.shape) == 4:
-            grids = grids.unsqueeze(0)
-
         n_grids = grids.shape[0]
         n_channels = grids.shape[1]
         grid_dim = grids.shape[2]
 
         if self.atom_init: # apply atom init function to grids
             grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
-                                              padding=kernel.shape[-1]//2,
-                                              groups=n_channels)
+                                               padding=kernel.shape[-1]//2,
+                                               groups=n_channels)
 
         # get indices of next atom positions and channels
         idx_flat = grids.reshape(n_grids, -1).topk(self.beam_size).indices
@@ -199,13 +160,8 @@ class AtomFitter(object):
         idx_c = idx_grid[0]
 
         # transform to xyz coordiates and type vectors
-        print(center.device)
-        print(idx_xyz.device)
         xyz = center + resolution*(idx_xyz - (grid_dim-1)/2.)
-        c = make_one_hot(idx_c, n_channels, device=self.device)
-
-        if n_grids == 1: # squeeze
-            xyz, c = xyz[0], c[0]
+        c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
 
         return xyz, c
 
@@ -215,28 +171,29 @@ class AtomFitter(object):
         '''
         t_start = time.time()
 
-        if self.atom_init:
+        if self.atom_init: # initialize convolution kernel
             kernel = self.init_kernel(grid.channels, grid.resolution, self.atom_init == 'deconv')
         else:
             kernel = None
 
         # get true grid on appropriate device
-        grid_true = MolGrid(grid.values, grid.channels, grid.center,
-                            grid.resolution).to(device)
-        print(grid.values.device)
-        print(grid.center.device)
+        grid_true = MolGrid(values=torch.as_tensor(grid.values, device=self.device),
+                            channels=grid.channels,
+                            center=torch.as_tensor(grid.center, device=self.device),
+                            resolution=grid.resolution)
 
         # empty initial struct
         n_channels = len(grid.channels)
-        xyz = torch.zeros((0, 3), device=self.device)
-        c = torch.zeros((0, n_channels), dtype=int, device=self.device)
-        loss = ((grid_true)**2).sum()/2.
+        xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
+        c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
+        loss = ((grid_true.values)**2).sum()/2.
 
         # get next atom init locations and channels
-        xyz_next, c_next = self.init_atoms(grid_true.values, grid.center, grid.resolution, kernel)
+        xyz_next, c_next = self.init_atoms(grid_true.values.unsqueeze(0), grid_true.center,
+                                           grid.resolution, kernel)
 
         # batch of best structures so far
-        best_structs = [(loss, 0, xyz, c, xyz_next, c_next)]
+        best_structs = [(loss, 0, xyz, c, xyz_next[0], c_next[0])]
         found_new_best_struct = True
         visited = set()
         struct_count = 1
@@ -285,15 +242,16 @@ class AtomFitter(object):
 
                 visited.add(struct_id)
 
-            # get atom init locations and channels for new best structures (batched)
-            xyz_next, c_next = self.init_atoms(torch.stack(new_best_grid_diffs),
-                                               grid.center, grid.resolution, kernel)
-
-            # determine new limited set of best structures
-            for i, (loss, struct_id, xyz, c) in enumerate(new_best_structs):
-                best_structs.append((loss, struct_id, xyz, c, xyz_next[i], c_next[i]))
-
             if found_new_best_struct:
+
+                # get atom init locations and channels for new best structures (batched)
+                xyz_next, c_next = self.init_atoms(torch.stack(new_best_grid_diffs),
+                                                   grid_true.center, grid_true.resolution, kernel)
+
+                # determine new limited set of best structures
+                for i, (loss, struct_id, xyz, c) in enumerate(new_best_structs):
+                    best_structs.append((loss, struct_id, xyz, c, xyz_next[i], c_next[i]))
+
                 best_structs = sorted(best_structs)[:self.beam_size]
 
         loss_best, _, xyz_best, c_best, _, _ = best_structs[0]
@@ -301,20 +259,28 @@ class AtomFitter(object):
         xyz_best, grid_pred, grid_diff, loss_best = \
             self.fit_gd(grid_true, xyz_best, c_best, self.final_iters)
 
-        struct_best = MolStruct(xyz_best, c_best, grid.channels, self.device,
-                                loss=loss_best, time=time.time()-t_start)
+        grid_pred = MolGrid(grid_pred.cpu().numpy(), grid.channels, grid.center, grid.resolution)
+        struct_best = MolStruct(xyz_best.cpu().numpy(), torch.argmax(c_best, dim=1).cpu().numpy(),
+                                grid.channels, loss=loss_best, time=time.time()-t_start)
+
         return grid_pred, struct_best
 
     def fit_gd(self, grid, xyz, c, n_iters):
 
         xyz = torch.tensor(xyz, device=self.device)
-        solver = torch.optim.Adam(xyz)
+        r = torch.tensor([ch.atomic_radius for ch in grid.channels], device=self.device)
+
+        solver = torch.optim.Adam((xyz,))
+
+        self.gmaker.set_radii_type_indexed(True)
+        self.gmaker.set_dimension(grid.dimension)
+        self.gmaker.set_resolution(grid.resolution)
 
         for i in range(n_iters+1):
             solver.zero_grad()
 
-            self.c2gf.apply(self.gmaker, grid.center, grid.size, xyz, c, grid_pred.values)
-            grid_diff = grid - grid_pred
+            grid_pred = self.c2grid(xyz, c, r)
+            grid_diff = grid.values - grid_pred
             loss = (grid_diff**2).sum()/2.
 
             if i == n_iters: # or converged
@@ -434,7 +400,7 @@ class OutputWriter(object):
             print('out_writer got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
         self.grids[lig_name][grid_name][sample_idx] = grid
-        if grid_name.endswith('_fit'):
+        if struct is not None:
             self.structs[lig_name][grid_name][sample_idx] = struct
 
         has_all_grids = len(self.grids[lig_name]) == self.n_grids
@@ -506,14 +472,17 @@ class OutputWriter(object):
             lig_fit_grid     = grids['lig_fit'][i].values
             lig_gen_fit_grid = grids['lig_gen_fit'][i].values
 
-            lig_fit_xyz     = xyzs['lig_fit'][i]
-            lig_gen_fit_xyz = xyzs['lig_gen_fit'][i]
+            lig_fit_xyz     = structs['lig_fit'][i].xyz
+            lig_gen_fit_xyz = structs['lig_gen_fit'][i].xyz
 
-            lig_fit_center     = np.mean(lig_fit_xyz, axis=0, keepdims=True)
-            lig_gen_fit_center = np.mean(lig_gen_fit_xyz, axis=0, keepdims=True)
+            lig_fit_center     = structs['lig_fit'][i].center
+            lig_gen_fit_center = structs['lig_gen_fit'][i].center
+            print(lig_fit_center)
+            print(lig_gen_fit_center)
 
-            lig_fit_c     = cs['lig_fit'][i]
-            lig_gen_fit_c = cs['lig_gen_fit'][i]
+            lig_fit_c     = structs['lig_fit'][i].c
+            lig_gen_fit_c = structs['lig_gen_fit'][i].c
+            n_types = len(structs['lig_fit'][i].channels)
 
             lig_fit_type_count     = count_types(lig_fit_c, n_types)
             lig_gen_fit_type_count = count_types(lig_gen_fit_c, n_types)
@@ -539,12 +508,14 @@ class OutputWriter(object):
             m.loc[idx, 'lig_gen_fit_type_diff'] = type_diff
 
             # fit time
-            m.loc[idx, 'lig_fit_time']     = fit_times['lig_fit'][i]
-            m.loc[idx, 'lig_gen_fit_time'] = fit_times['lig_gen_fit'][i]
+            m.loc[idx, 'lig_fit_time']     = structs['lig_fit'][i].info['time']
+            m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
 
             # fit structure quality
             rmsd = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
+
+        print(m.loc[lig_name])
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -1261,6 +1232,13 @@ def get_n_atoms_from_sdf_file(sdf_file, idx=0):
     return Counter(atom.GetSymbol() for atom in mol.GetAtoms())
 
 
+def make_one_hot(x, n, dtype=None, device=None):
+    y = torch.zeros(x.shape + (n,), dtype=dtype, device=device)
+    for idx, last_idx in np.ndenumerate(x):
+        y[idx + (int(last_idx),)] = 1
+    return y
+
+
 def make_ob_mol(xyz, c, bonds, channels):
     '''
     Return an OpenBabel molecule from an array of
@@ -1580,9 +1558,9 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             lig_xyz, types = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
 
             if fix_center_to_origin:
-                center = np.zeros(3)
+                center = np.zeros(3, dtype=np.float32)
             else:
-                center = np.mean(lig_xyz, axis=0)
+                center = np.mean(lig_xyz, axis=0, dtype=np.float32)
 
             for sample_idx in range(args.n_samples):
 
@@ -1630,14 +1608,13 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
 
                 for blob_name in args.blob_name: # get grid from blob and add to appropriate output
 
-                    grid = MolGrid(gen_net.blobs[blob_name].data[batch_idx],
+                    grid = MolGrid(np.array(gen_net.blobs[blob_name].data[batch_idx]),
                                    channels=lig_channels,
                                    center=center,
-                                   resolution=resolution,
-                                   device='cuda' if args.gpu else 'cpu')
+                                   resolution=resolution)
 
                     grid_name = blob_name
-                    grid_norm = torch.norm(grid.values)
+                    grid_norm = np.linalg.norm(grid.values)
 
                     if args.verbose:
                         print('main_thread produced {} {} {} (norm={})'
