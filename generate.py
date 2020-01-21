@@ -268,8 +268,9 @@ class AtomFitter(object):
     def fit_gd(self, grid, xyz, c, n_iters):
 
         xyz = torch.tensor(xyz, device=self.device)
-        r = torch.tensor([ch.atomic_radius for ch in grid.channels], device=self.device)
+        xyz.requires_grad = True
 
+        r = torch.tensor([ch.atomic_radius for ch in grid.channels], device=self.device)
         solver = torch.optim.Adam((xyz,))
 
         self.gmaker.set_radii_type_indexed(True)
@@ -1637,8 +1638,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
         if args.parallel:
 
             if args.fit_atoms:
-                for i in range(args.n_fit_workers):
-                    fit_queue.put(None)
+                #for i in range(args.n_fit_workers):
+                #    fit_queue.put(None)
                 fit_pool.close()
                 fit_pool.join()
 
