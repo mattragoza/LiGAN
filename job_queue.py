@@ -113,7 +113,7 @@ class SlurmQueue(JobQueue):
     @staticmethod
     def _status_cmd(job_names):
         out_format = r'%i %P %j %u %t %M %l %R %Z'
-        return 'squeue --cluster=gpu --name={} --format="{}"'.format(','.join(job_names), out_format)
+        return 'squeue --name={} --format="{}"'.format(','.join(job_names), out_format)
 
     @staticmethod
     def _submit_cmd(job_file, array_idx=None):
@@ -147,7 +147,8 @@ class SlurmQueue(JobQueue):
 
     @staticmethod
     def _parse_submit(stdout):
-        return int(re.match(r'^Submitted batch job (\d+) on cluster .+\n$', stdout).group(1))
+        return int(re.match(r'^Submitted batch job (\d+)( on cluster .+)?\n$', stdout).group(1))
+
 
     @staticmethod
     def get_scr_dir(job_id):
