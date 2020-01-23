@@ -16,8 +16,8 @@ except ImportError:
 from functools import partial
 from scipy.stats import multivariate_normal
 import caffe
-import openbabel as ob
-import pybel
+from openbabel import openbabel as ob
+from openbabel import pybel
 import caffe_util
 import atom_types
 pd.set_option('display.width', 250)
@@ -1292,7 +1292,11 @@ def compute_generative_metrics(df, lig_name, grids, xyzs, cs, fit_times, n_sampl
         df.loc[idx, 'lig_gen_fit_time'] = fit_times['lig_gen_fit'][i]
 
         # fit structure quality
-        df.loc[idx, 'lig_gen_fit_RMSD'] = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
+        try:
+            rmsd = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
+        except ValueError:
+            rmsd = np.nan
+        df.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
 
 def parse_args(argv=None):
@@ -1373,7 +1377,7 @@ def main(argv):
 
     if not args.data_file: # use the set of (rec_file, lig_file) examples
         assert len(args.rec_file) == len(args.lig_file)
-        examples = zip(args.rec_file, args.lig_file)
+        examples = list(zip(args.rec_file, args.lig_file))
 
     else: # use the examples in data_file
         #assert len(args.rec_file) == len(args.lig_file) == 0
