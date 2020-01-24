@@ -38,6 +38,11 @@ def read_file(file_):
         return f.read()
 
 
+def count_lines_in_file(file_):
+    with open(file_, 'r') as f:
+        return sum(1 for line in f if line.rstrip())
+
+
 def write_file(file_, buf):
     with open(file_, 'w') as f:
         f.write(buf)
@@ -58,11 +63,7 @@ def write_model(model_file, net_param, model_params={}):
 def scaffold_model(model_file, force=True):
 
     scaff_out_file = model_file + '.scaffold_output'
-    try:
-        assert not force
-        scaff_params = params.read_params(scaff_out_file)
-        print(scaff_out_file)
-    except (IOError, AssertionError):
+    if force or not os.path.isfile(scaff_out_file):
         net = caffe_util.Net(model_file, phase=caffe.TRAIN)
         scaff_params = params.Params()
         scaff_params['n_params'] = net.get_n_params()
@@ -70,11 +71,14 @@ def scaffold_model(model_file, force=True):
         scaff_params['size'] = net.get_approx_size()
         scaff_params['min_width'] = net.get_min_width()
         params.write_params(scaff_out_file, scaff_params)
+    else:
+        scaff_params = params.read_params(scaff_out_file)
+        print(scaff_out_file)
 
     return scaff_params
 
 
-def write_models(model_dir, param_space, scaffold=False, print_=False):
+def write_models(model_dir, param_space, scaffold=False, verbose=False):
     '''
     Write a model in model_dir for every set of params in param_space.
     '''
@@ -88,7 +92,14 @@ def write_models(model_dir, param_space, scaffold=False, print_=False):
     for i, model_params in enumerate(param_space):
 
         model_file = os.path.join(model_dir, '{}.model'.format(model_params.name))
-        net_param = make_model(**model_params)
+
+        if verbose:
+            print('CREATING MODEL ' + str(i))
+            print('model_file = ' + model_file)
+            print('model_name = ' + model_params.name)
+            print('model_params = \n' + params.format_params(model_params, '  '), end='')
+
+        net_param = make_model(verbose=verbose, **model_params)
         write_model(model_file, net_param, model_params)
         model_names.append(model_params.name)
 
@@ -99,15 +110,13 @@ def write_models(model_dir, param_space, scaffold=False, print_=False):
             if print_:
                 print(df.loc[i])
 
-        elif print_:
-            print(model_file)
+        print(model_file)
 
     if scaffold:
         print('MODELS')
         print(df)
 
-    if print_:
-        print(model_names)
+    print(model_names)
 
 
 def parse_params(buf, line_start='', delim='=', prefix='', converter=ast.literal_eval):
@@ -244,7 +253,7 @@ def parse_gen_name(gen_model_name):
 
 def standardize_encode_type(encode_type):
     if encode_type == 'data':
-        return 'd-'
+        return '-'
     if encode_type == 'disc':
         return '_d-'
     m = re.match(r'(_)?(v)?(a|c)', encode_type)
@@ -256,9 +265,9 @@ def standardize_encode_type(encode_type):
 
 def parse_encode_type(encode_type):
     encode_type = standardize_encode_type(encode_type)
-    enc_pat = r'(v)?(d|r|l)' 
+    enc_pat = r'(v)?(d|r|l)'
     dec_pat = r'(d|r|l|y)'
-    pat = r'(_)?(?P<enc>({})+)-(?P<dec>({})*)'.format(enc_pat, dec_pat)
+    pat = r'(_)?(?P<enc>({})*)-(?P<dec>({})*)'.format(enc_pat, dec_pat)
     m = re.match(pat, encode_type)
     try:
         molgrid_data = not m.group(1)
@@ -268,7 +277,6 @@ def parse_encode_type(encode_type):
         return molgrid_data, encoders, decoders
     except AttributeError:
         raise Exception('could not parse encode_type {} with pattern {}'.format(encode_type, pat))
-
 
 
 def format_encode_type(molgrid_data, encoders, decoders):
@@ -283,7 +291,8 @@ def least_prime_factor(n):
 
 def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='', n_levels=0, conv_per_level=0,
                arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='', batch_size=16,
-               conv_kernel_size=3, latent_kernel_size=None, pool_type='a', unpool_type='n', growth_rate=16):
+               conv_kernel_size=3, latent_kernel_size=None, pool_type='a', unpool_type='n', growth_rate=16,
+               rec_map='', lig_map='', verbose=False):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
@@ -306,7 +315,13 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
     assert conv_kernel_size%2 == 1
     assert not latent_kernel_size or latent_kernel_size%2 == 1
 
-    n_channels = dict(rec=16, lig=19, data=16+19)
+    # determine number of rec and lig channels
+    n_channels = dict(rec=0, lig=0) #TODO get from gnina
+    if rec_map:
+        n_channels['rec'] = count_lines_in_file(rec_map)
+    if lig_map:
+        n_channels['lig'] = count_lines_in_file(lig_map)
+    n_channels['data'] = n_channels['rec'] + n_channels['lig']
 
     net = caffe.NetSpec()
 
@@ -328,7 +343,9 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             random_rotation=True,
             random_translate=2.0,
             radius_multiple=1.5,
-            use_covalent_radius=use_covalent_radius)
+            use_covalent_radius=use_covalent_radius,
+            recmap=rec_map,
+            ligmap=lig_map)
 
         net._ = caffe.layers.MolGridData(ntop=0, name='data', top=['data', 'label', 'aff'],
             include=dict(phase=caffe.TEST),
@@ -345,18 +362,19 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             random_rotation=False,
             random_translate=0.0,
             radius_multiple=1.5,
-            use_covalent_radius=use_covalent_radius)
+            use_covalent_radius=use_covalent_radius,
+            recmap=rec_map,
+            ligmap=lig_map)
 
         net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
                                               axis=1, slice_point=n_channels['rec'])
 
-    else:
+    else: # no molgrid_data layers, just input blobs
         net.rec = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['rec']] + [data_dim]*3))
         net.lig = caffe.layers.Input(shape=dict(dim=[batch_size, n_channels['lig']] + [data_dim]*3))
-
         net.data = caffe.layers.Concat(net.rec, net.lig, axis=1)
 
-        if not (molgrid_data or decoders):
+        if not decoders: # discriminative model, so need label input blob
             net.label = caffe.layers.Input(shape=dict(dim=[batch_size, n_latent]))
 
     # encoder(s)
@@ -972,6 +990,15 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             operation=caffe.params.Reduction.MEAN,
             loss_weight=1.0)
 
+    if verbose:
+        print('iterating over dict of net top blobs and layers')
+        for k, v in net.tops.items():
+            print('top name = ' + k)
+            try:
+                print('layer params = ' + repr(v.fn.params))
+            except AttributeError:
+                print('layer params = ' + repr(v.params))
+
     return net.to_proto()
 
 
@@ -990,7 +1017,8 @@ def parse_args(argv):
     parser.add_argument('-n', '--model_name', help='custom model name format')
     parser.add_argument('-m', '--model_type', default=None, help='model type, for default model name format (e.g. data, gen, or disc)')
     parser.add_argument('-v', '--version', default=None, help='version, for default model name format (e.g. 13, default most recent)')
-    parser.add_argument('--scaffold', action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--scaffold', default=False, action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--verbose', default=False, action='store_true', help='print out more info for debugging prototxt creation')
     parser.add_argument('--gpu', default=False, action='store_true', help='if benchmarking, use the GPU')
     return parser.parse_args(argv)
 
@@ -1019,7 +1047,7 @@ def main(argv):
         caffe.set_mode_cpu()
 
     param_space = params.ParamSpace(args.params_file, format=args.model_name.format)
-    write_models(args.out_dir, param_space, args.scaffold, print_=True)
+    write_models(args.out_dir, param_space, args.scaffold, verbose=args.verbose)
 
 
 if __name__ == '__main__':
