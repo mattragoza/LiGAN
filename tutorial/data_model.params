@@ -2,3 +2,5 @@ encode_type = 'data'
 data_dim = 24
 resolution = 0.5
 data_options = ''
+rec_map = 'my_rec_map'
+lig_map = 'my_lig_map'

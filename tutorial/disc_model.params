@@ -1,4 +1,6 @@
 encode_type = 'disc'
+rec_map = 'my_rec_map'
+lig_map = 'my_lig_map'
 data_dim = 24
 n_levels = 3
 conv_per_level = 1
