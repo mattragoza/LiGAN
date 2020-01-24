@@ -6,6 +6,11 @@ import pandas as pd
 from io import StringIO
 
 
+class SubprocessError(Exception):
+    '''Raised when a subprocess fails, and contains the stderr'''
+    pass
+
+
 def run_subprocess(cmd, stdin=None):
     '''
     Run a subprocess with the given stdin and return (stdout, stderr).
@@ -58,7 +63,7 @@ class JobQueue(object):
         cmd = cls._status_cmd(job_names)
         stdout, stderr = run_subprocess(cmd)
         if stderr:
-            raise Exception(stderr)
+            raise SubprocessError(stderr)
         else:
             return cls._parse_status(stdout)
 
@@ -77,7 +82,7 @@ class JobQueue(object):
             os.chdir(orig_dir)
 
         if stderr:
-            raise Exception(stderr)
+            raise SubprocessError(stderr)
         else:
             return cls._parse_submit(stdout)
 
@@ -257,7 +262,7 @@ def qsub_job(pbs_file, array_idx=None):
         cmd += ' -t {}'.format(array_idx)
     stdout, stderr = run_subprocess(cmd)
     if stderr:
-        raise Exception(stderr)
+        raise SubprocessError(stderr)
     job_id = stdout.strip()
     if array_idx is not None:
         job_id = job_id.replace('[]', '[{}]'.format(array_idx))
