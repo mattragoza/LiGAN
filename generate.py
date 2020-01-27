@@ -229,14 +229,14 @@ class AtomFitter(object):
                         found_new_best_struct = True
                         struct_count += 1
 
-                if self.interm_iters: # also try GD without adding atom
+                if False: # also try GD without adding atom
 
                     xyz_new, grid_pred, grid_diff, loss_new = \
-                        self.fit_gd(grid, xyz, c, self.interm_iters)
+                        self.fit_gd(grid_true, xyz, c, self.interm_iters)
 
                     if any(loss_new < tup[0] for tup in best_structs):
-                        new_best_structs.append((loss_new, count, xyz_new, c))
-                        new_grid_diffs.append(grid_diff)
+                        new_best_structs.append((loss_new, struct_count, xyz_new, c))
+                        new_best_grid_diffs.append(grid_diff)
                         found_new_best_struct = True
                         struct_count += 1
 
@@ -259,8 +259,16 @@ class AtomFitter(object):
         xyz_best, grid_pred, grid_diff, loss_best = \
             self.fit_gd(grid_true, xyz_best, c_best, self.final_iters)
 
-        grid_pred = MolGrid(grid_pred.cpu().numpy(), grid.channels, grid.center, grid.resolution)
-        struct_best = MolStruct(xyz_best.cpu().numpy(), torch.argmax(c_best, dim=1).cpu().numpy(),
+        grid_pred = MolGrid(grid_pred.cpu().detach().numpy(),
+                            grid.channels, grid.center, grid.resolution)
+
+        if len(c_best) > 0:
+            c_best = torch.argmax(c_best, dim=1)
+        else:
+            c_best = torch.zeros((0,))
+
+        struct_best = MolStruct(xyz_best.cpu().detach().numpy(),
+                                c_best.cpu().detach().numpy(),
                                 grid.channels, loss=loss_best, time=time.time()-t_start)
 
         return grid_pred, struct_best
@@ -495,12 +503,22 @@ class OutputWriter(object):
             m.loc[idx, 'lig_gen_fit_loss'] = lig_gen_fit_loss.item()
 
             # number of fit atoms
-            m.loc[idx, 'lig_fit_n_atoms']     = len(lig_fit_c)
-            m.loc[idx, 'lig_gen_fit_n_atoms'] = len(lig_gen_fit_c)
+            lig_fit_n_atoms = len(lig_fit_c)
+            lig_gen_fit_n_atoms = len(lig_gen_fit_c)
+            m.loc[idx, 'lig_fit_n_atoms']     = lig_fit_n_atoms
+            m.loc[idx, 'lig_gen_fit_n_atoms'] = lig_gen_fit_n_atoms
 
             # fit structure radius
-            lig_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_fit_center, axis=1))
-            lig_gen_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_gen_fit_center, axis=1))
+            if lig_fit_n_atoms > 0:
+                lig_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_fit_center, axis=1))
+            else:
+                lig_fit_radius = np.nan
+
+            if lig_fit_n_atoms > 0:
+                lig_gen_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_gen_fit_center, axis=1))
+            else:
+                lig_gen_fit_radius = np.nan
+
             m.loc[idx, 'lig_fit_radius']     = lig_fit_radius
             m.loc[idx, 'lig_gen_fit_radius'] = lig_gen_fit_radius
 
@@ -513,7 +531,10 @@ class OutputWriter(object):
             m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
 
             # fit structure quality
-            rmsd = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
+            try:
+                rmsd = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
+            except (ValueError, ZeroDivisionError):
+                rmsd = np.nan
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
         print(m.loc[lig_name])
@@ -1640,8 +1661,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             if args.fit_atoms:
                 #for i in range(args.n_fit_workers):
                 #    fit_queue.put(None)
-                fit_pool.close()
-                fit_pool.join()
+                fit_procs.close()
+                fit_procs.join()
 
             out_queue.put(None)
             out_thread.join()
@@ -1780,7 +1801,7 @@ def main(argv):
     data_param.root_folder = args.data_root
 
     # create the net in caffe
-    if args.gpu:
+    if True:
         caffe.set_mode_gpu()
     else:
         caffe.set_mode_cpu()
