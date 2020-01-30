@@ -91,28 +91,42 @@ class MolStruct(object):
         self.n_atoms = self.xyz.shape[0]
         self.info = info
 
+    def to_ob_mol(self):
+        return make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
+
     def to_sdf(self, sdf_file):
-        mol = make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
-        write_ob_mols_to_sdf_file(sdf_file, [mol])
+        write_ob_mols_to_sdf_file(sdf_file, [self.to_ob_mol()])
 
 
 class AtomFitter(object):
     
     def __init__(self, beam_size, atom_init, interm_iters, final_iters,
-                 learning_rate, momentum, constrain_types, device, verbose):
+                 learning_rate, beta1, beta2, weight_decay, constrain_types,
+                 r_factor, output_visited, output_kernel, device, verbose):
+
+        assert atom_init in {None, 'conv', 'deconv'}
 
         self.beam_size = beam_size
         self.atom_init = atom_init
         self.interm_iters = interm_iters
         self.final_iters = final_iters
+
         self.learning_rate = learning_rate
-        self.momentum = momentum
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.weight_decay = weight_decay
+
         self.constrain_types = constrain_types
+        self.r_factor = r_factor
+
         self.device = device
         self.verbose = verbose
 
         self.gmaker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.gmaker)
+
+        self.output_visited = output_visited
+        self.output_kernel = output_kernel
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
@@ -131,14 +145,27 @@ class AtomFitter(object):
         self.gmaker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
         self.gmaker.set_resolution(resolution)
 
+        self.c2grid.center = torch.zeros(3, device=self.device)
         kernel = self.c2grid(xyz, c, r)
 
         if deconv:
-            kernel = weiner_invert_kernel(kernel)
+            dtype = kernel.dtype
+            kernel = 100*torch.tensor(weiner_invert_kernel(kernel.cpu(), noise_ratio=1),
+                                      dtype=dtype, device=self.device)
+
+        if self.output_kernel:
+            dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
+            if self.verbose:
+                print('writing out {} (norm={})'.format(dx_prefix, np.linalg.norm(kernel.cpu())))
+            write_grids_to_dx_files(dx_prefix, kernel.cpu(),
+                                channels=channels,
+                                center=np.zeros(3),
+                                resolution=resolution)
+            self.output_kernel = False
 
         return kernel
 
-    def init_atoms(self, grids, center, resolution, kernel):
+    def init_atoms(self, grids, center, resolution, kernel=None):
         '''
         Apply atom initialization kernel if needed and
         then return best next atom initializations on a
@@ -148,13 +175,13 @@ class AtomFitter(object):
         n_channels = grids.shape[1]
         grid_dim = grids.shape[2]
 
-        if self.atom_init: # apply atom init function to grids
+        if kernel is not None: # apply atom init function to grids
             grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
                                                padding=kernel.shape[-1]//2,
                                                groups=n_channels)
 
         # get indices of next atom positions and channels
-        idx_flat = grids.reshape(n_grids, -1).topk(self.beam_size).indices
+        idx_flat = grids.reshape(n_grids, -1).topk(self.beam_size).indices # (n_grids, beam_size)
         idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
         idx_xyz = torch.tensor(idx_grid[1:], device=self.device).permute(1, 2, 0)
         idx_c = idx_grid[0]
@@ -165,14 +192,17 @@ class AtomFitter(object):
 
         return xyz, c
 
-    def fit(self, grid, types=None):
+    def fit(self, grid, types=None, use_r_factor=False):
         '''
         Fit atomic structure to mol grid.
         '''
         t_start = time.time()
 
+        r_factor = self.r_factor if use_r_factor else 1.0
+
         if self.atom_init: # initialize convolution kernel
-            kernel = self.init_kernel(grid.channels, grid.resolution, self.atom_init == 'deconv')
+            deconv = (self.atom_init == 'deconv')
+            kernel = self.init_kernel(grid.channels, grid.resolution, deconv)
         else:
             kernel = None
 
@@ -197,6 +227,7 @@ class AtomFitter(object):
         found_new_best_struct = True
         visited = set()
         struct_count = 1
+        visited_structs = []
 
         # search until we can't find a better structure
         while found_new_best_struct:
@@ -220,7 +251,7 @@ class AtomFitter(object):
 
                     # compute diff and loss after gradient descent
                     xyz_new, grid_pred, grid_diff, loss_new = \
-                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters)
+                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
 
                     # check if new structure is one of the best
                     if any(loss_new < tup[0] for tup in best_structs):
@@ -229,18 +260,9 @@ class AtomFitter(object):
                         found_new_best_struct = True
                         struct_count += 1
 
-                if False: # also try GD without adding atom
-
-                    xyz_new, grid_pred, grid_diff, loss_new = \
-                        self.fit_gd(grid_true, xyz, c, self.interm_iters)
-
-                    if any(loss_new < tup[0] for tup in best_structs):
-                        new_best_structs.append((loss_new, struct_count, xyz_new, c))
-                        new_best_grid_diffs.append(grid_diff)
-                        found_new_best_struct = True
-                        struct_count += 1
-
                 visited.add(struct_id)
+                if self.output_visited:
+                    visited_structs.append((loss, struct_id, time.time()-t_start, xyz, c))
 
             if found_new_best_struct:
 
@@ -253,37 +275,49 @@ class AtomFitter(object):
                     best_structs.append((loss, struct_id, xyz, c, xyz_next[i], c_next[i]))
 
                 best_structs = sorted(best_structs)[:self.beam_size]
+                best_loss = best_structs[0][0]
+                best_id = best_structs[0][1]
+                if self.verbose:
+                    print('best struct # {} (loss={})'.format(best_id, best_loss))
 
-        loss_best, _, xyz_best, c_best, _, _ = best_structs[0]
+        _, _, xyz_best, c_best, _, _ = best_structs[0]
 
         xyz_best, grid_pred, grid_diff, loss_best = \
-            self.fit_gd(grid_true, xyz_best, c_best, self.final_iters)
+            self.fit_gd(grid_true, xyz_best, c_best, self.final_iters, r_factor)
 
         grid_pred = MolGrid(grid_pred.cpu().detach().numpy(),
                             grid.channels, grid.center, grid.resolution)
 
-        if len(c_best) > 0:
-            c_best = torch.argmax(c_best, dim=1)
-        else:
-            c_best = torch.zeros((0,))
+        if self.output_visited: # return all visited structures
+            struct_best = []
+            for loss, struct_id, fit_time, xyz, c in visited_structs:
+                c = torch.argmax(c, dim=1) if len(c) > 0 else torch.zeros((0,))
+                struct = MolStruct(xyz.cpu().detach().numpy(), c.cpu().detach().numpy(),
+                                   grid.channels, loss=loss, time=fit_time)
+                struct_best.append(struct)
 
-        struct_best = MolStruct(xyz_best.cpu().detach().numpy(),
-                                c_best.cpu().detach().numpy(),
-                                grid.channels, loss=loss_best, time=time.time()-t_start)
+        else: # return only the best structure
+            c_best = torch.argmax(c_best, dim=1) if len(c_best) > 0 else torch.zeros((0,))
+            struct_best = MolStruct(xyz_best.cpu().detach().numpy(), c_best.cpu().detach().numpy(),
+                                    grid.channels, loss=loss_best, time=time.time()-t_start)
 
         return grid_pred, struct_best
 
-    def fit_gd(self, grid, xyz, c, n_iters):
+    def fit_gd(self, grid, xyz, c, n_iters, r_factor=1.0):
+
+        r = torch.tensor([ch.atomic_radius for ch in grid.channels],
+                         device=self.device) * r_factor
 
         xyz = torch.tensor(xyz, device=self.device)
         xyz.requires_grad = True
-
-        r = torch.tensor([ch.atomic_radius for ch in grid.channels], device=self.device)
-        solver = torch.optim.Adam((xyz,))
+        solver = torch.optim.Adam((xyz,), lr=self.learning_rate,
+                                  betas=(self.beta1, self.beta2),
+                                  weight_decay=self.weight_decay)
 
         self.gmaker.set_radii_type_indexed(True)
         self.gmaker.set_dimension(grid.dimension)
         self.gmaker.set_resolution(grid.resolution)
+        self.c2grid.center = tuple(grid.center.cpu().numpy().astype(float))
 
         for i in range(n_iters+1):
             solver.zero_grad()
@@ -299,67 +333,6 @@ class AtomFitter(object):
             solver.step()
 
         return xyz, grid_pred, grid_diff, loss
-
-
-class Struct2GridFunction(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, gmaker, channels, center, resolution, size, xyz, c):
-        if len(xyz.shape) != 2:
-            raise RuntimeError('xyz must have 2 dimensions')
-        if xyz.shape[0] != c.shape[0]:
-            raise RuntimeError('xyz and c must have same first dimension')
-        if len(c.shape) == 1: # scalar types
-            r = torch.tensor([channels[i].atomic_radius for i in c],
-                             device=xyz.device)
-            vector_types = False
-        elif len(c.shape) == 2: # vector types
-            r = torch.tensor([ch.atomic_radius for ch in channels],
-                             device=xyz.device)
-            vector_types = True
-        else:
-            raise RuntimeError('c must have 1 or 2 dimensions')
-
-        ctx.save_for_backward(xyz, c, r)
-        ctx.gmaker = gmaker
-        ctx.center = center
-        ctx.vector_types = vector_types
-        ctx.resolution = resolution
-        dimension = MolGrid.compute_dimension(size, resolution)
-        ctx.dimension = dimension
-
-        gmaker.set_radii_type_indexed(vector_types)
-        gmaker.set_resolution(resolution)
-        gmaker.set_dimension(dimension)
-
-        n_channels = len(channels)
-        shape = gmaker.grid_dimensions(n_channels)
-
-        grid = MolGrid(torch.empty(*shape, dtype=xyz.dtype),
-                       channels=channels, center=center,
-                       resolution=resolution,
-                       device=xyz.device)
-
-        print(center.shape, center.dtype, center.device)
-        print(xyz.shape, xyz.dtype, xyz.device)
-        print(c.shape, c.dtype, c.device)
-        print(r.shape, r.dtype, r.device)
-        print(grid.values.shape, grid.values.dtype, grid.values.device)
-
-        gmaker.forward(center, xyz, c, r, grid.values)
-        return grid
-
-    @staticmethod
-    def backward(ctx, d_grid):
-        xyz, c, r = ctx.saved_tensors
-
-        ctx.gmaker.set_radii_type_indexed(ctx.vector_types)
-        ctx.gmaker.set_resolution(ctx.resolution)
-        ctx.gmaker.set_dimension(ctx.dimension)
-
-        d_xyz = torch.empty(*xyz.shape, dtype=xyz.dtype, device=xyz.device)
-        ctx.gmaker.backward(ctx.center, xyz, c, r, d_grid, d_xyz)
-        return None, None, None, None, None, d_xyz, None
 
 
 class OutputWriter(object):
@@ -417,14 +390,19 @@ class OutputWriter(object):
 
         if has_all_grids and has_all_samples:
 
+            if self.verbose:
+                print('out_writer has all grids for {}'.format(lig_name))
+
             lig_grids = self.grids[lig_name]
             lig_structs = self.structs[lig_name]
 
             for grid_name in lig_grids:
                 for i in range(self.n_samples):
-                    grid_prefix = '{}_{}_{}_{}'.format(self.out_prefix, lig_name, grid_name, sample_idx)
+                    grid_prefix = '{}_{}_{}_{}'.format(self.out_prefix, lig_name, grid_name, i)
 
                     if self.output_dx: # write out density grid
+                        if self.verbose:
+                            print('out_writer writing {} .dx files'.format(grid_prefix))
                         grid = lig_grids[grid_name][i]
                         grid.to_dx(grid_prefix)
                         self.dx_prefixes.append(grid_prefix)
@@ -432,14 +410,32 @@ class OutputWriter(object):
                     if self.output_sdf and grid_name.endswith('_fit'): # write out fit structure
                         struct = lig_structs[grid_name][i]
                         struct_file = '{}.sdf'.format(grid_prefix)
-                        struct.to_sdf(struct_file)
+                        if self.verbose:
+                            print('out_writer writing {}'.format(struct_file))
+                        if isinstance(struct, list):
+                            mols = [s.to_ob_mol() for s in struct]
+                            write_ob_mols_to_sdf_file(struct_file, mols)
+                            struct = sorted(struct, key=lambda s: s.info['loss'])[0]
+                            lig_structs[grid_name][i] = struct
+                        else:
+                            struct.to_sdf(struct_file)
                         self.struct_files.append(struct_file)
                         self.centers.append(struct.center)
 
+            if self.verbose:
+                print('out_writer computing metrics for {}'.format(lig_name))
             self.compute_metrics(lig_name, lig_grids, lig_structs)
+
+            if self.verbose:
+                print('out_writer writing {}'.format(self.metric_file))
             self.metrics.to_csv(self.metric_file, sep=' ')
+
+            if self.verbose:
+                print('out_writer writing {}'.format(self.pymol_file))
             write_pymol_script(self.pymol_file, self.dx_prefixes, self.struct_files, self.centers)
 
+            if self.verbose:
+                print('out_writer flushing out {}'.format(lig_name))
             del self.grids[lig_name] # free memory
             del self.structs[lig_name]
 
@@ -486,8 +482,6 @@ class OutputWriter(object):
 
             lig_fit_center     = structs['lig_fit'][i].center
             lig_gen_fit_center = structs['lig_gen_fit'][i].center
-            print(lig_fit_center)
-            print(lig_gen_fit_center)
 
             lig_fit_c     = structs['lig_fit'][i].c
             lig_gen_fit_c = structs['lig_gen_fit'][i].c
@@ -537,7 +531,8 @@ class OutputWriter(object):
                 rmsd = np.nan
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
-        print(m.loc[lig_name])
+        if self.verbose:
+            print(m.loc[lig_name])
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -1562,11 +1557,10 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                               args.verbose)
 
         if args.fit_atoms:
-            fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters,
-                                args.final_iters, args.learning_rate, args.momentum,
-                                constrain_types=args.fit_atom_types,
-                                device='cuda' if args.gpu else 'cpu',
-                                verbose=args.verbose)
+            fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters, args.final_iters,
+                                args.learning_rate, args.beta1, args.beta2, args.weight_decay,
+                                args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
+                                device=('cpu', 'cuda')[args.gpu], verbose=args.verbose)
 
     # generate density grids from generative model in main thread
     try:
@@ -1640,14 +1634,14 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
 
                     if args.verbose:
                         print('main_thread produced {} {} {} (norm={})'
-                              .format(lig_name, grid_name, sample_idx, grid_norm))
+                              .format(lig_name, grid_name, sample_idx, grid_norm), flush=True)
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
                             fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
                         else:
                             output.write(lig_name, grid_name, sample_idx, grid)
-                            grid, struct = fitter.fit(grid, types)
+                            grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
                             grid_name += '_fit'
                             output.write(lig_name, grid_name, sample_idx, grid, struct)
                     else:
@@ -1667,13 +1661,16 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             out_queue.put(None)
             out_thread.join()
 
+    if args.verbose:
+        print('main_thread exit')
+
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters,
-                        args.final_iters, args.learning_rate, args.momentum,
-                        constrain_types=args.fit_atom_types, device='cpu',
-                        verbose=args.verbose)
+    fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters, args.final_iters,
+                        args.learning_rate, args.beta1, args.beta2, args.weight_decay,
+                        args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
+                        device='cpu', verbose=args.verbose)
     while True:
 
         if args.verbose:
@@ -1688,7 +1685,7 @@ def fit_worker_main(fit_queue, out_queue, args):
 
         out_queue.put((lig_name, grid_name, sample_idx, grid, None))
 
-        grid, struct = fitter.fit(grid, types)
+        grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
         grid_name += '_fit'
         if args.verbose:
             print('fit_worker produced {} {} {} ({} atoms, {}s)'
@@ -1711,6 +1708,9 @@ def out_worker_main(out_queue, args):
             break
         output.write(*task)
 
+    if args.verbose:
+        print('out_worker exit')
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='Generate atomic density grids from generative model with Caffe')
@@ -1729,15 +1729,20 @@ def parse_args(argv=None):
     parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
+    parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')
+    parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
+    parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
-    parser.add_argument('--fit_atom_types', action='store_true', help='fit exact atom types of true ligands to density grids')
-    parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of fit atom positions')
-    parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate for atom fitting')
-    parser.add_argument('--momentum', type=float, default=0.0, help='momentum for atom fitting')
+    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to use atom types of true ligand')
+    parser.add_argument('--r_factor', type=float, default=1.0, help='radius multiple for fitting to generated grids')
+    parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')
+    parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
+    parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
     parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
     parser.add_argument('--atom_init', type=str, default=None, help='function to apply to remaining density before atom init (|conv|deconv)')
-    parser.add_argument('--interm_iters', type=int, default=0, help='maximum number of iterations for atom fitting between atom inits')
-    parser.add_argument('--final_iters', type=int, default=np.inf, help='maximum number of iterations for atom fitting after atom inits')
+    parser.add_argument('--interm_iters', type=int, default=10, help='maximum number of iterations for atom fitting between atom inits')
+    parser.add_argument('--final_iters', type=int, default=100, help='maximum number of iterations for atom fitting after atom inits')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')
     parser.add_argument('--bonded', action='store_true', help="add atoms by creating bonds to existing atoms when atom fitting")
     parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
@@ -1747,7 +1752,6 @@ def parse_args(argv=None):
     parser.add_argument('--deconv_fit', action='store_true', help="apply Wiener deconvolution for atom fitting initialization")
     parser.add_argument('--noise_ratio', default=1.0, type=float, help="noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
-    parser.add_argument('--all_iters_sdf', action='store_true', help="output a .sdf structure for each outer iteration of atom fitting")
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
@@ -1758,8 +1762,8 @@ def parse_args(argv=None):
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
-    parser.add_argument('--parallel', default=False, action='store_true', help='parallelize generation, atom fitting, and output')
-    parser.add_argument('--n_fit_workers', default=mp.cpu_count(), type=int, help='number of worker processes for async atom fitting')
+    parser.add_argument('--parallel', default=False, action='store_true', help='run atom fitting in separate worker processes')
+    parser.add_argument('--n_fit_workers', default=8, type=int, help='number of worker processes for parallel atom fitting')
     return parser.parse_args(argv)
 
 
@@ -1768,8 +1772,6 @@ def main(argv):
 
     if not args.blob_name:
         args.blob_name += ['lig', 'lig_gen']
-
-    args.fit_atoms |= args.fit_atom_types or args.output_sdf
 
     # read the model param files and set atom gridding params
     data_net_param = caffe_util.NetParameter.from_prototxt(args.data_model_file)
