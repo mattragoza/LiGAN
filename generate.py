@@ -516,13 +516,13 @@ class OutputWriter(object):
             m.loc[idx, 'lig_fit_radius']     = lig_fit_radius
             m.loc[idx, 'lig_gen_fit_radius'] = lig_gen_fit_radius
 
-            # fit type count absolute difference
-            type_diff = np.linalg.norm(lig_fit_type_count - lig_gen_fit_type_count, ord=1)
-            m.loc[idx, 'lig_gen_fit_type_diff'] = type_diff
-
             # fit time
             m.loc[idx, 'lig_fit_time']     = structs['lig_fit'][i].info['time']
             m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
+
+            # fit type count absolute difference
+            type_diff = np.linalg.norm(lig_fit_type_count - lig_gen_fit_type_count, ord=1)
+            m.loc[idx, 'lig_gen_fit_type_diff'] = type_diff
 
             # fit structure quality
             try:
