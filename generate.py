@@ -100,13 +100,14 @@ class MolStruct(object):
 
 class AtomFitter(object):
     
-    def __init__(self, beam_size, atom_init, interm_iters, final_iters,
+    def __init__(self, beam_size, beam_stride, atom_init, interm_iters, final_iters,
                  learning_rate, beta1, beta2, weight_decay, constrain_types,
                  r_factor, output_visited, output_kernel, device, verbose):
 
         assert atom_init in {None, 'conv', 'deconv'}
 
         self.beam_size = beam_size
+        self.beam_stride = beam_stride
         self.atom_init = atom_init
         self.interm_iters = interm_iters
         self.final_iters = final_iters
@@ -186,7 +187,8 @@ class AtomFitter(object):
                                                groups=n_channels)
 
         # get indices of next atom positions and channels
-        idx_flat = grids.reshape(n_grids, -1).topk(self.beam_size).indices # (n_grids, beam_size)
+        k = self.beam_size*self.beam_stride
+        idx_flat = grids.reshape(n_grids, -1).topk(k).indices[:,::self.beam_stride]
         idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
         idx_xyz = torch.tensor(idx_grid[1:], device=self.device).permute(1, 2, 0)
         idx_c = idx_grid[0]
@@ -1595,7 +1597,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                               args.verbose)
 
         if args.fit_atoms:
-            fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters, args.final_iters,
+            fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
                                 args.learning_rate, args.beta1, args.beta2, args.weight_decay,
                                 args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
                                 device=('cpu', 'cuda')[args.gpu], verbose=args.verbose)
@@ -1705,7 +1707,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    fitter = AtomFitter(args.beam_size, args.atom_init, args.interm_iters, args.final_iters,
+    fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
                         args.learning_rate, args.beta1, args.beta2, args.weight_decay,
                         args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
                         device='cpu', verbose=args.verbose)
@@ -1778,6 +1780,7 @@ def parse_args(argv=None):
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
     parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
+    parser.add_argument('--beam_stride', type=int, default=1, help='stride of atom fitting beam search')
     parser.add_argument('--atom_init', type=str, default=None, help='function to apply to remaining density before atom init (|conv|deconv)')
     parser.add_argument('--interm_iters', type=int, default=10, help='maximum number of iterations for atom fitting between atom inits')
     parser.add_argument('--final_iters', type=int, default=100, help='maximum number of iterations for atom fitting after atom inits')
