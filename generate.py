@@ -145,7 +145,7 @@ class AtomFitter(object):
         self.gmaker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
         self.gmaker.set_resolution(resolution)
 
-        self.c2grid.center = torch.zeros(3, device=self.device)
+        self.c2grid.center = (0.,0.,0.)
         kernel = self.c2grid(xyz, c, r)
 
         if deconv:
@@ -165,7 +165,7 @@ class AtomFitter(object):
 
         return kernel
 
-    def init_atoms(self, grids, center, resolution, kernel=None):
+    def init_atoms(self, grids, center, resolution, kernel=None, types=None):
         '''
         Apply atom initialization kernel if needed and
         then return best next atom initializations on a
@@ -174,6 +174,11 @@ class AtomFitter(object):
         n_grids = grids.shape[0]
         n_channels = grids.shape[1]
         grid_dim = grids.shape[2]
+
+        if self.constrain_types:
+            grids = grids.clone()
+            for i in range(n_grids):
+                grids[i,types[i]<=0] = -1
 
         if kernel is not None: # apply atom init function to grids
             grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
@@ -192,12 +197,13 @@ class AtomFitter(object):
 
         return xyz, c
 
-    def fit(self, grid, types=None, use_r_factor=False):
+    def fit(self, grid, types, use_r_factor=False):
         '''
         Fit atomic structure to mol grid.
         '''
         t_start = time.time()
 
+        types = torch.tensor(types, device=self.device)
         r_factor = self.r_factor if use_r_factor else 1.0
 
         if self.atom_init: # initialize convolution kernel
@@ -216,14 +222,22 @@ class AtomFitter(object):
         n_channels = len(grid.channels)
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
-        loss = ((grid_true.values)**2).sum()/2.
+        fit_loss = ((grid_true.values)**2).sum()/2.
+        type_diff = types
+
+        # to constrain types, order structs first by type-correctness, then by L2 loss
+        if self.constrain_types:
+            heuristic = (type_diff.abs().sum().item(), fit_loss.item())
+
+        else: # otherwise, order structs only by L2 loss
+            heuristic = fit_loss.item()
 
         # get next atom init locations and channels
         xyz_next, c_next = self.init_atoms(grid_true.values.unsqueeze(0), grid_true.center,
-                                           grid.resolution, kernel)
+                                           grid.resolution, kernel, type_diff.unsqueeze(0))
 
         # batch of best structures so far
-        best_structs = [(loss, 0, xyz, c, xyz_next[0], c_next[0])]
+        best_structs = [(heuristic, 0, xyz, c, xyz_next[0], c_next[0])]
         found_new_best_struct = True
         visited = set()
         struct_count = 1
@@ -234,10 +248,11 @@ class AtomFitter(object):
 
             new_best_structs = []
             new_best_grid_diffs = []
+            new_best_type_diffs = []
             found_new_best_struct = False
 
             # try to expand each current best structure
-            for loss, struct_id, xyz, c, xyz_next, c_next in best_structs:
+            for heuristic, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
                 if struct_id in visited:
                     continue
@@ -250,56 +265,76 @@ class AtomFitter(object):
                     c_new   = torch.cat([c, c_next_.unsqueeze(0)])
 
                     # compute diff and loss after gradient descent
-                    xyz_new, grid_pred, grid_diff, loss_new = \
+                    xyz_new, grid_pred, grid_diff, fit_loss = \
                         self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
+                    type_diff = types - c_new.sum(dim=0)
 
-                    # check if new structure is one of the best
-                    if any(loss_new < tup[0] for tup in best_structs):
-                        new_best_structs.append((loss_new, struct_count, xyz_new, c_new))
+                    if self.constrain_types:
+                        heuristic_new = (type_diff.abs().sum().item(), fit_loss.item())
+                    else:
+                        heuristic_new = fit_loss.item()
+
+                    # check if new structure is one of the best yet
+                    if any(heuristic_new < s[0] for s in best_structs):
+
+                        new_best_structs.append((heuristic_new, struct_count, xyz_new, c_new))
                         new_best_grid_diffs.append(grid_diff)
+                        new_best_type_diffs.append(type_diff)
                         found_new_best_struct = True
                         struct_count += 1
 
                 visited.add(struct_id)
                 if self.output_visited:
-                    visited_structs.append((loss, struct_id, time.time()-t_start, xyz, c))
+                    visited_structs.append((heuristic, struct_id, time.time()-t_start, xyz, c))
 
             if found_new_best_struct:
 
-                # get atom init locations and channels for new best structures (batched)
-                xyz_next, c_next = self.init_atoms(torch.stack(new_best_grid_diffs),
-                                                   grid_true.center, grid_true.resolution, kernel)
+                new_best_grid_diffs = torch.stack(new_best_grid_diffs)
+                new_best_type_diffs = torch.stack(new_best_type_diffs)
+
+                # get next-atom init coords and types for new set of best structures
+                xyz_next, c_next = self.init_atoms(new_best_grid_diffs, grid_true.center,
+                                                   grid_true.resolution, kernel, new_best_type_diffs)
 
                 # determine new limited set of best structures
-                for i, (loss, struct_id, xyz, c) in enumerate(new_best_structs):
-                    best_structs.append((loss, struct_id, xyz, c, xyz_next[i], c_next[i]))
+                for i, (heuristic, struct_id, xyz, c) in enumerate(new_best_structs):
+                    best_structs.append((heuristic, struct_id, xyz, c, xyz_next[i], c_next[i]))
 
                 best_structs = sorted(best_structs)[:self.beam_size]
-                best_loss = best_structs[0][0]
+                best_heuristic = best_structs[0][0]
                 best_id = best_structs[0][1]
                 if self.verbose:
-                    print('best struct # {} (loss={})'.format(best_id, best_loss))
+                    print('best struct # {} (heuristic={})'.format(best_id, best_heuristic))
 
-        _, _, xyz_best, c_best, _, _ = best_structs[0]
+        best_heuristic, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
-        xyz_best, grid_pred, grid_diff, loss_best = \
+        xyz_best, grid_pred, grid_diff, fit_loss = \
             self.fit_gd(grid_true, xyz_best, c_best, self.final_iters, r_factor)
+        type_diff = (types - c_best.sum(dim=0)).abs().sum().item()
 
         grid_pred = MolGrid(grid_pred.cpu().detach().numpy(),
                             grid.channels, grid.center, grid.resolution)
 
         if self.output_visited: # return all visited structures
+
             struct_best = []
-            for loss, struct_id, fit_time, xyz, c in visited_structs:
+            for heuristic, struct_id, fit_time, xyz, c in visited_structs:
+
+                if self.constrain_types:
+                    type_diff, fit_loss = heuristic[1]
+                else:
+                    fit_loss = heuristic
+                    type_diff = (types - c.sum(dim=0)).abs().sum().item()
+
                 c = torch.argmax(c, dim=1) if len(c) > 0 else torch.zeros((0,))
                 struct = MolStruct(xyz.cpu().detach().numpy(), c.cpu().detach().numpy(),
-                                   grid.channels, loss=loss, time=fit_time)
+                                   grid.channels, loss=fit_loss, type_diff=type_diff, time=fit_time)
                 struct_best.append(struct)
 
         else: # return only the best structure
             c_best = torch.argmax(c_best, dim=1) if len(c_best) > 0 else torch.zeros((0,))
             struct_best = MolStruct(xyz_best.cpu().detach().numpy(), c_best.cpu().detach().numpy(),
-                                    grid.channels, loss=loss_best, time=time.time()-t_start)
+                                    grid.channels, loss=fit_loss, type_diff=type_diff, time=time.time()-t_start)
 
         return grid_pred, struct_best
 
@@ -373,7 +408,7 @@ class OutputWriter(object):
 
         self.verbose = verbose
 
-    def write(self, lig_name, grid_name, sample_idx, grid, struct=None):
+    def write(self, lig_name, grid_name, sample_idx, grid, types, struct=None):
         '''
         Add grid and struct to the data structure and write output
         for lig_name, if all expected grids and structs are present.
@@ -516,13 +551,16 @@ class OutputWriter(object):
             m.loc[idx, 'lig_fit_radius']     = lig_fit_radius
             m.loc[idx, 'lig_gen_fit_radius'] = lig_gen_fit_radius
 
+            # true type difference
+            m.loc[idx, 'lig_fit_type_diff'] = structs['lig_fit'][i].info['type_diff']
+            m.loc[idx, 'lig_gen_fit_type_diff'] = structs['lig_gen_fit'][i].info['type_diff']
+
             # fit time
             m.loc[idx, 'lig_fit_time']     = structs['lig_fit'][i].info['time']
             m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
 
-            # fit type count absolute difference
             type_diff = np.linalg.norm(lig_fit_type_count - lig_gen_fit_type_count, ord=1)
-            m.loc[idx, 'lig_gen_fit_type_diff'] = type_diff
+            m.loc[idx, 'lig_fit_lig_gen_fit_type_diff'] = type_diff
 
             # fit structure quality
             try:
@@ -1571,7 +1609,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             lig_prefix, lig_ext = os.path.splitext(lig_file)
             lig_name = os.path.basename(lig_prefix)
 
-            lig_xyz, types = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
+            lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
+            types = count_types(lig_c, len(lig_channels))
 
             if fix_center_to_origin:
                 center = np.zeros(3, dtype=np.float32)
@@ -1640,15 +1679,14 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                         if args.parallel:
                             fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid)
+                            output.write(lig_name, grid_name, sample_idx, grid, types)
                             grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
-                            grid_name += '_fit'
-                            output.write(lig_name, grid_name, sample_idx, grid, struct)
+                            output.write(lig_name, grid_name+'_fit', sample_idx, grid, types, struct)
                     else:
                         if args.parallel:
-                            out_queue.put((lig_name, grid_name, sample_idx, grid, None))
+                            out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid)
+                            output.write(lig_name, grid_name, sample_idx, grid, types)
     finally:
         if args.parallel:
 
@@ -1683,7 +1721,7 @@ def fit_worker_main(fit_queue, out_queue, args):
         if args.verbose:
             print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid, None))
+        out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
 
         grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
         grid_name += '_fit'
@@ -1691,7 +1729,7 @@ def fit_worker_main(fit_queue, out_queue, args):
             print('fit_worker produced {} {} {} ({} atoms, {}s)'
                   .format(lig_name, grid_name, sample_idx, struct.n_atoms, struct.fit_time))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid, struct))
+        out_queue.put((lig_name, grid_name, sample_idx, grid, types, struct))
 
     if args.verbose:
         print('fit_worker exit')
