@@ -1,6 +1,7 @@
 from __future__ import print_function, division
-import matplotlib
-matplotlib.use('Agg')
+if __name__ == '__main__':
+    import matplotlib
+    matplotlib.use('Agg')
 import sys, os, re, glob, argparse, parse, ast, shutil
 from collections import defaultdict
 import numpy as np
@@ -53,7 +54,8 @@ def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, dist_kws={}, sca
     return fig
 
 
-def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=None, outlier_z=None, lgd_title=True):
+def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
+               outlier_z=None, lgd_title=True):
 
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max())
@@ -145,7 +147,7 @@ def plot_lines(plot_file, df, x, y, hue, n_cols=None, height=6, width=6, ylim=No
 
     fig.tight_layout()
     fig.savefig(str(plot_file), format='png', bbox_extra_artists=extra, bbox_inches='tight')
-    plt.close(fig)
+    return fig
 
 
 def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
@@ -168,17 +170,21 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
 
     for ax in iter_axes:
         ax.axis('off')
+
     fig.tight_layout()
     fig.savefig(plot_file, bbox_inches='tight')
-    plt.close(fig)
+    return fig
 
 
 
 def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
                 point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={},
-                box=False, box_kws={}, grouped=False, outlier_z=None):
+                box=False, box_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None):
     df = df.reset_index()
     assert len(df) > 0, 'empty data frame'
+
+    if not isinstance(x, list):
+        x = [x]
 
     if n_cols is None:
         n_cols = len(x)
@@ -189,6 +195,8 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
     iter_axes = iter(axes.flatten())
+
+    share_ylim = defaultdict(list)
 
     extra = []
     for i, y_ in enumerate(y):
@@ -251,8 +259,21 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
             ax.set_ylim(ylim_)
 
+            if share_ylim_pat:
+                share_y = re.sub(share_ylim_pat, '', y_)
+                share_ylim[share_y].append(ax)
+
             if hue:
                 ax.legend_.remove()
+
+    # set shared y lims
+    for share_y, axs in share_ylim.items():
+        y_min, y_max = np.inf, -np.inf
+        for ax in axs:
+            y_min = min(y_min, ax.get_ylim()[0])
+            y_max = max(y_max, ax.get_ylim()[1])
+        for ax in axs:
+            ax.set_ylim(y_min, y_max)
 
     if hue and not grouped: # add legend
         lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
@@ -379,8 +400,11 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def aggregate_data(df, group_cols):
-    f = {c: np.mean if is_numeric_dtype(df[c]) else lambda x: set(x) for c in df if c not in group_cols}
+def aggregate_data(df, group_cols, numeric=np.mean, nonnumeric=set, **kwargs):
+    f = {col: kwargs[col] if col in kwargs \
+            else numeric if is_numeric_dtype(df[col]) \
+            else nonnumeric \
+            for col in df if col not in group_cols}
     return df.groupby(group_cols).agg(f)
 
 
