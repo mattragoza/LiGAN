@@ -321,7 +321,7 @@ class AtomFitter(object):
             for heuristic, struct_id, fit_time, xyz, c in visited_structs:
 
                 if self.constrain_types:
-                    type_diff, fit_loss = heuristic[1]
+                    type_diff, fit_loss = heuristic
                 else:
                     fit_loss = heuristic
                     type_diff = (types - c.sum(dim=0)).abs().sum().item()
