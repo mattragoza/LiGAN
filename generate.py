@@ -378,12 +378,13 @@ class OutputWriter(object):
     MolStructs from a generative model or atom fitting algorithm,
     computing metrics, and writing files to disk as necessary.
     '''
-    def __init__(self, out_prefix, output_dx, output_sdf, n_samples, blob_names,
-                 fit_atoms, verbose):
+    def __init__(self, out_prefix, output_dx, output_sdf, output_channels,
+                 n_samples, blob_names, fit_atoms, verbose):
 
         self.out_prefix = out_prefix
         self.output_dx = output_dx
         self.output_sdf = output_sdf
+        self.output_channels = output_channels
 
         # organize grids and structs by lig_name, grid_name, sample_idx
         self.grids = defaultdict(lambda: defaultdict(dict))
@@ -458,6 +459,12 @@ class OutputWriter(object):
                             struct.to_sdf(struct_file)
                         self.struct_files.append(struct_file)
                         self.centers.append(struct.center)
+
+                        if self.output_channels:
+                            channels_file = '{}.channels'.format(grid_prefix)
+                            if self.verbose:
+                                print('out_writer writing {}'.format(channels_file))
+                            write_channels_to_file(channels_file, struct.c, struct.channels)
 
             if self.verbose:
                 print('out_writer computing metrics for {}'.format(lig_name))
@@ -1346,6 +1353,13 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv.CloseOutFile()
 
 
+def write_channels_to_file(channels_file, c, channels):
+    with open(channels_file, 'w') as f:
+        for c_ in c:
+            channel = channels[c_]
+            f.write(channel.name+'\n')
+
+
 def write_xyz_elems_bonds_to_sdf_file(sdf_file, xyz_elems_bonds):
     '''
     Write tuples of (xyz, elemes, bonds) atom positions and
@@ -1592,9 +1606,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                 initargs=(fit_queue, out_queue, args))
 
     else: # compute metrics, write output, and fit atoms in single thread
-        output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf,
-                              args.n_samples, args.blob_name, args.fit_atoms,
-                              args.verbose)
+        output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf, args.output_channels,
+                              args.n_samples, args.blob_name, args.fit_atoms, verbose=args.verbose)
 
         if args.fit_atoms:
             fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
@@ -1739,9 +1752,8 @@ def fit_worker_main(fit_queue, out_queue, args):
 
 def out_worker_main(out_queue, args):
 
-    output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf,
-                          args.n_samples, args.blob_name, args.fit_atoms,
-                          verbose=args.verbose)
+    output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf, args.output_channels,
+                          args.n_samples, args.blob_name, args.fit_atoms, verbose=args.verbose)
     while True:
         task = out_queue.get()
         if task is None:
@@ -1772,6 +1784,7 @@ def parse_args(argv=None):
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')
     parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
+    parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to use atom types of true ligand')
     parser.add_argument('--r_factor', type=float, default=1.0, help='radius multiple for fitting to generated grids')
