@@ -104,7 +104,7 @@ class AtomFitter(object):
                  learning_rate, beta1, beta2, weight_decay, constrain_types,
                  r_factor, output_visited, output_kernel, device, verbose):
 
-        assert atom_init in {None, 'conv', 'deconv'}
+        assert atom_init in {'none', 'conv', 'deconv'}
 
         self.beam_size = beam_size
         self.beam_stride = beam_stride
@@ -1781,7 +1781,7 @@ def parse_args(argv=None):
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
     parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
     parser.add_argument('--beam_stride', type=int, default=1, help='stride of atom fitting beam search')
-    parser.add_argument('--atom_init', type=str, default=None, help='function to apply to remaining density before atom init (|conv|deconv)')
+    parser.add_argument('--atom_init', type=str, default='none', help='function to apply to remaining density before atom init (none|conv|deconv)')
     parser.add_argument('--interm_iters', type=int, default=10, help='maximum number of iterations for atom fitting between atom inits')
     parser.add_argument('--final_iters', type=int, default=100, help='maximum number of iterations for atom fitting after atom inits')
     parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')

@@ -74,6 +74,8 @@ def fill_job_template(job_template, job_params):
     for param, value in job_params.items():
         if param == 'train_options':
             value = expand_train_options(value)
+        if param == 'gen_options':
+            value = expand_gen_options(value)
         job = re.sub('<'+param.upper()+'>', str(value), job)
     return job
 
@@ -84,6 +86,15 @@ def expand_train_options(args):
         b='--balance',
         g='--disc_grad_norm',
         s='--disc_spectral_norm',
+    )[a] for a in args)
+
+
+def expand_gen_options(args):
+    return ' '.join(dict(
+        p='--prior',
+        m='--mean',
+        r='--random_rotation',
+        c='--constrain_types',
     )[a] for a in args)
 
 
