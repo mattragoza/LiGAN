@@ -18,7 +18,8 @@ import caffe
 import torch
 import torch.multiprocessing as mp
 from openbabel import openbabel as ob
-from openbabel import pybel
+from rdkit import Chem
+from rdkit import Geometry
 import molgrid
 
 import caffe_util
@@ -92,10 +93,19 @@ class MolStruct(object):
         self.info = info
 
     def to_ob_mol(self):
-        return make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
+        mol = make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
+        mol.ConnectTheDots()
+        mol.PerceiveBondOrders()
+        return mol
 
     def to_sdf(self, sdf_file):
         write_ob_mols_to_sdf_file(sdf_file, [self.to_ob_mol()])
+
+    def check_validity(self):
+        mol = self.to_ob_mol()
+        mol = ob_mol_to_rd_mol(mol)
+        ret = Chem.SanitizeMol(mol)
+        return ret == Chem.SanitizeFlags.SANITIZE_NONE
 
 
 class AtomFitter(object):
@@ -577,6 +587,10 @@ class OutputWriter(object):
             except (ValueError, ZeroDivisionError):
                 rmsd = np.nan
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
+
+            # fit structure validity
+            m.loc[idx, 'lig_fit_valid']     = structs['lig_fit'][i].check_validity()
+            m.loc[idx, 'lig_gen_fit_valid'] = structs['lig_gen_fit'][i].check_validity()
 
         if self.verbose:
             print(m.loc[lig_name])
@@ -1273,13 +1287,6 @@ def read_gninatypes_file(lig_file, channels):
     return np.array(xyz), np.array(c)
 
 
-def read_mols_from_sdf_file(sdf_file):
-    '''
-    Read a list of molecules from an .sdf file.
-    '''
-    return list(pybel.readfile('sdf', sdf_file))
-
-
 def get_mol_center(mol):
     '''
     Compute the center of a molecule, ignoring hydrogen.
@@ -1303,6 +1310,40 @@ def make_one_hot(x, n, dtype=None, device=None):
     return y
 
 
+def ob_mol_to_rd_mol(ob_mol):
+
+    n_atoms = ob_mol.NumAtoms()
+    rd_mol = Chem.RWMol()
+    rd_conf = Chem.Conformer(n_atoms)
+
+    for ob_atom in ob.OBMolAtomIter(ob_mol):
+        rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        i = rd_mol.AddAtom(rd_atom)
+        ob_coords = ob_atom.GetVector()
+        x = ob_coords.GetX()
+        y = ob_coords.GetY()
+        z = ob_coords.GetZ()
+        rd_coords = Geometry.Point3D(x, y, z)
+        rd_conf.SetAtomPosition(i, rd_coords)
+
+    rd_mol.AddConformer(rd_conf)
+
+    for ob_bond in ob.OBMolBondIter(ob_mol):
+        i = ob_bond.GetBeginAtomIdx()-1
+        j = ob_bond.GetEndAtomIdx()-1
+        bond_order = ob_bond.GetBondOrder()
+        if bond_order == 1:
+            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+        elif bond_order == 2:
+            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
+        elif bond_order == 3:
+            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
+        else:
+            raise Exception('unknown bond order {}'.format(bond_order))
+
+    return rd_mol
+
+
 def make_ob_mol(xyz, c, bonds, channels):
     '''
     Return an OpenBabel molecule from an array of
@@ -1313,8 +1354,9 @@ def make_ob_mol(xyz, c, bonds, channels):
 
     n_atoms = 0
     for (x, y, z), c_ in zip(xyz, c):
+        atomic_num = channels[c_].atomic_num
         atom = mol.NewAtom()
-        atom.SetAtomicNum(channels[c_].atomic_num)
+        atom.SetAtomicNum(atomic_num)
         atom.SetVector(x, y, z)
         n_atoms += 1
 
@@ -1329,20 +1371,6 @@ def make_ob_mol(xyz, c, bonds, channels):
                     bond.Set(n_bonds, atom_i, atom_j, 1, 0)
                     n_bonds += 1
     return mol
-
-
-def ob_mol_to_rd_mol(mol):
-    raise NotImplementedError('TODO')
-
-
-def check_mol_validity(xyz, c, bonds, channels):
-    raise NotImplementedError('TODO')
-
-    mol = make_ob_mol(xyz, c, bonds, channels)
-    mol.ConnectTheDots()
-    mol.PerceiveBondOrders()
-    mol = ob_mol_to_rd_mol(mol)
-    ret = chem.SanitizeMol(mol)
 
 
 def write_ob_mols_to_sdf_file(sdf_file, mols):
