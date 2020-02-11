@@ -400,7 +400,7 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def aggregate_data(df, group_cols, numeric=np.mean, nonnumeric=set, **kwargs):
+def aggregate_data(df, group_cols, numeric=np.mean, nonnumeric=pd.Series.nunique, **kwargs):
     f = {col: kwargs[col] if col in kwargs \
             else numeric if is_numeric_dtype(df[col]) \
             else nonnumeric \

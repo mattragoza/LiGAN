@@ -24,7 +24,7 @@ import molgrid
 
 import caffe_util
 import atom_types
-pd.set_option('display.width', 250)
+from results import get_terminal_size
 
 
 class MolGrid(object):
@@ -104,8 +104,9 @@ class MolStruct(object):
     def check_validity(self):
         mol = self.to_ob_mol()
         mol = ob_mol_to_rd_mol(mol)
-        ret = Chem.SanitizeMol(mol)
-        return ret == Chem.SanitizeFlags.SANITIZE_NONE
+        error = str(Chem.SanitizeMol(mol, catchErrors=True))
+        n_frags = len(Chem.GetMolFrags(mol))
+        return error, n_frags
 
 
 class AtomFitter(object):
@@ -589,8 +590,17 @@ class OutputWriter(object):
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
             # fit structure validity
-            m.loc[idx, 'lig_fit_valid']     = structs['lig_fit'][i].check_validity()
-            m.loc[idx, 'lig_gen_fit_valid'] = structs['lig_gen_fit'][i].check_validity()
+            lig_valid, lig_err, lig_n_frags = structs['lig_fit'][i].check_validity()
+            lig_gen_valid, lig_gen_err, lig_gen_n_frags = structs['lig_gen_fit'][i].check_validity()
+
+            m.loc[idx, 'lig_fit_valid'] = lig_valid
+            m.loc[idx, 'lig_gen_fit_valid'] = lig_gen_valid
+
+            m.loc[idx, 'lig_fit_error'] = lig_err
+            m.loc[idx, 'lig_gen_fit_error'] = lig_gen_err
+
+            m.loc[idx, 'lig_fit_n_frags'] = lig_n_frags
+            m.loc[idx, 'lig_gen_fit_n_frags'] = lig_gen_n_frags  
 
         if self.verbose:
             print(m.loc[lig_name])
@@ -1850,6 +1860,11 @@ def parse_args(argv=None):
 
 
 def main(argv):
+
+    pd.set_option('display.max_columns', 100)
+    pd.set_option('display.max_colwidth', 100)
+    pd.set_option('display.width', get_terminal_size()[1])
+
     args = parse_args(argv)
 
     if not args.blob_name:
