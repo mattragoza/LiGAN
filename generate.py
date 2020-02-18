@@ -1865,8 +1865,10 @@ def main(argv):
 
     pd.set_option('display.max_columns', 100)
     pd.set_option('display.max_colwidth', 100)
-    pd.set_option('display.width', get_terminal_size()[1])
-
+    try:
+        pd.set_option('display.width', get_terminal_size()[1])
+    except:
+        pass
     args = parse_args(argv)
 
     if not args.blob_name:
