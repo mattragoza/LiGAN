@@ -104,7 +104,12 @@ class MolStruct(object):
     def check_validity(self):
         mol = self.to_ob_mol()
         mol = ob_mol_to_rd_mol(mol)
-        error = str(Chem.SanitizeMol(mol, catchErrors=True))
+        try:
+            Chem.SanitizeMol(mol)
+        except Chem.MolSanitizeException as e:
+            error = e
+        else:
+            error = None
         n_frags = len(Chem.GetMolFrags(mol))
         return error, n_frags
 
@@ -590,14 +595,11 @@ class OutputWriter(object):
             m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
             # fit structure validity
-            lig_valid, lig_err, lig_n_frags = structs['lig_fit'][i].check_validity()
-            lig_gen_valid, lig_gen_err, lig_gen_n_frags = structs['lig_gen_fit'][i].check_validity()
+            lig_error, lig_n_frags = structs['lig_fit'][i].check_validity()
+            lig_gen_error, lig_gen_n_frags = structs['lig_gen_fit'][i].check_validity()
 
-            m.loc[idx, 'lig_fit_valid'] = lig_valid
-            m.loc[idx, 'lig_gen_fit_valid'] = lig_gen_valid
-
-            m.loc[idx, 'lig_fit_error'] = lig_err
-            m.loc[idx, 'lig_gen_fit_error'] = lig_gen_err
+            m.loc[idx, 'lig_fit_error'] = lig_error
+            m.loc[idx, 'lig_gen_fit_error'] = lig_gen_error
 
             m.loc[idx, 'lig_fit_n_frags'] = lig_n_frags
             m.loc[idx, 'lig_gen_fit_n_frags'] = lig_gen_n_frags  
