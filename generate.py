@@ -106,7 +106,7 @@ class MolStruct(object):
         mol = ob_mol_to_rd_mol(mol)
         try:
             Chem.SanitizeMol(mol)
-        except Chem.MolSanitizeException as e:
+        except Exception as e:
             error = e
         else:
             error = None
@@ -1664,10 +1664,14 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             lig_prefix, lig_ext = os.path.splitext(lig_file)
             lig_name = os.path.basename(lig_prefix)
 
-            lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
-            types = count_types(lig_c, len(lig_channels))
+            try:
+                lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
+                types = count_types(lig_c, len(lig_channels))
+            except AssertionError:
+                print('WARNING: {}.gninatypes is empty'.format(lig_prefix), file=sys.stderr)
+                types = None
 
-            if fix_center_to_origin:
+            if fix_center_to_origin or types is None:
                 center = np.zeros(3, dtype=np.float32)
             else:
                 center = np.mean(lig_xyz, axis=0, dtype=np.float32)
@@ -1729,6 +1733,9 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                     if args.verbose:
                         print('main_thread produced {} {} {} (norm={})'
                               .format(lig_name, grid_name, sample_idx, grid_norm), flush=True)
+
+                    if types is None:
+                        continue
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
