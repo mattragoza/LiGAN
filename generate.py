@@ -17,6 +17,7 @@ from scipy.stats import multivariate_normal
 import caffe
 import torch
 import torch.multiprocessing as mp
+from GPUtil import getGPUs
 from openbabel import openbabel as ob
 from rdkit import Chem
 from rdkit import Geometry
@@ -322,7 +323,7 @@ class AtomFitter(object):
                 best_heuristic = best_structs[0][0]
                 best_id = best_structs[0][1]
                 if self.verbose:
-                    print('best struct # {} (heuristic={})'.format(best_id, best_heuristic))
+                    print('best struct # {} (heuristic={}, GPU={})'.format(best_id, best_heuristic, getGPUs()[0].memoryUtil))
 
         best_heuristic, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
@@ -361,8 +362,10 @@ class AtomFitter(object):
         r = torch.tensor([ch.atomic_radius for ch in grid.channels],
                          device=self.device) * r_factor
 
-        xyz = torch.tensor(xyz, device=self.device)
+        xyz = xyz.clone().detach().to(self.device)
+        c = c.clone().detach().to(self.device)
         xyz.requires_grad = True
+
         solver = torch.optim.Adam((xyz,), lr=self.learning_rate,
                                   betas=(self.beta1, self.beta2),
                                   weight_decay=self.weight_decay)
@@ -385,7 +388,7 @@ class AtomFitter(object):
             loss.backward()
             solver.step()
 
-        return xyz, grid_pred, grid_diff, loss
+        return xyz.detach(), grid_pred.detach(), grid_diff.detach(), loss.detach()
 
 
 class OutputWriter(object):
@@ -1731,8 +1734,8 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                     grid_norm = np.linalg.norm(grid.values)
 
                     if args.verbose:
-                        print('main_thread produced {} {} {} (norm={})'
-                              .format(lig_name, grid_name, sample_idx, grid_norm), flush=True)
+                        print('main_thread produced {} {} {} (norm={}\tGPU={})'
+                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm, getGPUs()[0].memoryUtil), flush=True)
 
                     if types is None:
                         continue
