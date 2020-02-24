@@ -1,12 +1,11 @@
 from collections import namedtuple, defaultdict
-import openbabel as ob
-
+from openbabel import openbabel as ob
+import molgrid
 
 try:
     table = ob.OBElementTable()
 except AttributeError:
     table = ob
-
 
 get_atomic_num = table.GetAtomicNum
 get_name = table.GetName
@@ -49,6 +48,8 @@ smina_types = [
     atom_type("Boron",                          5,  "B", 0.90, 1.92)
 ]
 
+smina_types_by_name = dict((t.name, t) for t in smina_types)
+
 
 channel = namedtuple('channel', ['name', 'atomic_num', 'symbol', 'atomic_radius'])
 
@@ -66,28 +67,47 @@ def get_channel_color(channel):
         return get_rgb(channel.atomic_num)
 
 
-def get_smina_type_channels(idx, use_covalent_radius, name_prefix):
+def get_channel(t, use_covalent_radius, name_prefix):
+    name = name_prefix + t.name
+    atomic_radius = t.covalent_radius if use_covalent_radius else t.xs_radius
+    return channel(name, t.atomic_num, t.symbol, atomic_radius)
+
+
+def get_channels_by_index(type_idx, use_covalent_radius=False, name_prefix=''):
     channels = []
-    for i in idx:
+    for i in type_idx:
         t = smina_types[i]
-        c = channel(
-            name=name_prefix + t.name,
-            atomic_num=t.atomic_num,
-            symbol=t.symbol,
-            atomic_radius=t.covalent_radius if use_covalent_radius else t.xs_radius,
-        )
+        c = get_channel(t, use_covalent_radius, name_prefix)
         channels.append(c)
     return channels
 
 
+def get_channels_by_name(type_names, use_covalent_radius=False, name_prefix=''):
+    channels = []
+    for type_name in type_names:
+        t = smina_types_by_name[type_name]
+        c = get_channel(t, use_covalent_radius, name_prefix)
+        channels.append(c)
+    return channels
+
+
+def get_channels_from_map(map_, use_covalent_radius=False, name_prefix=''):
+    return get_channels_by_name(map_.get_type_names(), use_covalent_radius, name_prefix)
+
+
+def get_channels_from_file(map_file, use_covalent_radius=False, name_prefix=''):
+    map_ = molgrid.FileMappedGninaTyper(map_file)
+    return get_channels_from_map(map_, use_covalent_radius, name_prefix)
+
+
 def get_default_rec_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 24, 25, 21, 6, 9, 7, 8, 13, 12, 16, 14, 23]
-    return get_smina_type_channels(idx, use_covalent_radius, name_prefix='Receptor')
+    return get_channels_by_index(idx, use_covalent_radius, name_prefix='Receptor')
 
 
 def get_default_lig_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 19, 18, 17, 6, 9, 7, 8, 10, 13, 12, 16, 14, 15, 20, 27]
-    return get_smina_type_channels(idx, use_covalent_radius, name_prefix='Ligand')
+    return get_channels_by_index(idx, use_covalent_radius, name_prefix='Ligand')
 
 
 def get_default_channels(use_covalent_radius=False):

@@ -93,6 +93,14 @@ class MolStruct(object):
         self.n_atoms = self.xyz.shape[0]
         self.info = info
 
+    @classmethod
+    def from_coord_set(self, coord_set, channels):
+        if not coord_set.has_indexed_types():
+            raise ValueError('can only make MolStruct from CoordinateSet with indexed types')
+        xyz = np.array(coord_set.coords, dtype=np.float32)
+        c = np.array(coord_set.type_index, dtype=np.int16)
+        return MolStruct(xyz, c, channels, file=coord_set.src)
+
     def to_ob_mol(self):
         mol = make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
         mol.ConnectTheDots()
@@ -140,8 +148,8 @@ class AtomFitter(object):
         self.device = device
         self.verbose = verbose
 
-        self.gmaker = molgrid.GridMaker()
-        self.c2grid = molgrid.Coords2Grid(self.gmaker)
+        self.grid_maker = molgrid.GridMaker()
+        self.c2grid = molgrid.Coords2Grid(self.grid_maker)
 
         self.output_visited = output_visited
         self.output_kernel = output_kernel
@@ -159,9 +167,9 @@ class AtomFitter(object):
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
         r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
 
-        self.gmaker.set_radii_type_indexed(True)
-        self.gmaker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
-        self.gmaker.set_resolution(resolution)
+        self.grid_maker.set_radii_type_indexed(True)
+        self.grid_maker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
+        self.grid_maker.set_resolution(resolution)
 
         self.c2grid.center = (0.,0.,0.)
         kernel = self.c2grid(xyz, c, r)
@@ -370,9 +378,9 @@ class AtomFitter(object):
                                   betas=(self.beta1, self.beta2),
                                   weight_decay=self.weight_decay)
 
-        self.gmaker.set_radii_type_indexed(True)
-        self.gmaker.set_dimension(grid.dimension)
-        self.gmaker.set_resolution(grid.resolution)
+        self.grid_maker.set_radii_type_indexed(True)
+        self.grid_maker.set_dimension(grid.dimension)
+        self.grid_maker.set_resolution(grid.resolution)
         self.c2grid.center = tuple(grid.center.cpu().numpy().astype(float))
 
         for i in range(n_iters+1):
@@ -1563,8 +1571,8 @@ def lazy_forward(net, layer):
                 visited.add(layer)
 
 
-def count_types(c, n_types):
-    count = np.zeros(n_types)
+def count_types(c, n_types, dtype=None):
+    count = np.zeros(n_types, dtype=dtype)
     for i in c:
         count[i] += 1
     return count
@@ -1612,19 +1620,24 @@ def get_min_rmsd(xyz1, c1, xyz2, c2):
     return np.sqrt(ssd/n_atoms)
 
 
-def generate_from_model(data_net, gen_net, data_param, examples, args):
+def generate_from_model(gen_net, data_param, examples, args):
     '''
     Generate grids from specific blob(s) in gen_net for each
     ligand in examples, and possibly do atom fitting.
     '''
-    batch_size = data_param.batch_size
-    resolution = data_param.resolution
-    fix_center_to_origin = data_param.fix_center_to_origin
-    radius_multiple = data_param.radius_multiple
-    use_covalent_radius = data_param.use_covalent_radius
-    rec_channels = atom_types.get_default_rec_channels(use_covalent_radius)
-    lig_channels = atom_types.get_default_lig_channels(use_covalent_radius)
-    n_ligands = len(examples)
+    device = ('cpu', 'cuda')[args.gpu]
+    batch_size = gen_net.blobs['lig'].shape[0]
+
+    rec_map = molgrid.FileMappedGninaTyper(data_param.recmap)
+    lig_map = molgrid.FileMappedGninaTyper(data_param.ligmap)
+    lig_channels = atom_types.get_channels_from_map(lig_map)
+
+    ex_provider = molgrid.ExampleProvider(rec_map, lig_map, data_root=args.data_root)
+    ex_provider.populate(data_param.source)
+
+    grid_maker = molgrid.GridMaker(data_param.resolution, data_param.dimension)
+    grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
+    grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
     if args.prior or args.mean: # find latent variable blobs
         latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
@@ -1634,7 +1647,7 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
         gen_net.forward() # this is necessary for proper latent sampling
 
     if args.parallel: # compute metrics and write output in a separate thread
-        #mp.set_start_method('spawn')
+
         out_queue = mp.Queue()
         out_thread = threading.Thread(
             target=out_worker_main,
@@ -1656,38 +1669,25 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
             fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
                                 args.learning_rate, args.beta1, args.beta2, args.weight_decay,
                                 args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
-                                device=('cpu', 'cuda')[args.gpu], verbose=args.verbose)
+                                device=device, verbose=args.verbose)
 
     # generate density grids from generative model in main thread
     try:
-        for example_idx, (rec_file, lig_file) in enumerate(examples): 
-            rec_file = os.path.join(args.data_root, rec_file)
-            lig_file = os.path.join(args.data_root, lig_file)
-
-            lig_prefix, lig_ext = os.path.splitext(lig_file)
-            lig_name = os.path.basename(lig_prefix)
-
-            try:
-                lig_xyz, lig_c = read_gninatypes_file(lig_prefix + '.gninatypes', lig_channels)
-                types = count_types(lig_c, len(lig_channels))
-            except AssertionError:
-                print('WARNING: {}.gninatypes is empty'.format(lig_prefix), file=sys.stderr)
-                types = None
-
-            if fix_center_to_origin or types is None:
-                center = np.zeros(3, dtype=np.float32)
-            else:
-                center = np.mean(lig_xyz, axis=0, dtype=np.float32)
+        for example_idx, _ in enumerate(examples):
 
             for sample_idx in range(args.n_samples):
 
+                # keep track of position in batch
                 batch_idx = (example_idx*args.n_samples + sample_idx) % batch_size
 
                 if batch_idx == 0: # forward next batch
 
-                    data_net.forward()
-                    rec = data_net.blobs['rec'].data
-                    lig = data_net.blobs['lig'].data
+                    batch = ex_provider.next_batch(batch_size)
+                    grid_maker.forward(batch, grid_true)
+                    # TODO set rotation, center
+
+                    rec = grid_true[:,:rec_map.num_types(),...].cpu()
+                    lig = grid_true[:,rec_map.num_types():,...].cpu()
 
                     if (args.encode_first or args.condition_first) and not (example_idx or sample_idx):
                         first_rec = np.array(rec[0])
@@ -1723,30 +1723,32 @@ def generate_from_model(data_net, gen_net, data_param, examples, args):
                         else:
                             gen_net.forward()
 
+                # get current true structure and types
+                struct = MolStruct.from_coord_set(batch[batch_idx].coord_sets[1], lig_channels)
+                lig_name = os.path.splitext(os.path.basename(struct.info['file']))[0]
+                types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
+
                 for blob_name in args.blob_name: # get grid from blob and add to appropriate output
 
                     grid = MolGrid(np.array(gen_net.blobs[blob_name].data[batch_idx]),
-                                   channels=lig_channels,
-                                   center=center,
-                                   resolution=resolution)
+                                   channels=struct.channels, center=struct.center,
+                                   resolution=grid_maker.get_resolution())
 
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
                     if args.verbose:
                         print('main_thread produced {} {} {} (norm={}\tGPU={})'
-                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm, getGPUs()[0].memoryUtil), flush=True)
-
-                    if types is None:
-                        continue
+                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm,
+                                      getGPUs()[0].memoryUtil), flush=True)
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
                             fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
                         else:
                             output.write(lig_name, grid_name, sample_idx, grid, types)
-                            grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
-                            output.write(lig_name, grid_name+'_fit', sample_idx, grid, types, struct)
+                            grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
+                            output.write(lig_name, grid_name+'_fit', sample_idx, grid_fit, types, struct_fit)
                     else:
                         if args.parallel:
                             out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
@@ -1788,13 +1790,13 @@ def fit_worker_main(fit_queue, out_queue, args):
 
         out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
 
-        grid, struct = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
+        grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
         grid_name += '_fit'
         if args.verbose:
             print('fit_worker produced {} {} {} ({} atoms, {}s)'
-                  .format(lig_name, grid_name, sample_idx, struct.n_atoms, struct.fit_time))
+                  .format(lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid, types, struct))
+        out_queue.put((lig_name, grid_name, sample_idx, grid_fit, types, struct_fit))
 
     if args.verbose:
         print('fit_worker exit')
@@ -1865,21 +1867,21 @@ def parse_args(argv=None):
     parser.add_argument('--batch_rotate_pitch', type=float)
     parser.add_argument('--fix_center_to_origin', default=False, action='store_true', help='fix input grid center to origin')
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
-    parser.add_argument('--use_default_radius', default=False, action='store_true', help='force input grid to use default radius')
     parser.add_argument('--parallel', default=False, action='store_true', help='run atom fitting in separate worker processes')
     parser.add_argument('--n_fit_workers', default=8, type=int, help='number of worker processes for parallel atom fitting')
     return parser.parse_args(argv)
 
 
 def main(argv):
+    args = parse_args(argv)
 
     pd.set_option('display.max_columns', 100)
     pd.set_option('display.max_colwidth', 100)
     try:
-        pd.set_option('display.width', get_terminal_size()[1])
+        display_width = get_terminal_size()[1]
     except:
-        pass
-    args = parse_args(argv)
+        display_width = 185
+    pd.set_option('display.width', display_width)
 
     if not args.blob_name:
         args.blob_name += ['lig', 'lig_gen']
@@ -1892,32 +1894,10 @@ def main(argv):
     data_param.random_rotation = args.random_rotation
     data_param.random_translate = args.random_translate
     data_param.fix_center_to_origin = args.fix_center_to_origin
+    data_param.use_covalent_radius = args.use_covalent_radius
     data_param.shuffle = False
     data_param.balanced = False
 
-    assert not (args.use_covalent_radius and args.use_default_radius)
-    if args.use_covalent_radius:
-        data_param.use_covalent_radius = True
-    elif args.use_default_radius:
-        data_param.use_covalent_radius = False
-
-    if not args.data_file: # use the set of (rec_file, lig_file) examples
-        assert len(args.rec_file) == len(args.lig_file)
-        examples = list(zip(args.rec_file, args.lig_file))
-
-    else: # use the examples in data_file
-        #assert len(args.rec_file) == len(args.lig_file) == 0
-        examples = read_examples_from_data_file(args.data_file)
-
-    data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
-    data_param.source = data_file
-    data_param.root_folder = args.data_root
-
-    # create the net in caffe
-    caffe.set_mode_gpu()
-    gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
-
-    data_param.batch_size = gen_net.blobs['lig'].shape[0]
     if args.batch_rotate_yaw:
         data_param.batch_rotate = True
         data_param.batch_rotate_yaw = 2*np.pi/data_param.batch_size
@@ -1930,9 +1910,21 @@ def main(argv):
         data_param.batch_rotate = True
         data_param.batch_rotate_roll = 2*np.pi/data_param.batch_size
 
-    data_net = caffe_util.Net.from_param(data_net_param, phase=caffe.TEST)
+    if not args.data_file: # use the set of (rec_file, lig_file) examples
+        assert len(args.rec_file) == len(args.lig_file)
+        examples = list(zip(args.rec_file, args.lig_file))
 
-    generate_from_model(data_net, gen_net, data_param, examples, args)
+    else: # use the examples in data_file
+        examples = read_examples_from_data_file(args.data_file)
+
+    data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
+    data_param.source = data_file
+
+    # create the net in caffe
+    caffe.set_mode_gpu()
+    gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
+
+    generate_from_model(gen_net, data_param, examples, args)
 
 
 if __name__ == '__main__':
