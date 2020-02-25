@@ -438,7 +438,7 @@ class OutputWriter(object):
 
         self.verbose = verbose
 
-    def write(self, lig_name, grid_name, sample_idx, grid, types, struct=None):
+    def write(self, lig_name, grid_name, sample_idx, grid, struct):
         '''
         Add grid and struct to the data structure and write output
         for lig_name, if all expected grids and structs are present.
@@ -447,8 +447,7 @@ class OutputWriter(object):
             print('out_writer got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
         self.grids[lig_name][grid_name][sample_idx] = grid
-        if struct is not None:
-            self.structs[lig_name][grid_name][sample_idx] = struct
+        self.structs[lig_name][grid_name][sample_idx] = struct
 
         has_all_grids = len(self.grids[lig_name]) == self.n_grids
         has_all_samples = all(len(g) == self.n_samples for g in self.grids[lig_name].values())
@@ -472,7 +471,7 @@ class OutputWriter(object):
                         grid.to_dx(grid_prefix)
                         self.dx_prefixes.append(grid_prefix)
 
-                    if self.output_sdf and grid_name.endswith('_fit'): # write out fit structure
+                    if self.output_sdf and grid_name in lig_structs: # write out fit structure
                         struct = lig_structs[grid_name][i]
                         struct_file = '{}.sdf'.format(grid_prefix)
                         if self.verbose:
@@ -532,7 +531,7 @@ class OutputWriter(object):
             m.loc[idx, 'lig_norm']     = np.linalg.norm(lig_grid)
             m.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen_grid)
 
-            # density loss
+            # generated density loss
             lig_gen_loss = ((lig_grid - lig_gen_grid)**2).sum()/2
             m.loc[idx, 'lig_gen_loss'] = lig_gen_loss.item()
 
@@ -548,62 +547,78 @@ class OutputWriter(object):
             lig_fit_grid     = grids['lig_fit'][i].values
             lig_gen_fit_grid = grids['lig_gen_fit'][i].values
 
+            lig_xyz         = structs['lig'][i].xyz
             lig_fit_xyz     = structs['lig_fit'][i].xyz
             lig_gen_fit_xyz = structs['lig_gen_fit'][i].xyz
 
+            lig_center         = structs['lig'][i].center
             lig_fit_center     = structs['lig_fit'][i].center
             lig_gen_fit_center = structs['lig_gen_fit'][i].center
 
+            lig_c         = structs['lig'][i].c
             lig_fit_c     = structs['lig_fit'][i].c
             lig_gen_fit_c = structs['lig_gen_fit'][i].c
-            n_types = len(structs['lig_fit'][i].channels)
 
+            n_types = len(structs['lig'][i].channels)
+
+            lig_type_count         = count_types(lig_c, n_types)
             lig_fit_type_count     = count_types(lig_fit_c, n_types)
             lig_gen_fit_type_count = count_types(lig_gen_fit_c, n_types)
 
-            # density quality
+            # fit density loss
             lig_fit_loss     = ((lig_grid     - lig_fit_grid)**2).sum()/2
             lig_gen_fit_loss = ((lig_gen_grid - lig_gen_fit_grid)**2).sum()/2
             m.loc[idx, 'lig_fit_loss']     = lig_fit_loss.item()
             m.loc[idx, 'lig_gen_fit_loss'] = lig_gen_fit_loss.item()
 
-            # number of fit atoms
-            lig_fit_n_atoms = len(lig_fit_c)
+            # number of atoms
+            lig_n_atoms         = len(lig_c)
+            lig_fit_n_atoms     = len(lig_fit_c)
             lig_gen_fit_n_atoms = len(lig_gen_fit_c)
+            m.loc[idx, 'lig_n_atoms']         = lig_n_atoms
             m.loc[idx, 'lig_fit_n_atoms']     = lig_fit_n_atoms
             m.loc[idx, 'lig_gen_fit_n_atoms'] = lig_gen_fit_n_atoms
 
             # fit structure radius
+            if lig_n_atoms > 0:
+                lig_radius = max(np.linalg.norm(lig_xyz - lig_center, axis=1))
+            else:
+                lig_radius = np.nan
+
             if lig_fit_n_atoms > 0:
                 lig_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_fit_center, axis=1))
             else:
                 lig_fit_radius = np.nan
 
-            if lig_fit_n_atoms > 0:
-                lig_gen_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_gen_fit_center, axis=1))
+            if lig_gen_fit_n_atoms > 0:
+                lig_gen_fit_radius = max(np.linalg.norm(lig_gen_fit_xyz - lig_gen_fit_center, axis=1))
             else:
                 lig_gen_fit_radius = np.nan
 
+            m.loc[idx, 'lig_radius']         = lig_radius
             m.loc[idx, 'lig_fit_radius']     = lig_fit_radius
             m.loc[idx, 'lig_gen_fit_radius'] = lig_gen_fit_radius
 
-            # true type difference
-            m.loc[idx, 'lig_fit_type_diff'] = structs['lig_fit'][i].info['type_diff']
-            m.loc[idx, 'lig_gen_fit_type_diff'] = structs['lig_gen_fit'][i].info['type_diff']
+            # fit type difference
+            m.loc[idx, 'lig_fit_type_diff']     = np.linalg.norm(lig_type_count - lig_fit_type_count, ord=1)
+            m.loc[idx, 'lig_gen_fit_type_diff'] = np.linalg.norm(lig_type_count - lig_gen_fit_type_count, ord=1)
+
+            # fit minimum RMSD
+            try:
+                lig_fit_rmsd = get_min_rmsd(lig_xyz, lig_c, lig_fit_xyz, lig_fit_c)
+            except (ValueError, ZeroDivisionError):
+                lig_fit_rmsd = np.nan
+            try:
+                lig_gen_fit_rmsd = get_min_rmsd(lig_xyz, lig_c, lig_gen_fit_xyz, lig_gen_fit_c)
+            except (ValueError, ZeroDivisionError):
+                lig_gen_fit_rmsd = np.nan
+
+            m.loc[idx, 'lig_fit_RMSD']     = lig_fit_rmsd
+            m.loc[idx, 'lig_gen_fit_RMSD'] = lig_gen_fit_rmsd
 
             # fit time
             m.loc[idx, 'lig_fit_time']     = structs['lig_fit'][i].info['time']
             m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
-
-            type_diff = np.linalg.norm(lig_fit_type_count - lig_gen_fit_type_count, ord=1)
-            m.loc[idx, 'lig_fit_lig_gen_fit_type_diff'] = type_diff
-
-            # fit structure quality
-            try:
-                rmsd = get_min_rmsd(lig_fit_xyz, lig_fit_c, lig_gen_fit_xyz, lig_gen_fit_c)
-            except (ValueError, ZeroDivisionError):
-                rmsd = np.nan
-            m.loc[idx, 'lig_gen_fit_RMSD'] = rmsd
 
             # fit structure validity
             lig_error, lig_n_frags = structs['lig_fit'][i].check_validity()
@@ -1620,7 +1635,7 @@ def get_min_rmsd(xyz1, c1, xyz2, c2):
     return np.sqrt(ssd/n_atoms)
 
 
-def generate_from_model(gen_net, data_param, examples, args):
+def generate_from_model(gen_net, data_param, n_examples, args):
     '''
     Generate grids from specific blob(s) in gen_net for each
     ligand in examples, and possibly do atom fitting.
@@ -1673,7 +1688,7 @@ def generate_from_model(gen_net, data_param, examples, args):
 
     # generate density grids from generative model in main thread
     try:
-        for example_idx, _ in enumerate(examples):
+        for example_idx in range(n_examples):
 
             for sample_idx in range(args.n_samples):
 
@@ -1682,9 +1697,13 @@ def generate_from_model(gen_net, data_param, examples, args):
 
                 if batch_idx == 0: # forward next batch
 
-                    batch = ex_provider.next_batch(batch_size)
-                    grid_maker.forward(batch, grid_true)
-                    # TODO set rotation, center
+                    examples = ex_provider.next_batch(batch_size)
+                    for i, ex in enumerate(examples):
+                        t = molgrid.Transform(ex.coord_sets[1].center(),
+                                              args.random_translate,
+                                              args.random_rotation)
+                        t.forward(ex, ex)
+                        grid_maker.forward(ex, grid_true[i])
 
                     rec = grid_true[:,:rec_map.num_types(),...].cpu()
                     lig = grid_true[:,rec_map.num_types():,...].cpu()
@@ -1724,7 +1743,8 @@ def generate_from_model(gen_net, data_param, examples, args):
                             gen_net.forward()
 
                 # get current true structure and types
-                struct = MolStruct.from_coord_set(batch[batch_idx].coord_sets[1], lig_channels)
+                ex = examples[batch_idx]
+                struct = MolStruct.from_coord_set(ex.coord_sets[1], lig_channels)
                 lig_name = os.path.splitext(os.path.basename(struct.info['file']))[0]
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
@@ -1744,16 +1764,16 @@ def generate_from_model(gen_net, data_param, examples, args):
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
-                            fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
+                            fit_queue.put((lig_name, grid_name, sample_idx, grid, struct))
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid, types)
+                            output.write(lig_name, grid_name, sample_idx, grid, struct)
                             grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
-                            output.write(lig_name, grid_name+'_fit', sample_idx, grid_fit, types, struct_fit)
+                            output.write(lig_name, grid_name+'_fit', sample_idx, grid_fit, struct_fit)
                     else:
                         if args.parallel:
-                            out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
+                            out_queue.put((lig_name, grid_name, sample_idx, grid, struct))
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid, types)
+                            output.write(lig_name, grid_name, sample_idx, grid, struct)
     finally:
         if args.parallel:
 
@@ -1784,19 +1804,20 @@ def fit_worker_main(fit_queue, out_queue, args):
         if task is None:
             break
 
-        lig_name, grid_name, sample_idx, grid, types = task
+        lig_name, grid_name, sample_idx, grid, struct = task
         if args.verbose:
             print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid, types, None))
+        out_queue.put((lig_name, grid_name, sample_idx, grid, struct))
 
+        types = count_types(struct.c, len(struct.channels), dtype=int16)
         grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
         grid_name += '_fit'
         if args.verbose:
             print('fit_worker produced {} {} {} ({} atoms, {}s)'
                   .format(lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid_fit, types, struct_fit))
+        out_queue.put((lig_name, grid_name, sample_idx, grid_fit, struct_fit))
 
     if args.verbose:
         print('fit_worker exit')
@@ -1924,7 +1945,7 @@ def main(argv):
     caffe.set_mode_gpu()
     gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
 
-    generate_from_model(gen_net, data_param, examples, args)
+    generate_from_model(gen_net, data_param, len(examples), args)
 
 
 if __name__ == '__main__':
