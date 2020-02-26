@@ -330,8 +330,14 @@ class AtomFitter(object):
                 best_structs = sorted(best_structs)[:self.beam_size]
                 best_heuristic = best_structs[0][0]
                 best_id = best_structs[0][1]
+
                 if self.verbose:
-                    print('best struct # {} (heuristic={}, GPU={})'.format(best_id, best_heuristic, getGPUs()[0].memoryUtil))
+                    try:
+                        gpu_usage = getGPUs()[0].memoryUtil
+                    except:
+                        gpu_usage = np.nan
+                    print('best struct # {} (heuristic={}, GPU={})'
+                          .format(best_id, best_heuristic, gpu_usage))
 
         best_heuristic, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
@@ -1758,9 +1764,13 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid_norm = np.linalg.norm(grid.values)
 
                     if args.verbose:
+                        try:
+                            gpu_usage = getGPUs()[0].memoryUtil
+                        except:
+                            gpu_usage = np.nan
+
                         print('main_thread produced {} {} {} (norm={}\tGPU={})'
-                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm,
-                                      getGPUs()[0].memoryUtil), flush=True)
+                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage), flush=True)
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
