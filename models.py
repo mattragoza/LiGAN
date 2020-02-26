@@ -107,7 +107,7 @@ def write_models(model_dir, param_space, scaffold=False, verbose=False):
             df.loc[i, 'model_file'] = model_file
             for k, v in scaffold_model(model_file).items():
                 df.loc[i, k] = v
-            if print_:
+            if verbose:
                 print(df.loc[i])
 
         print(model_file)
