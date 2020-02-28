@@ -27,7 +27,9 @@ def get_terminal_size():
 
 
 def annotate_pearson_r(x, y, **kwargs):
-    r, _ = stats.pearsonr(x, y)
+    print(kwargs)
+    nan = np.isnan(x) | np.isnan(y)
+    r, _ = stats.pearsonr(x[~nan], y[~nan])
     plt.gca().annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8),
         xycoords='axes fraction', ha='center', fontsize='large')
 
@@ -45,7 +47,7 @@ def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, dist_kws={}, sca
     g.map_diag(my_dist_plot, **dist_kws)
     g.map_offdiag(plt.scatter, **scatter_kws)
     #g.map_upper(sns.kdeplot, shade=True)
-    g.map_offdiag(annotate_pearson_r)
+    #g.map_offdiag(annotate_pearson_r)
     fig = g.fig
     fig.tight_layout()
     plt.subplots_adjust(wspace=0.2, hspace=0.2)
@@ -146,11 +148,11 @@ def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, yl
         ax.axis('off')
 
     fig.tight_layout()
-    fig.savefig(str(plot_file), format='png', bbox_extra_artists=extra, bbox_inches='tight')
+    fig.savefig(plot_file, format='png', bbox_extra_artists=extra, bbox_inches='tight')
     return fig
 
 
-def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
+def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6, **kwargs):
 
     df = df.reset_index()
     if n_cols is None:
@@ -166,7 +168,11 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6):
 
     for x_ in x:
         ax = next(iter_axes)
-        sns.distplot(df[x_], norm_hist=True, ax=ax)
+        if hue:
+            for i, h_ in enumerate(df[hue].unique()):
+                sns.distplot(df[x_][df[hue]==h_].dropna(), norm_hist=True, ax=ax, **kwargs)
+        else:
+            sns.distplot(df[x_].dropna(), norm_hist=True, ax=ax, **kwargs)
 
     for ax in iter_axes:
         ax.axis('off')
@@ -205,7 +211,11 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
             ax = next(iter_axes)
 
             if grouped:
-                hue = '({})'.format(', '.join([c for c in x if c not in {x_, 'memory'}]))
+                hue_cols = [c for c in x if c not in {x_, 'memory'}]
+                if len(hue_cols) > 1:
+                    hue = '({})'.format(', '.join(hue_cols))
+                else:
+                    hue = hue_cols[0]
 
             #print('CALLING POINT PLOT')
             #print('  x = {}'.format(x_))
@@ -400,8 +410,9 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def aggregate_data(df, group_cols, numeric=np.mean, nonnumeric=pd.Series.nunique, **kwargs):
+def aggregate_data(df, group_cols, numeric=np.mean, nonnumeric=pd.Series.nunique, default=None, **kwargs):
     f = {col: kwargs[col] if col in kwargs \
+            else default if default is not None \
             else numeric if is_numeric_dtype(df[col]) \
             else nonnumeric \
             for col in df if col not in group_cols}

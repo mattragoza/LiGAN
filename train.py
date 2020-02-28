@@ -218,6 +218,9 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
 
+    # keep track of generator loss weights
+    loss_weights = dict((l,float(gen.net.blobs[l].diff[...])) for l in gen_loss_names)
+
     if args.alternate: # find latent variable blob names for prior sampling
         latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
         latent_std = generate.find_blobs_in_net(gen.net, r'.+_latent_std')[0]
@@ -324,8 +327,8 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             gen.net.clear_param_diffs()
 
             # set non-GAN loss weights
-            for l in gen_loss_names:
-                gen.net.blobs[l].diff[...] = 0.0 if prior else args.loss_weight
+            for l, w in loss_weights.items():
+                gen.net.blobs[l].diff[...] = 0 if prior else w * args.loss_weight
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
