@@ -87,7 +87,7 @@ def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, yl
         ax.set_ylabel(y_)
 
         if hue:
-            alpha = 0.5/df.index.get_level_values(hue).nunique()
+            alpha = 0.5 #/df.index.get_level_values(hue).nunique()
             for j, _ in df.groupby(level=0):
                 mean = df.loc[j][y_].groupby(level=0).mean()
                 sem = df.loc[j][y_].groupby(level=0).sem()
@@ -104,7 +104,12 @@ def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, yl
         handles, labels = ax.get_legend_handles_labels()
 
         if ylim:
-            if len(ylim) > 1:
+            if isinstance(ylim, dict):
+                if y_ in ylim:
+                    ylim_ = ylim[y_]
+                else:
+                    ylim_ = ax.get_ylim()
+            elif len(ylim) > 1:
                 ylim_ = ylim[i]
             else:
                 ylim_ = ylim[0]
