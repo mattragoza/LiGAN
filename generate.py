@@ -455,65 +455,85 @@ class OutputWriter(object):
         self.grids[lig_name][grid_name][sample_idx] = grid
         self.structs[lig_name][grid_name][sample_idx] = struct
 
-        has_all_grids = len(self.grids[lig_name]) == self.n_grids
+        has_all_grids = (len(self.grids[lig_name]) == self.n_grids)
         has_all_samples = all(len(g) == self.n_samples for g in self.grids[lig_name].values())
 
-        if has_all_grids and has_all_samples:
+        if  not (has_all_grids and has_all_samples):
+            return False
 
-            if self.verbose:
-                print('out_writer has all grids for {}'.format(lig_name))
+        if self.verbose:
+            print('out_writer has all grids for ' + lig_name)
 
-            lig_grids = self.grids[lig_name]
-            lig_structs = self.structs[lig_name]
+        lig_grids = self.grids[lig_name]
+        lig_structs = self.structs[lig_name]
 
-            for grid_name in lig_grids:
-                for i in range(self.n_samples):
-                    grid_prefix = '{}_{}_{}_{}'.format(self.out_prefix, lig_name, grid_name, i)
+        for grid_name in lig_grids:
+            grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
 
-                    if self.output_dx: # write out density grid
+            if self.output_dx:
+
+                for sample_idx, grid in lig_grids[grid_name].items():
+                    sample_prefix = grid_prefix + '_' + str(sample_idx)
+                    if self.verbose:
+                        print('out_writer writing ' + sample_prefix + ' .dx files')
+                    grid.to_dx(sample_prefix)
+
+                self.dx_prefixes.append(grid_prefix)
+
+            if self.output_sdf:
+
+                structs = []
+                for sample_idx, struct in lig_structs[grid_name].items():
+
+                    if isinstance(struct, list): # all visited structs
+                        sample_prefix = grid_prefix + '_' + str(sample_idx)
+                        struct_file = sample_prefix + '.sdf'
                         if self.verbose:
-                            print('out_writer writing {} .dx files'.format(grid_prefix))
-                        grid = lig_grids[grid_name][i]
-                        grid.to_dx(grid_prefix)
-                        self.dx_prefixes.append(grid_prefix)
-
-                    if self.output_sdf and grid_name in lig_structs: # write out fit structure
-                        struct = lig_structs[grid_name][i]
-                        struct_file = '{}.sdf'.format(grid_prefix)
-                        if self.verbose:
-                            print('out_writer writing {}'.format(struct_file))
-                        if isinstance(struct, list):
-                            mols = [s.to_ob_mol() for s in struct]
-                            write_ob_mols_to_sdf_file(struct_file, mols)
-                            struct = sorted(struct, key=lambda s: s.info['loss'])[0]
-                            lig_structs[grid_name][i] = struct
-                        else:
-                            struct.to_sdf(struct_file)
+                            print('out_writer writing ' + struct_file)
+                        write_structs_to_sdf_file(struct_file, struct)
                         self.struct_files.append(struct_file)
+
+                        # best struct
+                        struct = sorted(struct, key=lambda s: s.info['loss'])[0]
+                        lig_structs[grid_name][i] = struct
                         self.centers.append(struct.center)
 
+                    if struct is not None:
+                        structs.append(struct)
+
                         if self.output_channels:
-                            channels_file = '{}.channels'.format(grid_prefix)
+                            sample_prefix = grid_prefix + '_' + str(sample_idx)
+                            channels_file = '{}.channels'.format(sample_prefix)
                             if self.verbose:
-                                print('out_writer writing {}'.format(channels_file))
+                                print('out_writer writing ' + channels_file)
                             write_channels_to_file(channels_file, struct.c, struct.channels)
 
-            if self.verbose:
-                print('out_writer computing metrics for {}'.format(lig_name))
-            self.compute_metrics(lig_name, lig_grids, lig_structs)
+                # write final stucts to single sdf file so that they
+                # are loaded into diff states of single pymol object
+                if structs:
+                    struct_file = grid_prefix + '.sdf'
+                    if self.verbose:
+                        print('out_writer writing ' + struct_file)
+                    write_structs_to_sdf_file(struct_file, structs)
+                    self.struct_files.append(struct_file)
+                    self.centers.append(structs[0].center)
 
-            if self.verbose:
-                print('out_writer writing {}'.format(self.metric_file))
-            self.metrics.to_csv(self.metric_file, sep=' ')
+        if self.verbose:
+            print('out_writer computing metrics for ' + lig_name)
+        self.compute_metrics(lig_name, lig_grids, lig_structs)
 
-            if self.verbose:
-                print('out_writer writing {}'.format(self.pymol_file))
-            write_pymol_script(self.pymol_file, self.dx_prefixes, self.struct_files, self.centers)
+        if self.verbose:
+            print('out_writer writing ' + self.metric_file)
+        self.metrics.to_csv(self.metric_file, sep=' ')
 
-            if self.verbose:
-                print('out_writer flushing out {}'.format(lig_name))
-            del self.grids[lig_name] # free memory
-            del self.structs[lig_name]
+        if self.verbose:
+            print('out_writer writing ' + self.pymol_file)
+        write_pymol_script(self.pymol_file, self.dx_prefixes, self.struct_files, self.centers)
+
+        if self.verbose:
+            print('out_writer freeing ' + lig_name)
+        del self.grids[lig_name] # free memory
+        del self.structs[lig_name]
 
     def compute_metrics(self, lig_name, grids, structs):
         '''
@@ -1294,8 +1314,8 @@ def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
     with open(pymol_file, 'w') as f:
         for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            grid_name = '{}_grid'.format(os.path.basename(dx_prefix))
-            f.write('load_group {}, {}\n'.format(dx_pattern, grid_name))
+            dx_group = '{}_grids'.format(os.path.basename(dx_prefix))
+            f.write('load_group {}, {}\n'.format(dx_pattern, dx_group))
 
         for struct_file in struct_files: # load structures
             obj_name = os.path.splitext(os.path.basename(struct_file))[0]
@@ -1421,8 +1441,16 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv = ob.OBConversion()
     conv.SetOutFormat('sdf')
     for i, mol in enumerate(mols):
-        conv.WriteFile(mol, sdf_file) if i == 0 else conv.Write(mol)
+        if i == 0:
+            conv.WriteFile(mol, sdf_file)
+        else:
+            conv.Write(mol)
     conv.CloseOutFile()
+
+
+def write_structs_to_sdf_file(sdf_file, structs):
+    mols = (s.to_ob_mol() for s in structs)
+    write_ob_mols_to_sdf_file(sdf_file, mols)
 
 
 def write_channels_to_file(channels_file, c, channels):
@@ -1651,7 +1679,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
     rec_map = molgrid.FileMappedGninaTyper(data_param.recmap)
     lig_map = molgrid.FileMappedGninaTyper(data_param.ligmap)
-    lig_channels = atom_types.get_channels_from_map(lig_map)
+    rec_channels = atom_types.get_channels_from_map(rec_map, name_prefix='Receptor')
+    lig_channels = atom_types.get_channels_from_map(lig_map, name_prefix='Ligand')
 
     ex_provider = molgrid.ExampleProvider(rec_map, lig_map, data_root=args.data_root)
     ex_provider.populate(data_param.source)
