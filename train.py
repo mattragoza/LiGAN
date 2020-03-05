@@ -386,22 +386,17 @@ def insert_metrics(loss_df, iter_, test_data, metrics):
         loss_df.loc[(iter_, test_data), m] = metrics[m]
 
 
-def write_and_plot_metrics(loss_df, loss_out, plot_out):
+def write_and_plot_metrics(loss_df, loss_file, plot_file):
 
-    loss_out.seek(0)
-    loss_df.to_csv(loss_out, sep=' ')
-    loss_out.flush()
-
-    plot_out.seek(0)
-    plot_lines(plot_out, loss_df, x='iteration', y=loss_df.columns, hue='test_data')
-    plot_out.flush()
+    loss_df.to_csv(loss_file, sep=' ')
+    plot_lines(plot_file, loss_df, x='iteration', y=loss_df.columns, hue='test_data')
 
 
-def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_out, args):
+def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args):
     '''
     Train a GAN using the provided train_data net, gen solver, and disc solver.
     Return loss_df of metrics evaluated on train and test data, while also writing
-    to loss_out and plotting to plot_out as training progresses.
+    to loss_file and plotting to plot_file as training progresses.
     '''
     # training flags for dynamic balancing
     train_disc = True
@@ -459,7 +454,7 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_ou
                 for m in sorted(loss_df.columns):
                     print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
 
-            write_and_plot_metrics(loss_df, loss_out, plot_out)
+            write_and_plot_metrics(loss_df, loss_file, plot_file)
 
         if i == args.max_iter: # return after final test evaluation
             return
@@ -604,24 +599,18 @@ def main(argv):
         else:
             columns = ['iteration', 'test_data']
             loss_df = pd.DataFrame(columns=columns).set_index(columns)
-        loss_out = open(loss_file, 'w')
 
         plot_file = '{}.{}.png'.format(args.out_prefix, fold)
-        plot_out = open(plot_file, 'w')
 
         # begin training GAN
         try:
-            train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_out, plot_out, args)
-
+            train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args)
         except:
             gen.snapshot()
             disc.snapshot()
             raise
 
-        finally:
-            loss_out.close()
-            plot_out.close()
-
 
 if __name__ == '__main__':
     main(sys.argv[1:])
+

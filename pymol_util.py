@@ -7,64 +7,51 @@ import isoslider
 import atom_types
 
 
-def set_atom_level(level, selection='*', state=None):
+def set_atom_level(level, selection='*', state=None, rec_map='my_rec_map', lig_map='my_lig_map'):
 
-    channels = atom_types.get_default_channels(True)
-    channel_names = [c.name for c in channels]
-    channels_by_name = {n: channels[i] for i, n in enumerate(channel_names)}
+    rec_channels = atom_types.get_channels_from_file(rec_map, name_prefix='Receptor')
+    lig_channels = atom_types.get_channels_from_file(lig_map, name_prefix='Ligand')
 
-    for channel in channels:
-        cmd.set_color(channel.name+'$', atom_types.get_channel_color(channel))
+    channels = rec_channels + lig_channels
+    channels_by_name = dict((c.name, c) for c in channels)
 
-    # first identify .dx atom density grids
-    dx_pattern = r'(.*)_({})\.dx'.format('|'.join(channel_names))
-    dx_groups = OrderedDict()
-    for obj in sorted(cmd.get_names('objects')):
+    for c in channels:
+        cmd.set_color(c.name+'$', atom_types.get_channel_color(c))
 
-        match = re.match(dx_pattern, obj)
-        if match:
-            dx_prefix = match.group(1)
-            if dx_prefix not in dx_groups:
-                dx_groups[dx_prefix] = []
-            dx_groups[dx_prefix].append(obj)
+    dx_regex = re.compile(r'(.*)_(\d+)_({})\.dx'.format('|'.join(channels_by_name)))
 
     surface_groups = OrderedDict()
-    for dx_prefix in dx_groups:
+    for dx_object in sorted(cmd.get_names('objects')):
 
-        match = re.match(r'^(.*)_(\d+)$', dx_prefix)
-        if match:
-            surface_prefix = match.group(1)
-            if state is None:
-                state_ = int(match.group(2)) + 1
-            else:
-                state_ = state
+        if not fnmatch.fnmatch(dx_object, selection):
+            continue
+
+        m = dx_regex.match(dx_object)
+        if not m:
+            continue
+
+        grid_prefix = m.group(1)
+        sample_idx = int(m.group(2))
+        channel = channels_by_name[m.group(3)]
+
+        if state is None:
+            surface_state = sample_idx+1
         else:
-            surface_prefix = dx_prefix
-            state_ = state or 0
+            surface_state = state
 
-        for dx_object in dx_groups[dx_prefix]:
+        surface_object = '{}_{}_surface'.format(grid_prefix, channel.name)
+        cmd.isosurface(surface_object, dx_object, level=level, state=surface_state)
+        cmd.color(channel.name+'$', surface_object)
 
-            if fnmatch.fnmatch(dx_object, selection):
+        if grid_prefix not in surface_groups:
+            surface_groups[grid_prefix] = []
 
-                match = re.match(dx_pattern, dx_object)
-                channel_name = match.group(2)
-                channel = channels_by_name[channel_name]
-                element = atom_types.get_name(channel.atomic_num)
+        if surface_object not in surface_groups[grid_prefix]:
+            surface_groups[grid_prefix].append(surface_object)
 
-                surface_object = '{}_{}_surface'.format(surface_prefix, channel_name)
-                cmd.isosurface(surface_object, dx_object, level=level, state=state_)
-
-                cmd.color(channel.name+'$', surface_object)
-
-                if surface_prefix not in surface_groups:
-                    surface_groups[surface_prefix] = []
-
-                if surface_object not in surface_groups[surface_prefix]:
-                    surface_groups[surface_prefix].append(surface_object)
-
-    for surface_prefix in surface_groups:
-        surface_group = '{}_surface'.format(surface_prefix)
-        cmd.group(surface_group, ' '.join(surface_groups[surface_prefix]))
+    for grid_prefix, surface_objects in surface_groups.items():
+        surface_group = '{}_surfaces'.format(grid_prefix)
+        cmd.group(surface_group, ' '.join(surface_objects))
 
 
 def load_group(pattern, name):
