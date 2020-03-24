@@ -656,15 +656,18 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
                 data_filler=dict(type='constant', value=1),
                 shape=dict(dim=one_shape))
 
-            kldiv = '{}_latent_kldiv'.format(enc)
-            net[kldiv] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
+            kldiv_term = '{}_latent_kldiv_term_sum'.format(enc)
+            net[kldiv_term] = caffe.layers.Eltwise(net[one], net[log_std], net[mean2], net[var],
                 operation=caffe.params.Eltwise.SUM,
                 coeff=[-0.5, -1.0, 0.5, 0.5])
 
-            loss = 'kldiv_loss' # TODO handle multiple K-L divergence losses
-            net[loss] = caffe.layers.Reduction(net[kldiv],
-                operation=caffe.params.Reduction.SUM,
-                loss_weight=1.0/batch_size)
+            kldiv_batch = '{}_latent_kldiv_batch_sum'
+            net[kldiv_batch] = caffe.layers.Reduction(net[kldiv_term],
+                operation=caffe.params.Reduction.SUM)
+
+            kldiv_loss = 'kldiv_loss'
+            net[kldiv_loss] = caffe.layers.Power(net[kldiv_batch],
+                scale=1.0/batch_size, loss_weight=1.0)
 
         else:
 
@@ -929,11 +932,12 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
         net.diff = caffe.layers.Eltwise(curr_top, label_top,
             operation=caffe.params.Eltwise.SUM,
-            coeff=[-1.0, 1.0])
+            coeff=[1.0, -1.0])
 
-        net.L1_loss = caffe.layers.Reduction(net.diff,
-            operation=caffe.params.Reduction.ASUM,
-            loss_weight=1.0)
+        net.abs_sum = caffe.layers.Reduction(net.diff,
+            operation=caffe.params.Reduction.ASUM)
+
+        net.L1_loss = caffe.layers.Power(net.abs_sum, scale=1.0/batch_size, loss_weight=1.0)
 
     if 'f' in loss_types:
 
