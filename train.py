@@ -351,45 +351,24 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if compute_metrics:
                 metrics['gen_grad_norm'][i] = get_gradient_norm(gen.net)
                 metrics['gen_adv_grad_norm'][i] = get_gradient_norm(disc.net)
+                metrics['gen_loss_weight'][i] = args.loss_weight
 
             if train:
                 gen.apply_update()
 
-    if compute_metrics: # compute additional ligand grid metrics
-
-        lig_grid_names = ['lig', 'lig_gen']
-        grid_axes = (1, 2, 3, 4)
-
-        for g in lig_grid_names:
-            grids = gen.net.blobs[g].data
-            metrics[g + '_norm'][-1] = ((grids**2).sum(grid_axes)**0.5).mean()
-
-        for g, g2 in itertools.combinations(lig_grid_names, 2):
-            grids  = gen.net.blobs[g].data
-            grids2 = gen.net.blobs[g2].data
-            diffs =  grids2 - grids
-            metrics[g + '_' + g2 + '_dist'][-1] = ((diffs**2).sum(grid_axes)**0.5).mean()
-
-        for g in lig_grid_names:
-            grids = gen.net.blobs[g].data
-            diffs = grids[np.newaxis,:,...] - grids[:,np.newaxis,...]
-            metrics[g + '_' + g + '_dist'][-1] = ((diffs**2).sum(grid_axes)**0.5).mean()
-
-    metrics['gen_loss_weight'][-1] = args.loss_weight
-
     return {m: np.nanmean(metrics[m]) for m in metrics}
 
 
-def insert_metrics(loss_df, iter_, test_data, metrics):
+def insert_metrics(loss_df, iter_, phase, metrics):
 
     for m in metrics:
-        loss_df.loc[(iter_, test_data), m] = metrics[m]
+        loss_df.loc[(iter_, phase), m] = metrics[m]
 
 
 def write_and_plot_metrics(loss_df, loss_file, plot_file):
 
     loss_df.to_csv(loss_file, sep=' ')
-    plot_lines(plot_file, loss_df, x='iteration', y=loss_df.columns, hue='test_data')
+    plot_lines(plot_file, loss_df, x='iteration', y=loss_df.columns, hue='phase')
 
 
 def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args):
@@ -597,7 +576,7 @@ def main(argv):
             loss_df = pd.read_csv(loss_file, sep=' ', header=0, index_col=[0, 1])
             loss_df = loss_df[:args.cont_iter+1]
         else:
-            columns = ['iteration', 'test_data']
+            columns = ['iteration', 'phase']
             loss_df = pd.DataFrame(columns=columns).set_index(columns)
 
         plot_file = '{}.{}.png'.format(args.out_prefix, fold)
