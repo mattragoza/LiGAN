@@ -1695,6 +1695,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
         latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
         latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+        dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
         gen_net.forward() # this is necessary for proper latent sampling
 
     if args.parallel: # compute metrics and write output in a separate thread
@@ -1733,7 +1734,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                 if batch_idx == 0: # forward next batch
 
+                    # get next batch of structures
                     examples = ex_provider.next_batch(batch_size)
+
+                    # convert structures to grids
                     for i, ex in enumerate(examples):
                         t = molgrid.Transform(ex.coord_sets[1].center(),
                                               args.random_translate,
@@ -1744,39 +1748,59 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     rec = grid_true[:,:rec_map.num_types(),...].cpu()
                     lig = grid_true[:,rec_map.num_types():,...].cpu()
 
-                    if (args.encode_first or args.condition_first) and not (example_idx or sample_idx):
-                        first_rec = np.array(rec[0])
-                        first_lig = np.array(lig[0])
+                    need_first = (args.encode_first or args.condition_first)
+                    is_first = (example_idx == sample_idx == 0)
 
+                    if need_first and is_first:
+                        first_rec = np.array(rec[0:1])
+                        first_lig = np.array(lig[0:1])
+
+                    # set encoder input grids
                     if args.encode_first:
-                        gen_net.blobs['rec'].data[...] = first_rec[np.newaxis,...]
-                        gen_net.blobs['lig'].data[...] = first_lig[np.newaxis,...]
+                        gen_net.blobs['rec'].data[...] = first_rec
+                        gen_net.blobs['lig'].data[...] = first_lig
                     else:
                         gen_net.blobs['rec'].data[...] = rec
                         gen_net.blobs['lig'].data[...] = lig
 
+                    # set conditional input grids
                     if 'cond_rec' in gen_net.blobs:
                         if args.condition_first:
-                            gen_net.blobs['cond_rec'].data[...] = first_rec[np.newaxis,...]
+                            gen_net.blobs['cond_rec'].data[...] = first_rec
                         else:
                             gen_net.blobs['cond_rec'].data[...] = rec
 
+                    # encode true grids to latent variable parameters
                     if args.prior:
+
                         if args.mean:
                             gen_net.blobs[latent_mean].data[...] = 0.0
-                            gen_net.blobs[latent_std].data[...] = 0.0
-                            gen_net.forward(start=latent_noise)
+                            gen_net.blobs[latent_std].data[...]  = 0.0
                         else:
                             gen_net.blobs[latent_mean].data[...] = 0.0
-                            gen_net.blobs[latent_std].data[...] = 1.0
-                            gen_net.forward(start=latent_noise)
-                    else:
+                            gen_net.blobs[latent_std].data[...]  = 1.0
+
+                    else: # posterior
+
                         if args.mean:
                             gen_net.forward(end=latent_mean)
                             gen_net.blobs[latent_std].data[...] = 0.0
-                            gen_net.forward(start=latent_noise)
                         else:
-                            gen_net.forward()
+                            gen_net.forward(end=latent_std)
+
+                    # sample latent variables
+                    gen_net.forward(start=latent_noise, end=latent_sample)
+
+                    if args.interpolate: # interpolate between latent samples
+                        latent = np.array(gen_net.blobs[latent_sample].data)
+
+                        for i in range(0, batch_size, args.n_samples):
+                            j = (i + args.n_samples) % batch_size
+                            gen_net.blobs[latent_sample].data[i:i+args.n_samples,...] = \
+                                np.linspace(latent[i], latent[j], args.n_samples, endpoint=False)
+
+                    # decode latent samples to generate grids
+                    gen_net.forward(start=dec_fc)
 
                 # get current true structure and types
                 ex = examples[batch_idx]
@@ -1892,6 +1916,7 @@ def parse_args(argv=None):
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
     parser.add_argument('--encode_first', default=False, action='store_true', help='generate all output from encoding first example')
     parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
+    parser.add_argument('--interpolate', default=False, action='store_true', help='interpolate between examples in latent space')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')
