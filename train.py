@@ -368,7 +368,8 @@ def insert_metrics(loss_df, iter_, phase, metrics):
 def write_and_plot_metrics(loss_df, loss_file, plot_file):
 
     loss_df.to_csv(loss_file, sep=' ')
-    plot_lines(plot_file, loss_df, x='iteration', y=loss_df.columns, hue='phase')
+    fig = plot_lines(plot_file, loss_df, x='iteration', y=loss_df.columns, hue='phase')
+    plt.close(fig)
 
 
 def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args):

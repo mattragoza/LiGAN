@@ -60,7 +60,7 @@ def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, yl
                outlier_z=None, lgd_title=True):
 
     df = df.reset_index()
-    xlim = (df[x].min(), df[x].max())
+    xlim = (df[x].min(), df[x].max() + 1)
 
     if hue:
         df = df.set_index([hue, x])
@@ -472,7 +472,7 @@ def add_group_column(df, group_cols, do_print=False):
     '''
     group = '({})'.format(', '.join(group_cols))
     if do_print:
-        print('adding group column {}'.format(group))
+        print('adding group column {}'.format(repr(group)))
     df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
     return group
 
