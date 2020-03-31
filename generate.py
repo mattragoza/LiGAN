@@ -418,6 +418,7 @@ class OutputWriter(object):
         self.output_dx = output_dx
         self.output_sdf = output_sdf
         self.output_channels = output_channels
+        self.fit_atoms = fit_atoms
 
         # organize grids and structs by lig_name, grid_name, sample_idx
         self.grids = defaultdict(lambda: defaultdict(dict))
@@ -567,7 +568,7 @@ class OutputWriter(object):
             m.loc[idx, 'lig_var']     = lig_var.item()
             m.loc[idx, 'lig_gen_var'] = lig_gen_var.item()
 
-            if not any(structs): # start of atom fitting metrics
+            if not self.fit_atoms: # start of atom fitting metrics
                 continue
 
             lig_fit_grid     = grids['lig_fit'][i].values
