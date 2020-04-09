@@ -58,10 +58,10 @@ class MolGrid(object):
     def compute_size(cls, dimension, resolution):
         return int(np.ceil(dimension/resolution+1))
 
-    def to_dx(self, dx_prefix):
+    def to_dx(self, dx_prefix, center=None):
         write_grids_to_dx_files(dx_prefix, self.values,
                                 channels=self.channels,
-                                center=self.center,
+                                center=self.center if center is None else center,
                                 resolution=self.resolution)
 
 
@@ -459,7 +459,7 @@ class OutputWriter(object):
         has_all_grids = (len(self.grids[lig_name]) == self.n_grids)
         has_all_samples = all(len(g) == self.n_samples for g in self.grids[lig_name].values())
 
-        if  not (has_all_grids and has_all_samples):
+        if not (has_all_grids and has_all_samples):
             return False
 
         if self.verbose:
@@ -467,6 +467,10 @@ class OutputWriter(object):
 
         lig_grids = self.grids[lig_name]
         lig_structs = self.structs[lig_name]
+        lig_prefix = '{}_{}'.format(self.out_prefix, lig_name)
+
+        if self.output_dx: # load ligand grids in a single pymol group
+            self.dx_prefixes.append(lig_prefix)
 
         for grid_name in lig_grids:
             grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
@@ -477,9 +481,7 @@ class OutputWriter(object):
                     sample_prefix = grid_prefix + '_' + str(sample_idx)
                     if self.verbose:
                         print('out_writer writing ' + sample_prefix + ' .dx files')
-                    grid.to_dx(sample_prefix)
-
-                self.dx_prefixes.append(grid_prefix)
+                    grid.to_dx(sample_prefix, center=np.zeros(3))
 
             if self.output_sdf:
 
@@ -1330,7 +1332,7 @@ def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
 
         for struct_file, (x,y,z) in zip(struct_files, centers): # center structures
             obj_name = os.path.splitext(os.path.basename(struct_file))[0]
-            f.write('translate [{},{},{}], {}, camera=0\n'.format(-x, -y, -z, obj_name))
+            f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
 
 def read_gninatypes_file(lig_file, channels):
