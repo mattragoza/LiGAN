@@ -1692,13 +1692,13 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    if args.prior or args.mean: # find latent variable blobs
-        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
-        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
-        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
-        dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
-        gen_net.forward() # this is necessary for proper latent sampling
+    # find latent variable blobs (TODO assuming VAE for now, what about AE?)
+    latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
+    latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
+    latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
+    latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+    dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
+    gen_net.forward() # this is necessary for proper latent sampling
 
     if args.parallel: # compute metrics and write output in a separate thread
 
@@ -1733,6 +1733,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                 # keep track of position in batch
                 batch_idx = (example_idx*args.n_samples + sample_idx) % batch_size
+                first_sample_idx = batch_idx - batch_idx%args.n_samples
 
                 if batch_idx == 0: # forward next batch
 
@@ -1741,10 +1742,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     # convert structures to grids
                     for i, ex in enumerate(examples):
-                        t = molgrid.Transform(ex.coord_sets[1].center(),
-                                              args.random_translate,
-                                              args.random_rotation)
-                        t.forward(ex, ex)
+                        transform = molgrid.Transform(ex.coord_sets[1].center(),
+                                                      args.random_translate,
+                                                      args.random_rotation)
+                        transform.forward(ex, ex)
                         grid_maker.forward(ex, grid_true[i])
 
                     rec = grid_true[:,:rec_map.num_types(),...].cpu()
@@ -1772,9 +1773,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         else:
                             gen_net.blobs['cond_rec'].data[...] = rec
 
+                    if args.interpolate: # copy grids that will be interpolated
+                        for i in range(0, batch_size, args.n_samples):
+                            gen_net.blobs['lig'].data[i:i+args.n_samples] = \
+                                gen_net.blobs['lig'].data[i:i+1]
+                            gen_net.blobs['rec'].data[i:i+args.n_samples] = \
+                                gen_net.blobs['rec'].data[i:i+1]
+
                     # encode true grids to latent variable parameters
                     if args.prior:
-
                         if args.mean:
                             gen_net.blobs[latent_mean].data[...] = 0.0
                             gen_net.blobs[latent_std].data[...]  = 0.0
@@ -1783,7 +1790,6 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             gen_net.blobs[latent_std].data[...]  = 1.0
 
                     else: # posterior
-
                         if args.mean:
                             gen_net.forward(end=latent_mean)
                             gen_net.blobs[latent_std].data[...] = 0.0
@@ -1795,25 +1801,35 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     if args.interpolate: # interpolate between latent samples
                         latent = np.array(gen_net.blobs[latent_sample].data)
-
                         for i in range(0, batch_size, args.n_samples):
                             j = (i + args.n_samples) % batch_size
-                            gen_net.blobs[latent_sample].data[i:i+args.n_samples,...] = \
-                                np.linspace(latent[i], latent[j], args.n_samples, endpoint=False)
+                            gen_net.blobs[latent_sample].data[i:i+args.n_samples] = \
+                                np.linspace(latent[i], latent[j], args.n_samples)
 
                     # decode latent samples to generate grids
                     gen_net.forward(start=dec_fc)
 
                 # get current true structure and types
-                ex = examples[batch_idx]
+                if args.interpolate:
+                    ex = examples[first_sample_idx]
+                else:
+                    ex = examples[batch_idx]
                 struct = MolStruct.from_coord_set(ex.coord_sets[1], lig_channels)
                 lig_name = os.path.splitext(os.path.basename(struct.info['file']))[0]
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
                 for blob_name in args.blob_name: # get grid from blob and add to appropriate output
 
-                    grid = MolGrid(np.array(gen_net.blobs[blob_name].data[batch_idx]),
-                                   channels=struct.channels, center=struct.center,
+                    blob = gen_net.blobs[blob_name]
+
+                    if args.interpolate and not blob_name.endswith('_gen'):
+                        grid_data = blob.data[first_sample_idx]
+                    else:
+                        grid_data = blob.data[batch_idx]
+
+                    grid = MolGrid(values=np.array(grid_data),
+                                   channels=struct.channels,
+                                   center=struct.center,
                                    resolution=grid_maker.get_resolution())
 
                     grid_name = blob_name
