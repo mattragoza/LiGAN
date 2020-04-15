@@ -456,17 +456,22 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
             # how much better is D than G?
             if 'disc_wass_loss' in disc_metrics:
-                train_loss_ratio = gen_metrics['gen_adv_wass_loss'] / disc_metrics['disc_wass_loss']
+                train_gen_loss = gen_metrics['gen_adv_wass_loss']
+                train_disc_loss = disc_metrics['disc_wass_loss']
+                train_loss_balance = train_gen_loss - train_disc_loss
             else:
-                train_loss_ratio = gen_metrics['gen_adv_log_loss'] / disc_metrics['disc_log_loss']
+                train_gen_loss = gen_metrics['gen_adv_log_loss']
+                train_disc_loss = disc_metrics['disc_log_loss']
+                train_loss_balance = train_gen_loss / train_disc_loss
 
-            if train_disc and train_loss_ratio > 10:
+            if train_disc and train_loss_balance > 10:
                 train_disc = False
-            if not train_disc and train_loss_ratio < 2:
+            if not train_disc and train_loss_balance < 2:
                 train_disc = True
-            if train_gen and train_loss_ratio < 1:
+
+            if train_gen and train_loss_balance < 1:
                 train_gen = False
-            if not train_gen and train_loss_ratio > 2:
+            if not train_gen and train_loss_balance > 2:
                 train_gen = True
 
         # update non-GAN generator loss weight
