@@ -32,7 +32,7 @@ class MolGrid(object):
     '''
     An atomic density grid.
     '''
-    def __init__(self, values, channels, center, resolution):
+    def __init__(self, values, channels, center, resolution, **info):
 
         if len(values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
@@ -49,6 +49,8 @@ class MolGrid(object):
         self.resolution = resolution
         self.size = self.values.shape[1]
         self.dimension = self.compute_dimension(self.size, resolution)
+
+        self.info = info
 
     @classmethod
     def compute_dimension(cls, size, resolution):
@@ -559,6 +561,7 @@ class OutputWriter(object):
             # density magnitude
             m.loc[idx, 'lig_norm']     = np.linalg.norm(lig_grid)
             m.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen_grid)
+            m.loc[idx, 'latent_norm'] = grids['lig_gen'][i].info['latent_norm']
 
             # generated density loss
             lig_gen_loss = ((lig_grid - lig_gen_grid)**2).sum()/2
@@ -1692,12 +1695,21 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    # find latent variable blobs (TODO assuming VAE for now, what about AE?)
-    latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
-    latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
-    latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
-    latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+    try: # find latent variable blobs for VAE
+        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
+        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
+        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
+        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+        variational = True
+    except IndexError: # for standard AE
+        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_defc')[0]
+        variational = False
+
+    n_latent = gen_net.blobs[latent_sample].shape[1]
+
+    # find first decoder blob
     dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
+
     gen_net.forward() # this is necessary for proper latent sampling
 
     if args.parallel: # compute metrics and write output in a separate thread
@@ -1781,23 +1793,29 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                                 gen_net.blobs['rec'].data[i:i+1]
 
                     # encode true grids to latent variable parameters
-                    if args.prior:
-                        if args.mean:
-                            gen_net.blobs[latent_mean].data[...] = 0.0
-                            gen_net.blobs[latent_std].data[...]  = 0.0
-                        else:
-                            gen_net.blobs[latent_mean].data[...] = 0.0
-                            gen_net.blobs[latent_std].data[...]  = 1.0
+                    if variational:
+                        if args.prior:
+                            if args.mean:
+                                gen_net.blobs[latent_mean].data[...] = 0.0
+                                gen_net.blobs[latent_std].data[...]  = 0.0
+                            else:
+                                gen_net.blobs[latent_mean].data[...] = 0.0
+                                gen_net.blobs[latent_std].data[...]  = 1.0
+                        else: # posterior
+                            if args.mean:
+                                gen_net.forward(end=latent_mean)
+                                gen_net.blobs[latent_std].data[...] = 0.0
+                            else:
+                                gen_net.forward(end=latent_std)
 
-                    else: # posterior
-                        if args.mean:
-                            gen_net.forward(end=latent_mean)
-                            gen_net.blobs[latent_std].data[...] = 0.0
-                        else:
-                            gen_net.forward(end=latent_std)
+                        # sample latent variables
+                        gen_net.forward(start=latent_noise, end=latent_sample)
 
-                    # sample latent variables
-                    gen_net.forward(start=latent_noise, end=latent_sample)
+                    else:
+                        if args.prior:
+                            gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
+                        else:
+                            gen_net.forward(end=latent_sample)
 
                     if args.interpolate: # interpolate between latent samples
                         latent = np.array(gen_net.blobs[latent_sample].data)
@@ -1818,14 +1836,14 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_name = os.path.splitext(os.path.basename(struct.info['file']))[0]
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
-                for blob_name in args.blob_name: # get grid from blob and add to appropriate output
+                for blob_name in args.blob_name: # get data from blob and add to appropriate output
 
-                    blob = gen_net.blobs[blob_name]
+                    grid_blob = gen_net.blobs[blob_name]
 
-                    if args.interpolate and not blob_name.endswith('_gen'):
-                        grid_data = blob.data[first_sample_idx]
+                    if args.interpolate and blob_name in {'rec', 'lig'}:
+                        grid_data = grid_blob.data[first_sample_idx]
                     else:
-                        grid_data = blob.data[batch_idx]
+                        grid_data = grid_blob.data[batch_idx]
 
                     grid = MolGrid(values=np.array(grid_data),
                                    channels=struct.channels,
@@ -1834,6 +1852,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
+
+                    if grid_name == 'lig_gen':
+                        latent_blob = gen_net.blobs[latent_sample]
+                        latent_data = np.array(latent_blob.data)[batch_idx]
+                        grid.info['latent_norm'] = np.linalg.norm(latent_data)
 
                     if args.verbose:
                         try:
