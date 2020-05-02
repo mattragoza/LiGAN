@@ -1,5 +1,5 @@
 from __future__ import print_function
-import sys, os, re, argparse, time, glob, struct
+import sys, os, re, argparse, time, glob, struct, gzip, pickle
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -19,10 +19,14 @@ import torch
 import torch.multiprocessing as mp
 from GPUtil import getGPUs
 from openbabel import openbabel as ob
-from rdkit import Chem
-from rdkit import Geometry
-import molgrid
+import rdkit
+from rdkit import Chem, Geometry, DataStructs
+from rdkit.Chem import AllChem, Descriptors, QED, Crippen
+from rdkit.Chem.Fingerprints import FingerprintMols
+from SA_Score import sascorer
+from NP_Score import npscorer
 
+import molgrid
 import caffe_util
 import atom_types
 from results import get_terminal_size
@@ -71,7 +75,7 @@ class MolStruct(object):
     '''
     An atomic structure.
     '''
-    def __init__(self, xyz, c, channels, **info):
+    def __init__(self, xyz, c, channels, bonds=None, **info):
 
         if len(xyz.shape) != 2:
             raise ValueError('MolStruct xyz must have 2 dims')
@@ -88,41 +92,57 @@ class MolStruct(object):
         if any(c < 0) or any(c >= len(channels)):
             raise ValueError('invalid value in MolStruct c')
 
+        self.n_atoms = xyz.shape[0]
         self.xyz = xyz
-        self.c = c
+
         self.channels = channels
+        self.c = c
+
+        if bonds is not None:
+            if bonds.shape != (self.n_atoms, self.n_atoms):
+                raise ValueError('MolStruct bonds must have shape (n_atoms, n_atoms)')
+            self.bonds = bonds
+        else:
+            self.bonds = np.zeros((self.n_atoms, self.n_atoms))
+
         self.center = self.xyz.mean(0)
-        self.n_atoms = self.xyz.shape[0]
+
+        if self.n_atoms > 0:
+            self.radius = max(np.linalg.norm(self.xyz - self.center, axis=1))
+        else:
+            self.radius = np.nan
+
         self.info = info
 
     @classmethod
-    def from_coord_set(self, coord_set, channels):
+    def from_coord_set(self, coord_set, channels, **info):
+        
         if not coord_set.has_indexed_types():
             raise ValueError('can only make MolStruct from CoordinateSet with indexed types')
+        
         xyz = np.array(coord_set.coords, dtype=np.float32)
         c = np.array(coord_set.type_index, dtype=np.int16)
-        return MolStruct(xyz, c, channels, file=coord_set.src)
+        
+        return MolStruct(xyz, c, channels, **info)
 
     def to_ob_mol(self):
-        mol = make_ob_mol(self.xyz.astype(float), self.c, [], self.channels)
-        mol.ConnectTheDots()
-        mol.PerceiveBondOrders()
+        mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
         return mol
 
-    def to_sdf(self, sdf_file):
-        write_ob_mols_to_sdf_file(sdf_file, [self.to_ob_mol()])
+    def to_rd_mol(self):
+        raise NotImplementedError('TODO')
 
-    def check_validity(self):
-        mol = self.to_ob_mol()
-        mol = ob_mol_to_rd_mol(mol)
-        try:
-            Chem.SanitizeMol(mol)
-        except Exception as e:
-            error = e
-        else:
-            error = None
-        n_frags = len(Chem.GetMolFrags(mol))
-        return error, n_frags
+    def to_sdf(self, sdf_file):
+        write_rd_mols_to_sdf_file(sdf_file, [self.to_rd_mol()])
+
+    def add_bonds(self, tol=0.0):
+
+        nax = np.newaxis
+        channel_radii = np.array([c.atomic_radius for c in self.channels])
+
+        atom_dist2 = ((self.xyz[nax,:,:] - self.xyz[:,nax,:])**2).sum(axis=2)
+        max_bond_dist2 = channel_radii[self.c][nax,:] + channel_radii[self.c][:,nax]
+        self.bonds = (atom_dist2 < max_bond_dist2 + tol)
 
 
 class AtomFitter(object):
@@ -446,6 +466,7 @@ class OutputWriter(object):
         self.centers = []
 
         self.verbose = verbose
+        self.nps_model = npscorer.readNPModel()
 
     def write(self, lig_name, grid_name, sample_idx, grid, struct):
         '''
@@ -542,128 +563,376 @@ class OutputWriter(object):
 
     def compute_metrics(self, lig_name, grids, structs):
         '''
-        Compute magnitude, loss, and variance of grids, and
-        num atoms, radius, type count difference, fit time,
-        and RMSD for structs, for lig in metrics dataframe.
+        Compute metrics on generated density grids, fit atoms, and valid
+        molecules for a given ligand and insert in metrics data frame.
         '''
         # use mean grids to evaluate variability
-        lig_mean_grid     = sum(g.values for g in grids['lig'].values())/self.n_samples
-        lig_gen_mean_grid = sum(g.values for g in grids['lig_gen'].values())/self.n_samples
-
-        m = self.metrics
+        lig_grid_mean     = sum(g.values for g in grids['lig'].values())/self.n_samples
+        lig_gen_grid_mean = sum(g.values for g in grids['lig_gen'].values())/self.n_samples
 
         for i in range(self.n_samples):
             idx = (lig_name, i)
 
-            lig_grid     = grids['lig'][i].values
-            lig_gen_grid = grids['lig_gen'][i].values
+            lig_grid     = grids['lig'][i]
+            lig_gen_grid = grids['lig_gen'][i]
 
-            # density magnitude
-            m.loc[idx, 'lig_norm']     = np.linalg.norm(lig_grid)
-            m.loc[idx, 'lig_gen_norm'] = np.linalg.norm(lig_gen_grid)
-            m.loc[idx, 'latent_norm'] = grids['lig_gen'][i].info['latent_norm']
-
-            # generated density loss
-            lig_gen_loss = ((lig_grid - lig_gen_grid)**2).sum()/2
-            m.loc[idx, 'lig_gen_loss'] = lig_gen_loss.item()
-
-            # density variance
-            lig_var     = ((lig_grid     - lig_mean_grid)**2).sum()
-            lig_gen_var = ((lig_gen_grid - lig_gen_mean_grid)**2).sum()
-            m.loc[idx, 'lig_var']     = lig_var.item()
-            m.loc[idx, 'lig_gen_var'] = lig_gen_var.item()
+            self.compute_grid_metrics(idx, 'lig', lig_grid, lig_gen_grid, lig_grid_mean, lig_gen_grid_mean)
 
             if not self.fit_atoms: # start of atom fitting metrics
                 continue
 
-            lig_fit_grid     = grids['lig_fit'][i].values
-            lig_gen_fit_grid = grids['lig_gen_fit'][i].values
+            lig_fit_grid     = grids['lig_fit'][i]
+            lig_gen_fit_grid = grids['lig_gen_fit'][i]
 
-            lig_xyz         = structs['lig'][i].xyz
-            lig_fit_xyz     = structs['lig_fit'][i].xyz
-            lig_gen_fit_xyz = structs['lig_gen_fit'][i].xyz
+            lig_struct         = structs['lig'][i]
+            lig_fit_struct     = structs['lig_fit'][i]
+            lig_gen_fit_struct = structs['lig_gen_fit'][i]
 
-            lig_center         = structs['lig'][i].center
-            lig_fit_center     = structs['lig_fit'][i].center
-            lig_gen_fit_center = structs['lig_gen_fit'][i].center
+            self.compute_fit_metrics(idx, 'lig',     lig_grid,     lig_fit_grid,     lig_struct, lig_fit_struct)
+            self.compute_fit_metrics(idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid, lig_struct, lig_gen_fit_struct)
 
-            lig_c         = structs['lig'][i].c
-            lig_fit_c     = structs['lig_fit'][i].c
-            lig_gen_fit_c = structs['lig_gen_fit'][i].c
+            lig_mol = lig_struct.info['src_mol']
 
-            n_types = len(structs['lig'][i].channels)
-
-            lig_type_count         = count_types(lig_c, n_types)
-            lig_fit_type_count     = count_types(lig_fit_c, n_types)
-            lig_gen_fit_type_count = count_types(lig_gen_fit_c, n_types)
-
-            # fit density loss
-            lig_fit_loss     = ((lig_grid     - lig_fit_grid)**2).sum()/2
-            lig_gen_fit_loss = ((lig_gen_grid - lig_gen_fit_grid)**2).sum()/2
-            m.loc[idx, 'lig_fit_loss']     = lig_fit_loss.item()
-            m.loc[idx, 'lig_gen_fit_loss'] = lig_gen_fit_loss.item()
-
-            # number of atoms
-            lig_n_atoms         = len(lig_c)
-            lig_fit_n_atoms     = len(lig_fit_c)
-            lig_gen_fit_n_atoms = len(lig_gen_fit_c)
-            m.loc[idx, 'lig_n_atoms']         = lig_n_atoms
-            m.loc[idx, 'lig_fit_n_atoms']     = lig_fit_n_atoms
-            m.loc[idx, 'lig_gen_fit_n_atoms'] = lig_gen_fit_n_atoms
-
-            # fit structure radius
-            if lig_n_atoms > 0:
-                lig_radius = max(np.linalg.norm(lig_xyz - lig_center, axis=1))
-            else:
-                lig_radius = np.nan
-
-            if lig_fit_n_atoms > 0:
-                lig_fit_radius = max(np.linalg.norm(lig_fit_xyz - lig_fit_center, axis=1))
-            else:
-                lig_fit_radius = np.nan
-
-            if lig_gen_fit_n_atoms > 0:
-                lig_gen_fit_radius = max(np.linalg.norm(lig_gen_fit_xyz - lig_gen_fit_center, axis=1))
-            else:
-                lig_gen_fit_radius = np.nan
-
-            m.loc[idx, 'lig_radius']         = lig_radius
-            m.loc[idx, 'lig_fit_radius']     = lig_fit_radius
-            m.loc[idx, 'lig_gen_fit_radius'] = lig_gen_fit_radius
-
-            # fit type difference
-            m.loc[idx, 'lig_fit_type_diff']     = np.linalg.norm(lig_type_count - lig_fit_type_count, ord=1)
-            m.loc[idx, 'lig_gen_fit_type_diff'] = np.linalg.norm(lig_type_count - lig_gen_fit_type_count, ord=1)
-
-            # fit minimum RMSD
-            try:
-                lig_fit_rmsd = get_min_rmsd(lig_xyz, lig_c, lig_fit_xyz, lig_fit_c)
-            except (ValueError, ZeroDivisionError):
-                lig_fit_rmsd = np.nan
-            try:
-                lig_gen_fit_rmsd = get_min_rmsd(lig_xyz, lig_c, lig_gen_fit_xyz, lig_gen_fit_c)
-            except (ValueError, ZeroDivisionError):
-                lig_gen_fit_rmsd = np.nan
-
-            m.loc[idx, 'lig_fit_RMSD']     = lig_fit_rmsd
-            m.loc[idx, 'lig_gen_fit_RMSD'] = lig_gen_fit_rmsd
-
-            # fit time
-            m.loc[idx, 'lig_fit_time']     = structs['lig_fit'][i].info['time']
-            m.loc[idx, 'lig_gen_fit_time'] = structs['lig_gen_fit'][i].info['time']
-
-            # fit structure validity
-            lig_error, lig_n_frags = structs['lig_fit'][i].check_validity()
-            lig_gen_error, lig_gen_n_frags = structs['lig_gen_fit'][i].check_validity()
-
-            m.loc[idx, 'lig_fit_error'] = lig_error
-            m.loc[idx, 'lig_gen_fit_error'] = lig_gen_error
-
-            m.loc[idx, 'lig_fit_n_frags'] = lig_n_frags
-            m.loc[idx, 'lig_gen_fit_n_frags'] = lig_gen_n_frags  
+            self.compute_mol_validity(idx, 'lig',     lig_mol, lig_fit_struct)
+            self.compute_mol_validity(idx, 'lig_gen', lig_mol, lig_gen_fit_struct)
 
         if self.verbose:
-            print(m.loc[lig_name])
+            print(self.metrics.loc[lig_name])
+
+    def compute_grid_metrics(self, idx, prefix, true_grid, gen_grid, true_grid_mean, gen_grid_mean):
+
+        m = self.metrics
+
+        # density magnitude
+        m.loc[idx, prefix+'_norm']     = np.linalg.norm(true_grid.values)
+        m.loc[idx, prefix+'_gen_norm'] = np.linalg.norm(gen_grid.values)
+
+        # latent sample magnitude
+        m.loc[idx, prefix+'_latent_norm'] = gen_grid.info['latent_norm']
+
+        # generated density L2 loss
+        m.loc[idx, prefix+'_gen_L2_loss'] = \
+            (((true_grid.values - gen_grid.values)**2).sum()/2).item()
+
+        # density variance (divide by n_samples(+1) for sample (population) variance)
+        m.loc[idx, prefix+'_variance']     = ((true_grid.values - true_grid_mean)**2).sum().item()
+        m.loc[idx, prefix+'_gen_variance'] = ((gen_grid.values  - gen_grid_mean)**2).sum().item()
+
+    def compute_fit_metrics(self, idx, prefix, true_grid, fit_grid, true_struct, fit_struct):
+
+        m = self.metrics
+
+        # fit density L2 loss
+        m.loc[idx, prefix+'_fit_L2_loss'] = \
+            (((true_grid.values - fit_grid.values)**2).sum()/2).item()
+
+        # number of atoms
+        if not prefix.endswith('_gen'):
+            m.loc[idx, prefix+'_n_atoms'] = true_struct.n_atoms
+        m.loc[idx, prefix+'_fit_n_atoms'] = fit_struct.n_atoms
+
+        # fit structure radius
+        if not prefix.endswith('_gen'):
+            m.loc[idx, prefix+'_radius'] = true_struct.radius
+        m.loc[idx, prefix+'_fit_radius'] = fit_struct.radius
+
+        n_types = len(true_struct.channels)
+        true_type_count = count_types(true_struct.c, n_types)
+        fit_type_count  = count_types(fit_struct.c, n_types)
+
+        # fit type difference
+        m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(true_type_count - fit_type_count, ord=1)
+
+        # fit minimum RMSD
+        try:
+            rmsd = get_min_rmsd(true_struct.xyz, true_struct.c, fit_struct.xyz, fit_struct.c)
+        except (ValueError, ZeroDivisionError):
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_RMSD'] = rmsd
+
+        # fit time
+        m.loc[idx, prefix+'_fit_time'] = fit_struct.info['time']
+
+    def compute_mol_validity(self, idx, prefix, true_mol, fit_struct):
+
+        m = self.metrics
+
+        # get aromatic carbon, nitrogen donor channels
+        aroma_c_channels = set()
+        n_donor_channels = set()
+        for i, channel in enumerate(fit_struct.channels):
+            if 'AromaticCarbon' in channel.name:
+                aroma_c_channels.add(i)
+            if 'Nitrogen' in channel.name and 'Donor' in channel.name:
+                n_donor_channels.add(i)
+
+        # get aromatic carbon atoms
+        aroma_c_atoms = set()
+        for i, c in enumerate(fit_struct.c):
+            if c in aroma_c_channels:
+                aroma_c_atoms.add(i)
+
+        # perceive bonds in openbabel
+        mol = fit_struct.to_ob_mol()
+        mol.ConnectTheDots()
+        mol.PerceiveBondOrders()
+        # WARNING writing from OpenBabel to sdf, then reading with RDKit causes radicals to appear
+
+        # do the rest in rdkit
+        mol = ob_mol_to_rd_mol(mol)
+
+        # sanity check- validity of true molecule
+        if not prefix.endswith('_gen'):
+            n_frags, error, valid = get_rd_mol_validity(true_mol)
+            m.loc[idx, prefix+'_n_frags'] = n_frags
+            m.loc[idx, prefix+'_error']   = error
+            m.loc[idx, prefix+'_valid']   = valid
+
+        # check validity prior to bond adding
+        n_frags, error, valid = get_rd_mol_validity(mol)
+        m.loc[idx, prefix+'_fit_n_frags'] = n_frags
+        m.loc[idx, prefix+'_fit_error']   = error
+        m.loc[idx, prefix+'_fit_valid']   = valid
+
+        # make aromatic rings using channel info
+        rings = Chem.GetSymmSSSR(mol)
+        for ring_atoms in rings:
+            ring_atoms = set(ring_atoms)
+            if len(ring_atoms & aroma_c_atoms) == 0:
+                continue
+            if (len(ring_atoms) - 2)%4 != 0:
+                continue
+            for bond in mol.GetBonds():
+                i = bond.GetBeginAtomIdx()
+                j = bond.GetEndAtomIdx()
+                if i in ring_atoms and j in ring_atoms:
+                    bond.SetBondType(Chem.BondType.AROMATIC)
+
+        #Chem.Kekulize(mol) # do we need to do this?
+
+        # TODO add hydrogens using channel info
+
+        # try to connect fragments by adding min distance bonds
+        frags = Chem.GetMolFrags(mol)
+        n_frags = len(frags)
+        if n_frags > 1:
+
+            nax = np.newaxis
+            xyz = mol.GetConformer(0).GetPositions()
+            dist2 = ((xyz[nax,:,:] - xyz[:,nax,:])**2).sum(axis=2)
+
+            pt = Chem.GetPeriodicTable()
+            while n_frags > 1:
+
+                frag_map = {ai: fi for fi, f in enumerate(frags) for ai in f}
+                frag_idx = np.array([frag_map[i] for i in range(mol.GetNumAtoms())])
+                diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
+
+                can_bond = np.array([a.GetExplicitValence() <
+                                     pt.GetDefaultValence(a.GetAtomicNum())
+                                     for a in mol.GetAtoms()])
+                can_bond = can_bond[nax,:] & can_bond[nax,:]
+
+                cond_dist2 = np.where(diff_frags & can_bond & dist2<25, dist2, np.inf)
+
+                if not np.any(np.isfinite(cond_dist2)):
+                    break # no possible bond meets the conditons
+
+                a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
+                mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
+                mol.UpdatePropertyCache() # update explicit valences
+
+                frags = Chem.GetMolFrags(mol)
+                n_frags = len(frags)
+        
+        # check validity after bond adding
+        n_frags, error, valid = get_rd_mol_validity(mol)
+        m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
+        m.loc[idx, prefix+'_fit_add_error']   = error
+        m.loc[idx, prefix+'_fit_add_valid']   = valid
+
+        # energy minimization with UFF
+        true_uffE = get_rd_mol_uff_energy(true_mol)
+        min_mol, init_uffE, min_uffE, _ = uff_minimize_rd_mol(mol)
+
+        m.loc[idx, prefix+'_uffE']             = true_uffE
+        m.loc[idx, prefix+'_fit_add_uffE']     = init_uffE
+        m.loc[idx, prefix+'_fit_add_min_uffE'] = min_uffE
+
+        # TODO get RMSD to true struct, and before-after minimizing
+        try:
+            rmsd = AllChem.GetBestRMS(min_mol, true_mol)
+        except RuntimeError:
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_add_RMSD_true'] = rmsd
+
+        try:
+            rmsd = AllChem.GetBestRMS(mol, min_mol)
+        except RuntimeError:
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_add_RMSD_min']  = rmsd
+
+        # convert to smiles string
+        true_smi = Chem.MolToSmiles(true_mol, canonical=True)
+        smi      = Chem.MolToSmiles(mol,      canonical=True)
+
+        if not prefix.endswith('_gen'):
+            m.loc[idx, prefix+'_SMILES'] = true_smi
+        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
+        m.loc[idx, prefix+'_fit_add_SMILES_match'] = smi == true_smi
+
+        # fingerprint similarity
+        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol, 'morgan')
+        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol, 'rdkit')
+        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol, 'maccs')
+
+        # other molecular descriptors
+        if not prefix.endswith('_gen'):
+            m.loc[idx, prefix+'_MW']   = Chem.Descriptors.MolWt(true_mol)
+            m.loc[idx, prefix+'_QED']  = Chem.QED.default(true_mol)
+            m.loc[idx, prefix+'_logP'] = Crippen.MolLogP(true_mol)
+            m.loc[idx, prefix+'_SAS']  = sascorer.calculateScore(true_mol)
+            m.loc[idx, prefix+'_NPS']  = npscorer.scoreMol(true_mol, self.nps_model)
+
+        m.loc[idx, prefix+'_fit_add_min_MW']   = Chem.Descriptors.MolWt(mol)
+        m.loc[idx, prefix+'_fit_add_min_QED']  = Chem.QED.default(mol)
+        m.loc[idx, prefix+'_fit_add_min_logP'] = Crippen.MolLogP(mol)
+        m.loc[idx, prefix+'_fit_add_min_SAS']  = sascorer.calculateScore(mol)
+        m.loc[idx, prefix+'_fit_add_min_NPS']  = npscorer.scoreMol(mol, self.nps_model)
+
+
+
+def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
+    if fingerprint == 'morgan':
+        fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
+        fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
+    elif fingerprint == 'rdkit':
+        fgp1 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol1)
+        fgp2 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol2)
+    elif fingerprint == 'maccs':
+        fgp1 = AllChem.GetMACCSKeysFingerprint(rd_mol1)
+        fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
+    return DataStructs.TanimotoSimilarity(fgp1, fgp2)
+
+
+def uff_minimize_rd_mol(rd_mol, max_iters=1000):
+
+    if AllChem.UFFHasAllMoleculeParams(rd_mol):
+        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+        E_init = AllChem.UFFGetMoleculeForceField(rd_mol_H).CalcEnergy()
+        converged = AllChem.UFFOptimizeMolecule(rd_mol_H, maxIters=max_iters) == 0
+        E_final = AllChem.UFFGetMoleculeForceField(rd_mol_H).CalcEnergy()
+        rd_mol = Chem.RemoveHs(rd_mol_H)
+        return rd_mol, E_init, E_final, converged
+    else:
+        return rd_mol, np.nan, np.nan, np.nan
+
+
+def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
+    energy = AllChem.UFFGetMoleculeForceField(rd_mol).CalcEnergy()
+
+
+def get_rd_mol_validity(rd_mol):
+    n_frags = len(Chem.GetMolFrags(rd_mol))
+    try:
+        Chem.SanitizeMol(rd_mol)
+    except Exception as e:
+        error = e
+    else:
+        error = None
+    valid = n_frags == 1 and error is None
+    return n_frags, error, valid
+
+
+def ob_mol_to_rd_mol(ob_mol):
+
+    n_atoms = ob_mol.NumAtoms()
+    rd_mol = Chem.RWMol()
+    rd_conf = Chem.Conformer(n_atoms)
+
+    for ob_atom in ob.OBMolAtomIter(ob_mol):
+        rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        #TODO copy format charge
+        i = rd_mol.AddAtom(rd_atom)
+        ob_coords = ob_atom.GetVector()
+        x = ob_coords.GetX()
+        y = ob_coords.GetY()
+        z = ob_coords.GetZ()
+        rd_coords = Geometry.Point3D(x, y, z)
+        rd_conf.SetAtomPosition(i, rd_coords)
+
+    rd_mol.AddConformer(rd_conf)
+
+    for ob_bond in ob.OBMolBondIter(ob_mol):
+        i = ob_bond.GetBeginAtomIdx()-1
+        j = ob_bond.GetEndAtomIdx()-1
+        bond_order = ob_bond.GetBondOrder()
+        if ob_bond.IsAromatic():
+            rd_mol.AddBond(i, j, Chem.BondType.AROMATIC)
+        elif bond_order == 1:
+            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+        elif bond_order == 2:
+            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
+        elif bond_order == 3:
+            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
+        else:
+            raise Exception('unknown bond order {}'.format(bond_order))
+
+    return rd_mol
+
+
+def make_ob_mol(xyz, c, bonds, channels):
+    '''
+    Return an OpenBabel molecule from an array of
+    xyz atom positions, channel indices, a bond matrix,
+    and a list of atom type channels.
+    '''
+    mol = ob.OBMol()
+
+    n_atoms = 0
+    for (x, y, z), c_ in zip(xyz, c):
+        atomic_num = channels[c_].atomic_num
+        atom = mol.NewAtom()
+        atom.SetAtomicNum(atomic_num)
+        atom.SetVector(x, y, z)
+        n_atoms += 1
+
+    if np.any(bonds):
+        n_bonds = 0
+        for i in range(n_atoms):
+            atom_i = mol.GetAtom(i)
+            for j in range(i+1, n_atoms):
+                atom_j = mol.GetAtom(j)
+                if bonds[i,j]:
+                    bond = mol.NewBond()
+                    bond.Set(n_bonds, atom_i, atom_j, 1, 0)
+                    n_bonds += 1
+    return mol
+
+
+def write_ob_mols_to_sdf_file(sdf_file, mols):
+    conv = ob.OBConversion()
+    conv.SetOutFormat('sdf')
+    for i, mol in enumerate(mols):
+        if i == 0:
+            conv.WriteFile(mol, sdf_file)
+        else:
+            conv.Write(mol)
+    conv.CloseOutFile()
+
+
+def write_rd_mols_to_sdf_file(sdf_file, mols):
+    writer = Chem.SDWriter(sdf_file)
+    for mol in mols:
+        writer.write(mol)
+
+
+def read_rd_mols_from_sdf_file(sdf_file):
+    if sdf_file.endswith('.gz'):
+        open = gzip.open
+    with open(sdf_file) as f:
+        suppl = Chem.ForwardSDMolSupplier(f)
+        return [mol for mol in suppl]
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -1380,80 +1649,6 @@ def make_one_hot(x, n, dtype=None, device=None):
     return y
 
 
-def ob_mol_to_rd_mol(ob_mol):
-
-    n_atoms = ob_mol.NumAtoms()
-    rd_mol = Chem.RWMol()
-    rd_conf = Chem.Conformer(n_atoms)
-
-    for ob_atom in ob.OBMolAtomIter(ob_mol):
-        rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
-        i = rd_mol.AddAtom(rd_atom)
-        ob_coords = ob_atom.GetVector()
-        x = ob_coords.GetX()
-        y = ob_coords.GetY()
-        z = ob_coords.GetZ()
-        rd_coords = Geometry.Point3D(x, y, z)
-        rd_conf.SetAtomPosition(i, rd_coords)
-
-    rd_mol.AddConformer(rd_conf)
-
-    for ob_bond in ob.OBMolBondIter(ob_mol):
-        i = ob_bond.GetBeginAtomIdx()-1
-        j = ob_bond.GetEndAtomIdx()-1
-        bond_order = ob_bond.GetBondOrder()
-        if bond_order == 1:
-            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
-        elif bond_order == 2:
-            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
-        elif bond_order == 3:
-            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
-        else:
-            raise Exception('unknown bond order {}'.format(bond_order))
-
-    return rd_mol
-
-
-def make_ob_mol(xyz, c, bonds, channels):
-    '''
-    Return an OpenBabel molecule from an array of
-    xyz atom positions, channel indices, a bond matrix,
-    and a list of atom type channels.
-    '''
-    mol = ob.OBMol()
-
-    n_atoms = 0
-    for (x, y, z), c_ in zip(xyz, c):
-        atomic_num = channels[c_].atomic_num
-        atom = mol.NewAtom()
-        atom.SetAtomicNum(atomic_num)
-        atom.SetVector(x, y, z)
-        n_atoms += 1
-
-    if np.any(bonds):
-        n_bonds = 0
-        for i in range(n_atoms):
-            atom_i = mol.GetAtom(i)
-            for j in range(i+1, n_atoms):
-                atom_j = mol.GetAtom(j)
-                if bonds[i,j]:
-                    bond = mol.NewBond()
-                    bond.Set(n_bonds, atom_i, atom_j, 1, 0)
-                    n_bonds += 1
-    return mol
-
-
-def write_ob_mols_to_sdf_file(sdf_file, mols):
-    conv = ob.OBConversion()
-    conv.SetOutFormat('sdf')
-    for i, mol in enumerate(mols):
-        if i == 0:
-            conv.WriteFile(mol, sdf_file)
-        else:
-            conv.Write(mol)
-    conv.CloseOutFile()
-
-
 def write_structs_to_sdf_file(sdf_file, structs):
     mols = (s.to_ob_mol() for s in structs)
     write_ob_mols_to_sdf_file(sdf_file, mols)
@@ -1827,13 +2022,28 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     # decode latent samples to generate grids
                     gen_net.forward(start=dec_fc)
 
-                # get current true structure and types
+                # get current example ligand
                 if args.interpolate:
                     ex = examples[first_sample_idx]
                 else:
                     ex = examples[batch_idx]
-                struct = MolStruct.from_coord_set(ex.coord_sets[1], lig_channels)
-                lig_name = os.path.splitext(os.path.basename(struct.info['file']))[0]
+                lig_coord_set = ex.coord_sets[1]
+
+                # get lig source file and name
+                lig_base = os.path.splitext(lig_coord_set.src)[0]
+                lig_name = os.path.basename(lig_base)
+                m = re.match(r'(.+)_ligand_(\d+)', lig_base)
+                if m:
+                    lig_base = m.group(1) + '_docked.sdf.gz'
+                    idx = int(m.group(2))
+                else:
+                    lig_base = lig_base + '.sdf'
+                    idx = 0
+                lig_file = os.path.join(args.data_root, lig_base)
+
+                # get true ligand source mol, struct, and types
+                mol = read_rd_mols_from_sdf_file(lig_file)[idx]
+                struct = MolStruct.from_coord_set(lig_coord_set, lig_channels, src_mol=mol)
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
                 for blob_name in args.blob_name: # get data from blob and add to appropriate output
