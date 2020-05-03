@@ -540,7 +540,7 @@ class OutputWriter(object):
                     struct_file = grid_prefix + '.sdf'
                     if self.verbose:
                         print('out_writer writing ' + struct_file)
-                    write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in best_struct])
+                    write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in best_structs])
                     self.struct_files.append(struct_file)
                     self.centers.append(best_structs[0].center)
 
@@ -762,7 +762,7 @@ class OutputWriter(object):
         # energy minimization with UFF
         if not prefix.endswith('_gen'):
             true_uffE = get_rd_mol_uff_energy(true_mol)
-        m.loc[idx, prefix+'_uffE'] = true_uffE
+            m.loc[idx, prefix+'_uffE'] = true_uffE
 
         mol3, init_uffE, min_uffE, error = uff_minimize_rd_mol(mol2)
         m.loc[idx, prefix+'_fit_add_uffE']      = init_uffE
@@ -816,12 +816,14 @@ def set_rd_mol_aromatic(rd_mol, c, channels):
         if (len(ring_atoms) - 2)%4 != 0:
             continue
         for bond in rd_mol.GetBonds():
-            i = bond.GetBeginAtomIdx()
-            j = bond.GetEndAtomIdx()
-            if i in ring_atoms and j in ring_atoms:
+            atom1 = bond.GetBeginAtom()
+            atom2 = bond.GetEndAtom()
+            if atom1.GetIdx() in ring_atoms and atom2.GetIdx() in ring_atoms:
+                atom1.SetIsAromatic(True)
+                atom2.SetIsAromatic(True)
                 bond.SetBondType(Chem.BondType.AROMATIC)
 
-    #Chem.Kekulize(mol) # do we need to do this?
+    Chem.Kekulize(rd_mol) # do we need to do this?
 
 
 def connect_rd_mol_frags(rd_mol):
@@ -1031,10 +1033,11 @@ def write_rd_mols_to_sdf_file(sdf_file, mols):
 
 def read_rd_mols_from_sdf_file(sdf_file):
     if sdf_file.endswith('.gz'):
-        open = gzip.open
-    with open(sdf_file) as f:
+        f = gzip.open(sdf_file)
         suppl = Chem.ForwardSDMolSupplier(f)
-        return [mol for mol in suppl]
+    else:
+        suppl = Chem.SDMolSupplier(sdf_file)
+    return [mol for mol in suppl]
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
