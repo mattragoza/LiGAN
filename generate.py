@@ -130,7 +130,8 @@ class MolStruct(object):
         return mol
 
     def to_rd_mol(self):
-        raise NotImplementedError('TODO')
+        mol = make_rd_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
+        return mol
 
     def to_sdf(self, sdf_file):
         write_rd_mols_to_sdf_file(sdf_file, [self.to_rd_mol()])
@@ -506,51 +507,78 @@ class OutputWriter(object):
                         print('out_writer writing ' + sample_prefix + ' .dx files')
                     grid.to_dx(sample_prefix, center=np.zeros(3))
 
-            if self.output_sdf:
+            if self.output_sdf and not grid_name.endswith('_gen'):
 
-                structs = []
+                best_structs = []
                 for sample_idx, struct in lig_structs[grid_name].items():
+                    sample_prefix = grid_prefix + '_' + str(sample_idx)
 
                     if isinstance(struct, list): # all visited structs
-                        sample_prefix = grid_prefix + '_' + str(sample_idx)
                         struct_file = sample_prefix + '.sdf'
                         if self.verbose:
                             print('out_writer writing ' + struct_file)
-                        write_structs_to_sdf_file(struct_file, struct)
+                        write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in struct])
                         self.struct_files.append(struct_file)
 
                         # best struct
                         struct = sorted(struct, key=lambda s: s.info['loss'])[0]
-                        lig_structs[grid_name][i] = struct
+                        lig_structs[grid_name][sample_idx] = struct
                         self.centers.append(struct.center)
 
                     if struct is not None:
-                        structs.append(struct)
+                        best_structs.append(struct)
 
                         if self.output_channels:
-                            sample_prefix = grid_prefix + '_' + str(sample_idx)
                             channels_file = '{}.channels'.format(sample_prefix)
                             if self.verbose:
                                 print('out_writer writing ' + channels_file)
                             write_channels_to_file(channels_file, struct.c, struct.channels)
 
-                # write final stucts to single sdf file so that they
+                # write best stucts to single sdf file so that they
                 # are loaded into diff states of single pymol object
-                if structs:
+                if best_structs:
                     struct_file = grid_prefix + '.sdf'
                     if self.verbose:
                         print('out_writer writing ' + struct_file)
-                    write_structs_to_sdf_file(struct_file, structs)
+                    write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in best_struct])
                     self.struct_files.append(struct_file)
-                    self.centers.append(structs[0].center)
+                    self.centers.append(best_structs[0].center)
 
         if self.verbose:
             print('out_writer computing metrics for ' + lig_name)
-        self.compute_metrics(lig_name, lig_grids, lig_structs)
+        lig_mols = self.compute_metrics(lig_name, lig_grids, lig_structs)
 
         if self.verbose:
             print('out_writer writing ' + self.metric_file)
         self.metrics.to_csv(self.metric_file, sep=' ')
+
+        for grid_name in lig_mols:
+            grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
+
+            if self.output_sdf:
+
+                final_mols = []
+                for sample_idx, mols in lig_mols[grid_name].items():
+
+                    sample_prefix = grid_prefix + '_add_' + str(sample_idx)
+                    sdf_file = sample_prefix + '.sdf'
+                    if self.verbose:
+                        print('out_writer writing ' + sdf_file)
+                    write_rd_mols_to_sdf_file(sdf_file, mols)
+                    self.struct_files.append(sdf_file)
+
+                    final_mol = mols[-1]
+                    center = np.mean(final_mol.GetConformer(0).GetPositions(), axis=0)
+                    self.centers.append(center)
+                    final_mols.append(final_mol)
+
+                if final_mols: # write final mols to single sdf file
+                    sdf_file = grid_prefix + '_add.sdf'
+                    if self.verbose:
+                        print('out_writer writing ' + sdf_file)
+                    write_rd_mols_to_sdf_file(sdf_file, final_mols)
+                    self.struct_files.append(sdf_file)
+                    self.centers.append(center)
 
         if self.verbose:
             print('out_writer writing ' + self.pymol_file)
@@ -561,6 +589,8 @@ class OutputWriter(object):
         del self.grids[lig_name] # free memory
         del self.structs[lig_name]
 
+        return True
+
     def compute_metrics(self, lig_name, grids, structs):
         '''
         Compute metrics on generated density grids, fit atoms, and valid
@@ -569,6 +599,9 @@ class OutputWriter(object):
         # use mean grids to evaluate variability
         lig_grid_mean     = sum(g.values for g in grids['lig'].values())/self.n_samples
         lig_gen_grid_mean = sum(g.values for g in grids['lig_gen'].values())/self.n_samples
+
+        # return dict of rdkit mols
+        mols = defaultdict(dict)
 
         for i in range(self.n_samples):
             idx = (lig_name, i)
@@ -588,16 +621,21 @@ class OutputWriter(object):
             lig_fit_struct     = structs['lig_fit'][i]
             lig_gen_fit_struct = structs['lig_gen_fit'][i]
 
-            self.compute_fit_metrics(idx, 'lig',     lig_grid,     lig_fit_grid,     lig_struct, lig_fit_struct)
+            self.compute_fit_metrics(idx, 'lig', lig_grid, lig_fit_grid, lig_struct, lig_fit_struct)
             self.compute_fit_metrics(idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid, lig_struct, lig_gen_fit_struct)
 
-            lig_mol = lig_struct.info['src_mol']
+            lig_mol = Chem.RWMol(lig_struct.info['src_mol'])
+            lig_fit_mols = self.compute_mol_validity(idx, 'lig', lig_mol, lig_fit_struct)
+            lig_gen_fit_mols = self.compute_mol_validity(idx, 'lig_gen', lig_mol, lig_gen_fit_struct)
 
-            self.compute_mol_validity(idx, 'lig',     lig_mol, lig_fit_struct)
-            self.compute_mol_validity(idx, 'lig_gen', lig_mol, lig_gen_fit_struct)
+            mols['lig'][i] = [lig_mol]
+            mols['lig_fit'][i] = lig_fit_mols
+            mols['lig_gen_fit'][i] = lig_gen_fit_mols
 
         if self.verbose:
             print(self.metrics.loc[lig_name])
+
+        return mols
 
     def compute_grid_metrics(self, idx, prefix, true_grid, gen_grid, true_grid_mean, gen_grid_mean):
 
@@ -656,30 +694,17 @@ class OutputWriter(object):
     def compute_mol_validity(self, idx, prefix, true_mol, fit_struct):
 
         m = self.metrics
+        mols = [] # return mols from each step of processing
 
-        # get aromatic carbon, nitrogen donor channels
-        aroma_c_channels = set()
-        n_donor_channels = set()
-        for i, channel in enumerate(fit_struct.channels):
-            if 'AromaticCarbon' in channel.name:
-                aroma_c_channels.add(i)
-            if 'Nitrogen' in channel.name and 'Donor' in channel.name:
-                n_donor_channels.add(i)
-
-        # get aromatic carbon atoms
-        aroma_c_atoms = set()
-        for i, c in enumerate(fit_struct.c):
-            if c in aroma_c_channels:
-                aroma_c_atoms.add(i)
+        # initial struct with no bonds, from atom fitting
+        mol0 = fit_struct.to_rd_mol()
 
         # perceive bonds in openbabel
-        mol = fit_struct.to_ob_mol()
-        mol.ConnectTheDots()
-        mol.PerceiveBondOrders()
-        # WARNING writing from OpenBabel to sdf, then reading with RDKit causes radicals to appear
-
-        # do the rest in rdkit
-        mol = ob_mol_to_rd_mol(mol)
+        ob_mol = fit_struct.to_ob_mol()
+        ob_mol.ConnectTheDots()
+        ob_mol.PerceiveBondOrders()
+        mol1 = ob_mol_to_rd_mol(ob_mol)
+        # do everything else in rdkit
 
         # sanity check- validity of true molecule
         if not prefix.endswith('_gen'):
@@ -688,148 +713,195 @@ class OutputWriter(object):
             m.loc[idx, prefix+'_error']   = error
             m.loc[idx, prefix+'_valid']   = valid
 
-        # check validity prior to bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol)
+        # check mol validity prior to bond adding
+        n_frags, error, valid = get_rd_mol_validity(mol1)
         m.loc[idx, prefix+'_fit_n_frags'] = n_frags
         m.loc[idx, prefix+'_fit_error']   = error
         m.loc[idx, prefix+'_fit_valid']   = valid
 
         # make aromatic rings using channel info
-        rings = Chem.GetSymmSSSR(mol)
-        for ring_atoms in rings:
-            ring_atoms = set(ring_atoms)
-            if len(ring_atoms & aroma_c_atoms) == 0:
-                continue
-            if (len(ring_atoms) - 2)%4 != 0:
-                continue
-            for bond in mol.GetBonds():
-                i = bond.GetBeginAtomIdx()
-                j = bond.GetEndAtomIdx()
-                if i in ring_atoms and j in ring_atoms:
-                    bond.SetBondType(Chem.BondType.AROMATIC)
-
-        #Chem.Kekulize(mol) # do we need to do this?
-
-        # TODO add hydrogens using channel info
+        mol2 = Chem.RWMol(mol1)
+        set_rd_mol_aromatic(mol2, fit_struct.c, fit_struct.channels)
 
         # try to connect fragments by adding min distance bonds
-        frags = Chem.GetMolFrags(mol)
-        n_frags = len(frags)
-        if n_frags > 1:
+        connect_rd_mol_frags(mol2)
 
-            nax = np.newaxis
-            xyz = mol.GetConformer(0).GetPositions()
-            dist2 = ((xyz[nax,:,:] - xyz[:,nax,:])**2).sum(axis=2)
-
-            pt = Chem.GetPeriodicTable()
-            while n_frags > 1:
-
-                frag_map = {ai: fi for fi, f in enumerate(frags) for ai in f}
-                frag_idx = np.array([frag_map[i] for i in range(mol.GetNumAtoms())])
-                diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
-
-                can_bond = np.array([a.GetExplicitValence() <
-                                     pt.GetDefaultValence(a.GetAtomicNum())
-                                     for a in mol.GetAtoms()])
-                can_bond = can_bond[nax,:] & can_bond[nax,:]
-
-                cond_dist2 = np.where(diff_frags & can_bond & dist2<25, dist2, np.inf)
-
-                if not np.any(np.isfinite(cond_dist2)):
-                    break # no possible bond meets the conditons
-
-                a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
-                mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
-                mol.UpdatePropertyCache() # update explicit valences
-
-                frags = Chem.GetMolFrags(mol)
-                n_frags = len(frags)
-        
         # check validity after bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol)
+        n_frags, error, valid = get_rd_mol_validity(mol2)
         m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
         m.loc[idx, prefix+'_fit_add_error']   = error
         m.loc[idx, prefix+'_fit_add_valid']   = valid
 
-        # energy minimization with UFF
-        true_uffE = get_rd_mol_uff_energy(true_mol)
-        min_mol, init_uffE, min_uffE, _ = uff_minimize_rd_mol(mol)
-
-        m.loc[idx, prefix+'_uffE']             = true_uffE
-        m.loc[idx, prefix+'_fit_add_uffE']     = init_uffE
-        m.loc[idx, prefix+'_fit_add_min_uffE'] = min_uffE
-
-        # TODO get RMSD to true struct, and before-after minimizing
-        try:
-            rmsd = AllChem.GetBestRMS(min_mol, true_mol)
-        except RuntimeError:
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_add_RMSD_true'] = rmsd
-
-        try:
-            rmsd = AllChem.GetBestRMS(mol, min_mol)
-        except RuntimeError:
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_add_RMSD_min']  = rmsd
-
         # convert to smiles string
         true_smi = Chem.MolToSmiles(true_mol, canonical=True)
-        smi      = Chem.MolToSmiles(mol,      canonical=True)
+        smi      = Chem.MolToSmiles(mol2,     canonical=True)
 
         if not prefix.endswith('_gen'):
             m.loc[idx, prefix+'_SMILES'] = true_smi
         m.loc[idx, prefix+'_fit_add_SMILES'] = smi
-        m.loc[idx, prefix+'_fit_add_SMILES_match'] = smi == true_smi
 
         # fingerprint similarity
-        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol, 'morgan')
-        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol, 'rdkit')
-        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol, 'maccs')
+        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol2, 'morgan')
+        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol2, 'rdkit')
+        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol2, 'maccs')
 
         # other molecular descriptors
         if not prefix.endswith('_gen'):
             m.loc[idx, prefix+'_MW']   = Chem.Descriptors.MolWt(true_mol)
+            m.loc[idx, prefix+'_logP'] = Chem.Crippen.MolLogP(true_mol)
             m.loc[idx, prefix+'_QED']  = Chem.QED.default(true_mol)
-            m.loc[idx, prefix+'_logP'] = Crippen.MolLogP(true_mol)
             m.loc[idx, prefix+'_SAS']  = sascorer.calculateScore(true_mol)
             m.loc[idx, prefix+'_NPS']  = npscorer.scoreMol(true_mol, self.nps_model)
 
-        m.loc[idx, prefix+'_fit_add_min_MW']   = Chem.Descriptors.MolWt(mol)
-        m.loc[idx, prefix+'_fit_add_min_QED']  = Chem.QED.default(mol)
-        m.loc[idx, prefix+'_fit_add_min_logP'] = Crippen.MolLogP(mol)
-        m.loc[idx, prefix+'_fit_add_min_SAS']  = sascorer.calculateScore(mol)
-        m.loc[idx, prefix+'_fit_add_min_NPS']  = npscorer.scoreMol(mol, self.nps_model)
+        m.loc[idx, prefix+'_fit_add_MW']   = Chem.Descriptors.MolWt(mol2)
+        m.loc[idx, prefix+'_fit_add_logP'] = Chem.Crippen.MolLogP(mol2)
+        m.loc[idx, prefix+'_fit_add_QED']  = Chem.QED.default(mol2)
+        m.loc[idx, prefix+'_fit_add_SAS']  = sascorer.calculateScore(mol2)
+        m.loc[idx, prefix+'_fit_add_NPS']  = npscorer.scoreMol(mol2, self.nps_model)
 
+        # energy minimization with UFF
+        if not prefix.endswith('_gen'):
+            true_uffE = get_rd_mol_uff_energy(true_mol)
+        m.loc[idx, prefix+'_uffE'] = true_uffE
+
+        mol3, init_uffE, min_uffE, error = uff_minimize_rd_mol(mol2)
+        m.loc[idx, prefix+'_fit_add_uffE']      = init_uffE
+        m.loc[idx, prefix+'_fit_add_min_uffE']  = min_uffE
+        m.loc[idx, prefix+'_fit_add_min_error'] = error
+
+        # get aligned RMSD due to UFF min
+        try:
+            rmsd = AllChem.GetBestRMS(mol3, mol2)
+        except RuntimeError:
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_add_RMSD_min']  = rmsd
+
+        # get aligned pre min RMSD from true mol
+        try:
+            rmsd = AllChem.GetBestRMS(true_mol, mol2)
+        except RuntimeError:
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_add_RMSD_true'] = rmsd
+
+        # get aligned post min RMSD from true mol
+        try:
+            rmsd = AllChem.GetBestRMS(true_mol, mol3)
+        except RuntimeError:
+            rmsd = np.nan
+        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = rmsd
+
+        return mol0, mol1, mol2, mol3
+
+
+def set_rd_mol_aromatic(rd_mol, c, channels):
+
+    # get aromatic carbon channels
+    aroma_c_channels = set()
+    for i, channel in enumerate(channels):
+        if 'AromaticCarbon' in channel.name:
+            aroma_c_channels.add(i)
+
+    # get aromatic carbon atoms
+    aroma_c_atoms = set()
+    for i, c_ in enumerate(c):
+        if c_ in aroma_c_channels:
+            aroma_c_atoms.add(i)
+
+    # make aromatic rings using channel info
+    rings = Chem.GetSymmSSSR(rd_mol)
+    for ring_atoms in rings:
+        ring_atoms = set(ring_atoms)
+        if len(ring_atoms & aroma_c_atoms) == 0:
+            continue
+        if (len(ring_atoms) - 2)%4 != 0:
+            continue
+        for bond in rd_mol.GetBonds():
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+            if i in ring_atoms and j in ring_atoms:
+                bond.SetBondType(Chem.BondType.AROMATIC)
+
+    #Chem.Kekulize(mol) # do we need to do this?
+
+
+def connect_rd_mol_frags(rd_mol):
+
+    # try to connect fragments by adding min distance bonds
+    frags = Chem.GetMolFrags(rd_mol)
+    n_frags = len(frags)
+    if n_frags > 1:
+
+        nax = np.newaxis
+        xyz = rd_mol.GetConformer(0).GetPositions()
+        dist2 = ((xyz[nax,:,:] - xyz[:,nax,:])**2).sum(axis=2)
+
+        pt = Chem.GetPeriodicTable()
+        while n_frags > 1:
+
+            frag_map = {ai: fi for fi, f in enumerate(frags) for ai in f}
+            frag_idx = np.array([frag_map[i] for i in range(rd_mol.GetNumAtoms())])
+            diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
+
+            can_bond = np.array([a.GetExplicitValence() <
+                                 pt.GetDefaultValence(a.GetAtomicNum())
+                                 for a in rd_mol.GetAtoms()])
+            can_bond = can_bond[nax,:] & can_bond[:,nax]
+
+            cond_dist2 = np.where(diff_frags & can_bond & (dist2<25), dist2, np.inf)
+
+            if not np.any(np.isfinite(cond_dist2)):
+                break # no possible bond meets the conditions
+
+            a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
+            rd_mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
+            rd_mol.UpdatePropertyCache() # update explicit valences
+
+            frags = Chem.GetMolFrags(rd_mol)
+            n_frags = len(frags)
 
 
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
+
     if fingerprint == 'morgan':
         fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
         fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
+
     elif fingerprint == 'rdkit':
         fgp1 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol1)
         fgp2 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol2)
+
     elif fingerprint == 'maccs':
         fgp1 = AllChem.GetMACCSKeysFingerprint(rd_mol1)
         fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
+
     return DataStructs.TanimotoSimilarity(fgp1, fgp2)
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=1000):
-
-    if AllChem.UFFHasAllMoleculeParams(rd_mol):
-        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-        E_init = AllChem.UFFGetMoleculeForceField(rd_mol_H).CalcEnergy()
-        converged = AllChem.UFFOptimizeMolecule(rd_mol_H, maxIters=max_iters) == 0
-        E_final = AllChem.UFFGetMoleculeForceField(rd_mol_H).CalcEnergy()
-        rd_mol = Chem.RemoveHs(rd_mol_H)
-        return rd_mol, E_init, E_final, converged
-    else:
-        return rd_mol, np.nan, np.nan, np.nan
+    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+    try:
+        ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+        ff.Initialize()
+        E_init = ff.CalcEnergy()
+        try:
+            res = ff.Minimize(maxIts=max_iters)
+            E_final = ff.CalcEnergy()
+            rd_mol = Chem.RemoveHs(rd_mol_H)
+            if res == 0:
+                e = None
+            else:
+                e = RuntimeError('minimization not converged')
+            return rd_mol, E_init, E_final, e
+        except RuntimeError as e:
+            return Chem.RWMol(rd_mol), E_init, np.nan, e
+    except Exception as e:
+        return Chem.RWMol(rd_mol), np.nan, np.nan, e
 
 
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
-    energy = AllChem.UFFGetMoleculeForceField(rd_mol).CalcEnergy()
+    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+    ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+    return ff.CalcEnergy()
 
 
 def get_rd_mol_validity(rd_mol):
@@ -881,18 +953,48 @@ def ob_mol_to_rd_mol(ob_mol):
     return rd_mol
 
 
+def make_rd_mol(xyz, c, bonds, channels):
+
+    n_atoms = 0
+    rd_mol = Chem.RWMol()
+
+    for c_ in c:
+        atomic_num = channels[c_].atomic_num
+        rd_atom = Chem.Atom(atomic_num)
+        rd_mol.AddAtom(rd_atom)
+        n_atoms += 1
+
+    rd_conf = Chem.Conformer(n_atoms)
+
+    for i, (x, y, z) in enumerate(xyz):
+        rd_coords = Geometry.Point3D(x, y, z)
+        rd_conf.SetAtomPosition(i, rd_coords)
+
+    rd_mol.AddConformer(rd_conf)
+
+    if np.any(bonds):
+        n_bonds = 0
+        for i in range(n_atoms):
+            for j in range(i+1, n_atoms):
+                if bonds[i,j]:
+                    rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+                    n_bonds += 1
+
+    return rd_mol
+
+
 def make_ob_mol(xyz, c, bonds, channels):
     '''
     Return an OpenBabel molecule from an array of
     xyz atom positions, channel indices, a bond matrix,
     and a list of atom type channels.
     '''
-    mol = ob.OBMol()
+    ob_mol = ob.OBMol()
 
     n_atoms = 0
     for (x, y, z), c_ in zip(xyz, c):
         atomic_num = channels[c_].atomic_num
-        atom = mol.NewAtom()
+        atom = ob_mol.NewAtom()
         atom.SetAtomicNum(atomic_num)
         atom.SetVector(x, y, z)
         n_atoms += 1
@@ -900,14 +1002,14 @@ def make_ob_mol(xyz, c, bonds, channels):
     if np.any(bonds):
         n_bonds = 0
         for i in range(n_atoms):
-            atom_i = mol.GetAtom(i)
+            atom_i = ob_mol.GetAtom(i)
             for j in range(i+1, n_atoms):
-                atom_j = mol.GetAtom(j)
+                atom_j = ob_mol.GetAtom(j)
                 if bonds[i,j]:
-                    bond = mol.NewBond()
+                    bond = ob_mol.NewBond()
                     bond.Set(n_bonds, atom_i, atom_j, 1, 0)
                     n_bonds += 1
-    return mol
+    return ob_mol
 
 
 def write_ob_mols_to_sdf_file(sdf_file, mols):
@@ -1595,7 +1697,7 @@ def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
         for struct_file in struct_files: # load structures
             obj_name = os.path.splitext(os.path.basename(struct_file))[0]
             m = re.match(r'^(.*_fit)_(\d+)$', obj_name)
-            if m:
+            if m and False:
                 obj_name = m.group(1)
                 state = int(m.group(2)) + 1
                 f.write('load {}, {}, state={}\n'.format(struct_file, obj_name, state))
