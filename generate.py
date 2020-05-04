@@ -25,6 +25,7 @@ from rdkit.Chem import AllChem, Descriptors, QED, Crippen
 from rdkit.Chem.Fingerprints import FingerprintMols
 from SA_Score import sascorer
 from NP_Score import npscorer
+nps_model = npscorer.readNPModel()
 
 import molgrid
 import caffe_util
@@ -115,14 +116,16 @@ class MolStruct(object):
         self.info = info
 
     @classmethod
+    def from_gninatypes(self, gt_file, channels, **info):
+        xyz, c = read_gninatypes_file(gt_file, channels)
+        return MolStruct(xyz, c, channels, **info)
+
+    @classmethod
     def from_coord_set(self, coord_set, channels, **info):
-        
         if not coord_set.has_indexed_types():
             raise ValueError('can only make MolStruct from CoordinateSet with indexed types')
-        
         xyz = np.array(coord_set.coords, dtype=np.float32)
         c = np.array(coord_set.type_index, dtype=np.int16)
-        
         return MolStruct(xyz, c, channels, **info)
 
     def to_ob_mol(self):
@@ -467,7 +470,6 @@ class OutputWriter(object):
         self.centers = []
 
         self.verbose = verbose
-        self.nps_model = npscorer.readNPModel()
 
     def write(self, lig_name, grid_name, sample_idx, grid, struct):
         '''
@@ -697,100 +699,114 @@ class OutputWriter(object):
         mols = [] # return mols from each step of processing
 
         # initial struct with no bonds, from atom fitting
-        mol0 = fit_struct.to_rd_mol()
+        mol_fit = fit_struct.to_rd_mol()
 
         # perceive bonds in openbabel
         ob_mol = fit_struct.to_ob_mol()
         ob_mol.ConnectTheDots()
         ob_mol.PerceiveBondOrders()
-        mol1 = ob_mol_to_rd_mol(ob_mol)
+        mol_ob = ob_mol_to_rd_mol(ob_mol)
         # do everything else in rdkit
 
         # sanity check- validity of true molecule
+        n_frags, error, valid = get_rd_mol_validity(true_mol)
         if not prefix.endswith('_gen'):
-            n_frags, error, valid = get_rd_mol_validity(true_mol)
             m.loc[idx, prefix+'_n_frags'] = n_frags
             m.loc[idx, prefix+'_error']   = error
             m.loc[idx, prefix+'_valid']   = valid
 
         # check mol validity prior to bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol1)
+        n_frags, error, valid = get_rd_mol_validity(mol_ob)
         m.loc[idx, prefix+'_fit_n_frags'] = n_frags
         m.loc[idx, prefix+'_fit_error']   = error
         m.loc[idx, prefix+'_fit_valid']   = valid
 
         # make aromatic rings using channel info
-        mol2 = Chem.RWMol(mol1)
-        set_rd_mol_aromatic(mol2, fit_struct.c, fit_struct.channels)
+        mol_add = Chem.RWMol(mol_ob)
+        set_rd_mol_aromatic(mol_add, fit_struct.c, fit_struct.channels)
 
         # try to connect fragments by adding min distance bonds
-        connect_rd_mol_frags(mol2)
+        connect_rd_mol_frags(mol_add)
 
         # check validity after bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol2)
+        n_frags, error, valid = get_rd_mol_validity(mol_add)
         m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
         m.loc[idx, prefix+'_fit_add_error']   = error
         m.loc[idx, prefix+'_fit_add_valid']   = valid
 
         # convert to smiles string
         true_smi = Chem.MolToSmiles(true_mol, canonical=True)
-        smi      = Chem.MolToSmiles(mol2,     canonical=True)
+        smi      = Chem.MolToSmiles(mol_add,  canonical=True)
 
         if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_SMILES'] = true_smi
-        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
+            m.loc[idx, prefix+'_SMILES']           = true_smi
+        m.loc[idx, prefix+'_fit_add_SMILES']       = smi
+        m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
 
         # fingerprint similarity
-        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol2, 'morgan')
-        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol2, 'rdkit')
-        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol2, 'maccs')
+        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol_add, 'morgan')
+        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol_add, 'rdkit')
+        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol_add, 'maccs')
 
         # other molecular descriptors
         if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_MW']   = Chem.Descriptors.MolWt(true_mol)
-            m.loc[idx, prefix+'_logP'] = Chem.Crippen.MolLogP(true_mol)
-            m.loc[idx, prefix+'_QED']  = Chem.QED.default(true_mol)
-            m.loc[idx, prefix+'_SAS']  = sascorer.calculateScore(true_mol)
-            m.loc[idx, prefix+'_NPS']  = npscorer.scoreMol(true_mol, self.nps_model)
 
-        m.loc[idx, prefix+'_fit_add_MW']   = Chem.Descriptors.MolWt(mol2)
-        m.loc[idx, prefix+'_fit_add_logP'] = Chem.Crippen.MolLogP(mol2)
-        m.loc[idx, prefix+'_fit_add_QED']  = Chem.QED.default(mol2)
-        m.loc[idx, prefix+'_fit_add_SAS']  = sascorer.calculateScore(mol2)
-        m.loc[idx, prefix+'_fit_add_NPS']  = npscorer.scoreMol(mol2, self.nps_model)
+            m.loc[idx, prefix+'_MW']   = get_rd_mol_weight(true_mol)
+            m.loc[idx, prefix+'_logP'] = get_rd_mol_logP(true_mol)
+            m.loc[idx, prefix+'_QED']  = get_rd_mol_QED(true_mol)
+            m.loc[idx, prefix+'_SAS']  = get_rd_mol_SAS(true_mol)
+            m.loc[idx, prefix+'_NPS']  = get_rd_mol_NPS(true_mol, nps_model)
+
+        m.loc[idx, prefix+'_fit_add_MW']   = get_rd_mol_weight(mol_add)
+        m.loc[idx, prefix+'_fit_add_logP'] = get_rd_mol_logP(mol_add)
+        m.loc[idx, prefix+'_fit_add_QED']  = get_rd_mol_QED(mol_add)
+        m.loc[idx, prefix+'_fit_add_SAS']  = get_rd_mol_SAS(mol_add)
+        m.loc[idx, prefix+'_fit_add_NPS']  = get_rd_mol_NPS(mol_add, nps_model)
 
         # energy minimization with UFF
+        true_mol_min, init_E_t, min_E_t, error = uff_minimize_rd_mol(true_mol)
         if not prefix.endswith('_gen'):
-            true_uffE = get_rd_mol_uff_energy(true_mol)
-            m.loc[idx, prefix+'_uffE'] = true_uffE
+            m.loc[idx, prefix+'_E']         = init_E_t
+            m.loc[idx, prefix+'_min_E']     = min_E_t
+            m.loc[idx, prefix+'_dE_min']    = min_E_t - init_E_t
+            m.loc[idx, prefix+'_min_error'] = error
+            m.loc[idx, prefix+'_RMSD_min']  = get_aligned_rmsd(true_mol_min, true_mol)
 
-        mol3, init_uffE, min_uffE, error = uff_minimize_rd_mol(mol2)
-        m.loc[idx, prefix+'_fit_add_uffE']      = init_uffE
-        m.loc[idx, prefix+'_fit_add_min_uffE']  = min_uffE
+        mol_min, init_E, min_E, error = uff_minimize_rd_mol(mol_add)
+        m.loc[idx, prefix+'_fit_add_E']         = init_E
+        m.loc[idx, prefix+'_fit_add_min_E']     = min_E
+        m.loc[idx, prefix+'_fit_add_dE_min']    = min_E - init_E
         m.loc[idx, prefix+'_fit_add_min_error'] = error
+        m.loc[idx, prefix+'_fit_add_RMSD_min']  = get_aligned_rmsd(mol_min, mol_add)
 
-        # get aligned RMSD due to UFF min
+        # compare energy to true mol, pre- and post-minimize
+        m.loc[idx, prefix+'_fit_add_dE_true']     = init_E - init_E_t
+        m.loc[idx, prefix+'_fit_add_min_dE_true'] = min_E  - min_E_t
+
+        # get aligned RMSD to true mol, pre-minimize
+        m.loc[idx, prefix+'_fit_add_RMSD_true'] = get_aligned_rmsd(true_mol, mol_add)
+
+        # get aligned RMSD to true mol, post-minimize
+        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = get_aligned_rmsd(true_mol_min, mol_min)
+
+        return mol_fit, mol_ob, mol_add, mol_min
+
+
+def catch_exc(func, exc=Exception, default=np.nan):
+    def new_func(*args, **kwargs):
         try:
-            rmsd = AllChem.GetBestRMS(mol3, mol2)
-        except RuntimeError:
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_add_RMSD_min']  = rmsd
+            return func(*args, **kwargs)
+        except exc as e:
+            return default
+    return new_func
 
-        # get aligned pre min RMSD from true mol
-        try:
-            rmsd = AllChem.GetBestRMS(true_mol, mol2)
-        except RuntimeError:
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_add_RMSD_true'] = rmsd
 
-        # get aligned post min RMSD from true mol
-        try:
-            rmsd = AllChem.GetBestRMS(true_mol, mol3)
-        except RuntimeError:
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = rmsd
-
-        return mol0, mol1, mol2, mol3
+get_rd_mol_weight = catch_exc(Chem.Descriptors.MolWt)
+get_rd_mol_logP   = catch_exc(Chem.Crippen.MolLogP)
+get_rd_mol_QED    = catch_exc(Chem.QED.default)
+get_rd_mol_SAS    = catch_exc(sascorer.calculateScore)
+get_rd_mol_NPS    = catch_exc(npscorer.scoreMol)
+get_aligned_rmsd  = catch_exc(AllChem.GetBestRMS)
 
 
 def set_rd_mol_aromatic(rd_mol, c, channels):
@@ -823,7 +839,7 @@ def set_rd_mol_aromatic(rd_mol, c, channels):
                 atom2.SetIsAromatic(True)
                 bond.SetBondType(Chem.BondType.AROMATIC)
 
-    Chem.Kekulize(rd_mol) # do we need to do this?
+    Chem.Kekulize(rd_mol, clearAromaticFlags=True) # do we need to do this?
 
 
 def connect_rd_mol_frags(rd_mol):
@@ -856,12 +872,16 @@ def connect_rd_mol_frags(rd_mol):
 
             a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
             rd_mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
-            rd_mol.UpdatePropertyCache() # update explicit valences
+            try:
+                rd_mol.UpdatePropertyCache() # update explicit valences
+            except:
+                pass
 
             frags = Chem.GetMolFrags(rd_mol)
             n_frags = len(frags)
 
 
+@catch_exc
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
     if fingerprint == 'morgan':
@@ -880,8 +900,8 @@ def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=1000):
-    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
     try:
+        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
         ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
         ff.Initialize()
         E_init = ff.CalcEnergy()
@@ -900,6 +920,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=1000):
         return Chem.RWMol(rd_mol), np.nan, np.nan, e
 
 
+@catch_exc
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
     rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
     ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
@@ -910,10 +931,9 @@ def get_rd_mol_validity(rd_mol):
     n_frags = len(Chem.GetMolFrags(rd_mol))
     try:
         Chem.SanitizeMol(rd_mol)
+        error = None
     except Exception as e:
         error = e
-    else:
-        error = None
     valid = n_frags == 1 and error is None
     return n_frags, error, valid
 
@@ -2147,7 +2167,16 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_file = os.path.join(args.data_root, lig_base)
 
                 # get true ligand source mol, struct, and types
-                mol = read_rd_mols_from_sdf_file(lig_file)[idx]
+                try:
+                    mol = read_rd_mols_from_sdf_file(lig_file)[idx]
+                except Exception as e:
+                    lig_file = lig_file[:-4] + '.gninatypes'
+                    mol = MolStruct.from_gninatypes(lig_file, lig_channels)
+                    mol = mol.to_ob_mol()
+                    mol.ConnectTheDots()
+                    mol.PerceiveBondOrders()
+                    mol = ob_mol_to_rd_mol(mol)
+
                 struct = MolStruct.from_coord_set(lig_coord_set, lig_channels, src_mol=mol)
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
