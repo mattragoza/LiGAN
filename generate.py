@@ -150,12 +150,12 @@ class MolStruct(object):
 
 
 class AtomFitter(object):
-    
+
     def __init__(self, beam_size, beam_stride, atom_init, interm_iters, final_iters,
                  learning_rate, beta1, beta2, weight_decay, constrain_types,
                  r_factor, output_visited, output_kernel, device, verbose):
 
-        assert atom_init in {'none', 'conv', 'deconv'}
+        assert atom_init in {'none', 'conv', 'deconv', 'dist'}
 
         self.beam_size = beam_size
         self.beam_stride = beam_stride
@@ -232,12 +232,15 @@ class AtomFitter(object):
             for i in range(n_grids):
                 grids[i,types[i]<=0] = -1
 
-        if kernel is not None: # apply atom init function to grids
+        if self.atom_init in {'conv', 'deconv'}: # apply atom init function to grids
             grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
                                                padding=kernel.shape[-1]//2,
                                                groups=n_channels)
+        elif self.atom_init == 'dist':
+            # rank locations by distance from density value 1.0
+            grids = -(1.0 - grids)**2
 
-        # get indices of next atom positions and channels
+        # get indices of top-k grid values as next locations to init atoms
         k = self.beam_size*self.beam_stride
         idx_flat = grids.reshape(n_grids, -1).topk(k).indices[:,::self.beam_stride]
         idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
@@ -259,7 +262,7 @@ class AtomFitter(object):
         types = torch.tensor(types, device=self.device)
         r_factor = self.r_factor if use_r_factor else 1.0
 
-        if self.atom_init: # initialize convolution kernel
+        if self.atom_init in {'conv', 'deconv'}: # initialize convolution kernel
             deconv = (self.atom_init == 'deconv')
             kernel = self.init_kernel(grid.channels, grid.resolution, deconv)
         else:
