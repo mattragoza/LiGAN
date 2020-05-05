@@ -2011,7 +2011,9 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     rec_channels = atom_types.get_channels_from_map(rec_map, name_prefix='Receptor')
     lig_channels = atom_types.get_channels_from_map(lig_map, name_prefix='Ligand')
 
-    ex_provider = molgrid.ExampleProvider(rec_map, lig_map, data_root=args.data_root)
+    ex_provider = molgrid.ExampleProvider(rec_map, lig_map, data_root=args.data_root,
+                                          recmolcache=data_param.recmolcache,
+                                          ligmolcache=data_param.ligmolcache)
     ex_provider.populate(data_param.source)
 
     grid_maker = molgrid.GridMaker(data_param.resolution, data_param.dimension)
@@ -2155,33 +2157,33 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     ex = examples[first_sample_idx]
                 else:
                     ex = examples[batch_idx]
+
                 lig_coord_set = ex.coord_sets[1]
+                lig_src_file = lig_coord_set.src
+                struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
+                types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
 
-                # get lig source file and name
-                lig_base = os.path.splitext(lig_coord_set.src)[0]
-                lig_name = os.path.basename(lig_base)
-                m = re.match(r'(.+)_ligand_(\d+)', lig_base)
-                if m:
-                    lig_base = m.group(1) + '_docked.sdf.gz'
-                    idx = int(m.group(2))
-                else:
-                    lig_base = lig_base + '.sdf'
-                    idx = 0
-                lig_file = os.path.join(args.data_root, lig_base)
+                lig_src_no_ext = os.path.splitext(lig_src_file)[0]
+                lig_name = os.path.basename(lig_src_no_ext)
 
-                # get true ligand source mol, struct, and types
-                try:
-                    mol = read_rd_mols_from_sdf_file(lig_file)[idx]
-                except Exception as e:
-                    lig_file = lig_file[:-4] + '.gninatypes'
-                    mol = MolStruct.from_gninatypes(lig_file, lig_channels)
-                    mol = mol.to_ob_mol()
+                try: # get true mol from the original sdf file
+                    m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
+                    if m:
+                        lig_sdf_base = m.group(1) + '_docked.sdf.gz'
+                        idx = int(m.group(2))
+                    else:
+                        lig_sdf_base = lig_src_no_ext + '.sdf'
+                        idx = 0
+                    lig_sdf_file = os.path.join(args.data_root, lig_sdf_base)
+                    mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
+                    struct.info['src_mol'] = mol
+
+                except Exception as e: # get true mol from openbabel
+                    mol = struct.to_ob_mol()
                     mol.ConnectTheDots()
                     mol.PerceiveBondOrders()
                     mol = ob_mol_to_rd_mol(mol)
-
-                struct = MolStruct.from_coord_set(lig_coord_set, lig_channels, src_mol=mol)
-                types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
+                    struct.info['src_mol'] = mol
 
                 for blob_name in args.blob_name: # get data from blob and add to appropriate output
 
