@@ -122,9 +122,10 @@ class SlurmQueue(JobQueue):
 
     @staticmethod
     def _submit_cmd(job_file, array_idx=None):
-        cmd = 'sbatch {}'.format(job_file)
+        cmd = 'sbatch '
         if array_idx is not None:
-            cmd += ' --array={}'.format(array_idx)
+            cmd += '--array={} '.format(array_idx)
+        cmd += job_file
         return cmd
 
     @staticmethod
