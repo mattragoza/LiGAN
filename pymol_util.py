@@ -7,10 +7,17 @@ import isoslider
 import atom_types
 
 
-def set_atom_level(level, selection='*', state=None, rec_map='my_rec_map', lig_map='my_lig_map'):
+def set_atom_level(level, selection='*', state=None, rec_map=None, lig_map=None):
 
-    rec_channels = atom_types.get_channels_from_file(rec_map, name_prefix='Receptor')
-    lig_channels = atom_types.get_channels_from_file(lig_map, name_prefix='Ligand')
+    if rec_map is None:
+        rec_channels = atom_types.get_default_rec_channels()
+    else:
+        rec_channels = atom_types.get_channels_from_file(rec_map, name_prefix='Receptor')
+
+    if lig_map is None:
+        lig_channels = atom_types.get_default_lig_channels()
+    else:
+        lig_channels = atom_types.get_channels_from_file(lig_map, name_prefix='Ligand')
 
     channels = rec_channels + lig_channels
     channels_by_name = dict((c.name, c) for c in channels)
