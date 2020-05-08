@@ -57,7 +57,7 @@ def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, dist_kws={}, sca
 
 
 def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
-               outlier_z=None, lgd_title=True):
+               outlier_z=None, lgd_title=True, title=None):
 
     df = df.reset_index()
     xlim = (df[x].min(), df[x].max() + 1)
@@ -152,7 +152,12 @@ def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, yl
     for ax in iter_axes:
         ax.axis('off')
 
-    fig.tight_layout()
+    if title is not None:
+        fig.suptitle(title)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    else:
+        fig.tight_layout()
+
     fig.savefig(plot_file, format='png', bbox_extra_artists=extra, bbox_inches='tight')
     return fig
 
@@ -190,7 +195,7 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6, **kwargs):
 
 def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
                 point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={},
-                box=False, box_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None):
+                box=False, box_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None, title=None):
     df = df.reset_index()
     assert len(df) > 0, 'empty data frame'
 
@@ -298,7 +303,12 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
     for ax in iter_axes:
         ax.axis('off')
 
-    fig.tight_layout()
+    if title is not None:
+        fig.suptitle(title)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    else:
+        fig.tight_layout()
+
     fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
     return fig
 
