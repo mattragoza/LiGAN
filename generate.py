@@ -830,7 +830,7 @@ def set_rd_mol_aromatic(rd_mol, c, channels):
     rings = Chem.GetSymmSSSR(rd_mol)
     for ring_atoms in rings:
         ring_atoms = set(ring_atoms)
-        if len(ring_atoms & aroma_c_atoms) == 0:
+        if len(ring_atoms & aroma_c_atoms) == 0: #TODO test < 3 instead, and handle heteroatoms
             continue
         if (len(ring_atoms) - 2)%4 != 0:
             continue
@@ -841,8 +841,10 @@ def set_rd_mol_aromatic(rd_mol, c, channels):
                 atom1.SetIsAromatic(True)
                 atom2.SetIsAromatic(True)
                 bond.SetBondType(Chem.BondType.AROMATIC)
-
-    Chem.Kekulize(rd_mol, clearAromaticFlags=True) # do we need to do this?
+    try:
+        Chem.Kekulize(rd_mol, clearAromaticFlags=True)
+    except: # failed to kekulize raises an exception
+        pass
 
 
 def connect_rd_mol_frags(rd_mol):
