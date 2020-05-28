@@ -14,6 +14,8 @@ met_pat = re.compile(r'.*_(\d+)\.gen_metrics')
 err_pat = re.compile(r'slurm-(\d+)_(\d+)\.err')
 
 # determine max array idx submitted yet
+inf = float('inf')
+min_idx = inf
 max_idx = -1
 job_ids = []
 for in_file in get_files(in_dir):
@@ -23,19 +25,23 @@ for in_file in get_files(in_dir):
         idx = int(m.group(2))
         if idx > max_idx:
             max_idx = idx
+        if idx < min_idx:
+            min_idx = idx
         job_ids.append(job_id)
 
-print('max_idx')
-print(max_idx)
+n_submitted = max(0, max_idx - min_idx + 1)
+print('array indices submitted: {}'.format(n_submitted))
+if n_submitted > 0:
+    print('{}-{}'.format(min_idx, max_idx))
+else:
+    exit()
 
-query_idxs = set(range(1, max_idx+1))
-print('query_idxs')
-print(query_idxs)
-
+query_idxs = set(range(min_idx, max_idx+1))
 found_idxs = set()
 
 # copy back metric files from latest job submission
-if True:
+do_copy = True
+if do_copy:
     last_job_id = sorted(job_ids)[-1]
     for scr_file in get_files(in_dir + '/' + str(last_job_id)):
         m = met_pat.match(scr_file)
@@ -53,14 +59,10 @@ for in_file in get_files(in_dir):
         idx = int(m.group(1))
         found_idxs.add(idx)
 
-print('found_idxs')
-print(found_idxs)
-
 # determine idxs that are missing metrics
 error_idxs = query_idxs - found_idxs
-print('error_idxs')
-print(error_idxs)
-
+n_missing = len(error_idxs)
+print('array indices missing output: {}'.format(n_missing))
 print(','.join(map(str, sorted(error_idxs))))
 
 # find stderr files for idxs with missing metrics
@@ -86,8 +88,11 @@ def read_err_file(err_file):
 
 
 for i in sorted(error_idxs):
-    job_id, last_err_file = err_files[i][-1]
-    last_err_file = os.path.join(in_dir, last_err_file)
-    error = read_err_file(last_err_file)
-    print(last_err_file + '\t' + str(error))
+    try:
+        job_id, last_err_file = err_files[i][-1]
+        last_err_file = os.path.join(in_dir, last_err_file)
+        error = read_err_file(last_err_file)
+        print(last_err_file + '\t' + str(error))
+    except IndexError:
+        print('no error file for job array_idx ' + str(i))
 
