@@ -23,7 +23,7 @@ for in_file in get_files(in_dir):
     if m:
         job_id = int(m.group(1))
         idx = int(m.group(2))
-        if idx > max_idx:
+        if idx > max_idx and idx < 1e9:
             max_idx = idx
         if idx < min_idx:
             min_idx = idx
@@ -61,9 +61,15 @@ for in_file in get_files(in_dir):
 
 # determine idxs that are missing metrics
 error_idxs = query_idxs - found_idxs
+compl_idxs = query_idxs & found_idxs
+
+n_complete = len(compl_idxs)
+print('array indices complete: {}'.format(n_complete))
+
 n_missing = len(error_idxs)
 print('array indices missing output: {}'.format(n_missing))
 print(','.join(map(str, sorted(error_idxs))))
+
 
 # find stderr files for idxs with missing metrics
 err_files = defaultdict(list)
@@ -86,13 +92,14 @@ def read_err_file(err_file):
                 error = line.rstrip()
     return error
 
-
-for i in sorted(error_idxs):
-    try:
-        job_id, last_err_file = err_files[i][-1]
-        last_err_file = os.path.join(in_dir, last_err_file)
-        error = read_err_file(last_err_file)
-        print(last_err_file + '\t' + str(error))
-    except IndexError:
-        print('no error file for job array_idx ' + str(i))
+do_show = False
+if do_show:
+    for i in sorted(error_idxs):
+        try:
+            job_id, last_err_file = err_files[i][-1]
+            last_err_file = os.path.join(in_dir, last_err_file)
+            error = read_err_file(last_err_file)
+            print(last_err_file + '\t' + str(error))
+        except IndexError:
+            print('no error file for job array_idx ' + str(i))
 
