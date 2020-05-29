@@ -2,9 +2,12 @@ import sys, os, re, shutil, argparse
 from collections import defaultdict
 import pandas as pd
 
+from job_queue import SlurmQueue
+
 
 metric_file_pat = re.compile(r'(.*)_(\d+)\.gen_metrics')
 error_file_pat  = re.compile(r'slurm-(\d+)_(\d+)\.err')
+job_script_pat  = re.compile(r'(csb|crc|bridges)_fit.sh')
 inf = float('inf')
 
 
@@ -28,6 +31,11 @@ def get_files(dir):
 
 
 def print_index_set(idx_set):
+    s = get_index_set_str(idx_set)
+    print(s)
+
+
+def get_index_set_str(idx_set):
     s = ''
     last_idx = None
     skipping = False
@@ -44,7 +52,7 @@ def print_index_set(idx_set):
         last_idx = idx
     if skipping:
         s += '-' + str(last_idx)
-    print(s)
+    return s
 
 
 def parse_args(argv):
@@ -53,6 +61,7 @@ def parse_args(argv):
     parser.add_argument('--copy_metrics', '-c', default=False, action='store_true')
     parser.add_argument('--print_idxs',   '-i', default=False, action='store_true')
     parser.add_argument('--print_errors', '-e', default=False, action='store_true')
+    parser.add_argument('--resub_errors', '-r', default=False, action='store_true')
     parser.add_argument('--output_file',  '-o')
     return parser.parse_args(argv)
 
@@ -150,6 +159,14 @@ if __name__ == '__main__':
                 print(error_file + '\t' + str(error))
 
             print()
+
+        if args.resub_errors: # resubmit incomplete jobs
+
+            for job_file in get_files(job_dir):
+                m = job_script_pat.match(job_file)
+                if not m: continue
+                job_file = job_dir + '/' + job_file
+                SlurmQueue.submit_job(job_file, work_dir=job_dir, array_idx=get_index_set_str(incomplete_idxs))
 
     if args.output_file:
         if job_dfs:
