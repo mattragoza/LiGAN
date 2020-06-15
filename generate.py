@@ -242,13 +242,13 @@ class AtomFitter(object):
 
         # get indices of top-k grid values as next locations to init atoms
         k = self.beam_size*self.beam_stride
-        idx_flat = grids.reshape(n_grids, -1).topk(k).indices[:,::self.beam_stride]
+        idx_flat = grids.reshape(n_grids, -1).topk(k)[1][:,::self.beam_stride]
         idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
-        idx_xyz = torch.tensor(idx_grid[1:], device=self.device).permute(1, 2, 0)
+        idx_xyz = torch.tensor(idx_grid[1:], dtype=torch.float32, device=self.device).permute(1, 2, 0)
         idx_c = idx_grid[0]
 
         # transform to xyz coordiates and type vectors
-        xyz = center + resolution*(idx_xyz - (grid_dim-1)/2.)
+        xyz = center + resolution*(idx_xyz - (float(grid_dim)-1)/2.)
         c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
 
         return xyz, c
@@ -259,7 +259,7 @@ class AtomFitter(object):
         '''
         t_start = time.time()
 
-        types = torch.tensor(types, device=self.device)
+        types = torch.tensor(types, dtype=torch.float32, device=self.device)
         r_factor = self.r_factor if use_r_factor else 1.0
 
         if self.atom_init in {'conv', 'deconv'}: # initialize convolution kernel
