@@ -572,7 +572,10 @@ class OutputWriter(object):
                     write_rd_mols_to_sdf_file(sdf_file, mols)
                     self.struct_files.append(sdf_file)
 
-                    final_mol = mols[-1]
+                    try:
+                        final_mol = mols[-2] # don't use minimized mol
+                    except IndexError:
+                        final_mol = mols[0]
                     center = np.mean(final_mol.GetConformer(0).GetPositions(), axis=0)
                     self.centers.append(center)
                     final_mols.append(final_mol)
@@ -2000,6 +2003,23 @@ def get_min_rmsd(xyz1, c1, xyz2, c2):
     return np.sqrt(ssd/n_atoms)
 
 
+def slerp(v0, v1, t):
+    '''
+    Spherical linear interpolation between
+    vectors v0 and v1 at points t.
+    '''
+    norm_v0 = np.linalg.norm(v0)
+    norm_v1 = np.linalg.norm(v1)
+    dot_v0_v1 = np.dot(v0, v1)
+    cos_theta = dot_v0_v1 / (norm_v0 * norm_v1)
+    theta = np.arccos(cos_theta)
+    sin_theta = np.sin(theta)
+    s0 = np.sin((1.0-t)*theta) / sin_theta
+    s1 = np.sin(t*theta) / sin_theta
+    return s0[:,np.newaxis] * v0[np.newaxis,:] \
+         + s1[:,np.newaxis] * v1[np.newaxis,:]
+
+
 def generate_from_model(gen_net, data_param, n_examples, args):
     '''
     Generate grids from specific blob(s) in gen_net for each
@@ -2072,7 +2092,9 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                 # keep track of position in batch
                 batch_idx = (example_idx*args.n_samples + sample_idx) % batch_size
-                first_sample_idx = batch_idx - batch_idx%args.n_samples
+
+                if args.interpolate:
+                    endpoint_idx = 0 if batch_idx < batch_size//2 else -1
 
                 if batch_idx == 0: # forward next batch
 
@@ -2094,8 +2116,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     is_first = (example_idx == sample_idx == 0)
 
                     if need_first and is_first:
-                        first_rec = np.array(rec[0:1])
-                        first_lig = np.array(lig[0:1])
+                        first_rec = np.array(rec[:1])
+                        first_lig = np.array(lig[:1])
 
                     # set encoder input grids
                     if args.encode_first:
@@ -2112,12 +2134,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         else:
                             gen_net.blobs['cond_rec'].data[...] = rec
 
-                    if args.interpolate: # copy grids that will be interpolated
-                        for i in range(0, batch_size, args.n_samples):
-                            gen_net.blobs['lig'].data[i:i+args.n_samples] = \
-                                gen_net.blobs['lig'].data[i:i+1]
-                            gen_net.blobs['rec'].data[i:i+args.n_samples] = \
-                                gen_net.blobs['rec'].data[i:i+1]
+                    if args.interpolate: # copy true grids that will be interpolated
+                        start_rec = np.array(rec[:1])
+                        start_lig = np.array(lig[:1])
+                        end_rec = np.array(rec[-1:])
+                        end_lig = np.array(lig[-1:])
+                        gen_net.blobs['rec'].data[:batch_size//2] = start_rec
+                        gen_net.blobs['lig'].data[:batch_size//2] = start_lig
+                        gen_net.blobs['rec'].data[batch_size//2:] = end_rec
+                        gen_net.blobs['lig'].data[batch_size//2:] = end_lig
 
                     # encode true grids to latent variable parameters
                     if variational:
@@ -2145,18 +2170,22 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             gen_net.forward(end=latent_sample)
 
                     if args.interpolate: # interpolate between latent samples
-                        latent = np.array(gen_net.blobs[latent_sample].data)
-                        for i in range(0, batch_size, args.n_samples):
-                            j = (i + args.n_samples) % batch_size
-                            gen_net.blobs[latent_sample].data[i:i+args.n_samples] = \
-                                np.linspace(latent[i], latent[j], args.n_samples)
+                        latent = gen_net.blobs[latent_sample].data
+                        start_latent = np.array(latent[0])
+                        end_latent   = np.array(latent[-1])
+                        if args.spherical:
+                            gen_net.blobs[latent_sample].data[...] = \
+                                    slerp(start_latent, end_latent, np.linspace(0, 1, batch_size, endpoint=True))
+                        else:
+                            gen_net.blobs[latent_sample].data[...] = \
+                                    np.linspace(start_latent, end_latent, batch_size, endpoint=True)
 
                     # decode latent samples to generate grids
                     gen_net.forward(start=dec_fc)
 
                 # get current example ligand
                 if args.interpolate:
-                    ex = examples[first_sample_idx]
+                    ex = examples[endpoint_idx]
                 else:
                     ex = examples[batch_idx]
 
@@ -2192,7 +2221,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid_blob = gen_net.blobs[blob_name]
 
                     if args.interpolate and blob_name in {'rec', 'lig'}:
-                        grid_data = grid_blob.data[first_sample_idx]
+                        grid_data = grid_blob.data[endpoint_idx]
                     else:
                         grid_data = grid_blob.data[batch_idx]
 
@@ -2309,6 +2338,7 @@ def parse_args(argv=None):
     parser.add_argument('--encode_first', default=False, action='store_true', help='generate all output from encoding first example')
     parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('--interpolate', default=False, action='store_true', help='interpolate between examples in latent space')
+    parser.add_argument('--spherical', default=False, action='store_true', help='use spherical interpolation instead of linear')
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')

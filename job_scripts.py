@@ -95,6 +95,8 @@ def expand_gen_options(args):
         m='--mean',
         r='--random_rotation',
         c='--constrain_types',
+        i='--interpolate',
+        s='--spherical',
     )[a] for a in args)
 
 
