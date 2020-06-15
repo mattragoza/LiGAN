@@ -22,14 +22,6 @@ def read_err_file(err_file):
     return error
 
 
-files_cache = dict()
-def get_files(dir):
-    global files_cache
-    if dir not in files_cache:
-        files_cache[dir] = os.listdir(dir)
-    return files_cache[dir]
-
-
 def print_index_set(idx_set):
     s = get_index_set_str(idx_set)
     print(s)
@@ -80,7 +72,7 @@ if __name__ == '__main__':
         # find set of submitted array_idxs from error files
         job_ids = []
         submitted_idxs = set()
-        for job_file in get_files(job_dir):
+        for job_file in os.listdir(job_dir):
             m = error_file_pat.match(job_file)
             if not m: continue
             job_id    = int(m.group(1))
@@ -99,7 +91,7 @@ if __name__ == '__main__':
             last_job_id = sorted(job_ids)[-1]
             scr_dir = job_dir + '/' + str(last_job_id)
             n_copied = 0
-            for scr_file in get_files(scr_dir):
+            for scr_file in os.listdir(scr_dir):
                 m = metric_file_pat.match(scr_file)
                 if not m: continue
                 job_name  = m.group(1)
@@ -112,7 +104,7 @@ if __name__ == '__main__':
 
         # find set of completed array_idxs from metrics files
         complete_idxs = set()
-        for job_file in get_files(job_dir):
+        for job_file in os.listdir(job_dir):
             m = metric_file_pat.match(job_file)
             if not m: continue
             array_idx = int(m.group(2))
@@ -141,7 +133,7 @@ if __name__ == '__main__':
         if args.print_errors: # parse stderr files for incomplete indices
 
             error_files = defaultdict(list)
-            for job_file in get_files(job_dir):
+            for job_file in os.listdir(job_dir):
                 m = error_file_pat.match(job_file)
                 if not m: continue
                 job_id    = int(m.group(1))
@@ -162,7 +154,7 @@ if __name__ == '__main__':
 
         if args.resub_errors: # resubmit incomplete jobs
 
-            for job_file in get_files(job_dir):
+            for job_file in os.listdir(job_dir):
                 m = job_script_pat.match(job_file)
                 if not m: continue
                 job_file = job_dir + '/' + job_file
