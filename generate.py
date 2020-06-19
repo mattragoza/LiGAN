@@ -17,6 +17,7 @@ from scipy.stats import multivariate_normal
 import caffe
 import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
 from GPUtil import getGPUs
 from openbabel import openbabel as ob
 import rdkit
@@ -151,34 +152,41 @@ class MolStruct(object):
 
 class AtomFitter(object):
 
-    def __init__(self, beam_size, beam_stride, atom_init, interm_iters, final_iters,
-                 learning_rate, beta1, beta2, weight_decay, constrain_types,
-                 r_factor, output_visited, output_kernel, device, verbose):
+    def __init__(self, apply_conv, threshold, peak_value, min_dist, multi_atom, beam_size,
+                 constrain_types, constrain_frags, interm_iters, final_iters, gd_kwargs,
+                 output_visited, output_kernel, device, verbose):
 
-        assert atom_init in {'none', 'conv', 'deconv', 'dist'}
+        #lr=self.learning_rate,
+        #betas=(self.beta1, self.beta2),
+        #weight_decay=self.weight_decay
 
+        # settings for detecting next atoms to place on density grid
+        self.apply_conv = apply_conv
+        self.threshold = threshold
+        self.peak_value = peak_value
+        self.min_dist = min_dist
+
+        # can place all detected atoms at once, or do beam search
+        assert not (multi_atom and beam_size > 1)
+        self.multi_atom = multi_atom
         self.beam_size = beam_size
-        self.beam_stride = beam_stride
-        self.atom_init = atom_init
+
+        # can constrain to find exact atom type counts or single fragment
+        self.constrain_types = constrain_types
+        self.constrain_frags = contraing_frags
+
+        # can perform gradient descent at each step and/or at final step
         self.interm_iters = interm_iters
         self.final_iters = final_iters
+        self.gd_kwargs = gd_kwargs
 
-        self.learning_rate = learning_rate
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.weight_decay = weight_decay
-
-        self.constrain_types = constrain_types
-        self.r_factor = r_factor
-
+        self.output_visited = output_visited
+        self.output_kernel = output_kernel
         self.device = device
         self.verbose = verbose
 
         self.grid_maker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
-
-        self.output_visited = output_visited
-        self.output_kernel = output_kernel
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
@@ -202,8 +210,8 @@ class AtomFitter(object):
 
         if deconv:
             dtype = kernel.dtype
-            kernel = 100*torch.tensor(weiner_invert_kernel(kernel.cpu(), noise_ratio=1),
-                                      dtype=dtype, device=self.device)
+            kernel = torch.tensor(weiner_invert_kernel(kernel.cpu(), noise_ratio=1),
+                                  dtype=dtype, device=self.device)
 
         if self.output_kernel:
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
@@ -217,38 +225,62 @@ class AtomFitter(object):
 
         return kernel
 
-    def init_atoms(self, grids, center, resolution, kernel=None, types=None):
+    def init_atoms(self, grid, center, resolution, kernel=None, types=None):
         '''
-        Apply atom initialization kernel if needed and
-        then return best next atom initializations on a
-        grids or batch of grids (tensors).
+        Get a set of atoms from a density grid by convolving
+        with a kernel, applying a threshold, and then returning
+        the channel indices and coordinates that are a certain
+        minimum distance away ordered by convolution value.
         '''
-        n_grids = grids.shape[0]
-        n_channels = grids.shape[1]
-        grid_dim = grids.shape[2]
+        assert len(grid.shape) == 4
+        assert len(set(grid.shape[1:])) == 1
 
-        if self.constrain_types:
-            grids = grids.clone()
-            for i in range(n_grids):
-                grids[i,types[i]<=0] = -1
+        n_channels = grid.shape[0]
+        grid_dim = grid.shape[1]
 
-        if self.atom_init in {'conv', 'deconv'}: # apply atom init function to grids
-            grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
-                                               padding=kernel.shape[-1]//2,
-                                               groups=n_channels)
-        elif self.atom_init == 'dist':
-            # rank locations by distance from density value 1.0
-            grids = -(1.0 - grids)**2
+        if kernel is not None: # convolve grid with kernel
 
-        # get indices of top-k grid values as next locations to init atoms
-        k = self.beam_size*self.beam_stride
-        idx_flat = grids.reshape(n_grids, -1).topk(k)[1][:,::self.beam_stride]
-        idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
-        idx_xyz = torch.tensor(idx_grid[1:], dtype=torch.float32, device=self.device).permute(1, 2, 0)
-        idx_c = idx_grid[0]
+            grid = F.conv3d(grid.unsqueeze(0), kernel.unsqueeze(1),
+                            padding=kernel.shape[-1]//2,
+                            groups=n_channels)[0]
 
-        # transform to xyz coordiates and type vectors
-        xyz = center + resolution*(idx_xyz - (float(grid_dim)-1)/2.)
+            kernel_norm2 = (kernel**2).sum(dim=(1,2,3))
+            peak_value = kernel_norm2 * self.peak_value
+            threshold  = kernel_norm2 * self.threshold
+        else:
+            peak_value = self.peak_value
+            threshold  = self.threshold
+
+        # reflect grid values above peak value
+        if peak_value < np.inf:
+            grid = peak_value - np.abs(peak_value - grid)
+
+        # sort grid points by value
+        values, idx = torch.sort(grid.flatten(), descending=True)
+
+        # exclude grid points that are sub-threshold
+        above_thresh = values > threshold
+        values = values[above_thresh]
+        idx    = idx[above_thresh]
+
+        # convert flattened grid index to channel and spatial index
+        idx_z, idx = idx % grid_dim, idx // grid_dim
+        idx_y, idx = idx % grid_dim, idx // grid_dim
+        idx_x, idx = idx % grid_dim, idx // grid_dim
+        idx_c, idx = idx % grid_dim, idx // grid_dim
+        idx_xyz = torch.cat((idx_x, idx_y, idx_z), dim=1)
+
+        # exclude grid points in channels with no atoms left
+        has_atoms_left = types[idx_c] > 0
+        values = values[has_atoms_left]
+        idx_xyz = idx_xyz[has_atoms_left]
+        idx_c = idx_c[has_atoms_left]
+
+        # TODO apply non-max suppression using atomic radius
+
+        # convert channel and spatial index to atom type and coordinate vectors
+        origin = center - resolution*(float(grid_dim) - 1)/2.
+        xyz = origin + resolution*idx_xyz.float() 
         c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
 
         return xyz, c
@@ -262,7 +294,7 @@ class AtomFitter(object):
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
         r_factor = self.r_factor if use_r_factor else 1.0
 
-        if self.atom_init in {'conv', 'deconv'}: # initialize convolution kernel
+        if self.atom_init in {self., 'deconv'}: # initialize convolution kernel
             deconv = (self.atom_init == 'deconv')
             kernel = self.init_kernel(grid.channels, grid.resolution, deconv)
         else:
@@ -409,9 +441,7 @@ class AtomFitter(object):
         c = c.clone().detach().to(self.device)
         xyz.requires_grad = True
 
-        solver = torch.optim.Adam((xyz,), lr=self.learning_rate,
-                                  betas=(self.beta1, self.beta2),
-                                  weight_decay=self.weight_decay)
+        solver = torch.optim.Adam((xyz,), **self.gd_kwargs)
 
         self.grid_maker.set_radii_type_indexed(True)
         self.grid_maker.set_dimension(grid.dimension)
