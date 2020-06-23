@@ -152,7 +152,7 @@ class MolStruct(object):
 
 class AtomFitter(object):
 
-    def __init__(self, apply_conv, threshold, peak_value, min_dist, multi_atom, beam_size,
+    def __init__(self,  multi_atom, beam_size, apply_conv, threshold, peak_value, min_dist,
                  constrain_types, constrain_frags, interm_iters, final_iters, gd_kwargs,
                  output_visited, output_kernel, device, verbose):
 
@@ -160,16 +160,16 @@ class AtomFitter(object):
         #betas=(self.beta1, self.beta2),
         #weight_decay=self.weight_decay
 
+        # can place all detected atoms at once, or do beam search
+        assert not (multi_atom and beam_size)
+        self.multi_atom = multi_atom
+        self.beam_size = beam_size
+
         # settings for detecting next atoms to place on density grid
         self.apply_conv = apply_conv
         self.threshold = threshold
         self.peak_value = peak_value
         self.min_dist = min_dist
-
-        # can place all detected atoms at once, or do beam search
-        assert not (multi_atom and beam_size > 1)
-        self.multi_atom = multi_atom
-        self.beam_size = beam_size
 
         # can constrain to find exact atom type counts or single fragment
         self.constrain_types = constrain_types
@@ -253,20 +253,23 @@ class AtomFitter(object):
                             groups=n_channels)[0]
 
             kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
-            peak_value *= kernel_norm2
-            threshold  *= kernel_norm2
 
-        # reflect grid values above peak value
-        if peak_value < np.inf:
+            if peak_value is not None:
+                peak_value *= kernel_norm2
+
+            if threshold is not None:
+                threshold *= kernel_norm2
+
+        if peak_value is not None: # reflect grid values above peak value
             grid = peak_value - np.abs(peak_value - grid)
 
         # sort grid points by value
         values, idx = torch.sort(grid.flatten(), descending=True)
 
-        # apply threshold to grid points
-        above_thresh = values > threshold
-        values = values[above_thresh]
-        idx    = idx[above_thresh]
+        if threshold is not None: # apply threshold to grid values
+            above_thresh = values > threshold
+            values = values[above_thresh]
+            idx    = idx[above_thresh]
 
         # convert flattened grid index to channel and spatial index
         idx_z, idx = idx % grid_dim, idx // grid_dim
@@ -275,36 +278,43 @@ class AtomFitter(object):
         idx_c, idx = idx % grid_dim, idx // grid_dim
         idx_xyz = torch.cat((idx_x, idx_y, idx_z), dim=1)
 
-        # exclude grid points in channels with no atoms left (type constraint)
-        has_atoms_left = types[idx_c] > 0
-        values  = values[has_atoms_left]
-        idx_xyz = idx_xyz[has_atoms_left]
-        idx_c   = idx_c[has_atoms_left]
+        # exclude grid channels with no atoms left (type constraint)
+        if types is not None:
+            has_atoms_left = types[idx_c] > 0
+            values  = values[has_atoms_left]
+            idx_xyz = idx_xyz[has_atoms_left]
+            idx_c   = idx_c[has_atoms_left]
 
         # convert spatial index to atom coordinates
         origin = center - resolution*(float(grid_dim) - 1)/2.
         xyz = origin + resolution*idx_xyz.float() 
 
-        # suppress points that are too close to a higher-value point
-        r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
-        min_dist2 = (r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0))**2
-        dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
-        too_close = torch.tril(dist2 < min_dist2, k=-1).any(dim=1)
-        xyz   = xyz[local_max]
-        idx_c = idx_c[local_max]
+        if self.min_dist is not None: # suppress atoms too close to a higher-value point
+
+            r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
+            min_dist = self.min_dist * (r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0))
+            min_dist2 = min_dist**2
+
+            dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
+            not_too_close = ~torch.tril(dist2 < min_dist2, k=-1).any(dim=1)
+            xyz   = xyz[not_too_close]
+            idx_c = idx_c[not_too_close]
+
+        # limit number of atoms to beam size
+        if self.beam_size is not None:
+            xyz   = xyz[:self.beam_size]
+            idx_c = idx_c[:self.beam_size]
 
         # convert atom type channel index to one-hot type vector
         c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
 
-        return xyz, c
+        return xyz.detach(), c.detach()
 
     def fit(self, grid, types, use_r_factor=False):
         '''
         Fit atomic structure to mol grid.
         '''
         t_start = time.time()
-
-        r_factor = self.r_factor if use_r_factor else 1.0
 
         # get true grid on appropriate device
         grid_true = MolGrid(values=torch.as_tensor(grid.values, device=self.device),
@@ -321,21 +331,23 @@ class AtomFitter(object):
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
 
         fit_loss = (grid_true.values**2).sum()/2.
+        type_loss = types.abs().sum()
 
         # to constrain types, order structs first by type difference, then by L2 loss
         if self.constrain_types:
-            objective = (types.abs().sum().item(), fit_loss.item())
+            objective = (type_loss.item(), fit_loss.item())
 
         else: # otherwise, order structs only by L2 loss
             objective = fit_loss.item()
 
         # get next atom init locations and channels
-        xyz_next, c_next = self.init_atoms(grid_true.values, grid.channels, grid_true.center,
-                                           grid.resolution, types)
+        xyz_next, c_next = self.init_atoms(grid_true.values, grid.channels, grid.center, grid.resolution, types)
 
-        # batch of best structures so far
-        best_structs = [(objective, 0, xyz, c, xyz_next[0], c_next[0])]
+        # keept track of best structures so far
+        best_structs = [(objective, 0, xyz, c, xyz_next, c_next)]
         found_new_best_struct = True
+
+        # keep track of visited structures
         visited = set()
         visited_structs = []
         struct_count = 1
@@ -344,8 +356,6 @@ class AtomFitter(object):
         while found_new_best_struct:
 
             new_best_structs = []
-            new_best_grid_diffs = []
-            new_best_type_diffs = []
             found_new_best_struct = False
 
             # try to expand each current best structure
@@ -357,24 +367,25 @@ class AtomFitter(object):
                 if self.multi_atom: # evaluate all next atoms simultaneously
 
                     xyz_new = torch.cat([xyz, xyz_next])
-                    c_new   = torch.cat([c, c_next])
+                    c_new   = torch.cat([c,   c_next])
 
                     # compute diff and loss after gradient descent
                     xyz_new, grid_pred, grid_diff, fit_loss = \
-                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
+                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters)
+
                     type_diff = types - c_new.sum(dim=0)
+                    type_loss = type_diff.abs().sum()
 
                     if self.constrain_types:
-                        objective_new = (type_diff.abs().sum().item(), fit_loss.item())
+                        objective_new = (type_loss.item(), fit_loss.item())
                     else:
                         objective_new = fit_loss.item()
 
                     # check if new structure is one of the best yet
                     if any(objective_new < s[0] for s in best_structs):
 
-                        new_best_structs.append((objective_new, struct_count, xyz_new, c_new))
-                        new_best_grid_diffs.append(grid_diff)
-                        new_best_type_diffs.append(type_diff)
+                        xyz_new_next, c_new_next = self.init_atoms(grid_diff, grid.channels, grid.center, grid.resolution, type_diff)
+                        new_best_structs.append((objective_new, struct_count, xyz_new, c_new, xyz_new_next, c_new_next))
                         found_new_best_struct = True
                         struct_count += 1
 
@@ -384,11 +395,12 @@ class AtomFitter(object):
 
                         # add next atom to structure
                         xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
-                        c_new   = torch.cat([c, c_next_.unsqueeze(0)])
+                        c_new   = torch.cat([c,   c_next_.unsqueeze(0)])
 
                         # compute diff and loss after gradient descent
                         xyz_new, grid_pred, grid_diff, fit_loss = \
                             self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
+
                         type_diff = types - c_new.sum(dim=0)
 
                         if self.constrain_types:
@@ -399,31 +411,19 @@ class AtomFitter(object):
                         # check if new structure is one of the best yet
                         if any(objective_new < s[0] for s in best_structs):
 
-                            new_best_structs.append((objective_new, struct_count, xyz_new, c_new))
-                            new_best_grid_diffs.append(grid_diff)
-                            new_best_type_diffs.append(type_diff)
+                            xyz_new_next, c_new_next = self.init_atoms(grid_diff, grid.channels, grid.center, grid.resolution, type_diff)
+                            new_best_structs.append((objective_new, struct_count, xyz_new, c_new, xyz_new_next, c_new_next))
                             found_new_best_struct = True
                             struct_count += 1
 
                 visited.add(struct_id)
                 if self.output_visited:
-                    visited_structs.append((heuristic, struct_id, time.time()-t_start, xyz, c))
+                    visited_structs.append((objective, struct_id, time.time()-t_start, xyz, c))
 
-            if found_new_best_struct:
+            if found_new_best_struct: # determine new set of best structures
 
-                new_best_grid_diffs = torch.stack(new_best_grid_diffs)
-                new_best_type_diffs = torch.stack(new_best_type_diffs)
-
-                # get next-atom init coords and types for new set of best structures
-                xyz_next, c_next = self.init_atoms(new_best_grid_diffs, grid_true.center,
-                                                   grid_true.resolution, kernel, new_best_type_diffs)
-
-                # determine new limited set of best structures
-                for i, (objective, struct_id, xyz, c) in enumerate(new_best_structs):
-                    best_structs.append((objective, struct_id, xyz, c, xyz_next[i], c_next[i]))
-
-                best_structs = sorted(best_structs)[:self.beam_size]
-                best_heuristic = best_structs[0][0]
+                best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
+                best_objective = best_structs[0][0]
                 best_id = best_structs[0][1]
 
                 if self.verbose:
@@ -431,14 +431,14 @@ class AtomFitter(object):
                         gpu_usage = getGPUs()[0].memoryUtil
                     except:
                         gpu_usage = np.nan
-                    print('best struct # {} (objective={}, GPU={})'
-                          .format(best_id, best_objective, gpu_usage))
+                    print('best struct # {} (objective={}, GPU={})'.format(best_id, best_objective, gpu_usage))
 
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
         # perform final gradient descent
         xyz_best, grid_pred, grid_diff, fit_loss = \
             self.fit_gd(grid_true, xyz_best, c_best, self.final_iters, r_factor)
+
         type_diff = (types - c_best.sum(dim=0)).abs().sum().item()
 
         grid_pred = MolGrid(grid_pred.cpu().detach().numpy(),
@@ -467,10 +467,10 @@ class AtomFitter(object):
 
         return grid_pred, struct_best
 
-    def fit_gd(self, grid, xyz, c, n_iters, r_factor=1.0):
+    def fit_gd(self, grid, xyz, c, n_iters):
 
         r = torch.tensor([ch.atomic_radius for ch in grid.channels],
-                         device=self.device) * r_factor
+                         device=self.device)
 
         xyz = xyz.clone().detach().to(self.device)
         c = c.clone().detach().to(self.device)
@@ -2113,6 +2113,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
         latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
         variational = True
+
     except IndexError: # for standard AE
         latent_sample = find_blobs_in_net(gen_net, r'.+_latent_defc')[0]
         variational = False
@@ -2144,10 +2145,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                               args.n_samples, args.blob_name, args.fit_atoms, verbose=args.verbose)
 
         if args.fit_atoms:
-            fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
-                                args.learning_rate, args.beta1, args.beta2, args.weight_decay,
-                                args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
-                                device=device, verbose=args.verbose)
+            fitter = AtomFitter(args.multi_atom, args.beam_size, args.apply_conv, args.peak_value, args.threshold,
+                                args.constrain_types, False, args.interm_iters, args.final_iters,
+                                dict(lr=args.learning_rate, beta1=args.beta1, beta2=args.beta2, weight_decay=args.weight_decay),
+                                args.output_visited, args.output_kernel, device, args.verbose)
 
     # generate density grids from generative model in main thread
     try:
@@ -2342,10 +2343,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
-                        args.learning_rate, args.beta1, args.beta2, args.weight_decay,
-                        args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
-                        device='cpu', verbose=args.verbose)
+    fitter = AtomFitter(args.multi_atom, args.beam_size, args.apply_conv, args.peak_value, args.threshold,
+                        args.constrain_types, False, args.interm_iters, args.final_iters,
+                        dict(lr=args.learning_rate, beta1=args.beta1, beta2=args.beta2, weight_decay=args.weight_decay),
+                        args.output_visited, args.output_kernel, 'cpu', args.verbose)
     while True:
 
         if args.verbose:
@@ -2411,25 +2412,19 @@ def parse_args(argv=None):
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
-    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to use atom types of true ligand')
-    parser.add_argument('--r_factor', type=float, default=1.0, help='radius multiple for fitting to generated grids')
+    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand')
+    parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
+    parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
+    parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
+    parser.add_argument('--peak_value', type=float, default=None, help='reflect grid values higher than this value before detecting next atoms')
+    parser.add_argument('--threshold', type=float, default=None, help='threshold value for detecting next atoms on grid')
+    parser.add_argument('--min_dist', type=float, default=None, help='minimum distance between detected atoms, in terms of covalent bond length')
+    parser.add_argument('--interm_iters', type=int, default=10, help='number of gradient descent iterations after each step of atom fitting')
+    parser.add_argument('--final_iters', type=int, default=100, help='number of gradient descent iterations after final step of atom fitting')
     parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
-    parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
-    parser.add_argument('--beam_stride', type=int, default=1, help='stride of atom fitting beam search')
-    parser.add_argument('--atom_init', type=str, default='none', help='function to apply to remaining density before atom init (none|conv|deconv)')
-    parser.add_argument('--interm_iters', type=int, default=10, help='maximum number of iterations for atom fitting between atom inits')
-    parser.add_argument('--final_iters', type=int, default=100, help='maximum number of iterations for atom fitting after atom inits')
-    parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')
-    parser.add_argument('--bonded', action='store_true', help="add atoms by creating bonds to existing atoms when atom fitting")
-    parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
-    parser.add_argument('--fit_GMM', action='store_true', help='fit atoms by a Gaussian mixture model instead of gradient descent')
-    parser.add_argument('--noise_model', default='', help='noise model for GMM atom fitting (d|p)')
-    parser.add_argument('--deconv_grids', action='store_true', help="apply Wiener deconvolution to atom density grids")
-    parser.add_argument('--deconv_fit', action='store_true', help="apply Wiener deconvolution for atom fitting initialization")
-    parser.add_argument('--noise_ratio', default=1.0, type=float, help="noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
