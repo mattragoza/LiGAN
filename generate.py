@@ -187,6 +187,7 @@ class AtomFitter(object):
 
         self.grid_maker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
+        self.kernel = None
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
@@ -197,6 +198,7 @@ class AtomFitter(object):
 
         # kernel is created by computing a molgrid from a
         # struct with one atom of each type at the origin
+
         xyz = torch.zeros((n_channels, 3), device=self.device)
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
         r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
@@ -206,26 +208,26 @@ class AtomFitter(object):
         self.grid_maker.set_resolution(resolution)
 
         self.c2grid.center = (0.,0.,0.)
-        kernel = self.c2grid(xyz, c, r)
+        values = self.c2grid(xyz, c, r)
 
         if deconv:
             dtype = kernel.dtype
-            kernel = torch.tensor(weiner_invert_kernel(kernel.cpu(), noise_ratio=1),
+            values = torch.tensor(weiner_invert_kernel(values.cpu(), noise_ratio=1),
                                   dtype=dtype, device=self.device)
+
+        kernel = MolGrid(values, channels, torch.zeros(3), resolution)
 
         if self.output_kernel:
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
-                print('writing out {} (norm={})'.format(dx_prefix, np.linalg.norm(kernel.cpu())))
-            write_grids_to_dx_files(dx_prefix, kernel.cpu(),
-                                channels=channels,
-                                center=np.zeros(3),
-                                resolution=resolution)
-            self.output_kernel = False
+                kernel_norm = np.linalg.norm(values.cpu())
+                print('writing out {} (norm={})'.format(dx_prefix, kernel_norm))
+            kernel.to_dx(dx_prefix)
+            self.output_kernel = False # only write once
 
         return kernel
 
-    def init_atoms(self, grid, center, resolution, kernel=None, types=None):
+    def init_atoms(self, grid, channels, center, resolution, types=None):
         '''
         Get a set of atoms from a density grid by convolving
         with a kernel, applying a threshold, and then returning
@@ -236,20 +238,23 @@ class AtomFitter(object):
         assert len(set(grid.shape[1:])) == 1
 
         n_channels = grid.shape[0]
-        grid_dim = grid.shape[1]
+        grid_dim   = grid.shape[1]
 
-        if kernel is not None: # convolve grid with kernel
+        peak_value = self.peak_value
+        threshold  = self.threshold
 
-            grid = F.conv3d(grid.unsqueeze(0), kernel.unsqueeze(1),
-                            padding=kernel.shape[-1]//2,
+        if self.apply_conv: # convolve grid with kernel
+
+            if self.kernel is None:
+                self.kernel = self.init_kernel(channels, resolution)
+
+            grid = F.conv3d(grid.unsqueeze(0), self.kernel.values.unsqueeze(1),
+                            padding=self.kernel.values.shape[-1]//2,
                             groups=n_channels)[0]
 
-            kernel_norm2 = (kernel**2).sum(dim=(1,2,3))
-            peak_value = kernel_norm2 * self.peak_value
-            threshold  = kernel_norm2 * self.threshold
-        else:
-            peak_value = self.peak_value
-            threshold  = self.threshold
+            kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
+            peak_value *= kernel_norm2
+            threshold  *= kernel_norm2
 
         # reflect grid values above peak value
         if peak_value < np.inf:
@@ -258,7 +263,7 @@ class AtomFitter(object):
         # sort grid points by value
         values, idx = torch.sort(grid.flatten(), descending=True)
 
-        # exclude grid points that are sub-threshold
+        # apply threshold to grid points
         above_thresh = values > threshold
         values = values[above_thresh]
         idx    = idx[above_thresh]
@@ -270,17 +275,25 @@ class AtomFitter(object):
         idx_c, idx = idx % grid_dim, idx // grid_dim
         idx_xyz = torch.cat((idx_x, idx_y, idx_z), dim=1)
 
-        # exclude grid points in channels with no atoms left
+        # exclude grid points in channels with no atoms left (type constraint)
         has_atoms_left = types[idx_c] > 0
-        values = values[has_atoms_left]
+        values  = values[has_atoms_left]
         idx_xyz = idx_xyz[has_atoms_left]
-        idx_c = idx_c[has_atoms_left]
+        idx_c   = idx_c[has_atoms_left]
 
-        # TODO apply non-max suppression using atomic radius
-
-        # convert channel and spatial index to atom type and coordinate vectors
+        # convert spatial index to atom coordinates
         origin = center - resolution*(float(grid_dim) - 1)/2.
         xyz = origin + resolution*idx_xyz.float() 
+
+        # suppress points that are too close to a higher-value point
+        r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
+        min_dist2 = (r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0))**2
+        dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
+        too_close = torch.tril(dist2 < min_dist2, k=-1).any(dim=1)
+        xyz   = xyz[local_max]
+        idx_c = idx_c[local_max]
+
+        # convert atom type channel index to one-hot type vector
         c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
 
         return xyz, c
@@ -291,45 +304,41 @@ class AtomFitter(object):
         '''
         t_start = time.time()
 
-        types = torch.tensor(types, dtype=torch.float32, device=self.device)
         r_factor = self.r_factor if use_r_factor else 1.0
-
-        if self.atom_init in {self., 'deconv'}: # initialize convolution kernel
-            deconv = (self.atom_init == 'deconv')
-            kernel = self.init_kernel(grid.channels, grid.resolution, deconv)
-        else:
-            kernel = None
 
         # get true grid on appropriate device
         grid_true = MolGrid(values=torch.as_tensor(grid.values, device=self.device),
                             channels=grid.channels,
                             center=torch.as_tensor(grid.center, device=self.device),
                             resolution=grid.resolution)
+        
+        # get atom type counts on appropriate device
+        types = torch.tensor(types, dtype=torch.float32, device=self.device)
 
-        # empty initial struct
+        # initialize empty struct
         n_channels = len(grid.channels)
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
-        fit_loss = ((grid_true.values)**2).sum()/2.
-        type_diff = types
 
-        # to constrain types, order structs first by type-correctness, then by L2 loss
+        fit_loss = (grid_true.values**2).sum()/2.
+
+        # to constrain types, order structs first by type difference, then by L2 loss
         if self.constrain_types:
-            heuristic = (type_diff.abs().sum().item(), fit_loss.item())
+            objective = (types.abs().sum().item(), fit_loss.item())
 
         else: # otherwise, order structs only by L2 loss
-            heuristic = fit_loss.item()
+            objective = fit_loss.item()
 
         # get next atom init locations and channels
-        xyz_next, c_next = self.init_atoms(grid_true.values.unsqueeze(0), grid_true.center,
-                                           grid.resolution, kernel, type_diff.unsqueeze(0))
+        xyz_next, c_next = self.init_atoms(grid_true.values, grid.channels, grid_true.center,
+                                           grid.resolution, types)
 
         # batch of best structures so far
-        best_structs = [(heuristic, 0, xyz, c, xyz_next[0], c_next[0])]
+        best_structs = [(objective, 0, xyz, c, xyz_next[0], c_next[0])]
         found_new_best_struct = True
         visited = set()
-        struct_count = 1
         visited_structs = []
+        struct_count = 1
 
         # search until we can't find a better structure
         while found_new_best_struct:
@@ -340,17 +349,15 @@ class AtomFitter(object):
             found_new_best_struct = False
 
             # try to expand each current best structure
-            for heuristic, struct_id, xyz, c, xyz_next, c_next in best_structs:
+            for objective, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
                 if struct_id in visited:
                     continue
 
-                # evaluate each possible next atom
-                for xyz_next_, c_next_ in zip(xyz_next, c_next):
+                if self.multi_atom: # evaluate all next atoms simultaneously
 
-                    # add next atom to structure
-                    xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
-                    c_new   = torch.cat([c, c_next_.unsqueeze(0)])
+                    xyz_new = torch.cat([xyz, xyz_next])
+                    c_new   = torch.cat([c, c_next])
 
                     # compute diff and loss after gradient descent
                     xyz_new, grid_pred, grid_diff, fit_loss = \
@@ -358,18 +365,45 @@ class AtomFitter(object):
                     type_diff = types - c_new.sum(dim=0)
 
                     if self.constrain_types:
-                        heuristic_new = (type_diff.abs().sum().item(), fit_loss.item())
+                        objective_new = (type_diff.abs().sum().item(), fit_loss.item())
                     else:
-                        heuristic_new = fit_loss.item()
+                        objective_new = fit_loss.item()
 
                     # check if new structure is one of the best yet
-                    if any(heuristic_new < s[0] for s in best_structs):
+                    if any(objective_new < s[0] for s in best_structs):
 
-                        new_best_structs.append((heuristic_new, struct_count, xyz_new, c_new))
+                        new_best_structs.append((objective_new, struct_count, xyz_new, c_new))
                         new_best_grid_diffs.append(grid_diff)
                         new_best_type_diffs.append(type_diff)
                         found_new_best_struct = True
                         struct_count += 1
+
+                else: # evaluate each possible next atom individually
+
+                    for xyz_next_, c_next_ in zip(xyz_next, c_next):
+
+                        # add next atom to structure
+                        xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
+                        c_new   = torch.cat([c, c_next_.unsqueeze(0)])
+
+                        # compute diff and loss after gradient descent
+                        xyz_new, grid_pred, grid_diff, fit_loss = \
+                            self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
+                        type_diff = types - c_new.sum(dim=0)
+
+                        if self.constrain_types:
+                            objective_new = (type_diff.abs().sum().item(), fit_loss.item())
+                        else:
+                            objective_new = fit_loss.item()
+
+                        # check if new structure is one of the best yet
+                        if any(objective_new < s[0] for s in best_structs):
+
+                            new_best_structs.append((objective_new, struct_count, xyz_new, c_new))
+                            new_best_grid_diffs.append(grid_diff)
+                            new_best_type_diffs.append(type_diff)
+                            found_new_best_struct = True
+                            struct_count += 1
 
                 visited.add(struct_id)
                 if self.output_visited:
@@ -385,8 +419,8 @@ class AtomFitter(object):
                                                    grid_true.resolution, kernel, new_best_type_diffs)
 
                 # determine new limited set of best structures
-                for i, (heuristic, struct_id, xyz, c) in enumerate(new_best_structs):
-                    best_structs.append((heuristic, struct_id, xyz, c, xyz_next[i], c_next[i]))
+                for i, (objective, struct_id, xyz, c) in enumerate(new_best_structs):
+                    best_structs.append((objective, struct_id, xyz, c, xyz_next[i], c_next[i]))
 
                 best_structs = sorted(best_structs)[:self.beam_size]
                 best_heuristic = best_structs[0][0]
@@ -397,11 +431,12 @@ class AtomFitter(object):
                         gpu_usage = getGPUs()[0].memoryUtil
                     except:
                         gpu_usage = np.nan
-                    print('best struct # {} (heuristic={}, GPU={})'
-                          .format(best_id, best_heuristic, gpu_usage))
+                    print('best struct # {} (objective={}, GPU={})'
+                          .format(best_id, best_objective, gpu_usage))
 
-        best_heuristic, best_id, xyz_best, c_best, _, _ = best_structs[0]
+        best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
+        # perform final gradient descent
         xyz_best, grid_pred, grid_diff, fit_loss = \
             self.fit_gd(grid_true, xyz_best, c_best, self.final_iters, r_factor)
         type_diff = (types - c_best.sum(dim=0)).abs().sum().item()
@@ -412,12 +447,12 @@ class AtomFitter(object):
         if self.output_visited: # return all visited structures
 
             struct_best = []
-            for heuristic, struct_id, fit_time, xyz, c in visited_structs:
+            for objective, struct_id, fit_time, xyz, c in visited_structs:
 
                 if self.constrain_types:
-                    type_diff, fit_loss = heuristic
+                    type_diff, fit_loss = objective
                 else:
-                    fit_loss = heuristic
+                    fit_loss = objective
                     type_diff = (types - c.sum(dim=0)).abs().sum().item()
 
                 c = torch.argmax(c, dim=1) if len(c) > 0 else torch.zeros((0,))
