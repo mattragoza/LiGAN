@@ -93,10 +93,13 @@ def expand_gen_options(args):
     return ' '.join(dict(
         p='--prior',
         m='--mean',
-        r='--random_rotation',
-        c='--constrain_types',
         i='--interpolate',
         s='--spherical',
+        r='--random_rotation',
+        M='--multi_atom',
+        c='--apply_conv',
+        t='--constrain_types',
+        f='--constrain_frags',
     )[a] for a in args)
 
 
