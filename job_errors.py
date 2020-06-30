@@ -5,29 +5,23 @@ import pandas as pd
 from job_queue import SlurmQueue
 
 
-metric_file_pat = re.compile(r'(.*)_(\d+)\.gen_metrics')
-error_file_pat  = re.compile(r'slurm-(\d+)_(\d+)\.err')
-job_script_pat  = re.compile(r'(csb|crc|bridges)_fit.sh')
-inf = float('inf')
-
-
-def read_err_file(err_file):
-    wrn_pat = re.compile(r'Warning.*')
-    err_pat = re.compile(r'.*(Error|Exception|error|fault|failed).*')
+def read_stderr_file(stderr_file):
+    warning_pat = re.compile(r'Warning.*')
+    error_pat = re.compile(r'.*(Error|Exception|error|fault|failed).*')
     error = None
-    with open(err_file) as f:
+    with open(stderr_file) as f:
         for line in f:
-            if not wrn_pat.match(line) and err_pat.match(line):
+            if not warning_pat.match(line) and error_pat.match(line):
                 error = line.rstrip()
     return error
 
 
-def print_index_set(idx_set):
-    s = get_index_set_str(idx_set)
+def print_array_indices(idx_set):
+    s = get_array_indices_string(idx_set)
     print(s)
 
 
-def get_index_set_str(idx_set):
+def get_array_indices_string(idx_set):
     s = ''
     last_idx = None
     skipping = False
@@ -47,118 +41,161 @@ def get_index_set_str(idx_set):
     return s
 
 
+def match_files_in_dir(dir, pattern):
+    '''
+    Iterate through files in dir that match pattern.
+    '''
+    for file in os.listdir(dir):
+        m = pattern.match(file)
+        if m is not None:
+            yield m
+
+
+def find_submitted_array_indices(job_dir, stderr_pat):
+    '''
+    Find array indices and job ids that have been
+    submitted by parsing stderr files in job_dir.
+    '''
+    submitted = set()
+    job_ids = []
+    for m in match_files_in_dir(job_dir, stderr_pat):
+        stderr_file = m.group(0)
+        job_id = int(m.group(1))
+        array_idx = int(m.group(2))
+        job_ids.append(job_id)
+        submitted.add(array_idx)
+
+    return submitted, job_ids
+
+
+def copy_back_from_scr_dir(job_dir, scr_dir, output_pat):
+    '''
+    Copy back output files from scr_dir to job_dir.
+    '''
+    copied = []
+    for m in match_files_in_dir(scr_dir, output_pat):
+        output_file = m.group(0)
+        src_file = os.path.join(scr_dir, output_file)
+        dst_file = os.path.join(job_dir, output_file)
+        shutil.copyfile(src_file, dst_file)
+        copied.append(dst_file)
+
+    return copied
+
+
+def find_completed_array_indices(job_dir, output_pat, read=False):
+    '''
+    Find array_indices that have completed by parsing output
+    files in job_dir, also optionally read and return job dfs.
+    '''
+    job_dfs = []
+    completed = set()
+    for m in match_files_in_dir(job_dir, output_pat):
+        array_idx = int(m.group(2))
+        completed.add(array_idx)
+        if read:
+            output_file = os.path.join(job_dir, m.group(0))
+            job_df = pd.read_csv(output_file, sep=' ')
+            job_df['job_name']  = os.path.split(job_dir)[-1]
+            job_df['array_idx'] = array_idx
+            job_dfs.append(job_df)
+
+    return completed, job_dfs
+
+
+def print_errors_for_array_indices(job_dir, stderr_pat, indices):
+
+    stderr_files = defaultdict(list)
+    for m in match_files_in_dir(job_dir, stderr_pat):
+        stderr_file = m.group(0)
+        job_id = int(m.group(1))
+        array_idx = int(m.group(2))
+        if array_idx in indices:
+            stderr_files[array_idx].append((job_id, stderr_file))
+
+    for array_idx in sorted(indices):
+        if not stderr_files[array_idx]:
+            print('no error file for array_idx {}'.format(array_idx))
+            continue
+        job_id, stderr_file = sorted(stderr_files[array_idx])[-1]
+        stderr_file = os.path.join(job_dir, stderr_file)
+        error = read_stderr_file(stderr_file)
+        print(stderr_file + '\t' + str(error))
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('job_dirs', nargs='+')
-    parser.add_argument('--copy_metrics', '-c', default=False, action='store_true')
-    parser.add_argument('--print_idxs',   '-i', default=False, action='store_true')
+    parser.add_argument('--copy_back', '-c', default=False, action='store_true')
+    parser.add_argument('--print_indices', '-i', default=False, action='store_true')
     parser.add_argument('--print_errors', '-e', default=False, action='store_true')
     parser.add_argument('--resub_errors', '-r', default=False, action='store_true')
-    parser.add_argument('--output_file',  '-o')
+    parser.add_argument('--output_file', '-o')
     return parser.parse_args(argv)
 
 
-if __name__ == '__main__':
-    args = parse_args(sys.argv[1:])
+def main(argv):
+    args = parse_args(argv)
 
     for job_dir in args.job_dirs:
         assert os.path.isdir(job_dir), job_dir + ' is not a directory'
 
+    output_pat = re.compile(r'(.*)_(\d+)\.gen_metrics')
+    stderr_pat = re.compile(r'slurm-(\d+)_(\d+)\.err')
+    inf = float('inf')
+
     job_dfs = []
     for job_dir in args.job_dirs:
-
         print(job_dir)
 
-        # find set of submitted array_idxs from error files
-        job_ids = []
-        submitted_idxs = set()
-        for job_file in os.listdir(job_dir):
-            m = error_file_pat.match(job_file)
-            if not m: continue
-            job_id    = int(m.group(1))
-            array_idx = int(m.group(2))
-            job_ids.append(job_id)
-            submitted_idxs.add(array_idx)
+        submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
 
-        n_submitted = len(submitted_idxs)
+        n_submitted = len(submitted)
         print('n_submitted = {}'.format(n_submitted))
+
         if n_submitted == 0:
             continue
-        elif args.print_idxs:
-            print_index_set(submitted_idxs)
 
-        if args.copy_metrics: # copy back metric files from latest scr_dir
+        if args.print_indices:
+            print_array_indices(submitted)
+
+        if args.copy_back:
             last_job_id = sorted(job_ids)[-1]
             scr_dir = job_dir + '/' + str(last_job_id)
-            n_copied = 0
-            for scr_file in os.listdir(scr_dir):
-                m = metric_file_pat.match(scr_file)
-                if not m: continue
-                job_name  = m.group(1)
-                array_idx = int(m.group(2))
-                src_file = scr_dir + '/' + scr_file
-                dst_file = job_dir + '/' + scr_file
-                shutil.copyfile(src_file, dst_file)
-                n_copied += 1
-            print('copied {} metrics files from {}'.format(n_copied, last_job_id))
 
-        # find set of completed array_idxs from metrics files
-        complete_idxs = set()
-        for job_file in os.listdir(job_dir):
-            m = metric_file_pat.match(job_file)
-            if not m: continue
-            array_idx = int(m.group(2))
-            complete_idxs.add(array_idx)
-            if args.output_file:
-                job_file = job_dir + '/' + job_file
-                job_df = pd.read_csv(job_file, sep=' ')
-                job_df['job_name']  = os.path.split(job_dir)[-1]
-                job_df['array_idx'] = array_idx
-                job_dfs.append(job_df)
+            copied = copy_back_from_scr_dir(job_dir, scr_dir, output_pat)
 
-        n_complete = len(complete_idxs)
-        print('n_complete = {}'.format(n_complete))
-        if args.print_idxs:
-            print_index_set(complete_idxs)
+            n_copied = len(copied)
+            print('copied {} files from {}'.format(n_copied, last_job_id))
 
-        # determine set of incomplete array_idxs
-        incomplete_idxs = submitted_idxs - complete_idxs
-        n_incomplete = len(incomplete_idxs)
+        completed, job_dfs = find_completed_array_indices(job_dir, output_pat, read=args.output_file)
+
+        n_completed = len(completed)
+        print('n_completed = {}'.format(n_completed))
+
+        if args.print_indices:
+            print_array_indices(completed)
+
+        incomplete = submitted - completed
+
+        n_incomplete = len(incomplete)
         print('n_incomplete = {}'.format(n_incomplete))
-        if args.print_idxs:
-            print_index_set(incomplete_idxs)
 
-        print()
+        if args.print_indices:
+            print_array_indices(incomplete)
 
         if args.print_errors: # parse stderr files for incomplete indices
-
-            error_files = defaultdict(list)
-            for job_file in os.listdir(job_dir):
-                m = error_file_pat.match(job_file)
-                if not m: continue
-                job_id    = int(m.group(1))
-                array_idx = int(m.group(2))
-                if array_idx in incomplete_idxs:
-                    error_files[array_idx].append((job_id, job_file))
-
-            for array_idx in sorted(incomplete_idxs):
-                if not error_files[array_idx]:
-                    print('no error file for array_idx {}'.format(array_idx))
-                    continue
-                job_id, error_file = sorted(error_files[array_idx])[-1]
-                error_file = os.path.join(job_dir, error_file)
-                error = read_err_file(error_file)
-                print(error_file + '\t' + str(error))
-
-            print()
+            print_errors_for_array_indices(job_dir, stderr_pat, indices=incomplete)
 
         if args.resub_errors: # resubmit incomplete jobs
 
-            for job_file in os.listdir(job_dir):
-                m = job_script_pat.match(job_file)
-                if not m: continue
-                job_file = job_dir + '/' + job_file
-                SlurmQueue.submit_job(job_file, work_dir=job_dir, array_idx=get_index_set_str(incomplete_idxs))
+            for m in match_files_in_dir(job_dir):
+                job_script = os.path.join(job_dir, m.group(0))
+                SlurmQueue.submit_job(
+                    job_file,
+                    work_dir=job_dir,
+                    array_idx=get_array_indices_string(incomplete)
+                )
 
     if args.output_file:
         if job_dfs:
@@ -166,4 +203,8 @@ if __name__ == '__main__':
             print('concatenated metrics to {}'.format(args.output_file))
         else:
             print('nothing to concatenate')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
 
