@@ -285,6 +285,7 @@ class AtomFitter(object):
 
         # reflect grid values above peak value
         if apply_peak_value:
+            peak_value = peak_value.view(n_channels, 1, 1, 1)
             grid = peak_value - (peak_value - grid).abs()
 
         # sort grid points by value
@@ -323,17 +324,18 @@ class AtomFitter(object):
                 device=self.device,
             )
             if len(idx_c) > 1000:
-                xyz_max = torch.empty((0, 3), dtype=torch.float32, device=self.device)
-                idx_c_max = torch.empty((0,), dtype=torch.int64, device=self.device)
 
-                for xyz_, idx_c_ in zip(xyz, idx_c):
-                    bond_radius = r[idx_c_] + r[idx_c_max]
+                xyz_max = xyz[0].unsqueeze(0)
+                idx_c_max = idx_c[0].unsqueeze(0)
+
+                for i in range(1, len(idx_c)):
+                    bond_radius = r[idx_c[i]] + r[idx_c_max]
                     min_dist = self.min_dist * bond_radius
                     min_dist2 = min_dist**2
-                    dist2 = ((xyz_ - xyz_max)**2).sum(dim=1)
+                    dist2 = ((xyz[i].unsqueeze(0) - xyz_max)**2).sum(dim=1)
                     if not (dist2 < min_dist2).any():
-                        xyz_max = torch.cat([xyz_max, xyz_.unsqueeze(0)])
-                        idx_c_max = torch.cat([idx_c_max, idx_c_.unsqueeze(0)])
+                        xyz_max = torch.cat([xyz_max, xyz[i].unsqueeze(0)])
+                        idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
 
                 xyz = xyz_max
                 idx_c = idx_c_max
