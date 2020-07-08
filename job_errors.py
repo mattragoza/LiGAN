@@ -241,9 +241,14 @@ def main(argv):
             incomplete = submitted - completed
             n_incomplete = len(incomplete)
 
-            print('n_submitted = {}'.format(n_submitted, get_array_indices_string(submitted)))
-            print('n_completed = {}'.format(n_completed, get_array_indices_string(completed)))
-            print('n_incomplete = {}'.format(n_incomplete, get_array_indices_string(incomplete)))
+            if args.print_indices:
+                print('n_submitted = {} ({})'.format(n_submitted, get_array_indices_string(submitted)))
+                print('n_completed = {} ({})'.format(n_completed, get_array_indices_string(completed)))
+                print('n_incomplete = {} ({})'.format(n_incomplete, get_array_indices_string(incomplete)))
+            else:
+                print('n_submitted = {}'.format(n_submitted))
+                print('n_completed = {}'.format(n_completed))
+                print('n_incomplete = {}'.format(n_incomplete))
 
             if args.print_errors:
                 print_errors_for_array_indices(job_dir, stderr_pat, indices=incomplete)
@@ -287,8 +292,8 @@ def main(argv):
                     print('copied {} files from {}'.format(n_copied, last_job_id))
 
     if args.output_file:
-        if job_dfs:
-            pd.concat(job_dfs).to_csv(args.output_file, sep=' ')
+        if all_job_dfs:
+            pd.concat(all_job_dfs).to_csv(args.output_file, sep=' ')
             print('concatenated metrics to {}'.format(args.output_file))
         else:
             print('nothing to concatenate')
