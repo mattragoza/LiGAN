@@ -122,8 +122,8 @@ class MolStruct(object):
             raise ValueError(
                 'can only make MolStruct from CoordinateSet with indexed types'
             )
-        xyz = np.array(coord_set.coords, dtype=np.float32)
-        c = np.array(coord_set.type_index, dtype=np.int16)
+        xyz = coord_set.coords.tonumpy()
+        c = coord_set.type_index.tonumpy()
         return MolStruct(xyz, c, channels, **info)
 
     def to_ob_mol(self):
@@ -2325,15 +2325,19 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     rec_channels = atom_types.get_channels_from_map(rec_map, name_prefix='Receptor')
     lig_channels = atom_types.get_channels_from_map(lig_map, name_prefix='Ligand')
 
+    print('Creating example provider')
     ex_provider = molgrid.ExampleProvider(
         rec_map,
         lig_map,
         data_root=args.data_root,
         recmolcache=data_param.recmolcache,
-        ligmolcache=data_param.ligmolcache
+        ligmolcache=data_param.ligmolcache,
     )
+
+    print('Populating example provider')
     ex_provider.populate(data_param.source)
 
+    print('Creating grid maker')
     grid_maker = molgrid.GridMaker(data_param.resolution, data_param.dimension)
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
@@ -2354,7 +2358,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     # find first decoder blob
     dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
 
+    print('Testing generator forward')
     gen_net.forward() # this is necessary for proper latent sampling
+
+    print('Creating atom fitter and output writer')
 
     if args.parallel: # compute metrics and write output in a separate thread
 
@@ -2399,7 +2406,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 estimate_types=args.estimate_types,
                 interm_gd_iters=args.interm_gd_iters,
                 final_gd_iters=args.final_gd_iters,
-                gd_kwargs=dict(lr=args.learning_rate,
+                gd_kwargs=dict(
+                    lr=args.learning_rate,
                     betas=(args.beta1, args.beta2),
                     weight_decay=args.weight_decay,
                 ),
@@ -2408,6 +2416,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 device=device,
                 verbose=args.verbose,
             )
+
+    print('Starting to generate grids')
 
     # generate density grids from generative model in main thread
     try:
@@ -2424,7 +2434,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 if batch_idx == 0: # forward next batch
 
                     # get next batch of structures
+                    print('Getting batch of examples')
                     examples = ex_provider.next_batch(batch_size)
+
+                    print('Calling generator custom forward')
 
                     # convert structures to grids
                     for i, ex in enumerate(examples):
@@ -2516,21 +2529,29 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     # decode latent samples to generate grids
                     gen_net.forward(start=dec_fc)
 
+                print('Getting true molecule for current example')
+
                 # get current example ligand
                 if args.interpolate:
                     ex = examples[endpoint_idx]
                 else:
                     ex = examples[batch_idx]
 
+                print('Here 1')
                 lig_coord_set = ex.coord_sets[1]
+                print('Here 2')
                 lig_src_file = lig_coord_set.src
+                print('Here 3')
                 struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
+                print('Here 4')
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
+                print('Here 5')
 
                 lig_src_no_ext = os.path.splitext(lig_src_file)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
 
                 try: # get true mol from the original sdf file
+                    print('Looking for true molecule in data root')
                     m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
                     if m:
                         lig_sdf_base = m.group(1) + '_docked.sdf.gz'
@@ -2543,13 +2564,19 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     struct.info['src_mol'] = mol
 
                 except Exception as e: # get true mol from openbabel
+                    print('Inferring true molecule using OpenBabel')
                     mol = struct.to_ob_mol()
                     mol.ConnectTheDots()
                     mol.PerceiveBondOrders()
                     mol = ob_mol_to_rd_mol(mol)
                     struct.info['src_mol'] = mol
 
-                for blob_name in args.blob_name: # get data from blob, process, and write output
+                print('True molecule for {} has {} atoms'.format(lig_name, struct.n_atoms))
+
+                # get data from blob, process, and write output
+                for blob_name in args.blob_name:
+
+                    print('Getting grid from {} blob'.format(blob_name))
 
                     grid_blob = gen_net.blobs[blob_name]
 
@@ -2579,7 +2606,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         except:
                             gpu_usage = np.nan
 
-                        print('main_thread produced {} {} {} (norm={}\tGPU={})'.format(
+                        print('Main thread produced {} {} {} (norm={}\tGPU={})'.format(
                             lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage
                         ), flush=True)
 
@@ -2618,7 +2645,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             out_thread.join()
 
     if args.verbose:
-        print('main_thread exit')
+        print('Main thread exit')
 
 
 def fit_worker_main(fit_queue, out_queue, args):
@@ -2648,7 +2675,7 @@ def fit_worker_main(fit_queue, out_queue, args):
 
     while True:
         if args.verbose:
-            print('fit_worker waiting')
+            print('Fit worker waiting')
 
         task = fit_queue.get()
         if task is None:
@@ -2656,7 +2683,7 @@ def fit_worker_main(fit_queue, out_queue, args):
 
         lig_name, grid_name, sample_idx, grid, struct = task
         if args.verbose:
-            print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
+            print('Fit worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
         out_queue.put(
             (lig_name, grid_name, sample_idx, grid, struct)
@@ -2666,7 +2693,7 @@ def fit_worker_main(fit_queue, out_queue, args):
         grid_fit, struct_fit = fitter.fit(grid, types)
         grid_name += '_fit'
         if args.verbose:
-            print('fit_worker produced {} {} {} ({} atoms, {}s)'.format(
+            print('Fit worker produced {} {} {} ({} atoms, {}s)'.format(
                 lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time
             ), flush=True)
 
@@ -2675,7 +2702,7 @@ def fit_worker_main(fit_queue, out_queue, args):
         )
 
     if args.verbose:
-        print('fit_worker exit')
+        print('Fit worker exit')
 
 
 def out_worker_main(out_queue, args):
@@ -2698,7 +2725,7 @@ def out_worker_main(out_queue, args):
         output.write(*task)
 
     if args.verbose:
-        print('out_worker exit')
+        print('Output worker exit')
 
 
 def parse_args(argv=None):
@@ -2801,6 +2828,7 @@ def main(argv):
 
     data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
     data_param.source = data_file
+    data_param.root_folder = args.data_root
 
     # create the net in caffe
     caffe.set_mode_gpu()
