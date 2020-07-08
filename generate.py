@@ -159,6 +159,7 @@ class AtomFitter(object):
         min_dist,
         constrain_types,
         constrain_frags,
+        estimate_types,
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
@@ -181,6 +182,7 @@ class AtomFitter(object):
         # can constrain to find exact atom type counts or single fragment
         self.constrain_types = constrain_types
         self.constrain_frags = constrain_frags
+        self.estimate_types = estimate_types
 
         # can perform gradient descent at each step and/or at final step
         self.interm_gd_iters = interm_gd_iters
@@ -359,6 +361,19 @@ class AtomFitter(object):
 
         return xyz.detach(), c.detach()
 
+    def get_estimate_types(self, grid, channels, resolution):
+        '''
+        Since atom density is additive and non-negative, estimate
+        the atom type counts by dividing the total density in each
+        grid channel by the total density of the kernel.
+        '''
+        if self.kernel is None:
+            self.init_kernel(channels, resolution)
+
+        kernel_sum = self.kernel.sum(dim=(1,2,3))
+        grid_sum = grid.sum(dim=(1,2,3))
+        return grid_sum / kernel_sum
+
     def fit(self, grid, types):
         '''
         Fit atomic structure to mol grid.
@@ -372,9 +387,15 @@ class AtomFitter(object):
             center=torch.as_tensor(grid.center, device=self.device),
             resolution=grid.resolution,
         )
-        
-        # get atom type counts on appropriate device
-        types = torch.tensor(types, dtype=torch.float32, device=self.device)
+             
+        if self.estimate_types: # estimate atom type counts from grid density
+            types = self.get_estimate_types(
+                grid_true.values,
+                grid_true.channels,
+                grid_true.resolution,
+            )
+        else: # get true atom type counts on appropriate device
+            types = torch.tensor(types, dtype=torch.float32, device=self.device)
 
         # initialize empty struct
         print('initializing empty struct 0')
@@ -2375,6 +2396,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 min_dist=args.min_dist,
                 constrain_types=args.constrain_types,
                 constrain_frags=False,
+                estimate_types=args.estimate_types,
                 interm_gd_iters=args.interm_gd_iters,
                 final_gd_iters=args.final_gd_iters,
                 gd_kwargs=dict(lr=args.learning_rate,
@@ -2610,6 +2632,7 @@ def fit_worker_main(fit_queue, out_queue, args):
         min_dist=args.min_dist,
         constrain_types=args.constrain_types,
         constrain_frags=False,
+        estimate_types=args.estimate_types,
         interm_gd_iters=args.interm_gd_iters,
         final_gd_iters=args.final_gd_iters,
         gd_kwargs=dict(
@@ -2702,7 +2725,8 @@ def parse_args(argv=None):
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
-    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand')
+    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
+    parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
     parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
     parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
