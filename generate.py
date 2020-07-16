@@ -687,6 +687,7 @@ class OutputWriter(object):
         output_dx,
         output_sdf,
         output_channels,
+        output_latent,
         n_samples,
         blob_names,
         fit_atoms,
@@ -697,6 +698,7 @@ class OutputWriter(object):
         self.output_dx = output_dx
         self.output_sdf = output_sdf
         self.output_channels = output_channels
+        self.output_latent = output_latent
         self.fit_atoms = fit_atoms
 
         # organize grids and structs by lig_name, grid_name, sample_idx
@@ -806,6 +808,19 @@ class OutputWriter(object):
                     )
                     self.struct_files.append(struct_file)
                     self.centers.append(best_structs[0].center)
+
+            if self.output_latent and grid_name.endswith('_gen'):
+
+                latent_vecs = []
+                for sample_idx, grid in lig_grids[grid_name].items():
+                    latent_vecs.append(grid.info['latent_vec'])
+
+                latent_file = grid_prefix + '.latent'
+
+                if self.verbose:
+                    print('out_writer writing ' + latent_file)
+
+                write_latent_vecs_to_file(latent_file, latent_vecs)
 
         if self.verbose:
             print('out_writer computing metrics for ' + lig_name)
@@ -936,7 +951,7 @@ class OutputWriter(object):
         m.loc[idx, prefix+'_gen_norm'] = np.linalg.norm(gen_grid.values)
 
         # latent sample magnitude
-        m.loc[idx, prefix+'_latent_norm'] = gen_grid.info['latent_norm']
+        m.loc[idx, prefix+'_latent_norm'] = np.linalg.norm(gen_grid.info['latent_vec'])
 
         # generated density L2 loss
         m.loc[idx, prefix+'_gen_L2_loss'] = \
@@ -1373,6 +1388,14 @@ def read_rd_mols_from_sdf_file(sdf_file):
     else:
         suppl = Chem.SDMolSupplier(sdf_file)
     return [mol for mol in suppl]
+
+
+def write_latent_vecs_to_file(latent_file, latent_vecs):
+
+    with open(latent_file, 'w') as f:
+        for v in latent_vecs:
+            line = ' '.join('{:.5f}'.format(x) for x in v) + '\n'
+            f.write(line)
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -2402,6 +2425,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             output_dx=args.output_dx,
             output_sdf=args.output_sdf,
             output_channels=args.output_channels,
+            output_latent=args.output_latent,
             n_samples=args.n_samples,
             blob_names=args.blob_name,
             fit_atoms=args.fit_atoms,
@@ -2605,10 +2629,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
-                    if grid_name == 'lig_gen':
+                    if grid_name == 'lig_gen': # store latent vector for generated grids
                         latent_blob = gen_net.blobs[latent_sample]
-                        latent_data = np.array(latent_blob.data)[batch_idx]
-                        grid.info['latent_norm'] = np.linalg.norm(latent_data)
+                        latent_vec = np.array(latent_blob.data[batch_idx])
+                        grid.info['latent_vec'] = latent_vec
 
                     if args.verbose:
                         try:
@@ -2722,6 +2746,7 @@ def out_worker_main(out_queue, args):
         output_dx=args.output_dx,
         output_sdf=args.output_sdf,
         output_channels=args.output_channels,
+        output_latent=args.output_latent,
         n_samples=args.n_samples,
         blob_names=args.blob_name,
         fit_atoms=args.fit_atoms,
@@ -2761,6 +2786,7 @@ def parse_args(argv=None):
     parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
+    parser.add_argument('--output_latent', action='store_true', help='output latent vectors for each generated density grid')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
