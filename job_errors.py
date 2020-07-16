@@ -227,11 +227,11 @@ def main(argv):
 
             submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
             n_submitted = len(submitted)
-            
+
             if n_submitted == 0:
                 print('none submitted')
                 continue
-            
+
             completed, job_dfs = find_completed_array_indices(job_dir, output_pat, read=args.output_file)
             n_completed = len(completed)
 
@@ -284,9 +284,8 @@ def main(argv):
 
             if args.copy_back:
 
-                for last_job_id in sorted(job_ids)[-2:]:
+                for last_job_id in sorted(job_ids):
                     scr_dir = os.path.join(job_dir, str(last_job_id))
-
                     copied = copy_back_from_scr_dir(job_dir, scr_dir, copy_back_pat)
                     n_copied = len(copied)
                     print('copied {} files from {}'.format(n_copied, last_job_id))
