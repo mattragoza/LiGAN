@@ -123,7 +123,7 @@ class MolStruct(object):
                 'can only make MolStruct from CoordinateSet with indexed types'
             )
         xyz = coord_set.coords.tonumpy()
-        c = coord_set.type_index.tonumpy()
+        c = coord_set.type_index.tonumpy().astype(int)
         return MolStruct(xyz, c, channels, **info)
 
     def to_ob_mol(self):
@@ -314,6 +314,13 @@ class AtomFitter(object):
             idx_xyz = idx_xyz[has_atoms_left]
             idx_c = idx_c[has_atoms_left]
 
+            #TODO this does not constrain the atoms types correctly
+            # when doing multi_atom fitting, because it only omits
+            # atom types that have 0 atoms left- i.e. we could still
+            # return 2 atoms of a type that only has 1 atom left.
+            # Need to exclude all atoms of type t beyond rank n_t
+            # where n_t is the number of atoms left of type t
+
         # convert spatial index to atom coordinates
         origin = center - resolution * (float(grid_dim) - 1) / 2.0
         xyz = origin + resolution * idx_xyz.float()
@@ -370,7 +377,7 @@ class AtomFitter(object):
         if self.kernel is None:
             self.init_kernel(channels, resolution)
 
-        kernel_sum = self.kernel.sum(dim=(1,2,3))
+        kernel_sum = self.kernel.values.sum(dim=(1,2,3))
         grid_sum = grid.sum(dim=(1,2,3))
         return grid_sum / kernel_sum
 
@@ -387,15 +394,20 @@ class AtomFitter(object):
             center=torch.as_tensor(grid.center, device=self.device),
             resolution=grid.resolution,
         )
+
+        # get true atom type counts on appropriate device
+        types = torch.tensor(types, dtype=torch.float32, device=self.device)
              
         if self.estimate_types: # estimate atom type counts from grid density
-            types = self.get_estimate_types(
+            types_est = self.get_estimate_types(
                 grid_true.values,
                 grid_true.channels,
                 grid_true.resolution,
             )
-        else: # get true atom type counts on appropriate device
-            types = torch.tensor(types, dtype=torch.float32, device=self.device)
+            est_type_diff = (types - types_est).abs().sum().item()
+            types = types_est
+        else:
+            est_type_diff = np.nan
 
         # initialize empty struct
         print('initializing empty struct 0')
@@ -507,7 +519,7 @@ class AtomFitter(object):
                         type_loss = type_diff.abs().sum()
 
                         if self.constrain_types:
-                            objective_new = (types_loss.item(), fit_loss.item())
+                            objective_new = (type_loss.item(), fit_loss.item())
                         else:
                             objective_new = fit_loss.item()
 
@@ -600,6 +612,7 @@ class AtomFitter(object):
                     channels=grid.channels,
                     loss=fit_loss,
                     type_diff=type_diff,
+                    est_type_diff=est_type_diff,
                     time=fit_time,
                 )
                 struct_best.append(struct)
@@ -617,6 +630,7 @@ class AtomFitter(object):
                 channels=grid.channels,
                 loss=fit_loss,
                 type_diff=type_diff,
+                est_type_diff=est_type_diff,
                 time=time.time()-t_start,
             )
 
@@ -972,6 +986,7 @@ class OutputWriter(object):
         m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(
             true_type_count - fit_type_count, ord=1
         )
+        m.loc[idx, prefix+'_est_type_diff'] = fit_struct.info['est_type_diff']
 
         # fit minimum RMSD
         try:
@@ -2537,15 +2552,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 else:
                     ex = examples[batch_idx]
 
-                print('Here 1')
                 lig_coord_set = ex.coord_sets[1]
-                print('Here 2')
                 lig_src_file = lig_coord_set.src
-                print('Here 3')
                 struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
-                print('Here 4')
                 types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
-                print('Here 5')
 
                 lig_src_no_ext = os.path.splitext(lig_src_file)[0]
                 lig_name = os.path.basename(lig_src_no_ext)

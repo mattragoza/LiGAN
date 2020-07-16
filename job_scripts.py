@@ -100,6 +100,7 @@ def expand_gen_options(args):
         c='--apply_conv',
         t='--constrain_types',
         f='--constrain_frags',
+        e='--estimate_types',
     )[a] for a in args)
 
 
