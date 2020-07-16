@@ -372,7 +372,7 @@ class AtomFitter(object):
         '''
         Since atom density is additive and non-negative, estimate
         the atom type counts by dividing the total density in each
-        grid channel by the total density of the kernel.
+        grid channel by the total density in each kernel channel.
         '''
         if self.kernel is None:
             self.init_kernel(channels, resolution)
@@ -2866,8 +2866,15 @@ def main(argv):
     data_param.source = data_file
     data_param.root_folder = args.data_root
 
+    if args.gpu:
+        print('Setting caffe to GPU mode')
+        caffe.set_mode_gpu()
+    else:
+        print('Setting caffe to CPU mode')
+        caffe.set_mode_cpu()
+
     # create the net in caffe
-    caffe.set_mode_gpu()
+    print('Constructing generator in caffe')
     gen_net = caffe_util.Net.from_param(
         gen_net_param, args.gen_weights_file, phase=caffe.TEST
     )
