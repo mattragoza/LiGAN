@@ -197,12 +197,14 @@ def main(argv):
         assert os.path.isdir(job_dir), job_dir + ' is not a directory'
 
     if args.job_type == 'train':
+        job_script_pat = re.compile(r'(.*)_train.sh')
         output_ext = 'training_output'
         copy_back_exts = [
             'model', 'solver','caffemodel', 'solverstate', 'training_output', 'png', 'pdf'
         ]
 
     elif args.job_type == 'fit':
+        job_script_pat = re.compile(r'(.*)_fit.sh')
         output_ext = 'gen_metrics'
         copy_back_exts = [
             'types', 'model', 'caffemodel', 'dx', 'sdf', 'pymol', 'gen_metrics'
@@ -227,11 +229,11 @@ def main(argv):
 
             submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
             n_submitted = len(submitted)
-            
+
             if n_submitted == 0:
                 print('none submitted')
                 continue
-            
+
             completed, job_dfs = find_completed_array_indices(job_dir, output_pat, read=args.output_file)
             n_completed = len(completed)
 
@@ -264,10 +266,10 @@ def main(argv):
 
             if args.resub_errors: # resubmit incomplete jobs
 
-                for m in match_files_in_dir(job_dir):
+                for m in match_files_in_dir(job_dir, job_script_pat):
                     job_script = os.path.join(job_dir, m.group(0))
                     SlurmQueue.submit_job(
-                        job_file,
+                        job_script,
                         work_dir=job_dir,
                         array_idx=get_array_indices_string(incomplete)
                     )
