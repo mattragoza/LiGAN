@@ -41,6 +41,20 @@ def get_array_indices_string(idx_set):
     return s
 
 
+def parse_array_indices_str(s):
+    idx_pat = re.compile(r'^(\d+)(-(\d+))?$')
+    indices = []
+    for field in s.split(','):
+        m = idx_pat.match(field)
+        idx_start = int(m.group(1))
+        if m.group(2):
+            idx_end = int(m.group(3))
+            indices.extend(range(idx_start, idx_end+1))
+        else:
+            indices.append(idx_start)
+    return set(indices)
+
+
 def match_files_in_dir(dir, pattern):
     '''
     Iterate through files in dir that match pattern.
@@ -180,6 +194,7 @@ def parse_args(argv):
     parser.add_argument('job_dirs', nargs='+')
     parser.add_argument('--job_type', required=True)
     parser.add_argument('--array_job', default=False, action='store_true')
+    parser.add_argument('--submitted', default=None)
     parser.add_argument('--copy_back', '-c', default=False, action='store_true')
     parser.add_argument('--print_indices', '-i', default=False, action='store_true')
     parser.add_argument('--print_errors', '-e', default=False, action='store_true')
@@ -227,7 +242,10 @@ def main(argv):
 
         if args.array_job:
 
-            submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
+            if args.submitted is not None:
+                submitted = parse_array_indices_str(args.submitted)
+            else:
+                submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
             n_submitted = len(submitted)
 
             if n_submitted == 0:
@@ -286,9 +304,8 @@ def main(argv):
 
             if args.copy_back:
 
-                for last_job_id in sorted(job_ids)[-2:]:
+                for last_job_id in sorted(job_ids):
                     scr_dir = os.path.join(job_dir, str(last_job_id))
-
                     copied = copy_back_from_scr_dir(job_dir, scr_dir, copy_back_pat)
                     n_copied = len(copied)
                     print('copied {} files from {}'.format(n_copied, last_job_id))
