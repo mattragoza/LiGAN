@@ -397,7 +397,7 @@ class AtomFitter(object):
 
         # get true atom type counts on appropriate device
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
-             
+
         if self.estimate_types: # estimate atom type counts from grid density
             types_est = self.get_estimate_types(
                 grid_true.values,
@@ -883,6 +883,7 @@ class OutputWriter(object):
         lig_grid_mean = sum(
             g.values for g in grids['lig'].values()
         ) / self.n_samples
+
         lig_gen_grid_mean = sum(
             g.values for g in grids['lig_gen'].values()
         ) / self.n_samples
@@ -1121,12 +1122,12 @@ class OutputWriter(object):
 
 
 def catch_exc(func, exc=Exception, default=np.nan):
-    def new_func(*args, **kwargs):
+    def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except exc as e:
             return default
-    return new_func
+    return wrapper
 
 
 get_rd_mol_weight = catch_exc(Chem.Descriptors.MolWt)
@@ -2793,9 +2794,9 @@ def parse_args(argv=None):
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
     parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
     parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
-    parser.add_argument('--threshold', type=float, default=None, help='threshold value for detecting next atoms on grid')
-    parser.add_argument('--peak_value', type=float, default=None, help='reflect grid values higher than this value before detecting next atoms')
-    parser.add_argument('--min_dist', type=float, default=None, help='minimum distance between detected atoms, in terms of covalent bond length')
+    parser.add_argument('--threshold', type=float, default=0.1, help='threshold value for detecting next atoms on grid')
+    parser.add_argument('--peak_value', type=float, default=1.5, help='reflect grid values higher than this value before detecting next atoms')
+    parser.add_argument('--min_dist', type=float, default=0.0, help='minimum distance between detected atoms, in terms of covalent bond length')
     parser.add_argument('--interm_gd_iters', type=int, default=10, help='number of gradient descent iterations after each step of atom fitting')
     parser.add_argument('--final_gd_iters', type=int, default=100, help='number of gradient descent iterations after final step of atom fitting')
     parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')
@@ -2884,3 +2885,4 @@ def main(argv):
 
 if __name__ == '__main__':
     main(sys.argv[1:])
+
