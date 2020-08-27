@@ -20,6 +20,7 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from GPUtil import getGPUs
 from openbabel import openbabel as ob
+from openbabel import pybel
 import rdkit
 from rdkit import Chem, Geometry, DataStructs
 from rdkit.Chem import AllChem, Descriptors, QED, Crippen
@@ -614,7 +615,7 @@ class AtomFitter(object):
                     type_diff=type_diff,
                     est_type_diff=est_type_diff,
                     time=fit_time,
-                    n_steps=len(visited),
+                    n_steps=len(visited)-1,
                 )
                 struct_best.append(struct)
 
@@ -633,7 +634,7 @@ class AtomFitter(object):
                 type_diff=type_diff,
                 est_type_diff=est_type_diff,
                 time=time.time()-t_start,
-                n_steps=len(visited),
+                n_steps=len(visited)-1,
             )
 
         return grid_pred, struct_best
