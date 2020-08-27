@@ -151,7 +151,7 @@ class AtomFitter(object):
 
     def __init__(
         self,
-        multi_atom,     
+        multi_atom,
         beam_size,
         apply_conv,
         threshold,
@@ -614,6 +614,7 @@ class AtomFitter(object):
                     type_diff=type_diff,
                     est_type_diff=est_type_diff,
                     time=fit_time,
+                    n_steps=len(visited),
                 )
                 struct_best.append(struct)
 
@@ -632,6 +633,7 @@ class AtomFitter(object):
                 type_diff=type_diff,
                 est_type_diff=est_type_diff,
                 time=time.time()-t_start,
+                n_steps=len(visited),
             )
 
         return grid_pred, struct_best
@@ -1004,6 +1006,9 @@ class OutputWriter(object):
         )
         m.loc[idx, prefix+'_est_type_diff'] = fit_struct.info['est_type_diff']
 
+        m.loc[idx, prefix+'_fit_exact_types'] = (m.loc[idx, prefix+'_fit_type_diff'] == 0)
+        m.loc[idx, prefix+'_est_exact_types'] = (m.loc[idx, prefix+'_est_type_diff'] == 0)
+
         # fit minimum RMSD
         try:
             rmsd = get_min_rmsd(
@@ -1013,8 +1018,9 @@ class OutputWriter(object):
             rmsd = np.nan
         m.loc[idx, prefix+'_fit_RMSD'] = rmsd
 
-        # fit time
+        # fit time and number of steps
         m.loc[idx, prefix+'_fit_time'] = fit_struct.info['time']
+        m.loc[idx, prefix+'_fit_n_steps'] = fit_struct.info['n_steps']
 
     def compute_mol_validity(self, idx, prefix, true_mol, fit_struct):
 
@@ -1068,6 +1074,8 @@ class OutputWriter(object):
         m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
 
         # fingerprint similarity
+        m.loc[idx, prefix+'_fit_add_ob_sim']  = get_ob_smi_similarity(true_smi, smi)
+
         m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(
             true_mol, mol_add, 'morgan'
         )
@@ -1228,6 +1236,13 @@ def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
         fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
 
     return DataStructs.TanimotoSimilarity(fgp1, fgp2)
+
+
+@catch_exc
+def get_ob_smi_similarity(smi1, smi2):
+    fgp1 = pybel.readstring('smi', smi1).calcfp()
+    fgp2 = pybel.readstring('smi', smi2).calcfp()
+    return fgp1 | fgp2
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=1000):
