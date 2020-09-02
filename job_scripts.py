@@ -101,6 +101,7 @@ def expand_gen_options(args):
         t='--constrain_types',
         f='--constrain_frags',
         e='--estimate_types',
+        a='--alt_bond_adding',
     )[a] for a in args)
 
 

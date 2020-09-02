@@ -164,6 +164,7 @@ class AtomFitter(object):
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
+        alt_bond_adding,
         output_kernel,
         device,
         verbose=0,
@@ -188,6 +189,9 @@ class AtomFitter(object):
         self.interm_gd_iters = interm_gd_iters
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
+
+        # use alternate bond adding method
+        self.alt_bond_adding = alt_bond_adding
 
         self.output_kernel = output_kernel
         self.device = device
@@ -367,7 +371,7 @@ class AtomFitter(object):
 
         return xyz.detach(), c.detach()
 
-    def get_estimate_types(self, grid, channels, resolution):
+    def get_types_estimate(self, grid, channels, resolution):
         '''
         Since atom density is additive and non-negative, estimate
         the atom type counts by dividing the total density in each
@@ -398,7 +402,7 @@ class AtomFitter(object):
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
 
         if self.estimate_types: # estimate atom type counts from grid density
-            types_est = self.get_estimate_types(
+            types_est = self.get_types_estimate(
                 grid_true.values,
                 grid_true.channels,
                 grid_true.resolution,
@@ -674,50 +678,70 @@ class AtomFitter(object):
         structure by inferring bonds, setting aromaticity
         and connecting fragments, then minimizing energy.
         '''
-        # initial struct with no bonds, from atom fitting
-        mol_fit = struct.to_rd_mol()
-        struct.info['fit_validity'] = get_rd_mol_validity(mol_fit)
+        # initial struct from atom fitting (no bonds)
+        rd_mol = struct.to_rd_mol()
+        visited_mols = [rd_mol]
 
-        # connect the dots in openbabel
-        mol_ob = struct.to_ob_mol()
-        mol_ob.ConnectTheDots()
+        # connect the dots using openbabel
+        ob_mol = rd_mol_to_ob_mol(rd_mol)
+        ob_mol.ConnectTheDots()
+        rd_mol = ob_mol_to_rd_mol(ob_mol)
+        visited_mols.append(rd_mol)
 
-        # then go back to rdkit
-        mol_ob = ob_mol_to_rd_mol(mol_ob)
-        struct.info['ob_validity'] = get_rd_mol_validity(mol_ob)
+        # perceive bonds in openbabel and evaluate "geometric validity"
+        # i.e. validity of molecule inferred purely using openbabel
+        ob_mol.PerceiveBondOrders()
+        rd_mol_ob = ob_mol_to_rd_mol(ob_mol)
+        struct.info['ob_validity'] = get_rd_mol_validity(rd_mol_ob)
+        struct.info['ob_mol'] = rd_mol_ob
 
-        # connect fragments by adding min distance bonds
-        mol_add = Chem.RWMol(mol_ob)
-        connect_rd_mol_frags(mol_add)
-        struct.info['add_validity'] = get_rd_mol_validity(mol_add)
+        # then go back to the simple molecule and try to validify it
+        # using fragment connection and aromatic channel info
 
-        # perceive bond orders in openbabel
-        mol_ob2 = rd_mol_to_ob_mol(mol_add)
-        mol_ob2.PerceiveBondOrders()
+        if self.alt_bond_adding: # connect fragments before perceiving bonds
 
-        # again back to rdkit
-        mol_ob2 = ob_mol_to_rd_mol(mol_ob2)
-        struct.info['ob2_validity'] = get_rd_mol_validity(mol_ob2)
+            # connect fragments by adding min distance bonds
+            rd_mol = Chem.RWMol(rd_mol)
+            connect_rd_mol_frags(rd_mol)
+            visited_mols.append(rd_mol)
 
-        # make aromatic rings using channel info
-        mol_aro = Chem.RWMol(mol_ob2)
-        set_rd_mol_aromatic(mol_aro, struct.c, struct.channels)
-        struct.info['aro_validity'] = get_rd_mol_validity(mol_aro)
+            # perceive bond orders in openbabel
+            ob_mol = rd_mol_to_ob_mol(rd_mol)
+            ob_mol.PerceiveBondOrders()
+            rd_mol = ob_mol_to_rd_mol(ob_mol)
+            get_rd_mol_validity(rd_mol_ob) # does this affect anything?
+            visited_mols.append(rd_mol)
+
+            # make aromatic rings using channel info
+            rd_mol = Chem.RWMol(rd_mol)
+            set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
+            struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+            struct.info['add_mol'] = rd_mol
+            visited_mols.append(rd_mol)
+
+        else: # continue from the openbabel-bonded molecule
+
+            visited_mols.append(rd_mol_ob)
+
+            # connect fragments by adding min distance bonds
+            rd_mol = Chem.RWMol(rd_mol_ob)
+            connect_rd_mol_frags(rd_mol)
+            visited_mols.append(rd_mol)
+
+            # make aromatic rings using channel info
+            rd_mol = Chem.RWMol(rd_mol)
+            set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
+            struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+            struct.info['add_mol'] = rd_mol
+            visited_mols.append(rd_mol)
 
         # minimize final molecule with UFF
-        mol_min, E_init, E_min, error = uff_minimize_rd_mol(mol_aro)
+        rd_mol_min, E_init, E_min, error = uff_minimize_rd_mol(rd_mol)
         struct.info['min_result'] = (E_init, E_min, error)
+        struct.info['min_mol'] = rd_mol_min
+        visited_mols.append(rd_mol_min)
 
-        struct.info['visited_mols'] = [
-            mol_fit,
-            mol_ob,
-            mol_add,
-            mol_ob2,
-            mol_aro,
-            mol_min
-        ]
-        struct.info['mol'] = mol_aro # use pre-min as final mol
-        struct.info['min_mol'] = mol_min
+        struct.info['visited_mols'] = visited_mols
 
 
 class OutputWriter(object):
@@ -776,6 +800,7 @@ class OutputWriter(object):
         grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
         sample_prefix = grid_prefix + '_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
+        ob_sample_prefix = grid_prefix + '_ob_' + str(sample_idx)
 
         is_gen_grid = grid_name.endswith('_gen')
         is_fit_grid = grid_name.endswith('_fit')
@@ -809,7 +834,17 @@ class OutputWriter(object):
             self.struct_files.append(mol_file)
             self.centers.append(struct.center)
 
-            # write molecules with added bonds
+            # write molecules with openbabel bonds
+            ob_mol_file = ob_sample_prefix + '.sdf'
+            if self.verbose:
+                print('Writing ' + ob_mol_file)
+
+            rd_mols = [struct.info['ob_mol']]
+            write_rd_mols_to_sdf_file(ob_mol_file, rd_mols)
+            self.struct_files.append(ob_mol_file)
+            self.centers.append(struct.center)
+
+            # write molecules with custom added bonds
             add_mol_file = add_sample_prefix + '.sdf'
             if self.verbose:
                 print('Writing ' + add_mol_file)
@@ -1078,20 +1113,23 @@ class OutputWriter(object):
 
         from_gen_grid = prefix.endswith('_gen')
 
-        true_mol = true_struct.info['mol']
+        true_mol = true_struct.info['add_mol']
         true_mol_min = true_struct.info['min_mol']
 
-        mol_fit, mol_ob, mol_add, mol_ob2, mol_aro, mol_min = \
-            fit_struct.info['visited_mols']
-        mol = fit_struct.info['mol']
+        mol = fit_struct.info['add_mol']
         mol_min = fit_struct.info['min_mol']
 
         # sanity check- validity of true molecule
-        n_frags, error, valid = true_struct.info['ob2_validity']
         if not from_gen_grid:
-            m.loc[idx, prefix+'_n_frags'] = n_frags
-            m.loc[idx, prefix+'_error'] = error
-            m.loc[idx, prefix+'_valid'] = valid
+            n_frags, error, valid = true_struct.info['ob_validity']
+            m.loc[idx, prefix+'_ob_n_frags'] = n_frags
+            m.loc[idx, prefix+'_ob_error'] = error
+            m.loc[idx, prefix+'_ob_valid'] = valid
+
+            n_frags, error, valid = true_struct.info['add_validity']
+            m.loc[idx, prefix+'_add_n_frags'] = n_frags
+            m.loc[idx, prefix+'_add_error'] = error
+            m.loc[idx, prefix+'_add_valid'] = valid
 
         # check mol validity of openbabel bond connecting
         n_frags, error, valid = fit_struct.info['ob_validity']
@@ -1105,81 +1143,69 @@ class OutputWriter(object):
         m.loc[idx, prefix+'_fit_add_error'] = error
         m.loc[idx, prefix+'_fit_add_valid'] = valid
 
-        # check validity after openbabel bond perception
-        n_frags, error, valid = fit_struct.info['ob2_validity']
-        m.loc[idx, prefix+'_fit_ob2_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_ob2_error'] = error
-        m.loc[idx, prefix+'_fit_ob2_valid'] = valid
-
-        # check validity after setting aromaticity
-        n_frags, error, valid = fit_struct.info['aro_validity']
-        m.loc[idx, prefix+'_fit_aro_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_aro_error'] = error
-        m.loc[idx, prefix+'_fit_aro_valid'] = valid
-
         # convert to SMILES string
         true_smi = Chem.MolToSmiles(true_mol, canonical=True)
         smi = Chem.MolToSmiles(mol,  canonical=True)
 
         if not from_gen_grid:
-            m.loc[idx, prefix+'_SMILES'] = true_smi
+            m.loc[idx, prefix+'_add_SMILES'] = true_smi
 
-        m.loc[idx, prefix+'_fit_SMILES'] = smi
-        m.loc[idx, prefix+'_fit_SMILES_match'] = (smi == true_smi)
+        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
+        m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
 
         # fingerprint similarity
-        m.loc[idx, prefix+'_fit_ob_sim']  = get_ob_smi_similarity(
+        m.loc[idx, prefix+'_fit_add_ob_sim']  = get_ob_smi_similarity(
             true_smi, smi
         )
-        m.loc[idx, prefix+'_fit_morgan_sim'] = get_rd_mol_similarity(
+        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(
             true_mol, mol, 'morgan'
         )
-        m.loc[idx, prefix+'_fit_rdkit_sim']  = get_rd_mol_similarity(
+        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(
             true_mol, mol, 'rdkit'
         )
-        m.loc[idx, prefix+'_fit_maccs_sim']  = get_rd_mol_similarity(
+        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(
             true_mol, mol, 'maccs'
         )
 
         # other molecular descriptors
         if not from_gen_grid:
-            m.loc[idx, prefix+'_MW'] = get_rd_mol_weight(true_mol)
-            m.loc[idx, prefix+'_logP'] = get_rd_mol_logP(true_mol)
-            m.loc[idx, prefix+'_QED'] = get_rd_mol_QED(true_mol)
-            m.loc[idx, prefix+'_SAS'] = get_rd_mol_SAS(true_mol)
-            m.loc[idx, prefix+'_NPS'] = get_rd_mol_NPS(true_mol, nps_model)
+            m.loc[idx, prefix+'_add_MW'] = get_rd_mol_weight(true_mol)
+            m.loc[idx, prefix+'_add_logP'] = get_rd_mol_logP(true_mol)
+            m.loc[idx, prefix+'_add_QED'] = get_rd_mol_QED(true_mol)
+            m.loc[idx, prefix+'_add_SAS'] = get_rd_mol_SAS(true_mol)
+            m.loc[idx, prefix+'_add_NPS'] = get_rd_mol_NPS(true_mol, nps_model)
 
-        m.loc[idx, prefix+'_fit_MW'] = get_rd_mol_weight(mol)
-        m.loc[idx, prefix+'_fit_logP'] = get_rd_mol_logP(mol)
-        m.loc[idx, prefix+'_fit_QED'] = get_rd_mol_QED(mol)
-        m.loc[idx, prefix+'_fit_SAS'] = get_rd_mol_SAS(mol)
-        m.loc[idx, prefix+'_fit_NPS'] = get_rd_mol_NPS(mol, nps_model)
+        m.loc[idx, prefix+'_fit_add_MW'] = get_rd_mol_weight(mol)
+        m.loc[idx, prefix+'_fit_add_logP'] = get_rd_mol_logP(mol)
+        m.loc[idx, prefix+'_fit_add_QED'] = get_rd_mol_QED(mol)
+        m.loc[idx, prefix+'_fit_add_SAS'] = get_rd_mol_SAS(mol)
+        m.loc[idx, prefix+'_fit_add_NPS'] = get_rd_mol_NPS(mol, nps_model)
 
         # UFF energy minimization
         E_init_t, E_min_t, error = true_struct.info['min_result']
         if not from_gen_grid:
-            m.loc[idx, prefix+'_E'] = E_init_t
-            m.loc[idx, prefix+'_min_E'] = E_min_t
-            m.loc[idx, prefix+'_dE_min'] = E_min_t - E_init_t
-            m.loc[idx, prefix+'_min_error'] = error
-            m.loc[idx, prefix+'_RMSD_min'] = get_aligned_rmsd(true_mol_min, true_mol)
+            m.loc[idx, prefix+'_add_E'] = E_init_t
+            m.loc[idx, prefix+'_add_min_E'] = E_min_t
+            m.loc[idx, prefix+'_add_dE_min'] = E_min_t - E_init_t
+            m.loc[idx, prefix+'_add_min_error'] = error
+            m.loc[idx, prefix+'_add_RMSD_min'] = get_aligned_rmsd(true_mol_min, true_mol)
 
         E_init, E_min, error = fit_struct.info['min_result']
-        m.loc[idx, prefix+'_fit_E'] = E_init
-        m.loc[idx, prefix+'_fit_min_E'] = E_min
-        m.loc[idx, prefix+'_fit_dE_min'] = E_min - E_init
-        m.loc[idx, prefix+'_fit_min_error'] = error
-        m.loc[idx, prefix+'_fit_RMSD_min']  = get_aligned_rmsd(mol_min, mol)
+        m.loc[idx, prefix+'_fit_add_E'] = E_init
+        m.loc[idx, prefix+'_fit_add_min_E'] = E_min
+        m.loc[idx, prefix+'_fit_add_dE_min'] = E_min - E_init
+        m.loc[idx, prefix+'_fit_add_min_error'] = error
+        m.loc[idx, prefix+'_fit_add_RMSD_min']  = get_aligned_rmsd(mol_min, mol)
 
         # compare energy to true mol, pre- and post-minimize
-        m.loc[idx, prefix+'_fit_dE_true'] = E_init - E_init_t
-        m.loc[idx, prefix+'_fit_min_dE_true'] = E_min - E_min_t
+        m.loc[idx, prefix+'_fit_add_dE_true'] = E_init - E_init_t
+        m.loc[idx, prefix+'_fit_add_min_dE_true'] = E_min - E_min_t
 
         # get aligned RMSD to true mol, pre-minimize
-        m.loc[idx, prefix+'_fit_RMSD_true'] = get_aligned_rmsd(true_mol, mol)
+        m.loc[idx, prefix+'_fit_add_RMSD_true'] = get_aligned_rmsd(true_mol, mol)
 
         # get aligned RMSD to true mol, post-minimize
-        m.loc[idx, prefix+'_fit_min_RMSD_true'] = get_aligned_rmsd(true_mol_min, mol_min)
+        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = get_aligned_rmsd(true_mol_min, mol_min)
 
 
 def catch_exc(func, exc=Exception, default=np.nan):
@@ -1967,6 +1993,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     betas=(args.beta1, args.beta2),
                     weight_decay=args.weight_decay,
                 ),
+                alt_bond_adding=args.alt_bond_adding,
                 output_kernel=args.output_kernel,
                 device=device,
                 verbose=args.verbose,
@@ -2201,6 +2228,7 @@ def fit_worker_main(fit_queue, out_queue, args):
             betas=(args.beta1, args.beta2),
             weight_decay=args.weight_decay,
         ),
+        alt_bond_adding=args.alt_bond_adding,
         output_kernel=args.output_kernel,
         device='cpu', # can't fit on gpu in multiple threads
         verbose=args.verbose,
@@ -2300,6 +2328,7 @@ def parse_args(argv=None):
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
+    parser.add_argument('--alt_bond_adding', default=False, action='store_true', help="connect fragments before perceiving bond orders instead of after")
     parser.add_argument('--batch_metrics', default=False, action='store_true', help="compute variance metrics across different samples")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
