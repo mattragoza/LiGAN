@@ -772,6 +772,7 @@ class OutputWriter(object):
                 print('Writing ' + sample_prefix + ' .dx files')
 
             grid.to_dx(sample_prefix, center=np.zeros(3))
+            self.dx_prefixes.append(sample_prefix)
 
         if has_struct and self.output_sdf: # write structure files
 
@@ -788,6 +789,8 @@ class OutputWriter(object):
                 rd_mols = [struct.to_rd_mol()]
 
             write_rd_mols_to_sdf_file(mol_file, rd_mols)
+            self.struct_files.append(mol_file)
+            self.centers.append(struct.center)
 
             # write molecules with added bonds
             add_mol_file = add_sample_prefix + '.sdf'
@@ -801,6 +804,8 @@ class OutputWriter(object):
                 struct.info['min_mol'],
             ]
             write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
+            self.struct_files.append(add_mol_file)
+            self.centers.append(struct.center)
 
             # write atom type channels
             if self.output_channels:
@@ -829,9 +834,7 @@ class OutputWriter(object):
 
         n_grids = len(self.blob_names) * 2 if self.fit_atoms else 1
 
-        if self.batch_metrics:
-
-            # store until grids for all samples are ready
+        if self.batch_metrics: # store until grids for all samples are ready
             has_all_samples = len(lig_grids) == self.n_samples
             has_all_grids = all(len(lig_grids[i]) == n_grids for i in lig_grids)
 
@@ -847,10 +850,17 @@ class OutputWriter(object):
                     print('Writing ' + self.metric_file)
 
                 self.metrics.to_csv(self.metric_file, sep=' ')
+
+                if self.verbose:
+                    print('Writing ' + self.pymol_file)
+
+                write_pymol_script(
+                    self.pymol_file, self.out_prefix, self.dx_prefixes,
+                    self.struct_files, self.centers
+                )
                 del self.grids[lig_name]
 
-        else:
-            # only store until grids for this sample are ready
+        else: # only store until grids for this sample are ready
             has_all_grids = len(lig_grids[sample_idx]) == n_grids
 
             if has_all_grids:
@@ -867,6 +877,14 @@ class OutputWriter(object):
                     print('Writing ' + self.metric_file)
 
                 self.metrics.to_csv(self.metric_file, sep=' ')
+
+                if self.verbose:
+                    print('Writing ' + self.pymol_file)
+
+                write_pymol_script(
+                    self.pymol_file, self.out_prefix, self.dx_prefixes,
+                    self.struct_files, self.centers
+                )
                 del self.grids[lig_name][sample_idx]
 
     def compute_metrics(self, lig_name, sample_idxs):
@@ -1538,30 +1556,28 @@ def n_lines_in_file(file):
         return sum(1 for line in f)
 
 
-def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
+def write_pymol_script(pymol_file, out_prefix, dx_prefixes, struct_files, centers=[]):
     '''
     Write a pymol script with a map object for each of dx_files, a
     group of all map objects (if any), a rec_file, a lig_file, and
     an optional fit_file.
     '''
     with open(pymol_file, 'w') as f:
+
         for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            dx_group = '{}_grids'.format(os.path.basename(dx_prefix))
-            f.write('load_group {}, {}\n'.format(dx_pattern, dx_group))
+            m = re.match('^{}_(.*)$'.format(out_prefix), dx_prefix)
+            group_name = m.group(1) + '_grids'
+            f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
         for struct_file in struct_files: # load structures
-            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
-            m = re.match(r'^(.*_fit)_(\d+)$', obj_name)
-            if m and False:
-                obj_name = m.group(1)
-                state = int(m.group(2)) + 1
-                f.write('load {}, {}, state={}\n'.format(struct_file, obj_name, state))
-            else:
-                f.write('load {}, {}\n'.format(struct_file, obj_name))
+            m = re.match('^{}_(.*)\\.sdf$'.format(out_prefix), struct_file)
+            obj_name = m.group(1)
+            f.write('load {}, {}\n'.format(struct_file, obj_name))
 
         for struct_file, (x,y,z) in zip(struct_files, centers): # center structures
-            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
+            m = re.match('^{}_(.*)\\.sdf$'.format(out_prefix), struct_file)
+            obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
 
