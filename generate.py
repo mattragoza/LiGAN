@@ -706,10 +706,14 @@ class AtomFitter(object):
             visited_mols.append(rd_mol)
 
             # perceive bond orders in openbabel
+            # TODO for some reason this does not function
+            # the same way as in default bond adding, in
+            # test case 103017026_14 it fails to set double
+            # bonds on two non-aromatic functional groups, 
+            # doesn't change any bonds at all in fact
             ob_mol = rd_mol_to_ob_mol(rd_mol)
             ob_mol.PerceiveBondOrders()
             rd_mol = ob_mol_to_rd_mol(ob_mol)
-            get_rd_mol_validity(rd_mol_ob) # does this affect anything?
             visited_mols.append(rd_mol)
 
             # make aromatic rings using channel info
