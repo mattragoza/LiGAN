@@ -1,0 +1,6 @@
+#python3 ../../../submit_job.py --array=1-10 $(cat all_job_scripts)
+#python3 ../../../submit_job.py --array=1-10 $(cat tail_job_scripts)
+#python3 ../../../submit_job.py --array=1-10 $(cat tail_job_scripts2)
+#python3 ../../../submit_job.py --array=1-10 $(cat tail_job_scripts3)
+#python3 ../../../submit_job.py --array=1-10 $(cat tail_job_scripts4)
+python3 ../../../submit_job.py --array=1-10 $(cat tail_job_scripts5)
