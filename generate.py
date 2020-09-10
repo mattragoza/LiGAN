@@ -2397,27 +2397,91 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    try: # find VAE latent blobs
-        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
-        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
-        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
-        variational = True
+    print('Finding important blobs')
+    try: # find receptor encoder blobs
+        rec_enc_start = find_blobs_in_net(gen_net, 'rec')[0]
+        try:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_std')[0]
+            rec_enc_is_var = True
+        except IndexError:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_fc')[0]
+            rec_enc_is_var = False
+        has_rec_enc = True
+    except IndexError:
+        has_rec_enc = False
 
-    except IndexError: # find AE latent blob
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_defc')[0]
+    if args.verbose:
+        print('has_rec_enc = {}'.format(has_rec_enc))
+        if has_rec_enc:
+            print('\trec_enc_is_var = {}'.format(rec_enc_is_var))
+            print('\trec_enc_start = {}'.format(repr(rec_enc_start)))
+            print('\trec_enc_end = {}'.format(repr(rec_enc_end)))
+
+    try: # find ligand encoder blobs
+        lig_enc_start = find_blobs_in_net(gen_net, 'lig')[0]
+        try:
+            lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_std')[0]
+            lig_enc_is_var = True
+        except IndexError:
+            try:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_defc')[0]
+            except IndexError:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_fc')[0]
+            lig_enc_is_var = False
+        has_lig_enc = True
+    except IndexError:
+        has_lig_enc = False
+
+    if args.verbose:
+        print('has_lig_enc = {}'.format(has_lig_enc))
+        if has_lig_enc:
+            print('\tlig_enc_is_var = {}'.format(lig_enc_is_var))
+            print('\tlig_enc_start = {}'.format(repr(lig_enc_start)))
+            print('\tlig_enc_end = {}'.format(repr(lig_enc_end)))
+
+    # must have at least one encoder
+    assert (has_rec_enc or has_lig_enc)
+
+    # only one encoder can be variational
+    if has_rec_enc and has_lig_enc:
+        assert not (rec_enc_is_var and lig_enc_is_var)
+
+    try: # find latent variable blobs
+        latent_prefix = ('lig' if has_lig_enc else 'rec') + '_latent'
+        latent_mean = find_blobs_in_net(gen_net, latent_prefix+'_mean')[0]
+        latent_std = find_blobs_in_net(gen_net, latent_prefix+'_std')[0]
+        latent_noise = find_blobs_in_net(gen_net, latent_prefix+'_noise')[0]
+        latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_sample')[0]
+        variational = True
+    except IndexError:
         variational = False
 
-    n_latent = gen_net.blobs[latent_sample].shape[1]
+    if args.verbose:
+        print('variational = {}'.format(variational))
+        if variational:
+            print('\tlatent_mean = {}'.format(repr(latent_mean)))
+            print('\tlatent_std = {}'.format(repr(latent_std)))
+            print('\tlatent_noise = {}'.format(repr(latent_noise)))
+            print('\tlatent_sample = {}'.format(repr(latent_sample)))
 
-    # find first decoder blob
-    dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
+    # find ligand decoder blobs (required)
+    if has_rec_enc and has_lig_enc:
+        lig_dec_start = find_blobs_in_net(gen_net, 'latent_concat')[0]
+    else:
+        lig_dec_start = find_blobs_in_net(gen_net, 'lig_dec_fc')[0]
+    lig_dec_end = find_blobs_in_net(gen_net, 'lig_gen')[0]
+
+    if args.verbose:
+        print('has_lig_dec = True')
+        print('\tlig_dec_start = {}'.format(repr(lig_dec_start)))
+        print('\tlig_dec_end = {}'.format(repr(lig_dec_end)))
+
+    n_latent = gen_net.blobs[latent_sample].shape[1]
 
     print('Testing generator forward')
     gen_net.forward() # this is necessary for proper latent sampling
 
     print('Creating atom fitter and output writer')
-
     if args.parallel: # compute metrics and write output in a separate thread
 
         out_queue = mp.Queue()
@@ -2473,9 +2537,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 verbose=args.verbose,
             )
 
-    print('Starting to generate grids')
-
     # generate density grids from generative model in main thread
+    print('Starting to generate grids')
     try:
         for example_idx in range(n_examples):
 
@@ -2493,9 +2556,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     print('Getting batch of examples')
                     examples = ex_provider.next_batch(batch_size)
 
-                    print('Calling generator custom forward')
-
                     # convert structures to grids
+                    print('Transforming and gridding examples')
                     for i, ex in enumerate(examples):
                         transform = molgrid.Transform(
                             ex.coord_sets[1].center(),
@@ -2514,6 +2576,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     if need_first and is_first:
                         first_rec = np.array(rec[:1])
                         first_lig = np.array(lig[:1])
+
+                    print('Calling generator forward')
 
                     # set encoder input grids
                     if args.encode_first:
@@ -2540,36 +2604,52 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         gen_net.blobs['rec'].data[batch_size//2:] = end_rec
                         gen_net.blobs['lig'].data[batch_size//2:] = end_lig
 
-                    # encode true grids to latent variable parameters
-                    if variational:
-                        if args.prior:
-                            if args.mean:
+                    if has_rec_enc: # forward receptor encoder
+                        if rec_enc_is_var:
+                            if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...] = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
                             else:
-                                gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...] = 1.0
-                        else: # posterior
-                            if args.mean:
-                                gen_net.forward(end=latent_mean)
-                                gen_net.blobs[latent_std].data[...] = 0.0
-                            else:
-                                gen_net.forward(end=latent_std)
-
-                        # sample latent variables
-                        gen_net.forward(start=latent_noise, end=latent_sample)
-
-                    else:
-                        if args.prior:
-                            gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
+                                gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
                         else:
-                            gen_net.forward(end=latent_sample)
+                            if args.prior:
+                                gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
+                            else:
+                                gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+
+                    if has_lig_enc: # forward ligand encoder
+                        if lig_enc_is_var:
+                            if args.prior:
+                                gen_net.blobs[latent_mean].data[...] = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
+                            else: # posterior
+                                if args.mean:
+                                    gen_net.forward(start=lig_enc_start, end=latent_mean)
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                        else:
+                            if args.prior:
+                                gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
+                            else:
+                                gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+
+                    if variational: # sample latent variables
+                        gen_net.forward(start=latent_noise, end=latent_sample)
 
                     if args.interpolate: # interpolate between latent samples
 
                         latent = gen_net.blobs[latent_sample].data
                         start_latent = np.array(latent[0])
-                        end_latent   = np.array(latent[-1])
+                        end_latent = np.array(latent[-1])
 
                         if args.spherical:
                             gen_net.blobs[latent_sample].data[...] = slerp(
@@ -2583,7 +2663,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             )
 
                     # decode latent samples to generate grids
-                    gen_net.forward(start=dec_fc)
+                    gen_net.forward(start=lig_dec_start, end=lig_dec_end)
 
                 print('Getting true molecule for current example')
 
@@ -2631,6 +2711,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid_blob = gen_net.blobs[blob_name]
 
+                    if blob_name == 'rec':
+                        grid_channels = rec_channels
+                    elif blob_name in {'lig', 'lig_gen'}:
+                        grid_channels = lig_channels
+                    else:
+                        grid_channels = atom_types.get_n_unknown_channels(
+                            grid_blob.shape[1]
+                        )
+
                     if args.interpolate and blob_name in {'rec', 'lig'}:
                         grid_data = grid_blob.data[endpoint_idx]
                     else:
@@ -2638,7 +2727,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid = MolGrid(
                         values=np.array(grid_data),
-                        channels=struct.channels,
+                        channels=grid_channels,
                         center=struct.center,
                         resolution=grid_maker.get_resolution(),
                     )
@@ -2790,6 +2879,7 @@ def parse_args(argv=None):
     parser.add_argument('--data_file', default='', help='path to data file (generate for every example)')
     parser.add_argument('--data_root', default='', help='path to root for receptor and ligand files')
     parser.add_argument('-b', '--blob_name', default=[], action='append', help='blob(s) in model to generate from (default lig & lig_gen)')
+    parser.add_argument('--all_blobs', default=False, action='store_true', help='generate from all blobs in generative model')
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
@@ -2820,6 +2910,7 @@ def parse_args(argv=None):
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
+    parser.add_argument('--debug', default=False, action='store_true', help='debug mode')
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
@@ -2895,6 +2986,9 @@ def main(argv):
     gen_net = caffe_util.Net.from_param(
         gen_net_param, args.gen_weights_file, phase=caffe.TEST
     )
+
+    if args.all_blobs:
+        args.blob_name = [b for b in gen_net.blobs]
 
     generate_from_model(gen_net, data_param, len(examples), args)
 
