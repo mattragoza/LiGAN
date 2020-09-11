@@ -1,0 +1,12 @@
+encode_type = 'disc'
+rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
+lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
+data_dim = 48
+n_levels = 3
+conv_per_level = 1
+arch_options = 'l'
+n_filters = 16
+width_factor = 2
+n_latent = 1
+loss_types = 'x'
+loss_weight_log = [0.1, 1, 10]
