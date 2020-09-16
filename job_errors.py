@@ -7,7 +7,7 @@ from job_queue import SlurmQueue
 
 def read_stderr_file(stderr_file):
     warning_pat = re.compile(r'Warning.*')
-    error_pat = re.compile(r'.*(Error|Exception|error|fault|failed).*')
+    error_pat = re.compile(r'.*(Error|Exception|error|fault|failed|Errno).*')
     error = None
     with open(stderr_file) as f:
         for line in f:

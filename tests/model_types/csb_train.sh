@@ -2,10 +2,11 @@
 #SBATCH --job-name=<JOB_NAME>
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=18
 #SBATCH --partition=dept_gpu
 #SBATCH --gres=gpu:1
-#SBATCH --time=1:00:00
+#SBATCH --mem=64gb
+#SBATCH --time=672:00:00
 #SBATCH --qos=normal
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
@@ -26,7 +27,7 @@ echo scr_dir $SCR_DIR
 echo ld_library_path $LD_LIBRARY_PATH
 echo ================================
 
-cp <LIGAN_DIR>/my_{rec,lig}_map $SCR_DIR
+cp ../<LIGAN_DIR>/my_{rec,lig}_map $SCR_DIR
 
 CONT_ITER=$(ls -U -1 | sed -n 's/.*_iter_\([0-9][0-9]*\).*/\1/p' | sort -n -r | head -n1)
 if [ -z $CONT_ITER ]
@@ -44,13 +45,13 @@ cd $SCR_DIR
 
 trap "cp *.{model,solver,caffemodel,solverstate,training_output,png,pdf} ${SLURM_SUBMIT_DIR}" EXIT
 
-python3 <LIGAN_DIR>/train.py \
-	--data_root ../../../data \
-	--data_prefix ../<DATA_DIR>/<DATA_PREFIX> \
-	--data_model_file ../<MODEL_DIR>/<DATA_MODEL_NAME>.model \
-	--gen_model_file ../<MODEL_DIR>/<GEN_MODEL_NAME>.model \
-	--disc_model_file ../<MODEL_DIR>/<DISC_MODEL_NAME>.model \
-	--solver_file ../<SOLVER_DIR>/<SOLVER_NAME>.solver \
+python3 ../../<LIGAN_DIR>/train.py \
+	--data_root ../../<DATA_ROOT> \
+	--data_prefix ../../<DATA_DIR>/<DATA_PREFIX> \
+	--data_model_file ../../<MODEL_DIR>/<DATA_MODEL_NAME>.model \
+	--gen_model_file ../../<MODEL_DIR>/<GEN_MODEL_NAME>.model \
+	--disc_model_file ../../<MODEL_DIR>/<DISC_MODEL_NAME>.model \
+	--solver_file ../../<SOLVER_DIR>/<SOLVER_NAME>.solver \
 	--random_seed <SEED> \
 	--fold_num <FOLD> \
 	--max_iter <MAX_ITER> \

@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 import caffe
 
+import molgrid
 import caffe_util
 import params
+from benchmark import benchmark_net
 
 
 # format strings for mapping model params to unique names
@@ -60,32 +62,14 @@ def write_model(model_file, net_param, model_params={}):
     write_file(model_file, buf)
 
 
-def scaffold_model(model_file, force=True):
-
-    scaff_out_file = model_file + '.scaffold_output'
-    if force or not os.path.isfile(scaff_out_file):
-        net = caffe_util.Net(model_file, phase=caffe.TRAIN)
-        scaff_params = params.Params()
-        scaff_params['n_params'] = net.get_n_params()
-        scaff_params['n_activs'] = net.get_n_activs()
-        scaff_params['size'] = net.get_approx_size()
-        scaff_params['min_width'] = net.get_min_width()
-        params.write_params(scaff_out_file, scaff_params)
-    else:
-        scaff_params = params.read_params(scaff_out_file)
-        print(scaff_out_file)
-
-    return scaff_params
-
-
-def write_models(model_dir, param_space, scaffold=False, verbose=False):
+def write_models(model_dir, param_space, scaffold=False, n_benchmark=0, verbose=False):
     '''
     Write a model in model_dir for every set of params in param_space.
     '''
     if not os.path.isdir(model_dir):
         os.makedirs(model_dir)
 
-    if scaffold:
+    if scaffold or n_benchmark > 0:
         df = pd.DataFrame(index=range(len(param_space)))
 
     model_names = []
@@ -103,17 +87,18 @@ def write_models(model_dir, param_space, scaffold=False, verbose=False):
         write_model(model_file, net_param, model_params)
         model_names.append(model_params.name)
 
-        if scaffold:
+        if scaffold or n_benchmark > 0:
             df.loc[i, 'model_file'] = model_file
-            for k, v in scaffold_model(model_file).items():
-                df.loc[i, k] = v
+            net = caffe_util.Net(model_file, caffe.TRAIN)
+            result = benchmark_net(net, n=n_benchmark)
+            for key, value in result.mean().items():
+                df.loc[i, key] = value
             if verbose:
                 print(df.loc[i])
 
         print(model_file)
 
-    if scaffold:
-        print('MODELS')
+    if scaffold or n_benchmark > 0:
         print(df)
 
     print(model_names)
@@ -341,11 +326,9 @@ def make_model(
     assert not latent_kernel_size or latent_kernel_size%2 == 1
 
     # determine number of rec and lig channels
-    n_channels = dict(rec=0, lig=0) #TODO get from gnina
-    if rec_map:
-        n_channels['rec'] = count_lines_in_file(rec_map)
-    if lig_map:
-        n_channels['lig'] = count_lines_in_file(lig_map)
+    n_channels = dict()
+    n_channels['rec'] = molgrid.FileMappedGninaTyper(rec_map).num_types()
+    n_channels['lig'] = molgrid.FileMappedGninaTyper(lig_map).num_types()
     n_channels['data'] = n_channels['rec'] + n_channels['lig']
 
     net = caffe.NetSpec()
@@ -1098,7 +1081,8 @@ def parse_args(argv):
     parser.add_argument('-n', '--model_name', help='custom model name format')
     parser.add_argument('-m', '--model_type', default=None, help='model type, for default model name format (e.g. data, gen, or disc)')
     parser.add_argument('-v', '--version', default=None, help='version, for default model name format (e.g. 13, default most recent)')
-    parser.add_argument('--scaffold', default=False, action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--scaffold', default=False, action='store_true', help='attempt to scaffold models in Caffe and estimate memory usage')
+    parser.add_argument('--benchmark', default=0, type=int, help='benchmark N forward-backward pass times and actual memory usage')
     parser.add_argument('--verbose', default=False, action='store_true', help='print out more info for debugging prototxt creation')
     parser.add_argument('--gpu', default=False, action='store_true', help='if benchmarking, use the GPU')
     return parser.parse_args(argv)
@@ -1128,7 +1112,7 @@ def main(argv):
         caffe.set_mode_cpu()
 
     param_space = params.ParamSpace(args.params_file, format=args.model_name.format)
-    write_models(args.out_dir, param_space, args.scaffold, verbose=args.verbose)
+    write_models(args.out_dir, param_space, args.scaffold, args.benchmark, args.verbose)
 
 
 if __name__ == '__main__':
