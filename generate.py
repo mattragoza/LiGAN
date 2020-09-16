@@ -2617,10 +2617,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                                 if args.mean:
                                     gen_net.blobs[latent_std].data[...] = 0.0
                         else:
-                            if args.prior:
-                                gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
-                            else:
-                                gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+                            gen_net.forward(start=rec_enc_start, end=rec_enc_end)
 
                     if has_lig_enc: # forward ligand encoder
                         if lig_enc_is_var:
@@ -2637,10 +2634,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                                 else:
                                     gen_net.forward(start=lig_enc_start, end=lig_enc_end)
                         else:
-                            if args.prior:
-                                gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
-                            else:
-                                gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                            gen_net.forward(start=lig_enc_start, end=lig_enc_end)
 
                     if variational: # sample latent variables
                         gen_net.forward(start=latent_noise, end=latent_sample)
