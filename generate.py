@@ -678,6 +678,22 @@ class AtomFitter(object):
         )
 
 
+class DkoesAtomFitter(AtomFitter):
+
+    def __init__(self, iters=25, tol=0.01):
+        self.iters = iters
+        self.tol = tol
+
+    def fit(self, grid, types):
+        from simple_fit import simple_atom_fit
+        return simple_atom_fit(
+            mgrid=grid,
+            types=types,
+            iters=self.iters,
+            tol=self.tol
+        )
+
+
 class OutputWriter(object):
     '''
     A data structure for receiving and organizing MolGrids and
@@ -2514,28 +2530,31 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         )
 
         if args.fit_atoms:
-            fitter = AtomFitter(
-                multi_atom=args.multi_atom, 
-                beam_size=args.beam_size,
-                apply_conv=args.apply_conv,
-                threshold=args.threshold,
-                peak_value=args.peak_value,
-                min_dist=args.min_dist,
-                constrain_types=args.constrain_types,
-                constrain_frags=False,
-                estimate_types=args.estimate_types,
-                interm_gd_iters=args.interm_gd_iters,
-                final_gd_iters=args.final_gd_iters,
-                gd_kwargs=dict(
-                    lr=args.learning_rate,
-                    betas=(args.beta1, args.beta2),
-                    weight_decay=args.weight_decay,
-                ),
-                output_visited=args.output_visited,
-                output_kernel=args.output_kernel,
-                device=device,
-                verbose=args.verbose,
-            )
+            if args.dkoes_simple_fit:
+                fitter = DkoesAtomFitter()
+            else:
+                fitter = AtomFitter(
+                    multi_atom=args.multi_atom, 
+                    beam_size=args.beam_size,
+                    apply_conv=args.apply_conv,
+                    threshold=args.threshold,
+                    peak_value=args.peak_value,
+                    min_dist=args.min_dist,
+                    constrain_types=args.constrain_types,
+                    constrain_frags=False,
+                    estimate_types=args.estimate_types,
+                    interm_gd_iters=args.interm_gd_iters,
+                    final_gd_iters=args.final_gd_iters,
+                    gd_kwargs=dict(
+                        lr=args.learning_rate,
+                        betas=(args.beta1, args.beta2),
+                        weight_decay=args.weight_decay,
+                    ),
+                    output_visited=args.output_visited,
+                    output_kernel=args.output_kernel,
+                    device=device,
+                    verbose=args.verbose,
+                )
 
     # generate density grids from generative model in main thread
     print('Starting to generate grids')
@@ -2784,28 +2803,31 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    fitter = AtomFitter(
-        multi_atom=args.multi_atom,
-        beam_size=args.beam_size,
-        apply_conv=args.apply_conv,
-        threshold=args.threshold,
-        peak_value=args.peak_value,
-        min_dist=args.min_dist,
-        constrain_types=args.constrain_types,
-        constrain_frags=False,
-        estimate_types=args.estimate_types,
-        interm_gd_iters=args.interm_gd_iters,
-        final_gd_iters=args.final_gd_iters,
-        gd_kwargs=dict(
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-        ),
-        output_visited=args.output_visited,
-        output_kernel=args.output_kernel,
-        device='cpu', # can't fit on gpu in multiple threads
-        verbose=args.verbose,
-    )
+    if args.dkoes_simple_fit:
+        fitter = DkoesAtomFitter()
+    else:
+        fitter = AtomFitter(
+            multi_atom=args.multi_atom,
+            beam_size=args.beam_size,
+            apply_conv=args.apply_conv,
+            threshold=args.threshold,
+            peak_value=args.peak_value,
+            min_dist=args.min_dist,
+            constrain_types=args.constrain_types,
+            constrain_frags=False,
+            estimate_types=args.estimate_types,
+            interm_gd_iters=args.interm_gd_iters,
+            final_gd_iters=args.final_gd_iters,
+            gd_kwargs=dict(
+                lr=args.learning_rate,
+                betas=(args.beta1, args.beta2),
+                weight_decay=args.weight_decay,
+            ),
+            output_visited=args.output_visited,
+            output_kernel=args.output_kernel,
+            device='cpu', # can't fit on gpu in multiple threads
+            verbose=args.verbose,
+        )
 
     while True:
         if args.verbose:
@@ -2889,6 +2911,7 @@ def parse_args(argv=None):
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--output_latent', action='store_true', help='output latent vectors for each generated density grid')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
+    parser.add_argument('--dkoes_simple_fit', action='store_true', help='fit atoms using simple_fit.py functions by dkoes')
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
