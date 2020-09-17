@@ -41,9 +41,9 @@ def select_atom_starts(mgrid, G, radius):
 
     mask = G.cpu().numpy()
     mask[mask > 0] = 1.0
-    maxpos = np.unravel_index(mask.argmax(),mask.shape)
+    maxpos = np.unravel_index(mask.argmax(),mask.shape) #mtr22 - do we want to use the mask here or G?
     masks = []
-    while mask[maxpos] > 0:
+    while mask[maxpos] > 0: #mtr22 - the only positive values in mask are 1.0
         flood_fill(mask, maxpos, -1, in_place=True) #identify and mark the connected region
         masks.append(mask == -1) # save the boolean selctor for this region
         mask[mask == -1] = 0 # remove it from the binary mask
@@ -56,13 +56,16 @@ def select_atom_starts(mgrid, G, radius):
         maskedG[~M] = 0
         flatG = maskedG.flatten()
         total = flatG.sum()
-        cnt = int(np.ceil(float(total)/per_atom_volume))  #pretty sure this can only underestimate
+        #mtr22 - the next line places at least one atom on each contiguous region,
+        # and for generated densities there can be thousands of these
+        cnt = int(np.round(float(total)/per_atom_volume))  #pretty sure this can only underestimate
         #counting this way is especially problematic for large molecules that go to the box edge
         
         flatG[flatG > 1.0] = 1.0
         rand = np.random.choice(range(len(flatG)), cnt, False, flatG/flatG.sum())
         gcoords = np.array(np.unravel_index(rand,G.shape)).T
         ccoords = grid_to_xyz(gcoords, mgrid)
+        #print(total, per_atom_volume, cnt, ccoords.shape)
         
         retcoords += list(ccoords)
 
@@ -75,10 +78,11 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
     Returns the MolGrid of the placed atoms and the MolStruct'''
     t_start = time.time()
 
+    # mtr22 - match the input API of generate.AtomFitter.fit
     mgrid = generate.MolGrid(
         values=torch.as_tensor(mgrid.values, device=device),
         channels=mgrid.channels,
-        center=tuple(mgrid.center.astype(float)),
+        center=mgrid.center,
         resolution=mgrid.resolution,
     )
 
@@ -89,16 +93,17 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
     typeindices = []    
     numatoms = 0
     tcnts = {}
-    types_est = []
+    types_est = [] # mtr22
     for (t,G) in enumerate(mgrid.values):
         ch = mgrid.channels[t]
-        types_est.append(G.sum()/get_per_atom_volume(ch.atomic_radius))
+        #print(ch)
         coords = select_atom_starts(mgrid, G, ch.atomic_radius)
         if coords:    
             tvec = np.zeros(len(mgrid.channels))
             tvec[t] = 1.0
             tcnt = len(coords)
             numatoms += tcnt
+            types_est.append(tcnt) #mtr22
             
             r = mgrid.channels[t].atomic_radius
             initcoords += coords
@@ -106,18 +111,23 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
             typeindices += [t]*tcnt
             radii += [r]*tcnt
             tcnts[t] = tcnt
+        else:
+            types_est.append(0) #mtr22
             
     typevecs = np.array(typevecs)
     initcoords = np.array(initcoords)
     typeindices = np.array(typeindices)
 
+    # mtr22 - for computing type_diff metrics in returned molstruct
     types_true = torch.tensor(types,dtype=torch.float32,device=device)
     types_est = torch.tensor(types_est,dtype=torch.float32,device=device)
-    print(types_est, flush=True)
+
+    print(types_est)
 
     #setup gridder
     gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution,
-                                                    gaussian_radius_multiple=-1.5),center=mgrid.center)
+                                                    gaussian_radius_multiple=-1.5),
+                                                    center=tuple(mgrid.center.astype(float)))
     mgrid.values = mgrid.values.to(device)
 
     #having setup input coordinates, optimize with BFGS
@@ -262,6 +272,7 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
                 
             offset += tcnts[t]
 
+    # mtr22 - match the output API of generate.AtomFitter.fit
     n_atoms = len(best_typeindices)
     n_channels = len(mgrid.channels)
     best_types = torch.zeros((n_atoms, n_channels), dtype=torch.float32, device=device)
@@ -380,7 +391,7 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
             if dists[i,j] < maxbond:
                 flag = 0
                 if 'Aromatic' in types[i] and 'Aromatic' in types[j]:
-                    flag = ob.OB_AROMATIC_BOND
+                    flag = openbabel.OB_AROMATIC_BOND
                 mol.AddBond(a.GetIdx(),b.GetIdx(),1,flag)
 
     #cleanup = remove long bonds
@@ -492,11 +503,13 @@ def fitmol(fname,niters=10):
     print('Calling gmaker forward')
     gmaker.forward((0,0,0),cset,mgrid_values)
 
-    mgrid = generate.MolGrid(mgrid_values, channels, (0,0,0), 0.5)
+    mgrid = generate.MolGrid(mgrid_values, channels, np.zeros(3), 0.5)
+    types = generate.count_types(cset.type_index.tonumpy().astype(int), cset.num_types(), dtype=np.int16)
 
-    start = time.time()
-    loss, fixes, struct = simple_atom_fit(mgrid, None,niters)
-    fittime = time.time()-start
+    grid, struct = simple_atom_fit(mgrid, types, niters)
+    loss = struct.info['loss']
+    fittime = struct.info['time']
+    fixes = struct.info['n_steps']
     
     try:
         rmsd = get_min_rmsd(cset.coords, cset.type_index.tonumpy(), struct.xyz, struct.c)
@@ -524,7 +537,7 @@ if __name__ == '__main__':
 
             mol.write('sdf','output/fit_%s'%ligname,overwrite=True)
             print('{}/{}'.format(i+1, len(files)))        
-        except IndexError as e:
+        except Exception as e:
             print("Failed",fname,e)
 
 
