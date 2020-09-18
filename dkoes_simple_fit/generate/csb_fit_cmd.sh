@@ -55,8 +55,8 @@ python3 ../../<LIGAN_DIR>/generate.py \
 	--verbose 3 \
 	--gpu \
 	--n_samples <N_SAMPLES> \
+	--batch_metrics \
 	<GEN_OPTIONS> \
-	--dkoes_simple_fit \
 	-o <JOB_NAME>_${SLURM_ARRAY_TASK_ID}
 
 exit

@@ -489,7 +489,7 @@ def make_mol(struct,verbose=False):
             if verbose:
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
         
-
+    mol.DeleteHydrogens()
     return mol,mismatches
 
 

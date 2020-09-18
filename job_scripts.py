@@ -86,6 +86,8 @@ def expand_gen_options(args):
         f='--constrain_frags',
         e='--estimate_types',
         a='--alt_bond_adding',
+        d='--dkoes_simple_fit',
+        D='--dkoes_make_mol',
     )[a] for a in args)
 
 

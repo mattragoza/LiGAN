@@ -165,7 +165,7 @@ class AtomFitter(object):
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
-        alt_bond_adding,
+        dkoes_make_mol,
         output_kernel,
         device,
         verbose=0,
@@ -673,7 +673,7 @@ class AtomFitter(object):
             loss.detach()
         )
 
-    def validify(self, struct):
+    def validify(self, struct, use_ob=False):
         '''
         Attempt to construct a valid molecule from an atomic
         structure by inferring bonds, setting aromaticity
@@ -692,33 +692,35 @@ class AtomFitter(object):
         # perceive bonds in openbabel and evaluate "geometric validity"
         # i.e. validity of molecule inferred purely using openbabel
         ob_mol.PerceiveBondOrders()
-        rd_mol_ob = ob_mol_to_rd_mol(ob_mol)
-        struct.info['ob_validity'] = get_rd_mol_validity(rd_mol_ob)
-        struct.info['ob_mol'] = rd_mol_ob
-        visited_mols.append(rd_mol_ob)
+        rd_mol = ob_mol_to_rd_mol(ob_mol)
+        struct.info['ob_validity'] = get_rd_mol_validity(rd_mol)
+        struct.info['ob_mol'] = rd_mol
+        visited_mols.append(rd_mol)
 
-        if self.dkoes_make_mol:
+        if not use_ob:
 
-            ob_mol, mismatches = simple_fit.make_mol(struct)
-            rd_mol = ob_mol_to_rd_mol(ob_mol)
-            struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
-            struct.info['add_mol'] = rd_mol
-            struct.info['mismatches'] = mismatches
-            visited_mols.append(rd_mol)
+            if self.dkoes_make_mol:
 
-        else: # try to fix it up using fragment connection and channel info
+                ob_mol, mismatches = simple_fit.make_mol(struct)
+                rd_mol = ob_mol_to_rd_mol(ob_mol)
+                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+                struct.info['add_mol'] = rd_mol
+                struct.info['mismatches'] = mismatches
+                visited_mols.append(rd_mol)
 
-            # connect fragments by adding min distance bonds
-            rd_mol = Chem.RWMol(rd_mol_ob)
-            connect_rd_mol_frags(rd_mol)
-            visited_mols.append(rd_mol)
+            else: # try to fix it up using fragment connection and channel info
 
-            # make aromatic rings using channel info
-            rd_mol = Chem.RWMol(rd_mol)
-            set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
-            struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
-            struct.info['add_mol'] = rd_mol
-            visited_mols.append(rd_mol)
+                # connect fragments by adding min distance bonds
+                rd_mol = Chem.RWMol(rd_mol)
+                connect_rd_mol_frags(rd_mol)
+                visited_mols.append(rd_mol)
+
+                # make aromatic rings using channel info
+                rd_mol = Chem.RWMol(rd_mol)
+                set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
+                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+                struct.info['add_mol'] = rd_mol
+                visited_mols.append(rd_mol)
 
         # minimize final molecule with UFF
         rd_mol_min, E_init, E_min, error = uff_minimize_rd_mol(rd_mol)
@@ -1116,7 +1118,7 @@ class OutputWriter(object):
 
         from_gen_grid = prefix.endswith('_gen')
 
-        true_mol = true_struct.info['add_mol']
+        true_mol = true_struct.info['ob_mol']
         true_mol_min = true_struct.info['min_mol']
 
         mol = fit_struct.info['add_mol']
@@ -1129,11 +1131,6 @@ class OutputWriter(object):
             m.loc[idx, prefix+'_ob_error'] = error
             m.loc[idx, prefix+'_ob_valid'] = valid
 
-            n_frags, error, valid = true_struct.info['add_validity']
-            m.loc[idx, prefix+'_add_n_frags'] = n_frags
-            m.loc[idx, prefix+'_add_error'] = error
-            m.loc[idx, prefix+'_add_valid'] = valid
-
         # check mol validity of openbabel bond connecting
         n_frags, error, valid = fit_struct.info['ob_validity']
         m.loc[idx, prefix+'_fit_ob_n_frags'] = n_frags
@@ -1145,6 +1142,7 @@ class OutputWriter(object):
         m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
         m.loc[idx, prefix+'_fit_add_error'] = error
         m.loc[idx, prefix+'_fit_add_valid'] = valid
+        m.loc[idx, prefix+'_fit_add_mismatches'] = fit_struct.info.get('mismatches', np.nan)
 
         # convert to SMILES string
         true_smi = Chem.MolToSmiles(true_mol, canonical=True)
@@ -2226,7 +2224,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     print('Did not find true molecule in data root')
                     struct.info['src_mol'] = None
 
-                atom_fitter.validify(struct)
+                atom_fitter.validify(struct, use_ob=True)
                 print('True molecule for {} has {} atoms'.format(lig_name, struct.n_atoms))
 
                 # get latent vector for current example
