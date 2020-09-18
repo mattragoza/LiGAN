@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 import caffe
 
+import molgrid
 import caffe_util
 import params
+from benchmark import benchmark_net
 
 
 # format strings for mapping model params to unique names
@@ -60,32 +62,14 @@ def write_model(model_file, net_param, model_params={}):
     write_file(model_file, buf)
 
 
-def scaffold_model(model_file, force=True):
-
-    scaff_out_file = model_file + '.scaffold_output'
-    if force or not os.path.isfile(scaff_out_file):
-        net = caffe_util.Net(model_file, phase=caffe.TRAIN)
-        scaff_params = params.Params()
-        scaff_params['n_params'] = net.get_n_params()
-        scaff_params['n_activs'] = net.get_n_activs()
-        scaff_params['size'] = net.get_approx_size()
-        scaff_params['min_width'] = net.get_min_width()
-        params.write_params(scaff_out_file, scaff_params)
-    else:
-        scaff_params = params.read_params(scaff_out_file)
-        print(scaff_out_file)
-
-    return scaff_params
-
-
-def write_models(model_dir, param_space, scaffold=False, verbose=False):
+def write_models(model_dir, param_space, scaffold=False, n_benchmark=0, verbose=False):
     '''
     Write a model in model_dir for every set of params in param_space.
     '''
     if not os.path.isdir(model_dir):
         os.makedirs(model_dir)
 
-    if scaffold:
+    if scaffold or n_benchmark > 0:
         df = pd.DataFrame(index=range(len(param_space)))
 
     model_names = []
@@ -103,17 +87,18 @@ def write_models(model_dir, param_space, scaffold=False, verbose=False):
         write_model(model_file, net_param, model_params)
         model_names.append(model_params.name)
 
-        if scaffold:
+        if scaffold or n_benchmark > 0:
             df.loc[i, 'model_file'] = model_file
-            for k, v in scaffold_model(model_file).items():
-                df.loc[i, k] = v
+            net = caffe_util.Net(model_file, caffe.TRAIN)
+            result = benchmark_net(net, n=n_benchmark)
+            for key, value in result.mean().items():
+                df.loc[i, key] = value
             if verbose:
                 print(df.loc[i])
 
         print(model_file)
 
-    if scaffold:
-        print('MODELS')
+    if scaffold or n_benchmark > 0:
         print(df)
 
     print(model_names)
@@ -289,10 +274,35 @@ def least_prime_factor(n):
     return next(i for i in range(2, n+1) if n%i == 0)
 
 
-def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='', n_levels=0, conv_per_level=0,
-               arch_options='', n_filters=32, width_factor=2, n_latent=None, loss_types='', batch_size=16,
-               conv_kernel_size=3, latent_kernel_size=None, pool_type='a', unpool_type='n', growth_rate=16,
-               rec_map='', lig_map='', verbose=False):
+def make_model(
+        encode_type='data',
+        data_dim=24,
+        resolution=0.5,
+        data_options='',
+        n_levels=0,
+        conv_per_level=0,
+        arch_options='',
+        n_filters=32,
+        width_factor=2,
+        n_latent=None,
+        loss_types='',
+        batch_size=16,
+        conv_kernel_size=3,
+        latent_kernel_size=None,
+        pool_type='a',
+        unpool_type='n',
+        growth_rate=16,
+        rec_map='',
+        lig_map='',
+        rec_molcache='',
+        lig_molcache='',
+        loss_weight_L1=1.0,
+        loss_weight_L2=1.0,
+        loss_weight_KL=1.0,
+        loss_weight_log=1.0,
+        loss_weight_wass=1.0,
+        verbose=False
+    ):
 
     molgrid_data, encoders, decoders = parse_encode_type(encode_type)
 
@@ -305,7 +315,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
     sigmoid_output = 's' in arch_options
     self_attention = 'a' in arch_options
     batch_disc = 'b' in arch_options
-    dense_net = 'd' in arch_options      
+    dense_net = 'd' in arch_options
     init_conv_pool = 'i' in arch_options
     fully_conv = 'c' in arch_options
 
@@ -316,11 +326,9 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
     assert not latent_kernel_size or latent_kernel_size%2 == 1
 
     # determine number of rec and lig channels
-    n_channels = dict(rec=0, lig=0) #TODO get from gnina
-    if rec_map:
-        n_channels['rec'] = count_lines_in_file(rec_map)
-    if lig_map:
-        n_channels['lig'] = count_lines_in_file(lig_map)
+    n_channels = dict()
+    n_channels['rec'] = molgrid.FileMappedGninaTyper(rec_map).num_types()
+    n_channels['lig'] = molgrid.FileMappedGninaTyper(lig_map).num_types()
     n_channels['data'] = n_channels['rec'] + n_channels['lig']
 
     net = caffe.NetSpec()
@@ -345,7 +353,10 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             radius_multiple=1.5,
             use_covalent_radius=use_covalent_radius,
             recmap=rec_map,
-            ligmap=lig_map)
+            ligmap=lig_map,
+            recmolcache=rec_molcache,
+            ligmolcache=lig_molcache,
+        )
 
         net._ = caffe.layers.MolGridData(ntop=0, name='data', top=['data', 'label', 'aff'],
             include=dict(phase=caffe.TEST),
@@ -364,7 +375,10 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             radius_multiple=1.5,
             use_covalent_radius=use_covalent_radius,
             recmap=rec_map,
-            ligmap=lig_map)
+            ligmap=lig_map,
+            recmolcache=rec_molcache,
+            ligmolcache=lig_molcache,
+        )
 
         net.rec, net.lig = caffe.layers.Slice(net.data, ntop=2, name='slice_rec_lig',
                                               axis=1, slice_point=n_channels['rec'])
@@ -391,7 +405,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
             conv = '{}_enc_init_conv'.format(enc)
             net[conv] = caffe.layers.Convolution(curr_top,
-                    num_output=next_n_filters,                      
+                    num_output=next_n_filters,
                     weight_filler=dict(type='xavier'),
                     kernel_size=conv_kernel_size,
                     pad=conv_kernel_size//2)
@@ -667,7 +681,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
             kldiv_loss = 'kldiv_loss'
             net[kldiv_loss] = caffe.layers.Power(net[kldiv_batch],
-                scale=1.0/batch_size, loss_weight=1.0)
+                scale=1.0/batch_size, loss_weight=loss_weight_KL)
 
         else:
 
@@ -878,7 +892,7 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
                     weight_filler=dict(type='xavier'),
                     kernel_size=conv_kernel_size,
                     pad=1))
-            
+
                 curr_top = net[deconv]
                 curr_n_filters = next_n_filters
 
@@ -926,31 +940,49 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
 
     # loss
     if 'e' in loss_types:
-        net.L2_loss = caffe.layers.EuclideanLoss(curr_top, label_top, loss_weight=1.0)
+
+        net.L2_loss = caffe.layers.EuclideanLoss(
+            curr_top,
+            label_top,
+            loss_weight=loss_weight_L2
+        )
 
     if 'a' in loss_types:
 
-        net.diff = caffe.layers.Eltwise(curr_top, label_top,
+        net.diff = caffe.layers.Eltwise(
+            curr_top,
+            label_top,
             operation=caffe.params.Eltwise.SUM,
-            coeff=[1.0, -1.0])
-
-        net.abs_sum = caffe.layers.Reduction(net.diff,
-            operation=caffe.params.Reduction.ASUM)
-
-        net.L1_loss = caffe.layers.Power(net.abs_sum, scale=1.0/batch_size, loss_weight=1.0)
+            coeff=[1.0, -1.0]
+        )
+        net.abs_sum = caffe.layers.Reduction(
+            net.diff,
+            operation=caffe.params.Reduction.ASUM
+        )
+        net.L1_loss = caffe.layers.Power(
+            net.abs_sum,
+            scale=1.0/batch_size,
+            loss_weight=loss_weight_L1
+        )
 
     if 'f' in loss_types:
 
         fit = '{}_gen_fit'.format(dec)
-        net[fit] = caffe.layers.Python(curr_top,
+        net[fit] = caffe.layers.Python(
+            curr_top,
             module='generate',
             layer='AtomFittingLayer',
             param_str=str(dict(
                 resolution=resolution,
                 use_covalent_radius=True,
-                gninatypes_file='/net/pulsar/home/koes/mtr22/gan/data/O_2_0_0.gninatypes')))
-
-        net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
+                gninatypes_file='/net/pulsar/home/koes/mtr22/gan/data/O_2_0_0.gninatypes'
+            ))
+        )
+        net.fit_L2_loss = caffe.layers.EuclideanLoss(
+            curr_top,
+            net[fit],
+            loss_weight=1.0
+        )
 
     if 'F' in loss_types:
 
@@ -960,39 +992,67 @@ def make_model(encode_type='data', data_dim=24, resolution=0.5, data_options='',
             layer='AtomFittingLayer',
             param_str=str(dict(
                 resolution=resolution,
-                use_covalent_radius=True)))
-
-        net.fit_L2_loss = caffe.layers.EuclideanLoss(curr_top, net[fit], loss_weight=1.0)
+                use_covalent_radius=True
+            ))
+        )
+        net.fit_L2_loss = caffe.layers.EuclideanLoss(
+            curr_top,
+            net[fit],
+            loss_weight=1.0
+        )
 
     if 'c' in loss_types:
 
-        net.chan_L2_loss = caffe.layers.Python(curr_top, label_top,
+        net.chan_L2_loss = caffe.layers.Python(
+            curr_top,
+            label_top,
             module='layers',
             layer='ChannelEuclideanLossLayer',
-            loss_weight=1.0)
+            loss_weight=1.0
+        )
 
     if 'm' in loss_types:
 
-        net.mask_L2_loss = caffe.layers.Python(curr_top, label_top,
+        net.mask_L2_loss = caffe.layers.Python(
+            curr_top,
+            label_top,
             model='layers',
             layer='MaskedEuclideanLossLayer',
-            loss_weight=0.0)
+            loss_weight=0.0
+        )
 
     if 'x' in loss_types:
 
         if n_latent > 1 and not decoders:
-            net.log_loss = caffe.layers.SoftmaxWithLoss(curr_top, label_top, loss_weight=1.0)
+            net.log_loss = caffe.layers.SoftmaxWithLoss(
+                curr_top,
+                label_top,
+                loss_weight=loss_weight_log
+            )
         else:
-            net.log_loss = caffe.layers.SigmoidCrossEntropyLoss(curr_top, label_top, loss_weight=1.0)
+            net.log_loss = caffe.layers.SigmoidCrossEntropyLoss(
+                curr_top,
+                label_top,
+                loss_weight=loss_weight_log
+            )
 
     if 'w' in loss_types:
 
-        net.wass_sign = caffe.layers.Power(label_top, scale=-2, shift=1)
-        net.wass_prod = caffe.layers.Eltwise(net.wass_sign, curr_top,
-            operation=caffe.params.Eltwise.PROD)
-        net.wass_loss = caffe.layers.Reduction(net.wass_prod,
+        net.wass_sign = caffe.layers.Power(
+            label_top,
+            scale=-2,
+            shift=1
+        )
+        net.wass_prod = caffe.layers.Eltwise(
+            net.wass_sign,
+            curr_top,
+            operation=caffe.params.Eltwise.PROD
+        )
+        net.wass_loss = caffe.layers.Reduction(
+            net.wass_prod,
             operation=caffe.params.Reduction.MEAN,
-            loss_weight=1.0)
+            loss_weight=loss_weight_wass
+        )
 
     if verbose:
         print('iterating over dict of net top blobs and layers')
@@ -1021,7 +1081,8 @@ def parse_args(argv):
     parser.add_argument('-n', '--model_name', help='custom model name format')
     parser.add_argument('-m', '--model_type', default=None, help='model type, for default model name format (e.g. data, gen, or disc)')
     parser.add_argument('-v', '--version', default=None, help='version, for default model name format (e.g. 13, default most recent)')
-    parser.add_argument('--scaffold', default=False, action='store_true', help='attempt to scaffold models in Caffe')
+    parser.add_argument('--scaffold', default=False, action='store_true', help='attempt to scaffold models in Caffe and estimate memory usage')
+    parser.add_argument('--benchmark', default=0, type=int, help='benchmark N forward-backward pass times and actual memory usage')
     parser.add_argument('--verbose', default=False, action='store_true', help='print out more info for debugging prototxt creation')
     parser.add_argument('--gpu', default=False, action='store_true', help='if benchmarking, use the GPU')
     return parser.parse_args(argv)
@@ -1051,7 +1112,7 @@ def main(argv):
         caffe.set_mode_cpu()
 
     param_space = params.ParamSpace(args.params_file, format=args.model_name.format)
-    write_models(args.out_dir, param_space, args.scaffold, verbose=args.verbose)
+    write_models(args.out_dir, param_space, args.scaffold, args.benchmark, args.verbose)
 
 
 if __name__ == '__main__':

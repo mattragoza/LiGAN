@@ -1,0 +1,14 @@
+encode_type = ['_l-l', '_r-l', '_vl-l', '_vr-l', '_vlr-l', '_rvl-l']
+data_dim = 48
+rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
+lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
+resolution = 0.5
+data_options = ''
+n_levels = 4
+conv_per_level = 3
+arch_options = 'l'
+n_filters = 32
+width_factor = 2
+n_latent = 1024
+loss_types = 'e'
+batch_size = 8

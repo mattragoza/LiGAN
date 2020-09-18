@@ -32,6 +32,7 @@ nps_model = npscorer.readNPModel()
 import molgrid
 import caffe_util
 import atom_types
+import simple_fit
 from results import get_terminal_size
 
 
@@ -191,7 +192,7 @@ class AtomFitter(object):
         self.gd_kwargs = gd_kwargs
 
         # use alternate bond adding method
-        self.alt_bond_adding = alt_bond_adding
+        self.dkoes_make_mol = dkoes_make_mol
 
         self.output_kernel = output_kernel
         self.device = device
@@ -694,38 +695,18 @@ class AtomFitter(object):
         rd_mol_ob = ob_mol_to_rd_mol(ob_mol)
         struct.info['ob_validity'] = get_rd_mol_validity(rd_mol_ob)
         struct.info['ob_mol'] = rd_mol_ob
+        visited_mols.append(rd_mol_ob)
 
-        # then go back to the simple molecule and try to validify it
-        # using fragment connection and aromatic channel info
+        if self.dkoes_make_mol:
 
-        if self.alt_bond_adding: # connect fragments before perceiving bonds
-
-            # connect fragments by adding min distance bonds
-            rd_mol = Chem.RWMol(rd_mol)
-            connect_rd_mol_frags(rd_mol)
-            visited_mols.append(rd_mol)
-
-            # perceive bond orders in openbabel
-            # TODO for some reason this does not function
-            # the same way as in default bond adding, in
-            # test case 103017026_14 it fails to set double
-            # bonds on two non-aromatic functional groups, 
-            # doesn't change any bonds at all in fact
-            ob_mol = rd_mol_to_ob_mol(rd_mol)
-            ob_mol.PerceiveBondOrders()
+            ob_mol, mismatches = simple_fit.make_mol(struct)
             rd_mol = ob_mol_to_rd_mol(ob_mol)
-            visited_mols.append(rd_mol)
-
-            # make aromatic rings using channel info
-            rd_mol = Chem.RWMol(rd_mol)
-            set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
             struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
             struct.info['add_mol'] = rd_mol
+            struct.info['mismatches'] = mismatches
             visited_mols.append(rd_mol)
 
-        else: # continue from the openbabel-bonded molecule
-
-            visited_mols.append(rd_mol_ob)
+        else: # try to fix it up using fragment connection and channel info
 
             # connect fragments by adding min distance bonds
             rd_mol = Chem.RWMol(rd_mol_ob)
@@ -746,6 +727,24 @@ class AtomFitter(object):
         visited_mols.append(rd_mol_min)
 
         struct.info['visited_mols'] = visited_mols
+
+
+class DkoesAtomFitter(AtomFitter):
+
+    def __init__(self, iters=25, tol=0.01, dkoes_make_mol=True):
+        self.iters = iters
+        self.tol = tol
+        self.dkoes_make_mol = dkoes_make_mol
+
+    def fit(self, grid, types):
+        grid_pred = simple_fit.simple_atom_fit(
+            mgrid=grid,
+            types=types,
+            iters=self.iters,
+            tol=self.tol
+        )
+        self.validify(grid_pred.info['src_struct'])
+        return grid_pred
 
 
 class OutputWriter(object):
@@ -1376,6 +1375,7 @@ def ob_mol_to_rd_mol(ob_mol):
 
     for ob_atom in ob.OBMolAtomIter(ob_mol):
         rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        rd_atom.SetIsAromatic(ob_atom.IsAromatic())
         #TODO copy format charge
         i = rd_mol.AddAtom(rd_atom)
         ob_coords = ob_atom.GetVector()
@@ -1392,15 +1392,16 @@ def ob_mol_to_rd_mol(ob_mol):
         j = ob_bond.GetEndAtomIdx()-1
         bond_order = ob_bond.GetBondOrder()
         if ob_bond.IsAromatic():
-            rd_mol.AddBond(i, j, Chem.BondType.AROMATIC)
+            bond_type = Chem.BondType.AROMATIC
         elif bond_order == 1:
-            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+            bond_type = Chem.BondType.SINGLE
         elif bond_order == 2:
-            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
+            bond_type = Chem.BondType.DOUBLE
         elif bond_order == 3:
-            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
+            bond_type = Chem.BondType.TRIPLE
         else:
             raise Exception('unknown bond order {}'.format(bond_order))
+        rd_mol.AddBond(i, j, bond_type)
 
     return rd_mol
 
@@ -1418,6 +1419,7 @@ def rd_mol_to_ob_mol(rd_mol):
         z = rd_coords.z
         ob_atom = ob_mol.NewAtom()
         ob_atom.SetAtomicNum(atomic_num)
+        ob_atom.SetAromatic(rd_atom.GetIsAromatic())
         ob_atom.SetVector(x, y, z)
 
     for k, rd_bond in enumerate(rd_mol.GetBonds()):
@@ -1427,18 +1429,14 @@ def rd_mol_to_ob_mol(rd_mol):
         bond_flags = 0
         if bond_type == Chem.BondType.AROMATIC:
             bond_order = 1
-            bond_flags |= ob.OBBond.Aromatic
+            bond_flags |= ob.OB_AROMATIC_BOND
         elif bond_type == Chem.BondType.SINGLE:
             bond_order = 1
         elif bond_type == Chem.BondType.DOUBLE:
             bond_order = 2
         elif bond_type == Chem.BondType.TRIPLE:
             bond_order = 3
-        ob_bond = ob_mol.NewBond()
-        atom_i = ob_mol.GetAtom(i)
-        atom_j = ob_mol.GetAtom(j)
-        print(k, atom_i, atom_j, bond_order, bond_flags)
-        ob_bond.Set(k, atom_i, atom_j, bond_order, bond_flags)
+        ob_mol.AddBond(i, j, bond_order, bond_flags)
 
     return ob_mol
                    
@@ -1514,6 +1512,7 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
     writer = Chem.SDWriter(sdf_file)
+    writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
 
@@ -1925,21 +1924,86 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    try: # find VAE latent blobs
-        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
-        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
-        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
-        variational = True
+    print('Finding important blobs')
+    try: # find receptor encoder blobs
+        rec_enc_start = find_blobs_in_net(gen_net, 'rec')[0]
+        try:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_std')[0]
+            rec_enc_is_var = True
+        except IndexError:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_fc')[0]
+            rec_enc_is_var = False
+        has_rec_enc = True
+    except IndexError:
+        has_rec_enc = False
 
-    except IndexError: # find AE latent blob
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_defc')[0]
+    if args.verbose:
+        print('has_rec_enc = {}'.format(has_rec_enc))
+        if has_rec_enc:
+            print('\trec_enc_is_var = {}'.format(rec_enc_is_var))
+            print('\trec_enc_start = {}'.format(repr(rec_enc_start)))
+            print('\trec_enc_end = {}'.format(repr(rec_enc_end)))
+
+    try: # find ligand encoder blobs
+        lig_enc_start = find_blobs_in_net(gen_net, 'lig')[0]
+        try:
+            lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_std')[0]
+            lig_enc_is_var = True
+        except IndexError:
+            try:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_defc')[0]
+            except IndexError:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_fc')[0]
+            lig_enc_is_var = False
+        has_lig_enc = True
+    except IndexError:
+        has_lig_enc = False
+
+    if args.verbose:
+        print('has_lig_enc = {}'.format(has_lig_enc))
+        if has_lig_enc:
+            print('\tlig_enc_is_var = {}'.format(lig_enc_is_var))
+            print('\tlig_enc_start = {}'.format(repr(lig_enc_start)))
+            print('\tlig_enc_end = {}'.format(repr(lig_enc_end)))
+
+    # must have at least one encoder
+    assert (has_rec_enc or has_lig_enc)
+
+    # only one encoder can be variational
+    if has_rec_enc and has_lig_enc:
+        assert not (rec_enc_is_var and lig_enc_is_var)
+
+    try: # find latent variable blobs
+        latent_prefix = ('lig' if has_lig_enc else 'rec') + '_latent'
+        latent_mean = find_blobs_in_net(gen_net, latent_prefix+'_mean')[0]
+        latent_std = find_blobs_in_net(gen_net, latent_prefix+'_std')[0]
+        latent_noise = find_blobs_in_net(gen_net, latent_prefix+'_noise')[0]
+        latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_sample')[0]
+        variational = True
+    except IndexError:
         variational = False
 
-    n_latent = gen_net.blobs[latent_sample].shape[1]
+    if args.verbose:
+        print('variational = {}'.format(variational))
+        if variational:
+            print('\tlatent_mean = {}'.format(repr(latent_mean)))
+            print('\tlatent_std = {}'.format(repr(latent_std)))
+            print('\tlatent_noise = {}'.format(repr(latent_noise)))
+            print('\tlatent_sample = {}'.format(repr(latent_sample)))
 
-    # find first decoder blob
-    dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
+    # find ligand decoder blobs (required)
+    if has_rec_enc and has_lig_enc:
+        lig_dec_start = find_blobs_in_net(gen_net, 'latent_concat')[0]
+    else:
+        lig_dec_start = find_blobs_in_net(gen_net, 'lig_dec_fc')[0]
+    lig_dec_end = find_blobs_in_net(gen_net, 'lig_gen')[0]
+
+    if args.verbose:
+        print('has_lig_dec = True')
+        print('\tlig_dec_start = {}'.format(repr(lig_dec_start)))
+        print('\tlig_dec_end = {}'.format(repr(lig_dec_end)))
+
+    n_latent = gen_net.blobs[latent_sample].shape[1]
 
     print('Testing generator forward')
     gen_net.forward() # this is necessary for proper latent sampling
@@ -1980,32 +2044,35 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         )
 
         if args.fit_atoms:
-            atom_fitter = AtomFitter(
-                multi_atom=args.multi_atom, 
-                beam_size=args.beam_size,
-                apply_conv=args.apply_conv,
-                threshold=args.threshold,
-                peak_value=args.peak_value,
-                min_dist=args.min_dist,
-                constrain_types=args.constrain_types,
-                constrain_frags=False,
-                estimate_types=args.estimate_types,
-                interm_gd_iters=args.interm_gd_iters,
-                final_gd_iters=args.final_gd_iters,
-                gd_kwargs=dict(
-                    lr=args.learning_rate,
-                    betas=(args.beta1, args.beta2),
-                    weight_decay=args.weight_decay,
-                ),
-                alt_bond_adding=args.alt_bond_adding,
-                output_kernel=args.output_kernel,
-                device=device,
-                verbose=args.verbose,
-            )
 
-    print('Starting to generate grids')
+            if args.dkoes_simple_fit:
+                atom_fitter = DkoesAtomFitter()
+            else:
+                atom_fitter = AtomFitter(
+                    multi_atom=args.multi_atom, 
+                    beam_size=args.beam_size,
+                    apply_conv=args.apply_conv,
+                    threshold=args.threshold,
+                    peak_value=args.peak_value,
+                    min_dist=args.min_dist,
+                    constrain_types=args.constrain_types,
+                    constrain_frags=False,
+                    estimate_types=args.estimate_types,
+                    interm_gd_iters=args.interm_gd_iters,
+                    final_gd_iters=args.final_gd_iters,
+                    gd_kwargs=dict(
+                        lr=args.learning_rate,
+                        betas=(args.beta1, args.beta2),
+                        weight_decay=args.weight_decay,
+                    ),
+                    dkoes_make_mol=args.dkoes_make_mol,
+                    output_kernel=args.output_kernel,
+                    device=device,
+                    verbose=args.verbose,
+                )
 
     # generate density grids from generative model in main thread
+    print('Starting to generate grids')
     try:
         for example_idx in range(n_examples):
 
@@ -2023,9 +2090,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     print('Getting batch of examples')
                     examples = ex_provider.next_batch(batch_size)
 
-                    print('Calling generator custom forward')
-
                     # convert structures to grids
+                    print('Transforming and gridding examples')
                     for i, ex in enumerate(examples):
                         transform = molgrid.Transform(
                             ex.coord_sets[1].center(),
@@ -2044,6 +2110,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     if need_first and is_first:
                         first_rec = np.array(rec[:1])
                         first_lig = np.array(lig[:1])
+
+                    print('Calling generator forward')
 
                     # set encoder input grids
                     if args.encode_first:
@@ -2070,30 +2138,40 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         gen_net.blobs['rec'].data[batch_size//2:] = end_rec
                         gen_net.blobs['lig'].data[batch_size//2:] = end_lig
 
-                    # encode true grids to latent variable parameters
-                    if variational:
-                        if args.prior:
-                            if args.mean:
+                    if has_rec_enc: # forward receptor encoder
+                        if rec_enc_is_var:
+                            if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...] = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
                             else:
-                                gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...] = 1.0
-                        else: # posterior
-                            if args.mean:
-                                gen_net.forward(end=latent_mean)
-                                gen_net.blobs[latent_std].data[...] = 0.0
-                            else:
-                                gen_net.forward(end=latent_std)
-
-                        # sample latent variables
-                        gen_net.forward(start=latent_noise, end=latent_sample)
-
-                    else:
-                        if args.prior:
-                            gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
+                                gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
                         else:
-                            gen_net.forward(end=latent_sample)
+                            gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+
+                    if has_lig_enc: # forward ligand encoder
+                        if lig_enc_is_var:
+                            if args.prior:
+                                gen_net.blobs[latent_mean].data[...] = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
+                            else: # posterior
+                                if args.mean:
+                                    gen_net.forward(start=lig_enc_start, end=latent_mean)
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                        else:
+                            gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+
+                    if variational: # sample latent variables
+                        gen_net.forward(start=latent_noise, end=latent_sample)
 
                     if args.interpolate: # interpolate between latent samples
 
@@ -2113,7 +2191,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             )
 
                     # decode latent samples to generate grids
-                    gen_net.forward(start=dec_fc)
+                    gen_net.forward(start=lig_dec_start, end=lig_dec_end)
 
                 print('Getting true molecule for current example')
 
@@ -2162,6 +2240,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid_blob = gen_net.blobs[blob_name]
                     grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
 
+                    if blob_name == 'rec':
+                        grid_channels = rec_channels
+                    elif blob_name in {'lig', 'lig_gen'}:
+                        grid_channels = lig_channels
+                    else:
+                        grid_channels = atom_types.get_n_unknown_channels(
+                            grid_blob.shape[1]
+                        )
+
                     if args.interpolate and blob_name in {'rec', 'lig'}:
                         grid_data = grid_blob.data[endpoint_idx]
                     else:
@@ -2169,7 +2256,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid = MolGrid(
                         values=np.array(grid_data),
-                        channels=struct.channels,
+                        channels=grid_channels,
                         center=struct.center,
                         resolution=grid_maker.get_resolution(),
                     )
@@ -2215,28 +2302,31 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    atom_fitter = AtomFitter(
-        multi_atom=args.multi_atom,
-        beam_size=args.beam_size,
-        apply_conv=args.apply_conv,
-        threshold=args.threshold,
-        peak_value=args.peak_value,
-        min_dist=args.min_dist,
-        constrain_types=args.constrain_types,
-        constrain_frags=False,
-        estimate_types=args.estimate_types,
-        interm_gd_iters=args.interm_gd_iters,
-        final_gd_iters=args.final_gd_iters,
-        gd_kwargs=dict(
-            lr=args.learning_rate,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-        ),
-        alt_bond_adding=args.alt_bond_adding,
-        output_kernel=args.output_kernel,
-        device='cpu', # can't fit on gpu in multiple threads
-        verbose=args.verbose,
-    )
+    if args.dkoes_simple_fit:
+        atom_fitter = DkoesAtomFitter()
+    else:
+        atom_fitter = AtomFitter(
+            multi_atom=args.multi_atom,
+            beam_size=args.beam_size,
+            apply_conv=args.apply_conv,
+            threshold=args.threshold,
+            peak_value=args.peak_value,
+            min_dist=args.min_dist,
+            constrain_types=args.constrain_types,
+            constrain_frags=False,
+            estimate_types=args.estimate_types,
+            interm_gd_iters=args.interm_gd_iters,
+            final_gd_iters=args.final_gd_iters,
+            gd_kwargs=dict(
+                lr=args.learning_rate,
+                betas=(args.beta1, args.beta2),
+                weight_decay=args.weight_decay,
+            ),
+            dkoes_make_mol=args.dkoes_make_mol,
+            output_kernel=args.output_kernel,
+            device='cpu', # can't fit on gpu in multiple threads
+            verbose=args.verbose,
+        )
 
     while True:
         if args.verbose:
@@ -2303,6 +2393,7 @@ def parse_args(argv=None):
     parser.add_argument('--data_file', default='', help='path to data file (generate for every example)')
     parser.add_argument('--data_root', default='', help='path to root for receptor and ligand files')
     parser.add_argument('-b', '--blob_name', default=[], action='append', help='blob(s) in model to generate from (default lig & lig_gen)')
+    parser.add_argument('--all_blobs', default=False, action='store_true', help='generate from all blobs in generative model')
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
@@ -2318,6 +2409,8 @@ def parse_args(argv=None):
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--output_latent', action='store_true', help='output latent vectors for each generated density grid')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
+    parser.add_argument('--dkoes_simple_fit', default=False, action='store_true', help='fit atoms using alternate functions by dkoes')
+    parser.add_argument('--dkoes_make_mol', default=False, action='store_true', help="validify molecule using alternate functions by dkoes")
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
@@ -2332,9 +2425,9 @@ def parse_args(argv=None):
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
-    parser.add_argument('--alt_bond_adding', default=False, action='store_true', help="connect fragments before perceiving bond orders instead of after")
     parser.add_argument('--batch_metrics', default=False, action='store_true', help="compute variance metrics across different samples")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
+    parser.add_argument('--debug', default=False, action='store_true', help='debug mode')
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
@@ -2410,6 +2503,9 @@ def main(argv):
     gen_net = caffe_util.Net.from_param(
         gen_net_param, args.gen_weights_file, phase=caffe.TEST
     )
+
+    if args.all_blobs:
+        args.blob_name = [b for b in gen_net.blobs]
 
     generate_from_model(gen_net, data_param, len(examples), args)
 
