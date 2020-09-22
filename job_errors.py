@@ -162,7 +162,7 @@ def find_completed_array_indices(job_dir, output_pat, read=False):
         if read:
             output_file = os.path.join(job_dir, m.group(0))
             job_df = pd.read_csv(output_file, sep=' ')
-            job_df['job_name']  = os.path.split(job_dir)[-1]
+            job_df['job_name'] = os.path.split(job_dir)[-1]
             job_df['array_idx'] = array_idx
             job_dfs.append(job_df)
 
@@ -191,8 +191,8 @@ def print_errors_for_array_indices(job_dir, stderr_pat, indices):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('job_dirs', nargs='+')
-    parser.add_argument('--job_type', required=True)
+    parser.add_argument('job_scripts', nargs='+')
+    parser.add_argument('--job_type')
     parser.add_argument('--array_job', default=False, action='store_true')
     parser.add_argument('--submitted', default=None)
     parser.add_argument('--copy_back', '-c', default=False, action='store_true')
@@ -206,44 +206,49 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
-    assert args.job_type in {'train', 'fit'}
-
-    for job_dir in args.job_dirs:
-        assert os.path.isdir(job_dir), job_dir + ' is not a directory'
-
-    if args.job_type == 'train':
-        job_script_pat = re.compile(r'(.*)_train.sh')
-        output_ext = 'training_output'
-        copy_back_exts = [
-            'model', 'solver','caffemodel', 'solverstate', 'training_output', 'png', 'pdf'
-        ]
-
-    elif args.job_type == 'fit':
-        job_script_pat = re.compile(r'(.*)_fit.sh')
-        output_ext = 'gen_metrics'
-        copy_back_exts = [
-            'types', 'model', 'caffemodel', 'dx', 'sdf', 'pymol', 'gen_metrics'
-        ]
-
-    if args.array_job:
-        stderr_pat = re.compile(r'slurm-(\d+)_(\d+)\.err$')
-        output_pat = re.compile(r'(.*)_(\d+)\.' + output_ext + '$')
-        copy_back_pat = re.compile(r'(.*)_(\d+)\.' + '({})$'.format('|'.join(copy_back_exts)))
-
-    else:
-        stderr_pat = re.compile(r'slurm-(\d+)\.err$')
-        output_pat = re.compile(r'(.*)\.' + output_ext + '$')
-        copy_back_pat = re.compile(r'(.*)\.' + '({})$'.format('|'.join(copy_back_exts)))
-
     all_job_dfs = []
-    for job_dir in args.job_dirs:
+    for job_script in args.job_scripts:
 
-        print(job_dir)
+        assert os.path.isfile(job_script), 'file ' + job_script + ' does not exist'
+
+        if args.job_type is None: # infer from file name
+            if 'fit' in job_script:
+                args.job_type = 'fit'
+            elif 'train' in job_script:
+                args.job_type = 'train'
+
+        # determine relevant files based on job type
+        if args.job_type == 'train':
+            job_script_pat = re.compile(r'(.*)_train.sh')
+            output_ext = 'training_output'
+            copy_back_exts = [
+                'model', 'solver','caffemodel', 'solverstate', 'training_output', 'png', 'pdf'
+            ]
+        elif args.job_type == 'fit':
+            job_script_pat = re.compile(r'(.*)_fit.sh')
+            output_ext = 'gen_metrics'
+            copy_back_exts = [
+                'types', 'model', 'caffemodel', 'dx', 'sdf', 'pymol', 'gen_metrics'
+            ]
+
+        # for array jobs, get output for any array indices present
+        if args.array_job:
+            stderr_pat = re.compile(r'slurm-(\d+)_(\d+)\.err$')
+            output_pat = re.compile(r'(.*)_(\d+)\.' + output_ext + '$')
+            copy_back_pat = re.compile(r'(.*)_(\d+)\.' + '({})$'.format('|'.join(copy_back_exts)))
+        else:
+            stderr_pat = re.compile(r'slurm-(\d+)\.err$')
+            output_pat = re.compile(r'(.*)\.' + output_ext + '$')
+            copy_back_pat = re.compile(r'(.*)\.' + '({})$'.format('|'.join(copy_back_exts)))
+
+        print(job_script)
+        job_dir = os.path.dirname(job_script)
 
         if args.array_job:
 
             if args.submitted is not None:
                 submitted = parse_array_indices_str(args.submitted)
+                job_ids = find_job_ids(job_dir, stderr_pat)
             else:
                 submitted, job_ids = find_submitted_array_indices(job_dir, stderr_pat)
             n_submitted = len(submitted)
@@ -312,7 +317,10 @@ def main(argv):
 
     if args.output_file:
         if all_job_dfs:
-            pd.concat(all_job_dfs).to_csv(args.output_file, sep=' ')
+            job_df = pd.concat(all_job_dfs)
+            pd.set_option('display.max_columns', 100)
+            print(job_df.groupby('job_name').mean())
+            job_df.to_csv(args.output_file, sep=' ')
             print('concatenated metrics to {}'.format(args.output_file))
         else:
             print('nothing to concatenate')
