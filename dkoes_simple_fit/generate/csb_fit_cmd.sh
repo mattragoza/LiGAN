@@ -38,7 +38,7 @@ cp ../<LIGAN_DIR>/my_{rec,lig}_map $SCR_DIR
 
 cd $SCR_DIR
 
-trap "cp *.{types,model,caffemodel,dx,sdf,pymol,gen_metrics} ${WORK_DIR}" EXIT
+trap "cp *.{types,model,caffemodel,dx,sdf,channels,latent,pymol,gen_metrics} ${WORK_DIR}" EXIT
 
 python3 ../../<LIGAN_DIR>/generate.py \
 	--data_model ../../<MODEL_DIR>/<DATA_MODEL_NAME>.model \

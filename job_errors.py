@@ -71,9 +71,14 @@ def find_job_ids(job_dir, stderr_pat):
     parsing stderr file names in job_dir.
     '''
     job_ids = []
-    for m in match_files_in_dir(job_dir, stderr_pat):
-        job_id = int(m.group(1))
-        job_ids.append(job_id)
+    for f in os.listdir(job_dir):
+        if os.path.isdir(os.path.join(job_dir, f)):
+            m = re.match(r'^(\d+)', f)
+        else:
+            m = re.match(stderr_pat, f)
+        if m:
+            job_id = int(m.group(1))
+            job_ids.append(job_id)
 
     return job_ids
 
@@ -228,7 +233,7 @@ def main(argv):
             job_script_pat = re.compile(r'(.*)_fit.sh')
             output_ext = 'gen_metrics'
             copy_back_exts = [
-                'types', 'model', 'caffemodel', 'dx', 'sdf', 'pymol', 'gen_metrics'
+                'types', 'model', 'caffemodel', 'dx', 'sdf', 'channels', 'latent', 'pymol', 'gen_metrics'
             ]
 
         # for array jobs, get output for any array indices present
