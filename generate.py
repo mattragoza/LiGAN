@@ -114,12 +114,12 @@ class MolStruct(object):
         self.info = info
 
     @classmethod
-    def from_gninatypes(self, gtypes_file, channels, **info):
+    def from_gninatypes(cls, gtypes_file, channels, **info):
         xyz, c = read_gninatypes_file(gtypes_file, channels)
         return MolStruct(xyz, c, channels, **info)
 
     @classmethod
-    def from_coord_set(self, coord_set, channels, **info):
+    def from_coord_set(cls, coord_set, channels, **info):
         if not coord_set.has_indexed_types():
             raise ValueError(
                 'can only make MolStruct from CoordinateSet with indexed types'
@@ -127,6 +127,18 @@ class MolStruct(object):
         xyz = coord_set.coords.tonumpy()
         c = coord_set.type_index.tonumpy().astype(int)
         return MolStruct(xyz, c, channels, **info)
+
+    @classmethod
+    def from_rd_mol(cls, rd_mol, c, channels, **info):
+        xyz = rd_mol.GetConformer(0).GetPositions()
+        return cls(xyz, c, channels, **info)
+
+    @classmethod
+    def from_sdf(cls, sdf_file, channels, **info):
+        rd_mol = read_rd_mols_from_sdf_file(sdf_file)[0]
+        channels_file = os.path.splitext(sdf_file)[0] + '.channels'
+        c = read_channels_from_file(channels_file, channels)
+        return cls.from_rd_mol(rd_mol, c, channels)
 
     def to_ob_mol(self):
         mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
@@ -862,7 +874,7 @@ class OutputWriter(object):
             # write atom type channels
             if self.output_channels:
 
-                channels_file = '{}.channels'.format(sample_prefix)
+                channels_file = sample_prefix + '.channels'
                 if self.verbose:
                     print('Writing ' + channels_file)
 
@@ -907,8 +919,11 @@ class OutputWriter(object):
                     print('Writing ' + self.pymol_file)
 
                 write_pymol_script(
-                    self.pymol_file, self.out_prefix, self.dx_prefixes,
-                    self.struct_files, self.centers
+                    self.pymol_file,
+                    self.out_prefix,
+                    self.dx_prefixes,
+                    self.struct_files,
+                    self.centers,
                 )
                 del self.grids[lig_name]
 
@@ -934,8 +949,11 @@ class OutputWriter(object):
                     print('Writing ' + self.pymol_file)
 
                 write_pymol_script(
-                    self.pymol_file, self.out_prefix, self.dx_prefixes,
-                    self.struct_files, self.centers
+                    self.pymol_file,
+                    self.out_prefix,
+                    self.dx_prefixes,
+                    self.struct_files,
+                    self.centers,
                 )
                 del self.grids[lig_name][sample_idx]
 
@@ -1720,6 +1738,18 @@ def write_channels_to_file(channels_file, c, channels):
         for c_ in c:
             channel = channels[c_]
             f.write(channel.name+'\n')
+
+
+def read_channels_from_file(channels_file, channels):
+    channel_map = {
+        ch.name: i for i, ch in enumerate(channels)
+    }
+    c = []
+    with open(channels_file, 'r') as f:
+        for line in f:
+            channel_name = line.rstrip()
+            c.append(channel_map[channel_name])
+    return np.array(c)
 
 
 def write_grid_to_dx_file(dx_file, grid, center, resolution):
