@@ -17,8 +17,10 @@ from scipy.stats import multivariate_normal
 import caffe
 import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
 from GPUtil import getGPUs
 from openbabel import openbabel as ob
+from openbabel import pybel
 import rdkit
 from rdkit import Chem, Geometry, DataStructs
 from rdkit.Chem import AllChem, Descriptors, QED, Crippen
@@ -41,10 +43,8 @@ class MolGrid(object):
 
         if len(values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
-
         if values.shape[0] != len(channels):
             raise ValueError('MolGrid values have wrong number of channels')
-
         if not (values.shape[1] == values.shape[2] == values.shape[3]):
             raise ValueError('last 3 dims of MolGrid values must be equal')
 
@@ -59,17 +59,19 @@ class MolGrid(object):
 
     @classmethod
     def compute_dimension(cls, size, resolution):
-        return (size-1)*resolution
+        return (size - 1) * resolution
 
     @classmethod
     def compute_size(cls, dimension, resolution):
-        return int(np.ceil(dimension/resolution+1))
+        return int(np.ceil(dimension / resolution + 1))
 
     def to_dx(self, dx_prefix, center=None):
-        write_grids_to_dx_files(dx_prefix, self.values,
-                                channels=self.channels,
-                                center=self.center if center is None else center,
-                                resolution=self.resolution)
+        write_grids_to_dx_files(
+            out_prefix=dx_prefix,
+            grids=self.values,
+            channels=self.channels,
+            center=self.center if center is None else center,
+            resolution=self.resolution)
 
 
 class MolStruct(object):
@@ -80,24 +82,19 @@ class MolStruct(object):
 
         if len(xyz.shape) != 2:
             raise ValueError('MolStruct xyz must have 2 dims')
-
         if len(c.shape) != 1:
             raise ValueError('MolStruct c must have 1 dimension')
-
         if xyz.shape[0] != c.shape[0]:
             raise ValueError('first dim of MolStruct xyz and c must be equal')
-
         if xyz.shape[1] != 3:
             raise ValueError('second dim of MolStruct xyz must be 3')
-
         if any(c < 0) or any(c >= len(channels)):
-            raise ValueError('invalid value in MolStruct c')
+            raise ValueError('invalid channel index in MolStruct c')
 
         self.n_atoms = xyz.shape[0]
         self.xyz = xyz
-
-        self.channels = channels
         self.c = c
+        self.channels = channels
 
         if bonds is not None:
             if bonds.shape != (self.n_atoms, self.n_atoms):
@@ -106,26 +103,28 @@ class MolStruct(object):
         else:
             self.bonds = np.zeros((self.n_atoms, self.n_atoms))
 
-        self.center = self.xyz.mean(0)
-
         if self.n_atoms > 0:
+            self.center = self.xyz.mean(0)
             self.radius = max(np.linalg.norm(self.xyz - self.center, axis=1))
         else:
+            self.center = np.full(3, np.nan)
             self.radius = np.nan
 
         self.info = info
 
     @classmethod
-    def from_gninatypes(self, gt_file, channels, **info):
-        xyz, c = read_gninatypes_file(gt_file, channels)
+    def from_gninatypes(self, gtypes_file, channels, **info):
+        xyz, c = read_gninatypes_file(gtypes_file, channels)
         return MolStruct(xyz, c, channels, **info)
 
     @classmethod
     def from_coord_set(self, coord_set, channels, **info):
         if not coord_set.has_indexed_types():
-            raise ValueError('can only make MolStruct from CoordinateSet with indexed types')
-        xyz = np.array(coord_set.coords, dtype=np.float32)
-        c = np.array(coord_set.type_index, dtype=np.int16)
+            raise ValueError(
+                'can only make MolStruct from CoordinateSet with indexed types'
+            )
+        xyz = coord_set.coords.tonumpy()
+        c = coord_set.type_index.tonumpy().astype(int)
         return MolStruct(xyz, c, channels, **info)
 
     def to_ob_mol(self):
@@ -151,34 +150,54 @@ class MolStruct(object):
 
 class AtomFitter(object):
 
-    def __init__(self, beam_size, beam_stride, atom_init, interm_iters, final_iters,
-                 learning_rate, beta1, beta2, weight_decay, constrain_types,
-                 r_factor, output_visited, output_kernel, device, verbose):
+    def __init__(
+        self,
+        multi_atom,
+        beam_size,
+        apply_conv,
+        threshold,
+        peak_value,
+        min_dist,
+        constrain_types,
+        constrain_frags,
+        estimate_types,
+        interm_gd_iters,
+        final_gd_iters,
+        gd_kwargs,
+        output_visited,
+        output_kernel,
+        device,
+        verbose=0,
+    ):
 
-        assert atom_init in {'none', 'conv', 'deconv', 'dist'}
-
+        # can place all detected atoms at once, or do beam search
+        self.multi_atom = multi_atom
         self.beam_size = beam_size
-        self.beam_stride = beam_stride
-        self.atom_init = atom_init
-        self.interm_iters = interm_iters
-        self.final_iters = final_iters
 
-        self.learning_rate = learning_rate
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.weight_decay = weight_decay
+        # settings for detecting next atoms to place on density grid
+        self.apply_conv = apply_conv
+        self.threshold = threshold
+        self.peak_value = peak_value
+        self.min_dist = min_dist
 
+        # can constrain to find exact atom type counts or single fragment
         self.constrain_types = constrain_types
-        self.r_factor = r_factor
+        self.constrain_frags = constrain_frags
+        self.estimate_types = estimate_types
 
+        # can perform gradient descent at each step and/or at final step
+        self.interm_gd_iters = interm_gd_iters
+        self.final_gd_iters = final_gd_iters
+        self.gd_kwargs = gd_kwargs
+
+        self.output_visited = output_visited
+        self.output_kernel = output_kernel
         self.device = device
         self.verbose = verbose
 
         self.grid_maker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
-
-        self.output_visited = output_visited
-        self.output_kernel = output_kernel
+        self.kernel = None
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
@@ -188,242 +207,462 @@ class AtomFitter(object):
         n_channels = len(channels)
 
         # kernel is created by computing a molgrid from a
-        # struct with one atom of each type at the origin
+        # struct with one atom of each type at the center
         xyz = torch.zeros((n_channels, 3), device=self.device)
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
         r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
 
+        # kernel must fit max radius atom
+        kernel_radius = 1.5 * max(r).item()
+
         self.grid_maker.set_radii_type_indexed(True)
-        self.grid_maker.set_dimension(2*1.5*max(r).item()) # kernel must fit max radius atom
+        self.grid_maker.set_dimension(2 * kernel_radius) 
         self.grid_maker.set_resolution(resolution)
 
-        self.c2grid.center = (0.,0.,0.)
-        kernel = self.c2grid(xyz, c, r)
+        self.c2grid.center = (0.0, 0.0, 0.0)
+        values = self.c2grid(xyz, c, r)
 
         if deconv:
-            dtype = kernel.dtype
-            kernel = 100*torch.tensor(weiner_invert_kernel(kernel.cpu(), noise_ratio=1),
-                                      dtype=dtype, device=self.device)
+            values = torch.tensor(
+                weiner_invert_kernel(values.cpu(), noise_ratio=1),
+                dtype=values.dtype,
+                device=self.device,
+            )
+
+        self.kernel = MolGrid(
+            values=values,
+            channels=channels,
+            center=torch.zeros(3, device=self.device),
+            resolution=resolution,
+        )
 
         if self.output_kernel:
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
-                print('writing out {} (norm={})'.format(dx_prefix, np.linalg.norm(kernel.cpu())))
-            write_grids_to_dx_files(dx_prefix, kernel.cpu(),
-                                channels=channels,
-                                center=np.zeros(3),
-                                resolution=resolution)
-            self.output_kernel = False
+                kernel_norm = np.linalg.norm(values.cpu())
+                print('writing out {} (norm={})'.format(dx_prefix, kernel_norm))
+            self.kernel.to_dx(dx_prefix)
+            self.output_kernel = False # only write once
 
-        return kernel
-
-    def init_atoms(self, grids, center, resolution, kernel=None, types=None):
+    def get_next_atoms(self, grid, channels, center, resolution, types=None):
         '''
-        Apply atom initialization kernel if needed and
-        then return best next atom initializations on a
-        grids or batch of grids (tensors).
+        Get a set of atoms from a density grid by convolving
+        with a kernel, applying a threshold, and then returning
+        atom types and coordinates ordered by grid value.
         '''
-        n_grids = grids.shape[0]
-        n_channels = grids.shape[1]
-        grid_dim = grids.shape[2]
+        assert len(grid.shape) == 4
+        assert len(set(grid.shape[1:])) == 1
 
+        n_channels = grid.shape[0]
+        grid_dim = grid.shape[1]
+
+        apply_peak_value = self.peak_value is not None and self.peak_value < np.inf
+        apply_threshold = self.threshold is not None and self.threshold > -np.inf
+        suppress_non_max = self.min_dist is not None and self.min_dist > 0.0
+
+        if apply_peak_value:
+            peak_value = torch.full((n_channels,), self.peak_value, device=self.device)
+
+        if apply_threshold:
+            threshold = torch.full((n_channels,), self.threshold, device=self.device)
+
+        if self.apply_conv: # convolve grid with kernel
+
+            if self.kernel is None:
+                self.init_kernel(channels, resolution)
+
+            grid = F.conv3d(
+                input=grid.unsqueeze(0),
+                weight=self.kernel.values.unsqueeze(1),
+                padding=self.kernel.values.shape[-1]//2,
+                groups=n_channels,
+            )[0]
+
+            kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
+
+            if apply_peak_value:
+                peak_value *= kernel_norm2
+
+            if apply_threshold:
+                threshold *= kernel_norm2
+
+        # reflect grid values above peak value
+        if apply_peak_value:
+            peak_value = peak_value.view(n_channels, 1, 1, 1)
+            grid = peak_value - (peak_value - grid).abs()
+
+        # sort grid points by value
+        values, idx = torch.sort(grid.flatten(), descending=True)
+
+        # convert flattened grid index to channel and spatial index
+        idx_z, idx = idx % grid_dim, idx // grid_dim
+        idx_y, idx = idx % grid_dim, idx // grid_dim
+        idx_x, idx = idx % grid_dim, idx // grid_dim
+        idx_c, idx = idx % n_channels, idx // n_channels
+        idx_xyz = torch.stack((idx_x, idx_y, idx_z), dim=1)
+
+        # apply threshold to grid values
+        if apply_threshold:
+            above_thresh = values > threshold[idx_c]
+            values = values[above_thresh]
+            idx_xyz = idx_xyz[above_thresh]
+            idx_c = idx_c[above_thresh]
+
+        # exclude grid channels with no atoms left
         if self.constrain_types:
-            grids = grids.clone()
-            for i in range(n_grids):
-                grids[i,types[i]<=0] = -1
+            has_atoms_left = types[idx_c] > 0
+            values = values[has_atoms_left]
+            idx_xyz = idx_xyz[has_atoms_left]
+            idx_c = idx_c[has_atoms_left]
 
-        if self.atom_init in {'conv', 'deconv'}: # apply atom init function to grids
-            grids = torch.nn.functional.conv3d(grids, kernel.unsqueeze(1),
-                                               padding=kernel.shape[-1]//2,
-                                               groups=n_channels)
-        elif self.atom_init == 'dist':
-            # rank locations by distance from density value 1.0
-            grids = -(1.0 - grids)**2
+            #TODO this does not constrain the atoms types correctly
+            # when doing multi_atom fitting, because it only omits
+            # atom types that have 0 atoms left- i.e. we could still
+            # return 2 atoms of a type that only has 1 atom left.
+            # Need to exclude all atoms of type t beyond rank n_t
+            # where n_t is the number of atoms left of type t
 
-        # get indices of top-k grid values as next locations to init atoms
-        k = self.beam_size*self.beam_stride
-        idx_flat = grids.reshape(n_grids, -1).topk(k)[1][:,::self.beam_stride]
-        idx_grid = np.unravel_index(idx_flat.cpu(), grids.shape[1:])
-        idx_xyz = torch.tensor(idx_grid[1:], dtype=torch.float32, device=self.device).permute(1, 2, 0)
-        idx_c = idx_grid[0]
+        # convert spatial index to atom coordinates
+        origin = center - resolution * (float(grid_dim) - 1) / 2.0
+        xyz = origin + resolution * idx_xyz.float()
 
-        # transform to xyz coordiates and type vectors
-        xyz = center + resolution*(idx_xyz - (float(grid_dim)-1)/2.)
-        c = make_one_hot(idx_c, n_channels, dtype=torch.float32, device=self.device)
+        # suppress atoms too close to a higher-value point
+        if suppress_non_max:
 
-        return xyz, c
+            r = torch.tensor(
+                [ch.atomic_radius for ch in channels],
+                device=self.device,
+            )
+            if len(idx_c) > 1000:
 
-    def fit(self, grid, types, use_r_factor=False):
+                xyz_max = xyz[0].unsqueeze(0)
+                idx_c_max = idx_c[0].unsqueeze(0)
+
+                for i in range(1, len(idx_c)):
+                    bond_radius = r[idx_c[i]] + r[idx_c_max]
+                    min_dist = self.min_dist * bond_radius
+                    min_dist2 = min_dist**2
+                    dist2 = ((xyz[i].unsqueeze(0) - xyz_max)**2).sum(dim=1)
+                    if not (dist2 < min_dist2).any():
+                        xyz_max = torch.cat([xyz_max, xyz[i].unsqueeze(0)])
+                        idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
+
+                xyz = xyz_max
+                idx_c = idx_c_max
+
+            else:
+                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
+                min_dist = self.min_dist * bond_radius
+                min_dist2 = min_dist**2
+                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
+                not_too_close = ~torch.tril(dist2 < min_dist2, diagonal=-1).any(dim=1)
+                xyz = xyz[not_too_close]
+                idx_c = idx_c[not_too_close]
+
+        # limit number of atoms to beam size
+        if not self.multi_atom:
+            xyz = xyz[:self.beam_size]
+            idx_c = idx_c[:self.beam_size]
+
+        # convert atom type channel index to one-hot type vector
+        c = F.one_hot(idx_c, n_channels).to(dtype=torch.float32, device=self.device)
+
+        return xyz.detach(), c.detach()
+
+    def get_estimate_types(self, grid, channels, resolution):
+        '''
+        Since atom density is additive and non-negative, estimate
+        the atom type counts by dividing the total density in each
+        grid channel by the total density in each kernel channel.
+        '''
+        if self.kernel is None:
+            self.init_kernel(channels, resolution)
+
+        kernel_sum = self.kernel.values.sum(dim=(1,2,3))
+        grid_sum = grid.sum(dim=(1,2,3))
+        return grid_sum / kernel_sum
+
+    def fit(self, grid, types):
         '''
         Fit atomic structure to mol grid.
         '''
         t_start = time.time()
 
-        types = torch.tensor(types, dtype=torch.float32, device=self.device)
-        r_factor = self.r_factor if use_r_factor else 1.0
-
-        if self.atom_init in {'conv', 'deconv'}: # initialize convolution kernel
-            deconv = (self.atom_init == 'deconv')
-            kernel = self.init_kernel(grid.channels, grid.resolution, deconv)
-        else:
-            kernel = None
-
         # get true grid on appropriate device
-        grid_true = MolGrid(values=torch.as_tensor(grid.values, device=self.device),
-                            channels=grid.channels,
-                            center=torch.as_tensor(grid.center, device=self.device),
-                            resolution=grid.resolution)
+        grid_true = MolGrid(
+            values=torch.as_tensor(grid.values, device=self.device),
+            channels=grid.channels,
+            center=torch.as_tensor(grid.center, device=self.device),
+            resolution=grid.resolution,
+        )
 
-        # empty initial struct
+        # get true atom type counts on appropriate device
+        types = torch.tensor(types, dtype=torch.float32, device=self.device)
+
+        if self.estimate_types: # estimate atom type counts from grid density
+            types_est = self.get_estimate_types(
+                grid_true.values,
+                grid_true.channels,
+                grid_true.resolution,
+            )
+            est_type_diff = (types - types_est).abs().sum().item()
+            types = types_est
+        else:
+            est_type_diff = np.nan
+
+        # initialize empty struct
+        print('initializing empty struct 0')
         n_channels = len(grid.channels)
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
-        fit_loss = ((grid_true.values)**2).sum()/2.
-        type_diff = types
 
-        # to constrain types, order structs first by type-correctness, then by L2 loss
+        fit_loss = (grid_true.values**2).sum() / 2.0
+        type_loss = types.abs().sum()
+
+        # to constrain types, order structs first by type diff, then by L2 loss
         if self.constrain_types:
-            heuristic = (type_diff.abs().sum().item(), fit_loss.item())
+            objective = (type_loss.item(), fit_loss.item())
 
         else: # otherwise, order structs only by L2 loss
-            heuristic = fit_loss.item()
+            objective = fit_loss.item()
 
         # get next atom init locations and channels
-        xyz_next, c_next = self.init_atoms(grid_true.values.unsqueeze(0), grid_true.center,
-                                           grid.resolution, kernel, type_diff.unsqueeze(0))
+        print('getting next atoms for struct 0')
+        xyz_next, c_next = self.get_next_atoms(
+            grid_true.values,
+            grid_true.channels,
+            grid_true.center,
+            grid_true.resolution,
+            types,
+        )
 
-        # batch of best structures so far
-        best_structs = [(heuristic, 0, xyz, c, xyz_next[0], c_next[0])]
+        # keept track of best structures so far
+        struct_id = 0
+        best_structs = [(objective, struct_id, xyz, c, xyz_next, c_next)]
         found_new_best_struct = True
+
+        # keep track of visited structures
         visited = set()
-        struct_count = 1
         visited_structs = []
+        struct_count = 1
 
         # search until we can't find a better structure
         while found_new_best_struct:
 
             new_best_structs = []
-            new_best_grid_diffs = []
-            new_best_type_diffs = []
             found_new_best_struct = False
 
             # try to expand each current best structure
-            for heuristic, struct_id, xyz, c, xyz_next, c_next in best_structs:
+            for objective, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
                 if struct_id in visited:
                     continue
 
-                # evaluate each possible next atom
-                for xyz_next_, c_next_ in zip(xyz_next, c_next):
+                print('expanding struct {} to {} next atoms'.format(struct_id, len(c_next)))
 
-                    # add next atom to structure
-                    xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
-                    c_new   = torch.cat([c, c_next_.unsqueeze(0)])
+                if self.multi_atom: # evaluate all next atoms simultaneously
+
+                    xyz_new = torch.cat([xyz, xyz_next])
+                    c_new = torch.cat([c, c_next])
 
                     # compute diff and loss after gradient descent
-                    xyz_new, grid_pred, grid_diff, fit_loss = \
-                        self.fit_gd(grid_true, xyz_new, c_new, self.interm_iters, r_factor)
+                    xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
+                        grid_true, xyz_new, c_new, self.interm_gd_iters
+                    )
+
                     type_diff = types - c_new.sum(dim=0)
+                    type_loss = type_diff.abs().sum()
 
                     if self.constrain_types:
-                        heuristic_new = (type_diff.abs().sum().item(), fit_loss.item())
+                        objective_new = (type_loss.item(), fit_loss.item())
                     else:
-                        heuristic_new = fit_loss.item()
+                        objective_new = fit_loss.item()
 
                     # check if new structure is one of the best yet
-                    if any(heuristic_new < s[0] for s in best_structs):
+                    if any(objective_new < s[0] for s in best_structs):
 
-                        new_best_structs.append((heuristic_new, struct_count, xyz_new, c_new))
-                        new_best_grid_diffs.append(grid_diff)
-                        new_best_type_diffs.append(type_diff)
+                        print('found new best as struct {}'.format(struct_count))
+
+                        xyz_new_next, c_new_next = self.get_next_atoms(
+                            grid_diff,
+                            grid_true.channels,
+                            grid_true.center,
+                            grid_true.resolution,
+                            type_diff,
+                        )
+                        new_best_structs.append(
+                            (
+                                objective_new,
+                                struct_count,
+                                xyz_new,
+                                c_new,
+                                xyz_new_next,
+                                c_new_next,
+                            )
+                        )
                         found_new_best_struct = True
                         struct_count += 1
 
+                else: # evaluate each possible next atom individually
+
+                    for xyz_next_, c_next_ in zip(xyz_next, c_next):
+
+                        # add next atom to structure
+                        xyz_new = torch.cat([xyz, xyz_next_.unsqueeze(0)])
+                        c_new = torch.cat([c, c_next_.unsqueeze(0)])
+
+                        # compute diff and loss after gradient descent
+                        xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
+                            grid_true, xyz_new, c_new, self.interm_gd_iters
+                        )
+
+                        type_diff = types - c_new.sum(dim=0)
+                        type_loss = type_diff.abs().sum()
+
+                        if self.constrain_types:
+                            objective_new = (type_loss.item(), fit_loss.item())
+                        else:
+                            objective_new = fit_loss.item()
+
+                        # check if new structure is one of the best yet
+                        if any(objective_new < s[0] for s in best_structs):
+
+                            xyz_new_next, c_new_next = self.get_next_atoms(
+                                grid_diff,
+                                grid_true.channels,
+                                grid_true.center,
+                                grid_true.resolution,
+                                type_diff,
+                            )
+                            new_best_structs.append(
+                                (
+                                    objective_new,
+                                    struct_count,
+                                    xyz_new,
+                                    c_new,
+                                    xyz_new_next,
+                                    c_new_next,
+                                )
+                            )
+                            found_new_best_struct = True
+                            struct_count += 1
+
                 visited.add(struct_id)
                 if self.output_visited:
-                    visited_structs.append((heuristic, struct_id, time.time()-t_start, xyz, c))
+                    visited_structs.append(
+                        (objective, struct_id, time.time()-t_start, xyz, c)
+                    )
 
-            if found_new_best_struct:
+            if found_new_best_struct: # determine new set of best structures
 
-                new_best_grid_diffs = torch.stack(new_best_grid_diffs)
-                new_best_type_diffs = torch.stack(new_best_type_diffs)
+                if self.multi_atom:
+                    best_structs = sorted(best_structs + new_best_structs)[:1]
+                else:
+                    best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
 
-                # get next-atom init coords and types for new set of best structures
-                xyz_next, c_next = self.init_atoms(new_best_grid_diffs, grid_true.center,
-                                                   grid_true.resolution, kernel, new_best_type_diffs)
-
-                # determine new limited set of best structures
-                for i, (heuristic, struct_id, xyz, c) in enumerate(new_best_structs):
-                    best_structs.append((heuristic, struct_id, xyz, c, xyz_next[i], c_next[i]))
-
-                best_structs = sorted(best_structs)[:self.beam_size]
-                best_heuristic = best_structs[0][0]
+                best_objective = best_structs[0][0]
                 best_id = best_structs[0][1]
+                best_n_atoms = best_structs[0][2].shape[0]
 
                 if self.verbose:
                     try:
                         gpu_usage = getGPUs()[0].memoryUtil
                     except:
                         gpu_usage = np.nan
-                    print('best struct # {} (heuristic={}, GPU={})'
-                          .format(best_id, best_heuristic, gpu_usage))
+                    print(
+                        'best struct # {} (objective={}, n_atoms={}, GPU={})'.format(
+                            best_id, best_objective, best_n_atoms, gpu_usage
+                        )
+                    )
 
-        best_heuristic, best_id, xyz_best, c_best, _, _ = best_structs[0]
+        best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
-        xyz_best, grid_pred, grid_diff, fit_loss = \
-            self.fit_gd(grid_true, xyz_best, c_best, self.final_iters, r_factor)
+        # perform final gradient descent
+        xyz_best, grid_pred, grid_diff, fit_loss = self.fit_gd(
+            grid_true, xyz_best, c_best, self.final_gd_iters
+        )
+
         type_diff = (types - c_best.sum(dim=0)).abs().sum().item()
 
-        grid_pred = MolGrid(grid_pred.cpu().detach().numpy(),
-                            grid.channels, grid.center, grid.resolution)
+        grid_pred = MolGrid(
+            values=grid_pred.cpu().detach().numpy(),
+            channels=grid.channels,
+            center=grid.center,
+            resolution=grid.resolution,
+        )
 
         if self.output_visited: # return all visited structures
 
             struct_best = []
-            for heuristic, struct_id, fit_time, xyz, c in visited_structs:
+            for objective, struct_id, fit_time, xyz, c in visited_structs:
 
                 if self.constrain_types:
-                    type_diff, fit_loss = heuristic
+                    type_diff, fit_loss = objective
                 else:
-                    fit_loss = heuristic
+                    fit_loss = objective
                     type_diff = (types - c.sum(dim=0)).abs().sum().item()
 
-                c = torch.argmax(c, dim=1) if len(c) > 0 else torch.zeros((0,))
-                struct = MolStruct(xyz.cpu().detach().numpy(), c.cpu().detach().numpy(),
-                                   grid.channels, loss=fit_loss, type_diff=type_diff, time=fit_time)
+                if len(c) > 0:
+                    c = torch.argmax(c, dim=1)
+                else:
+                    c = torch.zeros((0,))
+
+                struct = MolStruct(
+                    xyz=xyz.cpu().detach().numpy(),
+                    c=c.cpu().detach().numpy(),
+                    channels=grid.channels,
+                    loss=fit_loss,
+                    type_diff=type_diff,
+                    est_type_diff=est_type_diff,
+                    time=fit_time,
+                    n_steps=len(visited)-1,
+                )
                 struct_best.append(struct)
 
         else: # return only the best structure
-            c_best = torch.argmax(c_best, dim=1) if len(c_best) > 0 else torch.zeros((0,))
-            struct_best = MolStruct(xyz_best.cpu().detach().numpy(), c_best.cpu().detach().numpy(),
-                                    grid.channels, loss=fit_loss, type_diff=type_diff, time=time.time()-t_start)
+
+            if len(c_best) > 0:
+                c_best = torch.argmax(c_best, dim=1)
+            else:
+                c_best = torch.zeros((0,))
+
+            struct_best = MolStruct(
+                xyz=xyz_best.cpu().detach().numpy(),
+                c=c_best.cpu().detach().numpy(),
+                channels=grid.channels,
+                loss=fit_loss,
+                type_diff=type_diff,
+                est_type_diff=est_type_diff,
+                time=time.time()-t_start,
+                n_steps=len(visited)-1,
+            )
 
         return grid_pred, struct_best
 
-    def fit_gd(self, grid, xyz, c, n_iters, r_factor=1.0):
+    def fit_gd(self, grid, xyz, c, n_iters):
 
-        r = torch.tensor([ch.atomic_radius for ch in grid.channels],
-                         device=self.device) * r_factor
+        r = torch.tensor(
+            [ch.atomic_radius for ch in grid.channels],
+            device=self.device,
+        )
 
         xyz = xyz.clone().detach().to(self.device)
         c = c.clone().detach().to(self.device)
         xyz.requires_grad = True
 
-        solver = torch.optim.Adam((xyz,), lr=self.learning_rate,
-                                  betas=(self.beta1, self.beta2),
-                                  weight_decay=self.weight_decay)
+        solver = torch.optim.Adam((xyz,), **self.gd_kwargs)
 
         self.grid_maker.set_radii_type_indexed(True)
         self.grid_maker.set_dimension(grid.dimension)
         self.grid_maker.set_resolution(grid.resolution)
         self.c2grid.center = tuple(grid.center.cpu().numpy().astype(float))
 
-        for i in range(n_iters+1):
+        for i in range(n_iters + 1):
             solver.zero_grad()
 
             grid_pred = self.c2grid(xyz, c, r)
             grid_diff = grid.values - grid_pred
-            loss = (grid_diff**2).sum()/2.
+            loss = (grid_diff**2).sum() / 2.0
 
             if i == n_iters: # or converged
                 break
@@ -431,7 +670,28 @@ class AtomFitter(object):
             loss.backward()
             solver.step()
 
-        return xyz.detach(), grid_pred.detach(), grid_diff.detach(), loss.detach()
+        return (
+            xyz.detach(),
+            grid_pred.detach(),
+            grid_diff.detach(),
+            loss.detach()
+        )
+
+
+class DkoesAtomFitter(AtomFitter):
+
+    def __init__(self, iters=25, tol=0.01):
+        self.iters = iters
+        self.tol = tol
+
+    def fit(self, grid, types):
+        from simple_fit import simple_atom_fit
+        return simple_atom_fit(
+            mgrid=grid,
+            types=types,
+            iters=self.iters,
+            tol=self.tol
+        )
 
 
 class OutputWriter(object):
@@ -440,13 +700,24 @@ class OutputWriter(object):
     MolStructs from a generative model or atom fitting algorithm,
     computing metrics, and writing files to disk as necessary.
     '''
-    def __init__(self, out_prefix, output_dx, output_sdf, output_channels,
-                 n_samples, blob_names, fit_atoms, verbose):
+    def __init__(
+        self,
+        out_prefix,
+        output_dx,
+        output_sdf,
+        output_channels,
+        output_latent,
+        n_samples,
+        blob_names,
+        fit_atoms,
+        verbose
+    ):
 
         self.out_prefix = out_prefix
         self.output_dx = output_dx
         self.output_sdf = output_sdf
         self.output_channels = output_channels
+        self.output_latent = output_latent
         self.fit_atoms = fit_atoms
 
         # organize grids and structs by lig_name, grid_name, sample_idx
@@ -486,7 +757,9 @@ class OutputWriter(object):
         self.structs[lig_name][grid_name][sample_idx] = struct
 
         has_all_grids = (len(self.grids[lig_name]) == self.n_grids)
-        has_all_samples = all(len(g) == self.n_samples for g in self.grids[lig_name].values())
+        has_all_samples = all(
+            len(g) == self.n_samples for g in self.grids[lig_name].values()
+        )
 
         if not (has_all_grids and has_all_samples):
             return False
@@ -522,7 +795,9 @@ class OutputWriter(object):
                         struct_file = sample_prefix + '.sdf'
                         if self.verbose:
                             print('out_writer writing ' + struct_file)
-                        write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in struct])
+                        write_rd_mols_to_sdf_file(
+                            struct_file, [s.to_rd_mol() for s in struct]
+                        )
                         self.struct_files.append(struct_file)
 
                         # best struct
@@ -537,7 +812,9 @@ class OutputWriter(object):
                             channels_file = '{}.channels'.format(sample_prefix)
                             if self.verbose:
                                 print('out_writer writing ' + channels_file)
-                            write_channels_to_file(channels_file, struct.c, struct.channels)
+                            write_channels_to_file(
+                                channels_file, struct.c, struct.channels
+                            )
 
                 # write best stucts to single sdf file so that they
                 # are loaded into diff states of single pymol object
@@ -545,9 +822,24 @@ class OutputWriter(object):
                     struct_file = grid_prefix + '.sdf'
                     if self.verbose:
                         print('out_writer writing ' + struct_file)
-                    write_rd_mols_to_sdf_file(struct_file, [s.to_rd_mol() for s in best_structs])
+                    write_rd_mols_to_sdf_file(
+                        struct_file, [s.to_rd_mol() for s in best_structs]
+                    )
                     self.struct_files.append(struct_file)
                     self.centers.append(best_structs[0].center)
+
+            if self.output_latent and grid_name.endswith('_gen'):
+
+                latent_vecs = []
+                for sample_idx, grid in lig_grids[grid_name].items():
+                    latent_vecs.append(grid.info['latent_vec'])
+
+                latent_file = grid_prefix + '.latent'
+
+                if self.verbose:
+                    print('out_writer writing ' + latent_file)
+
+                write_latent_vecs_to_file(latent_file, latent_vecs)
 
         if self.verbose:
             print('out_writer computing metrics for ' + lig_name)
@@ -590,7 +882,9 @@ class OutputWriter(object):
 
         if self.verbose:
             print('out_writer writing ' + self.pymol_file)
-        write_pymol_script(self.pymol_file, self.dx_prefixes, self.struct_files, self.centers)
+        write_pymol_script(
+            self.pymol_file, self.dx_prefixes, self.struct_files, self.centers
+        )
 
         if self.verbose:
             print('out_writer freeing ' + lig_name)
@@ -605,8 +899,13 @@ class OutputWriter(object):
         molecules for a given ligand and insert in metrics data frame.
         '''
         # use mean grids to evaluate variability
-        lig_grid_mean     = sum(g.values for g in grids['lig'].values())/self.n_samples
-        lig_gen_grid_mean = sum(g.values for g in grids['lig_gen'].values())/self.n_samples
+        lig_grid_mean = sum(
+            g.values for g in grids['lig'].values()
+        ) / self.n_samples
+
+        lig_gen_grid_mean = sum(
+            g.values for g in grids['lig_gen'].values()
+        ) / self.n_samples
 
         # return dict of rdkit mols
         mols = defaultdict(dict)
@@ -617,7 +916,9 @@ class OutputWriter(object):
             lig_grid     = grids['lig'][i]
             lig_gen_grid = grids['lig_gen'][i]
 
-            self.compute_grid_metrics(idx, 'lig', lig_grid, lig_gen_grid, lig_grid_mean, lig_gen_grid_mean)
+            self.compute_grid_metrics(
+                idx, 'lig', lig_grid, lig_gen_grid, lig_grid_mean, lig_gen_grid_mean
+            )
 
             if not self.fit_atoms: # start of atom fitting metrics
                 continue
@@ -629,12 +930,20 @@ class OutputWriter(object):
             lig_fit_struct     = structs['lig_fit'][i]
             lig_gen_fit_struct = structs['lig_gen_fit'][i]
 
-            self.compute_fit_metrics(idx, 'lig', lig_grid, lig_fit_grid, lig_struct, lig_fit_struct)
-            self.compute_fit_metrics(idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid, lig_struct, lig_gen_fit_struct)
+            self.compute_fit_metrics(
+                idx, 'lig', lig_grid, lig_fit_grid, lig_struct, lig_fit_struct
+            )
+            self.compute_fit_metrics(
+                idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid, lig_struct, lig_gen_fit_struct
+            )
 
             lig_mol = Chem.RWMol(lig_struct.info['src_mol'])
-            lig_fit_mols = self.compute_mol_validity(idx, 'lig', lig_mol, lig_fit_struct)
-            lig_gen_fit_mols = self.compute_mol_validity(idx, 'lig_gen', lig_mol, lig_gen_fit_struct)
+            lig_fit_mols = self.compute_mol_validity(
+                idx, 'lig', lig_mol, lig_fit_struct
+            )
+            lig_gen_fit_mols = self.compute_mol_validity(
+                idx, 'lig_gen', lig_mol, lig_gen_fit_struct
+            )
 
             mols['lig'][i] = [lig_mol]
             mols['lig_fit'][i] = lig_fit_mols
@@ -645,32 +954,54 @@ class OutputWriter(object):
 
         return mols
 
-    def compute_grid_metrics(self, idx, prefix, true_grid, gen_grid, true_grid_mean, gen_grid_mean):
+    def compute_grid_metrics(
+        self,
+        idx,
+        prefix,
+        true_grid,
+        gen_grid,
+        true_grid_mean,
+        gen_grid_mean,
+    ):
 
         m = self.metrics
 
         # density magnitude
-        m.loc[idx, prefix+'_norm']     = np.linalg.norm(true_grid.values)
+        m.loc[idx, prefix+'_norm'] = np.linalg.norm(true_grid.values)
         m.loc[idx, prefix+'_gen_norm'] = np.linalg.norm(gen_grid.values)
 
         # latent sample magnitude
-        m.loc[idx, prefix+'_latent_norm'] = gen_grid.info['latent_norm']
+        m.loc[idx, prefix+'_latent_norm'] = np.linalg.norm(gen_grid.info['latent_vec'])
 
         # generated density L2 loss
         m.loc[idx, prefix+'_gen_L2_loss'] = \
             (((true_grid.values - gen_grid.values)**2).sum()/2).item()
 
         # density variance (divide by n_samples(+1) for sample (population) variance)
-        m.loc[idx, prefix+'_variance']     = ((true_grid.values - true_grid_mean)**2).sum().item()
-        m.loc[idx, prefix+'_gen_variance'] = ((gen_grid.values  - gen_grid_mean)**2).sum().item()
+        m.loc[idx, prefix+'_variance'] = (
+            (true_grid.values - true_grid_mean)**2
+        ).sum().item()
 
-    def compute_fit_metrics(self, idx, prefix, true_grid, fit_grid, true_struct, fit_struct):
+        m.loc[idx, prefix+'_gen_variance'] = (
+            (gen_grid.values  - gen_grid_mean)**2
+        ).sum().item()
+
+    def compute_fit_metrics(
+        self,
+        idx,
+        prefix,
+        true_grid,
+        fit_grid,
+        true_struct,
+        fit_struct
+    ):
 
         m = self.metrics
 
         # fit density L2 loss
-        m.loc[idx, prefix+'_fit_L2_loss'] = \
-            (((true_grid.values - fit_grid.values)**2).sum()/2).item()
+        m.loc[idx, prefix+'_fit_L2_loss'] = (
+            ((true_grid.values - fit_grid.values)**2).sum()/2
+        ).item()
 
         # number of atoms
         if not prefix.endswith('_gen'):
@@ -687,17 +1018,26 @@ class OutputWriter(object):
         fit_type_count  = count_types(fit_struct.c, n_types)
 
         # fit type difference
-        m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(true_type_count - fit_type_count, ord=1)
+        m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(
+            true_type_count - fit_type_count, ord=1
+        )
+        m.loc[idx, prefix+'_est_type_diff'] = fit_struct.info['est_type_diff']
+
+        m.loc[idx, prefix+'_fit_exact_types'] = (m.loc[idx, prefix+'_fit_type_diff'] == 0)
+        m.loc[idx, prefix+'_est_exact_types'] = (m.loc[idx, prefix+'_est_type_diff'] == 0)
 
         # fit minimum RMSD
         try:
-            rmsd = get_min_rmsd(true_struct.xyz, true_struct.c, fit_struct.xyz, fit_struct.c)
+            rmsd = get_min_rmsd(
+                true_struct.xyz, true_struct.c, fit_struct.xyz, fit_struct.c
+            )
         except (ValueError, ZeroDivisionError):
             rmsd = np.nan
         m.loc[idx, prefix+'_fit_RMSD'] = rmsd
 
-        # fit time
+        # fit time and number of steps
         m.loc[idx, prefix+'_fit_time'] = fit_struct.info['time']
+        m.loc[idx, prefix+'_fit_n_steps'] = fit_struct.info['n_steps']
 
     def compute_mol_validity(self, idx, prefix, true_mol, fit_struct):
 
@@ -718,14 +1058,14 @@ class OutputWriter(object):
         n_frags, error, valid = get_rd_mol_validity(true_mol)
         if not prefix.endswith('_gen'):
             m.loc[idx, prefix+'_n_frags'] = n_frags
-            m.loc[idx, prefix+'_error']   = error
-            m.loc[idx, prefix+'_valid']   = valid
+            m.loc[idx, prefix+'_error'] = error
+            m.loc[idx, prefix+'_valid'] = valid
 
         # check mol validity prior to bond adding
         n_frags, error, valid = get_rd_mol_validity(mol_ob)
         m.loc[idx, prefix+'_fit_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_error']   = error
-        m.loc[idx, prefix+'_fit_valid']   = valid
+        m.loc[idx, prefix+'_fit_error'] = error
+        m.loc[idx, prefix+'_fit_valid'] = valid
 
         # make aromatic rings using channel info
         mol_add = Chem.RWMol(mol_ob)
@@ -737,51 +1077,59 @@ class OutputWriter(object):
         # check validity after bond adding
         n_frags, error, valid = get_rd_mol_validity(mol_add)
         m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_add_error']   = error
-        m.loc[idx, prefix+'_fit_add_valid']   = valid
+        m.loc[idx, prefix+'_fit_add_error'] = error
+        m.loc[idx, prefix+'_fit_add_valid'] = valid
 
         # convert to smiles string
         true_smi = Chem.MolToSmiles(true_mol, canonical=True)
-        smi      = Chem.MolToSmiles(mol_add,  canonical=True)
+        smi = Chem.MolToSmiles(mol_add,  canonical=True)
 
         if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_SMILES']           = true_smi
-        m.loc[idx, prefix+'_fit_add_SMILES']       = smi
+            m.loc[idx, prefix+'_SMILES'] = true_smi
+
+        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
         m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
 
         # fingerprint similarity
-        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(true_mol, mol_add, 'morgan')
-        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(true_mol, mol_add, 'rdkit')
-        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(true_mol, mol_add, 'maccs')
+        m.loc[idx, prefix+'_fit_add_ob_sim']  = get_ob_smi_similarity(true_smi, smi)
+
+        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(
+            true_mol, mol_add, 'morgan'
+        )
+        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(
+            true_mol, mol_add, 'rdkit'
+        )
+        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(
+            true_mol, mol_add, 'maccs'
+        )
 
         # other molecular descriptors
         if not prefix.endswith('_gen'):
-
-            m.loc[idx, prefix+'_MW']   = get_rd_mol_weight(true_mol)
+            m.loc[idx, prefix+'_MW'] = get_rd_mol_weight(true_mol)
             m.loc[idx, prefix+'_logP'] = get_rd_mol_logP(true_mol)
-            m.loc[idx, prefix+'_QED']  = get_rd_mol_QED(true_mol)
-            m.loc[idx, prefix+'_SAS']  = get_rd_mol_SAS(true_mol)
-            m.loc[idx, prefix+'_NPS']  = get_rd_mol_NPS(true_mol, nps_model)
+            m.loc[idx, prefix+'_QED'] = get_rd_mol_QED(true_mol)
+            m.loc[idx, prefix+'_SAS'] = get_rd_mol_SAS(true_mol)
+            m.loc[idx, prefix+'_NPS'] = get_rd_mol_NPS(true_mol, nps_model)
 
-        m.loc[idx, prefix+'_fit_add_MW']   = get_rd_mol_weight(mol_add)
+        m.loc[idx, prefix+'_fit_add_MW'] = get_rd_mol_weight(mol_add)
         m.loc[idx, prefix+'_fit_add_logP'] = get_rd_mol_logP(mol_add)
-        m.loc[idx, prefix+'_fit_add_QED']  = get_rd_mol_QED(mol_add)
-        m.loc[idx, prefix+'_fit_add_SAS']  = get_rd_mol_SAS(mol_add)
-        m.loc[idx, prefix+'_fit_add_NPS']  = get_rd_mol_NPS(mol_add, nps_model)
+        m.loc[idx, prefix+'_fit_add_QED'] = get_rd_mol_QED(mol_add)
+        m.loc[idx, prefix+'_fit_add_SAS'] = get_rd_mol_SAS(mol_add)
+        m.loc[idx, prefix+'_fit_add_NPS'] = get_rd_mol_NPS(mol_add, nps_model)
 
         # energy minimization with UFF
         true_mol_min, init_E_t, min_E_t, error = uff_minimize_rd_mol(true_mol)
         if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_E']         = init_E_t
-            m.loc[idx, prefix+'_min_E']     = min_E_t
-            m.loc[idx, prefix+'_dE_min']    = min_E_t - init_E_t
+            m.loc[idx, prefix+'_E'] = init_E_t
+            m.loc[idx, prefix+'_min_E'] = min_E_t
+            m.loc[idx, prefix+'_dE_min'] = min_E_t - init_E_t
             m.loc[idx, prefix+'_min_error'] = error
-            m.loc[idx, prefix+'_RMSD_min']  = get_aligned_rmsd(true_mol_min, true_mol)
+            m.loc[idx, prefix+'_RMSD_min'] = get_aligned_rmsd(true_mol_min, true_mol)
 
         mol_min, init_E, min_E, error = uff_minimize_rd_mol(mol_add)
-        m.loc[idx, prefix+'_fit_add_E']         = init_E
-        m.loc[idx, prefix+'_fit_add_min_E']     = min_E
-        m.loc[idx, prefix+'_fit_add_dE_min']    = min_E - init_E
+        m.loc[idx, prefix+'_fit_add_E'] = init_E
+        m.loc[idx, prefix+'_fit_add_min_E'] = min_E
+        m.loc[idx, prefix+'_fit_add_dE_min'] = min_E - init_E
         m.loc[idx, prefix+'_fit_add_min_error'] = error
         m.loc[idx, prefix+'_fit_add_RMSD_min']  = get_aligned_rmsd(mol_min, mol_add)
 
@@ -799,12 +1147,12 @@ class OutputWriter(object):
 
 
 def catch_exc(func, exc=Exception, default=np.nan):
-    def new_func(*args, **kwargs):
+    def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except exc as e:
             return default
-    return new_func
+    return wrapper
 
 
 get_rd_mol_weight = catch_exc(Chem.Descriptors.MolWt)
@@ -905,6 +1253,13 @@ def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
         fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
 
     return DataStructs.TanimotoSimilarity(fgp1, fgp2)
+
+
+@catch_exc
+def get_ob_smi_similarity(smi1, smi2):
+    fgp1 = pybel.readstring('smi', smi1).calcfp()
+    fgp2 = pybel.readstring('smi', smi2).calcfp()
+    return fgp1 | fgp2
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=1000):
@@ -1066,6 +1421,14 @@ def read_rd_mols_from_sdf_file(sdf_file):
     else:
         suppl = Chem.SDMolSupplier(sdf_file)
     return [mol for mol in suppl]
+
+
+def write_latent_vecs_to_file(latent_file, latent_vecs):
+
+    with open(latent_file, 'w') as f:
+        for v in latent_vecs:
+            line = ' '.join('{:.5f}'.format(x) for x in v) + '\n'
+            f.write(line)
 
 
 def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
@@ -2033,38 +2396,115 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     rec_channels = atom_types.get_channels_from_map(rec_map, name_prefix='Receptor')
     lig_channels = atom_types.get_channels_from_map(lig_map, name_prefix='Ligand')
 
-    ex_provider = molgrid.ExampleProvider(rec_map, lig_map, data_root=args.data_root,
-                                          recmolcache=data_param.recmolcache,
-                                          ligmolcache=data_param.ligmolcache)
+    print('Creating example provider')
+    ex_provider = molgrid.ExampleProvider(
+        rec_map,
+        lig_map,
+        data_root=args.data_root,
+        recmolcache=data_param.recmolcache,
+        ligmolcache=data_param.ligmolcache,
+    )
+
+    print('Populating example provider')
     ex_provider.populate(data_param.source)
 
+    print('Creating grid maker')
     grid_maker = molgrid.GridMaker(data_param.resolution, data_param.dimension)
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    try: # find latent variable blobs for VAE
-        latent_mean = find_blobs_in_net(gen_net, r'.+_latent_mean')[0]
-        latent_std = find_blobs_in_net(gen_net, r'.+_latent_std')[0]
-        latent_noise = find_blobs_in_net(gen_net, r'.+_latent_noise')[0]
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_sample')[0]
+    print('Finding important blobs')
+    try: # find receptor encoder blobs
+        rec_enc_start = find_blobs_in_net(gen_net, 'rec')[0]
+        try:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_std')[0]
+            rec_enc_is_var = True
+        except IndexError:
+            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_fc')[0]
+            rec_enc_is_var = False
+        has_rec_enc = True
+    except IndexError:
+        has_rec_enc = False
+
+    if args.verbose:
+        print('has_rec_enc = {}'.format(has_rec_enc))
+        if has_rec_enc:
+            print('\trec_enc_is_var = {}'.format(rec_enc_is_var))
+            print('\trec_enc_start = {}'.format(repr(rec_enc_start)))
+            print('\trec_enc_end = {}'.format(repr(rec_enc_end)))
+
+    try: # find ligand encoder blobs
+        lig_enc_start = find_blobs_in_net(gen_net, 'lig')[0]
+        try:
+            lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_std')[0]
+            lig_enc_is_var = True
+        except IndexError:
+            try:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_defc')[0]
+            except IndexError:
+                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_fc')[0]
+            lig_enc_is_var = False
+        has_lig_enc = True
+    except IndexError:
+        has_lig_enc = False
+
+    if args.verbose:
+        print('has_lig_enc = {}'.format(has_lig_enc))
+        if has_lig_enc:
+            print('\tlig_enc_is_var = {}'.format(lig_enc_is_var))
+            print('\tlig_enc_start = {}'.format(repr(lig_enc_start)))
+            print('\tlig_enc_end = {}'.format(repr(lig_enc_end)))
+
+    # must have at least one encoder
+    assert (has_rec_enc or has_lig_enc)
+
+    # only one encoder can be variational
+    if has_rec_enc and has_lig_enc:
+        assert not (rec_enc_is_var and lig_enc_is_var)
+
+    try: # find latent variable blobs
+        latent_prefix = ('lig' if has_lig_enc else 'rec') + '_latent'
+        latent_mean = find_blobs_in_net(gen_net, latent_prefix+'_mean')[0]
+        latent_std = find_blobs_in_net(gen_net, latent_prefix+'_std')[0]
+        latent_noise = find_blobs_in_net(gen_net, latent_prefix+'_noise')[0]
+        latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_sample')[0]
         variational = True
-    except IndexError: # for standard AE
-        latent_sample = find_blobs_in_net(gen_net, r'.+_latent_defc')[0]
+    except IndexError:
         variational = False
+
+    if args.verbose:
+        print('variational = {}'.format(variational))
+        if variational:
+            print('\tlatent_mean = {}'.format(repr(latent_mean)))
+            print('\tlatent_std = {}'.format(repr(latent_std)))
+            print('\tlatent_noise = {}'.format(repr(latent_noise)))
+            print('\tlatent_sample = {}'.format(repr(latent_sample)))
+
+    # find ligand decoder blobs (required)
+    if has_rec_enc and has_lig_enc:
+        lig_dec_start = find_blobs_in_net(gen_net, 'latent_concat')[0]
+    else:
+        lig_dec_start = find_blobs_in_net(gen_net, 'lig_dec_fc')[0]
+    lig_dec_end = find_blobs_in_net(gen_net, 'lig_gen')[0]
+
+    if args.verbose:
+        print('has_lig_dec = True')
+        print('\tlig_dec_start = {}'.format(repr(lig_dec_start)))
+        print('\tlig_dec_end = {}'.format(repr(lig_dec_end)))
 
     n_latent = gen_net.blobs[latent_sample].shape[1]
 
-    # find first decoder blob
-    dec_fc = find_blobs_in_net(gen_net, r'.+_dec_fc')[0]
-
+    print('Testing generator forward')
     gen_net.forward() # this is necessary for proper latent sampling
 
+    print('Creating atom fitter and output writer')
     if args.parallel: # compute metrics and write output in a separate thread
 
         out_queue = mp.Queue()
         out_thread = threading.Thread(
             target=out_worker_main,
-            args=(out_queue, args))
+            args=(out_queue, args),
+        )
         out_thread.start()
 
         if args.fit_atoms: # fit atoms to grids in separate processes
@@ -2072,19 +2512,52 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             fit_procs = mp.Pool(
                 processes=args.n_fit_workers,
                 initializer=fit_worker_main,
-                initargs=(fit_queue, out_queue, args))
+                initargs=(fit_queue, out_queue, args),
+            )
 
     else: # compute metrics, write output, and fit atoms in single thread
-        output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf, args.output_channels,
-                              args.n_samples, args.blob_name, args.fit_atoms, verbose=args.verbose)
+
+        output = OutputWriter(
+            out_prefix=args.out_prefix,
+            output_dx=args.output_dx,
+            output_sdf=args.output_sdf,
+            output_channels=args.output_channels,
+            output_latent=args.output_latent,
+            n_samples=args.n_samples,
+            blob_names=args.blob_name,
+            fit_atoms=args.fit_atoms,
+            verbose=args.verbose,
+        )
 
         if args.fit_atoms:
-            fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
-                                args.learning_rate, args.beta1, args.beta2, args.weight_decay,
-                                args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
-                                device=device, verbose=args.verbose)
+            if args.dkoes_simple_fit:
+                fitter = DkoesAtomFitter()
+            else:
+                fitter = AtomFitter(
+                    multi_atom=args.multi_atom, 
+                    beam_size=args.beam_size,
+                    apply_conv=args.apply_conv,
+                    threshold=args.threshold,
+                    peak_value=args.peak_value,
+                    min_dist=args.min_dist,
+                    constrain_types=args.constrain_types,
+                    constrain_frags=False,
+                    estimate_types=args.estimate_types,
+                    interm_gd_iters=args.interm_gd_iters,
+                    final_gd_iters=args.final_gd_iters,
+                    gd_kwargs=dict(
+                        lr=args.learning_rate,
+                        betas=(args.beta1, args.beta2),
+                        weight_decay=args.weight_decay,
+                    ),
+                    output_visited=args.output_visited,
+                    output_kernel=args.output_kernel,
+                    device=device,
+                    verbose=args.verbose,
+                )
 
     # generate density grids from generative model in main thread
+    print('Starting to generate grids')
     try:
         for example_idx in range(n_examples):
 
@@ -2099,13 +2572,17 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 if batch_idx == 0: # forward next batch
 
                     # get next batch of structures
+                    print('Getting batch of examples')
                     examples = ex_provider.next_batch(batch_size)
 
                     # convert structures to grids
+                    print('Transforming and gridding examples')
                     for i, ex in enumerate(examples):
-                        transform = molgrid.Transform(ex.coord_sets[1].center(),
-                                                      args.random_translate,
-                                                      args.random_rotation)
+                        transform = molgrid.Transform(
+                            ex.coord_sets[1].center(),
+                            args.random_translate,
+                            args.random_rotation,
+                        )
                         transform.forward(ex, ex)
                         grid_maker.forward(ex, grid_true[i])
 
@@ -2118,6 +2595,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     if need_first and is_first:
                         first_rec = np.array(rec[:1])
                         first_lig = np.array(lig[:1])
+
+                    print('Calling generator forward')
 
                     # set encoder input grids
                     if args.encode_first:
@@ -2144,44 +2623,62 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         gen_net.blobs['rec'].data[batch_size//2:] = end_rec
                         gen_net.blobs['lig'].data[batch_size//2:] = end_lig
 
-                    # encode true grids to latent variable parameters
-                    if variational:
-                        if args.prior:
-                            if args.mean:
+                    if has_rec_enc: # forward receptor encoder
+                        if rec_enc_is_var:
+                            if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...]  = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
                             else:
-                                gen_net.blobs[latent_mean].data[...] = 0.0
-                                gen_net.blobs[latent_std].data[...]  = 1.0
-                        else: # posterior
-                            if args.mean:
-                                gen_net.forward(end=latent_mean)
-                                gen_net.blobs[latent_std].data[...] = 0.0
-                            else:
-                                gen_net.forward(end=latent_std)
+                                gen_net.forward(start=rec_enc_start, end=rec_enc_end)
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                        else:
+                            gen_net.forward(start=rec_enc_start, end=rec_enc_end)
 
-                        # sample latent variables
+                    if has_lig_enc: # forward ligand encoder
+                        if lig_enc_is_var:
+                            if args.prior:
+                                gen_net.blobs[latent_mean].data[...] = 0.0
+                                if args.mean:
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.blobs[latent_std].data[...] = 1.0
+                            else: # posterior
+                                if args.mean:
+                                    gen_net.forward(start=lig_enc_start, end=latent_mean)
+                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                else:
+                                    gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                        else:
+                            gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+
+                    if variational: # sample latent variables
                         gen_net.forward(start=latent_noise, end=latent_sample)
 
-                    else:
-                        if args.prior:
-                            gen_net.blobs[latent_sample] = np.random.randn(batch_size, n_latent)
-                        else:
-                            gen_net.forward(end=latent_sample)
-
                     if args.interpolate: # interpolate between latent samples
+
                         latent = gen_net.blobs[latent_sample].data
                         start_latent = np.array(latent[0])
-                        end_latent   = np.array(latent[-1])
+                        end_latent = np.array(latent[-1])
+
                         if args.spherical:
-                            gen_net.blobs[latent_sample].data[...] = \
-                                    slerp(start_latent, end_latent, np.linspace(0, 1, batch_size, endpoint=True))
+                            gen_net.blobs[latent_sample].data[...] = slerp(
+                                start_latent,
+                                end_latent,
+                                np.linspace(0, 1, batch_size, endpoint=True)
+                            )
                         else:
-                            gen_net.blobs[latent_sample].data[...] = \
-                                    np.linspace(start_latent, end_latent, batch_size, endpoint=True)
+                            gen_net.blobs[latent_sample].data[...] = np.linspace(
+                                start_latent, end_latent, batch_size, endpoint=True
+                            )
 
                     # decode latent samples to generate grids
-                    gen_net.forward(start=dec_fc)
+                    gen_net.forward(start=lig_dec_start, end=lig_dec_end)
+
+                print('Getting true molecule for current example')
 
                 # get current example ligand
                 if args.interpolate:
@@ -2198,6 +2695,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_name = os.path.basename(lig_src_no_ext)
 
                 try: # get true mol from the original sdf file
+                    print('Looking for true molecule in data root')
                     m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
                     if m:
                         lig_sdf_base = m.group(1) + '_docked.sdf.gz'
@@ -2210,33 +2708,50 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     struct.info['src_mol'] = mol
 
                 except Exception as e: # get true mol from openbabel
+                    print('Inferring true molecule using OpenBabel')
                     mol = struct.to_ob_mol()
                     mol.ConnectTheDots()
                     mol.PerceiveBondOrders()
                     mol = ob_mol_to_rd_mol(mol)
                     struct.info['src_mol'] = mol
 
-                for blob_name in args.blob_name: # get data from blob and add to appropriate output
+                print('True molecule for {} has {} atoms'.format(lig_name, struct.n_atoms))
+
+                # get data from blob, process, and write output
+                for blob_name in args.blob_name:
+
+                    print('Getting grid from {} blob'.format(blob_name))
 
                     grid_blob = gen_net.blobs[blob_name]
+
+                    if blob_name == 'rec':
+                        grid_channels = rec_channels
+                    elif blob_name in {'lig', 'lig_gen'}:
+                        grid_channels = lig_channels
+                    else:
+                        grid_channels = atom_types.get_n_unknown_channels(
+                            grid_blob.shape[1]
+                        )
 
                     if args.interpolate and blob_name in {'rec', 'lig'}:
                         grid_data = grid_blob.data[endpoint_idx]
                     else:
                         grid_data = grid_blob.data[batch_idx]
 
-                    grid = MolGrid(values=np.array(grid_data),
-                                   channels=struct.channels,
-                                   center=struct.center,
-                                   resolution=grid_maker.get_resolution())
+                    grid = MolGrid(
+                        values=np.array(grid_data),
+                        channels=grid_channels,
+                        center=struct.center,
+                        resolution=grid_maker.get_resolution(),
+                    )
 
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
-                    if grid_name == 'lig_gen':
+                    if grid_name == 'lig_gen': # store latent vector for generated grids
                         latent_blob = gen_net.blobs[latent_sample]
-                        latent_data = np.array(latent_blob.data)[batch_idx]
-                        grid.info['latent_norm'] = np.linalg.norm(latent_data)
+                        latent_vec = np.array(latent_blob.data[batch_idx])
+                        grid.info['latent_vec'] = latent_vec
 
                     if args.verbose:
                         try:
@@ -2244,21 +2759,32 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         except:
                             gpu_usage = np.nan
 
-                        print('main_thread produced {} {} {} (norm={}\tGPU={})'
-                              .format(lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage), flush=True)
+                        print('Main thread produced {} {} {} (norm={}\tGPU={})'.format(
+                            lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage
+                        ), flush=True)
 
                     if args.fit_atoms and blob_name.startswith('lig'):
                         if args.parallel:
-                            fit_queue.put((lig_name, grid_name, sample_idx, grid, struct))
+                            fit_queue.put(
+                                (lig_name, grid_name, sample_idx, grid, struct)
+                            )
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid, struct)
-                            grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
-                            output.write(lig_name, grid_name+'_fit', sample_idx, grid_fit, struct_fit)
+                            output.write(
+                                lig_name, grid_name, sample_idx, grid, struct
+                            )
+                            grid_fit, struct_fit = fitter.fit(grid, types)
+                            output.write(
+                                lig_name, grid_name+'_fit', sample_idx, grid_fit, struct_fit
+                            )
                     else:
                         if args.parallel:
-                            out_queue.put((lig_name, grid_name, sample_idx, grid, struct))
+                            out_queue.put(
+                                (lig_name, grid_name, sample_idx, grid, struct)
+                            )
                         else:
-                            output.write(lig_name, grid_name, sample_idx, grid, struct)
+                            output.write(
+                                lig_name, grid_name, sample_idx, grid, struct
+                            )
     finally:
         if args.parallel:
 
@@ -2272,46 +2798,83 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             out_thread.join()
 
     if args.verbose:
-        print('main_thread exit')
+        print('Main thread exit')
 
 
 def fit_worker_main(fit_queue, out_queue, args):
 
-    fitter = AtomFitter(args.beam_size, args.beam_stride, args.atom_init, args.interm_iters, args.final_iters,
-                        args.learning_rate, args.beta1, args.beta2, args.weight_decay,
-                        args.constrain_types, args.r_factor, args.output_visited, args.output_kernel,
-                        device='cpu', verbose=args.verbose)
-    while True:
+    if args.dkoes_simple_fit:
+        fitter = DkoesAtomFitter()
+    else:
+        fitter = AtomFitter(
+            multi_atom=args.multi_atom,
+            beam_size=args.beam_size,
+            apply_conv=args.apply_conv,
+            threshold=args.threshold,
+            peak_value=args.peak_value,
+            min_dist=args.min_dist,
+            constrain_types=args.constrain_types,
+            constrain_frags=False,
+            estimate_types=args.estimate_types,
+            interm_gd_iters=args.interm_gd_iters,
+            final_gd_iters=args.final_gd_iters,
+            gd_kwargs=dict(
+                lr=args.learning_rate,
+                betas=(args.beta1, args.beta2),
+                weight_decay=args.weight_decay,
+            ),
+            output_visited=args.output_visited,
+            output_kernel=args.output_kernel,
+            device='cpu', # can't fit on gpu in multiple threads
+            verbose=args.verbose,
+        )
 
+    while True:
         if args.verbose:
-            print('fit_worker waiting')
+            print('Fit worker waiting')
+
         task = fit_queue.get()
         if task is None:
             break
 
         lig_name, grid_name, sample_idx, grid, struct = task
         if args.verbose:
-            print('fit_worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
+            print('Fit worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid, struct))
+        out_queue.put(
+            (lig_name, grid_name, sample_idx, grid, struct)
+        )
 
         types = count_types(struct.c, len(struct.channels), dtype=int16)
-        grid_fit, struct_fit = fitter.fit(grid, types, use_r_factor='gen' in grid_name)
+        grid_fit, struct_fit = fitter.fit(grid, types)
         grid_name += '_fit'
         if args.verbose:
-            print('fit_worker produced {} {} {} ({} atoms, {}s)'
-                  .format(lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time))
+            print('Fit worker produced {} {} {} ({} atoms, {}s)'.format(
+                lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time
+            ), flush=True)
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid_fit, struct_fit))
+        out_queue.put(
+            (lig_name, grid_name, sample_idx, grid_fit, struct_fit)
+        )
 
     if args.verbose:
-        print('fit_worker exit')
+        print('Fit worker exit')
 
 
 def out_worker_main(out_queue, args):
 
-    output = OutputWriter(args.out_prefix, args.output_dx, args.output_sdf, args.output_channels,
-                          args.n_samples, args.blob_name, args.fit_atoms, verbose=args.verbose)
+    output = OutputWriter(
+        out_prefix=args.out_prefix,
+        output_dx=args.output_dx,
+        output_sdf=args.output_sdf,
+        output_channels=args.output_channels,
+        output_latent=args.output_latent,
+        n_samples=args.n_samples,
+        blob_names=args.blob_name,
+        fit_atoms=args.fit_atoms,
+        verbose=args.verbose,
+    )
+
     while True:
         task = out_queue.get()
         if task is None:
@@ -2319,7 +2882,7 @@ def out_worker_main(out_queue, args):
         output.write(*task)
 
     if args.verbose:
-        print('out_worker exit')
+        print('Output worker exit')
 
 
 def parse_args(argv=None):
@@ -2332,6 +2895,7 @@ def parse_args(argv=None):
     parser.add_argument('--data_file', default='', help='path to data file (generate for every example)')
     parser.add_argument('--data_root', default='', help='path to root for receptor and ligand files')
     parser.add_argument('-b', '--blob_name', default=[], action='append', help='blob(s) in model to generate from (default lig & lig_gen)')
+    parser.add_argument('--all_blobs', default=False, action='store_true', help='generate from all blobs in generative model')
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
     parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
@@ -2345,27 +2909,25 @@ def parse_args(argv=None):
     parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
+    parser.add_argument('--output_latent', action='store_true', help='output latent vectors for each generated density grid')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
-    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to use atom types of true ligand')
-    parser.add_argument('--r_factor', type=float, default=1.0, help='radius multiple for fitting to generated grids')
+    parser.add_argument('--dkoes_simple_fit', action='store_true', help='fit atoms using simple_fit.py functions by dkoes')
+    parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
+    parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
+    parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
+    parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
+    parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
+    parser.add_argument('--threshold', type=float, default=0.1, help='threshold value for detecting next atoms on grid')
+    parser.add_argument('--peak_value', type=float, default=1.5, help='reflect grid values higher than this value before detecting next atoms')
+    parser.add_argument('--min_dist', type=float, default=0.0, help='minimum distance between detected atoms, in terms of covalent bond length')
+    parser.add_argument('--interm_gd_iters', type=int, default=10, help='number of gradient descent iterations after each step of atom fitting')
+    parser.add_argument('--final_gd_iters', type=int, default=100, help='number of gradient descent iterations after final step of atom fitting')
     parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
-    parser.add_argument('--beam_size', type=int, default=1, help='value of beam size N for atom fitting search')
-    parser.add_argument('--beam_stride', type=int, default=1, help='stride of atom fitting beam search')
-    parser.add_argument('--atom_init', type=str, default='none', help='function to apply to remaining density before atom init (none|conv|deconv)')
-    parser.add_argument('--interm_iters', type=int, default=10, help='maximum number of iterations for atom fitting between atom inits')
-    parser.add_argument('--final_iters', type=int, default=100, help='maximum number of iterations for atom fitting after atom inits')
-    parser.add_argument('--lambda_E', type=float, default=0.0, help='interatomic bond energy loss weight for gradient descent atom fitting')
-    parser.add_argument('--bonded', action='store_true', help="add atoms by creating bonds to existing atoms when atom fitting")
-    parser.add_argument('--max_init_bond_E', type=float, default=0.5, help='maximum energy of bonds to consider when adding bonded atoms')
-    parser.add_argument('--fit_GMM', action='store_true', help='fit atoms by a Gaussian mixture model instead of gradient descent')
-    parser.add_argument('--noise_model', default='', help='noise model for GMM atom fitting (d|p)')
-    parser.add_argument('--deconv_grids', action='store_true', help="apply Wiener deconvolution to atom density grids")
-    parser.add_argument('--deconv_fit', action='store_true', help="apply Wiener deconvolution for atom fitting initialization")
-    parser.add_argument('--noise_ratio', default=1.0, type=float, help="noise-to-signal ratio for Wiener deconvolution")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
+    parser.add_argument('--debug', default=False, action='store_true', help='debug mode')
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")
     parser.add_argument('--random_rotation', default=False, action='store_true', help='randomly rotate input before generating grids')
     parser.add_argument('--random_translate', default=0.0, type=float, help='randomly translate up to #A before generating grids')
@@ -2427,13 +2989,27 @@ def main(argv):
 
     data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
     data_param.source = data_file
+    data_param.root_folder = args.data_root
+
+    if args.gpu:
+        print('Setting caffe to GPU mode')
+        caffe.set_mode_gpu()
+    else:
+        print('Setting caffe to CPU mode')
+        caffe.set_mode_cpu()
 
     # create the net in caffe
-    caffe.set_mode_gpu()
-    gen_net = caffe_util.Net.from_param(gen_net_param, args.gen_weights_file, phase=caffe.TEST)
+    print('Constructing generator in caffe')
+    gen_net = caffe_util.Net.from_param(
+        gen_net_param, args.gen_weights_file, phase=caffe.TEST
+    )
+
+    if args.all_blobs:
+        args.blob_name = [b for b in gen_net.blobs]
 
     generate_from_model(gen_net, data_param, len(examples), args)
 
 
 if __name__ == '__main__':
     main(sys.argv[1:])
+

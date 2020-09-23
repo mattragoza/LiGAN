@@ -8,7 +8,7 @@ layer {
     phase: TRAIN
   }
   molgrid_data_param {
-    source: "data/molportFULL_rand_train0.types"
+    source: "data/pubchem_diff0.0.types"
     batch_size: 16
     dimension: 23.5
     resolution: 0.5
@@ -22,8 +22,8 @@ layer {
     recmap: "my_rec_map"
     ligmap: "my_lig_map"
     cache_structs: false
-    recmolcache: "data/molportFULL_rec.molcache2"
-    ligmolcache: "data/molportFULL_lig.molcache2"
+    recmolcache: "data/pubchem_all_diffs_rec.molcache2"
+    ligmolcache: "data/pubchem_all_diffs_lig.molcache2"
   }
 }
 layer {
@@ -36,7 +36,7 @@ layer {
     phase: TEST
   }
   molgrid_data_param {
-    source: "data/molportFULL_rand_test0.types"
+    source: "data/pubchem_diff0.0.types"
     batch_size: 16
     dimension: 23.5
     resolution: 0.5
@@ -50,8 +50,8 @@ layer {
     recmap: "my_rec_map"
     ligmap: "my_lig_map"
     cache_structs: false
-    recmolcache: "data/molportFULL_rec.molcache2"
-    ligmolcache: "data/molportFULL_lig.molcache2"
+    recmolcache: "data/pubchem_all_diffs_rec.molcache2"
+    ligmolcache: "data/pubchem_all_diffs_lig.molcache2"
   }
 }
 layer {

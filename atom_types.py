@@ -213,6 +213,12 @@ def get_channels_from_file(map_file, use_covalent_radius=False, name_prefix=''):
     map_ = molgrid.FileMappedGninaTyper(map_file)
     return get_channels_from_map(map_, use_covalent_radius, name_prefix)
 
+def get_n_unknown_channels(n, radius=1.0):
+    channels = []
+    for i in range(n):
+        channels.append(channel('Unknown', 0, 'X', radius))
+    return channels
+
 
 def get_default_rec_channels(use_covalent_radius=False):
     idx = [2, 3, 4, 5, 24, 25, 21, 6, 9, 7, 8, 13, 12, 16, 14, 23]

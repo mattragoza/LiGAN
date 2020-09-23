@@ -37,21 +37,21 @@ def time_function_call(func, *args, **kwargs):
 
 def benchmark_net(net, n):
 
-    df = pd.DataFrame(index=range(n))
-    df['t_forward'] = pd.Series(dtype=float)
-    df['t_backward'] = pd.Series(dtype=float)
-    df['gpu_mem_usage'] = pd.Series(dtype=int)
-    df['gpu_mem_limit'] = pd.Series(dtype=int)
-    gpu_id = check_gpu_ids(os.getpid())[0]
+    df = pd.DataFrame(index=range(max(n, 1)))
 
+    df['n_params'] = net.get_n_params()
+    df['n_activs'] = net.get_n_activs()
+    df['approx_size'] = net.get_approx_size()
+
+    gpu_id = check_gpu_ids(os.getpid())[0]
     for i in range(n):
-        df.loc[i, 'model_file'] = model_file
-        df.loc[i, 'n_params'] = net.get_n_params()
-        df.loc[i, 'n_activs'] = net.get_n_activs()
-        df.loc[i, 'approx_size'] = net.get_approx_size()
         df.loc[i, 't_forward']  = time_function_call(net.forward)
         df.loc[i, 't_backward'] = time_function_call(net.backward)
-        df.loc[i, ('gpu_mem_usage', 'gpu_mem_limit')] = check_gpu_memory(gpu_id)
+        df.loc[i, 't_fwd_bwd'] = df.loc[i, 't_forward'] + df.loc[i, 't_backward']
+        gpu_mem_usage, gpu_mem_limit = check_gpu_memory(gpu_id)
+        df.loc[i, 'gpu_mem_usage'] = gpu_mem_usage * 2**20
+        df.loc[i, 'gpu_mem_limit'] = gpu_mem_limit * 2**20
+        df.loc[i, 'gpu_mem_util'] = df.loc[i, 'gpu_mem_usage'] / df.loc[i, 'gpu_mem_limit']
 
     return df
 

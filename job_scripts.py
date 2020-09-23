@@ -4,22 +4,6 @@ import params
 import job_queue
 
 
-SOLVER_NAME_FORMAT = '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}'
-
-SOLVER_SEARCH_SPACE = dict(
-    solver_name=['adam0'],
-    gen_train_iter=[2],
-    disc_train_iter=[2, 4],
-    train_options=['', 'b'],
-    instance_noise=[0.0],
-    loss_weight=[1.0, 0.5],
-    loss_weight_decay=[0.0, 1e-5, 2e-5],
-    memory=['24gb'],
-    walltime=['672:00:00'],
-    queue=['dept_gpu']
-)
-
-
 def keyword_product(**kwargs):
     for values in itertools.product(*kwargs.values()):
         yield dict(zip(kwargs.keys(), values))
@@ -93,27 +77,30 @@ def expand_gen_options(args):
     return ' '.join(dict(
         p='--prior',
         m='--mean',
-        r='--random_rotation',
-        c='--constrain_types',
         i='--interpolate',
         s='--spherical',
+        r='--random_rotation',
+        M='--multi_atom',
+        c='--apply_conv',
+        t='--constrain_types',
+        f='--constrain_frags',
+        e='--estimate_types',
     )[a] for a in args)
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create job scripts from a template and job params')
     parser.add_argument('params_file', help='file defining job params or dimensions of param space')
-    parser.add_argument('-b', '--job_template', required=True, help='job script template file')
-    parser.add_argument('-o', '--out_dir', required=True, help='common directory for job working directories')
+    parser.add_argument('-t', '--template', required=True, help='job script template file')
+    parser.add_argument('-o', '--out_dir', default='.', help='common directory for job working directories')
     parser.add_argument('-n', '--job_name', required=True, help='job name format')
-    parser.add_argument('-e', '--expt_name', help='experiment name, for status file')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
     param_space = params.ParamSpace(args.params_file, format=args.job_name.format)
-    write_job_scripts(args.out_dir, args.job_template, param_space, print_=True)
+    write_job_scripts(args.out_dir, args.template, param_space, print_=True)
 
 
 if __name__ == '__main__':
