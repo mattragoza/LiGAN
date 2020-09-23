@@ -1,0 +1,10 @@
+# type = 'Adam'
+# base_lr = 1e-05
+# momentum = 0.9
+# momentum2 = 0.999
+# lr_policy = 'fixed'
+base_lr: 9.999999747378752e-06
+lr_policy: "fixed"
+momentum: 0.8999999761581421
+momentum2: 0.9990000128746033
+type: "Adam"
