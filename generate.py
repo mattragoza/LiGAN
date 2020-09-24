@@ -2470,6 +2470,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_sample')[0]
         variational = True
     except IndexError:
+        try:
+            latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_defc')[0]
+        except IndexError:
+            latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_fc')[0]
         variational = False
 
     if args.verbose:
@@ -2478,7 +2482,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             print('\tlatent_mean = {}'.format(repr(latent_mean)))
             print('\tlatent_std = {}'.format(repr(latent_std)))
             print('\tlatent_noise = {}'.format(repr(latent_noise)))
-            print('\tlatent_sample = {}'.format(repr(latent_sample)))
+        print('\tlatent_sample = {}'.format(repr(latent_sample)))
 
     # find ligand decoder blobs (required)
     if has_rec_enc and has_lig_enc:
