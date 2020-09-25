@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=fit_pubchem2_1.0
+#SBATCH --job-name=fit_molport2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
@@ -16,7 +16,7 @@
 source ~/.bashrc
 cd $SLURM_SUBMIT_DIR
 
-JOB_SCRIPTS_FILE=../1.0_job_scripts
+JOB_SCRIPTS_FILE=../all_job_scripts
 if [ ! -f "${JOB_SCRIPTS_FILE}" ];
 then
 	echo error: file ${JOB_SCRIPTS_FILE} does not exist >&2
