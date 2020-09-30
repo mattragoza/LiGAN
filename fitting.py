@@ -440,7 +440,7 @@ def calc_valence(rdatom):
         cnt += bond.GetBondTypeAsDouble()
     return cnt
     
-def ob_mol_to_rd_mol(ob_mol):
+def convert_ob_mol_to_rd_mol(ob_mol):
     '''Convert OBMol to RDKit mol, fixing up issues'''
     ob_mol.DeleteHydrogens()
     n_atoms = ob_mol.NumAtoms()
