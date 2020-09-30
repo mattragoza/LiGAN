@@ -509,12 +509,12 @@ def parse_args(argv):
     parser.add_argument('-n', '--fold_nums', default='0,1,2,all', help='comma-separated fold numbers to run (default 0,1,2,all)')
     parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
     parser.add_argument('--random_seed', default=0, type=int, help='random seed for Caffe initialization and training (default 0)')
-    parser.add_argument('--max_iter', default=10000, type=int, help='total number of train iterations (default 10000)')
-    parser.add_argument('--snapshot', default=5000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
+    parser.add_argument('--max_iter', default=100000, type=int, help='total number of train iterations (default 10000)')
+    parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
     parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
-    parser.add_argument('--gen_train_iter', default=20, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
-    parser.add_argument('--disc_train_iter', default=20, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
+    parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
+    parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
     parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
     parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
@@ -538,7 +538,7 @@ def main(argv):
 
     gen_param = NetParameter.from_prototxt(args.gen_model_file)
     disc_param = NetParameter.from_prototxt(args.disc_model_file)
-    
+
     gen_param.force_backward = True
     disc_param.force_backward = True
 
@@ -561,7 +561,7 @@ def main(argv):
             test_data['test'] = Net.from_param(data_param, phase=caffe.TEST)
 
         # create solver for training generator net
-        gen_prefix = '{}.{}_gen'.format(args.out_prefix, fold)
+        gen_prefix = '{}_{}_gen'.format(args.out_prefix, fold)
         gen = Solver.from_param(solver_param, net_param=gen_param, snapshot_prefix=gen_prefix)
         if args.gen_weights_file:
             gen.net.copy_from(args.gen_weights_file)
@@ -569,13 +569,13 @@ def main(argv):
             gen.net.copy_from('lig_gauss_conv.caffemodel')
 
         # create solver for training discriminator net
-        disc_prefix = '{}.{}_disc'.format(args.out_prefix, fold)
+        disc_prefix = '{}_{}_disc'.format(args.out_prefix, fold)
         disc = Solver.from_param(solver_param, net_param=disc_param, snapshot_prefix=disc_prefix)
         if args.disc_weights_file:
             disc.net.copy_from(args.disc_weights_file)
 
         # continue previous training state, or start new training output file
-        loss_file = '{}.{}.training_output'.format(args.out_prefix, fold)
+        loss_file = '{}_{}.training_output'.format(args.out_prefix, fold)
         if args.cont_iter:
             gen.restore('{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter))
             disc.restore('{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter))
@@ -585,7 +585,7 @@ def main(argv):
             columns = ['iteration', 'phase']
             loss_df = pd.DataFrame(columns=columns).set_index(columns)
 
-        plot_file = '{}.{}.png'.format(args.out_prefix, fold)
+        plot_file = '{}_{}.png'.format(args.out_prefix, fold)
 
         # begin training GAN
         try:

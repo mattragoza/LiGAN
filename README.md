@@ -1,35 +1,67 @@
 # What is liGAN?
 
-liGAN is a python environment for training and evaluating deep generative models for *de novo* ligand design using [gnina](https://github.com/gnina/gnina), which is based on a fork of [caffe](https://github.com/BVLC/caffe). It includes scripts for creating models, solvers, and job scripts from files specifying sets of parameters, for submitting multiple batch jobs to a high-performance computing cluster and monitoring them as a single experiment, for using trained models to generate novel ligand densities and fit them with atomic structures, and for visualizing ligand densities and plotting experiment results.
+liGAN is a research codebase for training and evaluating  deep generative models for *de novo* drug design based on 3D atomic density grids. It is built on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe). It includes scripts for creating model architectures and job scripts from parameter files, as well as for submitting and managing experiments on Slurm or Torque-based computing clusters.
+
+## Dependencies
+
+- numpy
+- pandas
+- scikit-image
+- protobuf
+- torch
+- rdkit
+- openbabel
+- molgrid
+- [gnina](https://github.com/gnina/gnina) version of caffe
 
 ## Tutorial
+
+Here is basic walkthrough on how to use the liGAN scripts to launch a training experiment. All paths in the following commands are relative to the `tutorial` directory, so run this first:
+
+`cd <LIGAN_DIR>/tutorial`
 
 ### Specifying parameters
 
 A few scripts in this project take a "params file" as an argument. These are simple text files where each line assigns a value to a parameter in Python-like syntax. The values must be Python literals, and the meaning of the parameters depends on which script the params file is created for.
 
-Here is an example params file that creates a particular model architecture when provided to the models.py script:
+Here is an example params file that creates some model architectures when provided to the models.py script:
 ```
-encode_type = '_vl-l'
-data_dim = 24
-n_levels = 3
-conv_per_level = 2
+encode_type = ['_l-l', '_vl-l']
+rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
+lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
+data_dim = 48
+resolution = 0.5
+data_options = ''
+n_levels = 4
+conv_per_level = 3
 arch_options = 'l'
 n_filters = 32
 width_factor = 2
-n_latent = [1024, 2048]
+n_latent = 1024
 loss_types = 'e'
+loss_weight_KL = 0.1
+loss_weight_L2 = 1.0
 ```
-Any parameter can instead be assigned a list of values instead of a single value. In that case, the params file represents every possible combination of parameter assignments.
+Any parameter can be assigned a list of values instead of a single value. In that case, the params file represents every possible combination of parameter assignments.
 
-For example, in the above file, the `n_latent` parameter is assigned two values, so two model architectures can be created from the file- each with a different latent space size and all other parameters identical.
+For example, in the above file, the `encode_type` parameter is assigned two values, so two model architectures can be created from the file- a standard autoencoder and a variational autoencoder.
+
+The `encode_type` syntax allows the following architectures to be created, and more:
+
+```
+_l-l   -> ligand autoencoder (AE)
+_vl-l  -> ligand variational autoencoder (VAE)
+_r-l   -> receptor-to-ligand context encoder (CE)
+_rvl-l -> receptor-conditional VAE (CVAE)
+```
 
 ### Creating models
 
-As stated above, the models.py script is used to create model architecture files. Its usage is as follows:
+The models.py script is used to create a model architecture file for each parameter assignment in the provided params file.
+
 ```
 usage: models.py [-h] -o OUT_DIR [-n MODEL_NAME] [-m MODEL_TYPE] [-v VERSION]
-                 [-s] [--gpu]
+                 [--scaffold] [--benchmark BENCHMARK] [--verbose] [--gpu]
                  params_file
 
 Create model prototxt files from model params
@@ -50,26 +82,28 @@ optional arguments:
   -v VERSION, --version VERSION
                         version, for default model name format (e.g. 13,
                         default most recent)
-  -s, --scaffold        attempt to scaffold models in Caffe
-  --gpu                 if scaffolding, use the GPU
+  --scaffold            attempt to scaffold models in Caffe and estimate
+                        memory usage
+  --benchmark BENCHMARK
+                        benchmark N forward-backward pass times and actual
+                        memory usage
+  --verbose             print out more info for debugging prototxt creation
+  --gpu                 if benchmarking, use the GPU
 ```
-This script creates a model architecture file for each parameter assignment in the params file. The created files are named according to a name format, which can either be set explicitly with the -n argument, or a default format for a certain model type can be used by passing the -m argument.
 
-Name formats are simply strings that are formatted with the parameters used to create the model. For example, the current default format for the 'gen' model type is as follows:
+The created files are named according to the `--model_name` format string that by passing the model params to `str.format` in python.
 
-`{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}`
-
-This allows models to be differentiated by their name. If a custom name format is used, be careful not to underspecify the parameters- otherwise multiple models with the same name might be created, overwriting each other.
+Be careful not to underspecify the parameters in the model name format- otherwise multiple models with the same name might be created, overwriting each other.
 
 The following command will create the two generative models described by the params file in the previous section:
 
-`python models.py tutorial/gen_model.params -o tutorial/models -n gen{n_latent}`
+`python3 ../models.py gen_model.params -o models -n gen_{encode_type}`
 
 For training a GAN, you will also need a data-producing model and a discriminative model:
 
-`python models.py tutorial/data_model.params -o tutorial/models -n data`
+`python3 ../models.py data_model.params -o models -n data`
 
-`python models.py tutorial/disc_model.params -o tutorial/models -n disc`
+`python3 ../models.py disc_model.params -o models -n disc`
 
 ### Creating solvers
 
@@ -95,14 +129,14 @@ Similar to models.py, this script creates a solver file for each parameter assig
 
 Run this command to create a solver file for training with the Adam optimizer:
 
-`python solvers.py tutorial/solver.params -o tutorial/solvers -n adam0`
+`python3 ../solvers.py solver.params -o solvers -n adam0`
 
-### Creating job scripts
+### Creating training job scripts
 
-For executing jobs on a computer cluster using Torque or Slurm, you can use job_scripts.py to create a collection of job scripts ready to be submit.
+For executing training jobs on a computer cluster using Slurm or Torque, you can use job_scripts.py to create a collection of job scripts ready to submit.
 
 ```
-usage: job_scripts.py [-h] -b JOB_TEMPLATE -o OUT_DIR -n JOB_NAME params_file
+usage: job_scripts.py [-h] -t TEMPLATE [-o OUT_DIR] -n JOB_NAME params_file
 
 Create job scripts from a template and job params
 
@@ -111,27 +145,39 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -b JOB_TEMPLATE, --job_template JOB_TEMPLATE
+  -t TEMPLATE, --template TEMPLATE
                         job script template file
   -o OUT_DIR, --out_dir OUT_DIR
                         common directory for job working directories
   -n JOB_NAME, --job_name JOB_NAME
                         job name format
 ```
-This fills in placeholder values in a template job script with each set of parameter assignments. Just as in the models and solvers scripts, the parameter ranges are provided as a params file, and the individual jobs are named according to a name format. Some basic job template scripts are included in the job_templates sub directory, or they can be tailored to your needs.
+This fills in placeholder values in the template job script with each set of parameter assignments. Just as in the models and solvers scripts, the parameter ranges are provided as a params file.
 
-A slight difference in this script is that the name format string is used to create a working directory for the job to run in rather than to name the job script itself. The parameterized job scripts are each created in their own working directory.
+The result is that a working directory is created for each job, named according to the `--job_name` format string. The created directories each contain a job script based on the template script where the placeholder values have been replaced with a parameter assignment from the job params file.
 
 This command creates a job script to train each of the two generative models we've created so far:
 
-`python job_scripts.py tutorial/job.params -b job_templates/slurm_train.sh -o tutorial -n {gen_model_name}`
+`python3 ../job_scripts.py job.params -t csb_train.sh -n train_{gen_model_name}`
+
+NOTE: For convenience, all of the above commands that use parameter files to setup a training experiment are contained in a single bash script, `setup.sh`.
 
 ### Submitting jobs
 
-Once you've created a set of job scripts, you can easily submit them to a queue:
+Once you've created the required models, solvers and job scripts, you can easily submit them to the CSB department cluster:
 
-`python submit_job.py tutorial/*/slurm_train.sh`
+`python3 ../submit_job.py */csb_train.sh`
 
-### Monitoring job status
+This command is also contained in `submit.sh`.
 
-todo
+### Checking job errors
+
+`python3 ../job_errors.py train_*/ --job_type train --print_errors`
+
+This command is also contained in `errors.sh`.
+
+### Collecting job output
+
+`python3 ../job_errors.py train_*/ --job_type train --output_file tutorial.training_output`
+
+This command is also contained in `output.sh`.
