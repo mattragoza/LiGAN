@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=18
 #SBATCH --partition=dept_gpu
 #SBATCH --gres=gpu:1
-#SBATCH -x g005
+#SBATCH -x g005,g010,g011,g012,g013,g014,g015,g016,g017,g018
 #SBATCH --mem=32gb
 #SBATCH --time=2:00:00
 #SBATCH --qos=normal
