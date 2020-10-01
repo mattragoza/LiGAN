@@ -19,15 +19,16 @@ def select_atom_starts(mgrid, G, radius):
     '''Given a single channel grid and the atomic radius for that type,
     select initial positions using a weight random selection that treats 
     each disconnected volume of density separately'''
-    per_atom_volume = radius**3*((2*np.pi)**1.5)     
+    per_atom_volume = radius**3*((2*np.pi)**1.5) 
 
     mask = G.cpu().numpy()
     values = mask.copy()
     
     #look for islands of density greater than 0.5 (todo: parameterize this threshold?)
     #label each island in mask
-    mask[mask >= 0.5] = 1.0
-    mask[mask < 0.5] = 0
+    THRESHOLD = 0.5
+    mask[mask >= THRESHOLD] = 1.0
+    mask[mask < THRESHOLD] = 0
     
     maxpos = np.unravel_index(mask.argmax(),mask.shape)
     masks = []
@@ -52,6 +53,7 @@ def select_atom_starts(mgrid, G, radius):
         #counting this way is especially problematic for large molecules that go to the box edge
         if cnt == 0:
             continue
+       
         flatG[flatG > 1.0] = 1.0
         rand = np.random.choice(range(len(flatG)), cnt, False, flatG/flatG.sum())
         gcoords = np.array(np.unravel_index(rand,G.shape)).T
@@ -219,10 +221,11 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
                 
                 #if maxerr hasn't improved, give up
                 newerr = float(torch.square(agrid[t]-mgrid.values[t]).max())
+                #print(t,'newerr',newerr,'maxerr',maxerr,'maxdiff',maxdiff,'missing',missing_density)
                 if newerr >= maxerr:
                     #don't give up if there's still a lot left to fit
                     #and the missing density isn't all shallow
-                    if missing_density < per_atom_volume or maxdiff < 0.1: #magic number! 
+                    if missing_density < per_atom_volume or maxdiff < 0.01: #magic number! 
                         break
                 else:
                     maxerr = newerr
