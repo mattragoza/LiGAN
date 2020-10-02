@@ -1278,9 +1278,13 @@ def connect_rd_mol_frags(rd_mol):
             frag_idx = np.array([frag_map[i] for i in range(rd_mol.GetNumAtoms())])
             diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
 
-            can_bond = np.array([a.GetExplicitValence() <
-                                 pt.GetDefaultValence(a.GetAtomicNum())
-                                 for a in rd_mol.GetAtoms()])
+            can_bond = []
+            for a in rd_mol.GetAtoms():
+                n_bonds = sum(b.GetBondTypeAsDouble() for b in a.GetBonds())
+                max_bonds = pt.GetDefaultValence(a.GetAtomicNum())
+                can_bond.append(n_bonds < max_bonds)
+
+            can_bond = np.array(can_bond)
             can_bond = can_bond[nax,:] & can_bond[:,nax]
 
             cond_dist2 = np.where(diff_frags & can_bond & (dist2<25), dist2, np.inf)

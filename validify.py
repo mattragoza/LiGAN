@@ -152,6 +152,14 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
+    pd.set_option('display.max_columns', 100)
+    pd.set_option('display.max_colwidth', 100)
+    try:
+        display_width = g.get_terminal_size()[1]
+    except:
+        display_width = 185
+    pd.set_option('display.width', display_width)
+
     lig_channels = g.atom_types.get_channels_from_file(
         map_file=args.lig_map,
         name_prefix='Ligand',
@@ -183,24 +191,45 @@ def main(argv):
         # then get all of the derived typed-atom structs
         for struct_type in ['lig', 'lig_fit', 'lig_gen_fit']:
 
-            struct_file = os.path.join(
-                args.in_dir,
-                '_'.join([
-                    job_name,
-                    '*', # don't know array_idx...
-                    lig_name,
-                    struct_type,
-                ])
-            ) + '.sdf'
             try:
+                struct_file = os.path.join(
+                    args.in_dir,
+                    '_'.join([
+                        job_name,
+                        '*', # don't know array_idx...
+                        lig_name,
+                        struct_type,
+                    ])
+                ) + '.sdf'
                 struct_file = glob.glob(struct_file)[0]
-            except IndexError:
-                pass # next line will raise a more informative error
+                fit_mols = g.read_rd_mols_from_sdf_file(struct_file)
+                found_structs = True
+            except (IndexError, OSError):
+                found_structs = False
 
-            # these aren't validified molecules, just fit atom coords
-            fit_mols = g.read_rd_mols_from_sdf_file(struct_file)
-        
             for sample_idx in range(args.n_samples):
+
+                if found_structs:
+                    fit_mol = fit_mols[sample_idx]
+                else:
+                    struct_file = os.path.join(
+                        args.in_dir,
+                        '_'.join([
+                            job_name,
+                            '*', # don't know array_idx...
+                            lig_name,
+                            struct_type,
+                            str(sample_idx),
+                        ])
+                    ) + '.sdf'
+                    try:
+                        struct_file = glob.glob(struct_file)[0]
+                    except IndexError:
+                        pass
+                    fit_mol = g.read_rd_mols_from_sdf_file(struct_file)[-1]                   
+
+                # these aren't validified molecules, just fit atom coords
+                add_mols = g.read_rd_mols_from_sdf_file(struct_file)
 
                 # need the channels to recover the typed-atom struct
                 channels_file = struct_file.replace('.sdf', '_{}.channels'.format(sample_idx))
@@ -214,7 +243,10 @@ def main(argv):
 
                 if struct_type == 'lig':
                     lig_mol_ = Chem.RWMol(lig_mol)
-                    Chem.rdMolAlign.AlignMol(lig_mol_, struct.info['add_mol'])
+                    try:
+                        Chem.rdMolAlign.AlignMol(lig_mol_, struct.info['add_mol'])
+                    except RuntimeError as e:
+                        print('Warning: {}'.format(e))
                     mol_maker.uff_minimize(lig_mol_)
                     struct.info['src_mol'] = lig_mol_
 
