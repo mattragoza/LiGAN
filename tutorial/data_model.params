@@ -1,6 +1,8 @@
 encode_type = 'data'
-data_dim = 24
+rec_molcache = '/net/pulsar/home/koes/mtr22/gan/data/molportFULL_rec.molcache2'
+lig_molcache = '/net/pulsar/home/koes/mtr22/gan/data/molportFULL_lig.molcache2'
+rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
+lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
+data_dim = 48
 resolution = 0.5
 data_options = ''
-rec_map = 'my_rec_map'
-lig_map = 'my_lig_map'

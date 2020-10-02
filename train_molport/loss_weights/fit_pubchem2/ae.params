@@ -1,7 +1,7 @@
 data_dir = '../../../data'
 model_dir = '../../../models'
 weights_dir = '../../weights'
-data_name = ['pubchem_diff0.0', 'pubchem_diff0.1', 'pubchem_diff0.2', 'pubchem_diff0.3', 'pubchem_diff0.4', 'pubchem_diff0.5', 'pubchem_diff0.6', 'pubchem_diff0.7', 'pubchem_diff0.8', 'pubchem_diff0.9']
+data_name = ['pubchem_diff0.0', 'pubchem_diff0.1', 'pubchem_diff0.2', 'pubchem_diff0.3', 'pubchem_diff0.4', 'pubchem_diff0.5', 'pubchem_diff0.6', 'pubchem_diff0.7', 'pubchem_diff0.8', 'pubchem_diff0.9', 'pubchem_diff1.0']
 data_model_name = 'data_48_0.5_pubchem'
 train_iter = 100000
 gen_model_name = 'ae'
