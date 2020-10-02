@@ -77,7 +77,7 @@ class MolGrid(object):
 
 class MolStruct(object):
     '''
-    An atomic structure.
+    A typed atomic structure.
     '''
     def __init__(self, xyz, c, channels, bonds=None, **info):
 
@@ -633,7 +633,9 @@ class AtomFitter(object):
             type_diff=type_loss,
             est_type_diff=est_type_loss,
             time=time.time()-t_start,
+            visited_structs=visited_structs,
         )
+
         self.validify(struct_best)
 
         grid_pred = MolGrid(
@@ -705,8 +707,6 @@ class AtomFitter(object):
         # i.e. validity of molecule inferred purely using openbabel
         ob_mol.PerceiveBondOrders()
         rd_mol = ob_mol_to_rd_mol(ob_mol)
-        struct.info['ob_validity'] = get_rd_mol_validity(rd_mol)
-        struct.info['ob_mol'] = rd_mol
         visited_mols.append(rd_mol)
 
         if not use_ob:
@@ -734,13 +734,28 @@ class AtomFitter(object):
                 struct.info['add_mol'] = rd_mol
                 visited_mols.append(rd_mol)
 
-        # minimize final molecule with UFF
-        rd_mol_min, E_init, E_min, error = uff_minimize_rd_mol(rd_mol)
-        struct.info['min_result'] = (E_init, E_min, error)
-        struct.info['min_mol'] = rd_mol_min
-        visited_mols.append(rd_mol_min)
+        rd_mol.info = dict()
+        rd_mol.info['visited_mols'] = visited_mols
+        self.uff_minimize(rd_mol)
 
-        struct.info['visited_mols'] = visited_mols
+        struct.info['add_mol'] = rd_mol
+
+    def uff_minimize(self, mol):
+        t_start = time.time()
+        min_mol, E_init, E_min, error = uff_minimize_rd_mol(mol)
+
+        if not hasattr(mol, 'info'):
+            mol.info = dict()
+
+        if 'visited_mols' not in mol.info:
+            mol.info['visited_mols'] = []
+
+        mol.info['visited_mols'].append(min_mol)
+        mol.info['min_mol'] = min_mol
+        mol.info['E_init'] = E_init
+        mol.info['E_min'] = E_min
+        mol.info['min_error'] = error
+        mol.info['min_time'] = time.time() - t_start
 
 
 class DkoesAtomFitter(AtomFitter):
@@ -751,13 +766,14 @@ class DkoesAtomFitter(AtomFitter):
         self.dkoes_make_mol = dkoes_make_mol
 
     def fit(self, grid, types):
-        grid_pred = simple_fit.simple_atom_fit(
+        fit_grid = simple_fit.simple_atom_fit(
             mgrid=grid,
             types=types,
             iters=self.iters,
             tol=self.tol
         )
-        self.validify(grid_pred.info['src_struct'])
+        fit_struct = fit_grid.info['src_struct']
+        fit_struct.info['add_mol'] = self.validify(fit_struct)
         return grid_pred
 
 
@@ -804,7 +820,7 @@ class OutputWriter(object):
         # write a pymol script when finished
         self.pymol_file = '{}.pymol'.format(out_prefix)
         self.dx_prefixes = []
-        self.struct_files = []
+        self.sdf_files = []
         self.centers = []
 
         self.verbose = verbose
@@ -816,8 +832,8 @@ class OutputWriter(object):
         '''
         grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
         sample_prefix = grid_prefix + '_' + str(sample_idx)
+        src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
-        ob_sample_prefix = grid_prefix + '_ob_' + str(sample_idx)
 
         is_gen_grid = grid_name.endswith('_gen')
         is_fit_grid = grid_name.endswith('_fit')
@@ -835,40 +851,48 @@ class OutputWriter(object):
 
         if has_struct and self.output_sdf: # write structure files
 
-            # write atomic structure
-            mol_file = sample_prefix + '.sdf'
+            # write typed atom structure
+            struct_file = sample_prefix + '.sdf'
             if self.verbose:
-                print('Writing ' + mol_file)
+                print('Writing ' + struct_file)
 
             struct = grid.info['src_struct']
             if is_fit_grid and self.output_visited:
-                visited_structs = grid.info['visited_structs']
+                visited_structs = struct.info['visited_structs']
                 rd_mols = [s.to_rd_mol() for s in visited_structs]
             else:
                 rd_mols = [struct.to_rd_mol()]
-
-            write_rd_mols_to_sdf_file(mol_file, rd_mols)
-            self.struct_files.append(mol_file)
+            write_rd_mols_to_sdf_file(struct_file, rd_mols)
+            self.sdf_files.append(struct_file)
             self.centers.append(struct.center)
 
-            # write molecules with openbabel bonds
-            ob_mol_file = ob_sample_prefix + '.sdf'
-            if self.verbose:
-                print('Writing ' + ob_mol_file)
+            if is_real_grid: # write real input molecule
 
-            rd_mols = [struct.info['ob_mol']]
-            write_rd_mols_to_sdf_file(ob_mol_file, rd_mols)
-            self.struct_files.append(ob_mol_file)
-            self.centers.append(struct.center)
+                src_mol_file = src_sample_prefix + '.sdf'
+                if self.verbose:
+                    print('Writing ' + src_mol_file)
 
-            # write molecules with custom added bonds
+                src_mol = struct.info['src_mol']
+                if self.output_visited:
+                    rd_mols = src_mol.info['visited_mols']
+                else:
+                    rd_mols = [src_mol]
+                write_rd_mols_to_sdf_file(src_mol_file, rd_mols)
+                self.sdf_files.append(src_mol_file)
+                self.centers.append(struct.center)
+
+            # write molecule with added bonds
             add_mol_file = add_sample_prefix + '.sdf'
             if self.verbose:
                 print('Writing ' + add_mol_file)
 
-            rd_mols = struct.info['visited_mols']
+            add_mol = struct.info['add_mol']
+            if self.output_visited:
+                rd_mols = add_mol.info['visited_mols']
+            else:
+                rd_mols = [add_mol]
             write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
-            self.struct_files.append(add_mol_file)
+            self.sdf_files.append(add_mol_file)
             self.centers.append(struct.center)
 
             # write atom type channels
@@ -922,7 +946,7 @@ class OutputWriter(object):
                     self.pymol_file,
                     self.out_prefix,
                     self.dx_prefixes,
-                    self.struct_files,
+                    self.sdf_files,
                     self.centers,
                 )
                 del self.grids[lig_name]
@@ -952,15 +976,15 @@ class OutputWriter(object):
                     self.pymol_file,
                     self.out_prefix,
                     self.dx_prefixes,
-                    self.struct_files,
+                    self.sdf_files,
                     self.centers,
                 )
                 del self.grids[lig_name][sample_idx]
 
     def compute_metrics(self, lig_name, sample_idxs):
         '''
-        Compute metrics for density grids, fit atoms, and valid
-        molecules for a given ligand in metrics data frame.
+        Compute metrics for density grids, fit atom types, and
+        bonded molecules for a given ligand in metrics data frame.
         '''
         lig_grids = self.grids[lig_name]
 
@@ -981,250 +1005,206 @@ class OutputWriter(object):
         else:
             lig_grid_mean = None
             lig_gen_grid_mean = None
-            latent_mean = None
+            lig_latent_mean = None
 
         for sample_idx in sample_idxs:
             idx = (lig_name, sample_idx)
 
             lig_grid = lig_grids[sample_idx]['lig']
             lig_gen_grid = lig_grids[sample_idx]['lig_gen']
-            latent_vec = lig_gen_grid.info['latent_vec']
 
-            self.compute_grid_metrics(
-                idx, 'lig', lig_grid, lig_gen_grid, latent_vec,
-                lig_grid_mean, lig_gen_grid_mean, latent_mean
-            )
+            self.compute_grid_metrics(idx, 'lig', lig_grid, mean_grid=lig_grid_mean)
+            self.compute_grid_metrics(idx, 'lig_gen', lig_gen_grid, lig_grid, lig_gen_grid_mean)
+
+            lig_latent = lig_gen_grid.info['latent_vec']
+            self.compute_latent_metrics(idx, 'lig', lig_latent, lig_latent_mean)
 
             if self.fit_atoms:
 
                 lig_fit_grid = lig_grids[sample_idx]['lig_fit']
                 lig_gen_fit_grid = lig_grids[sample_idx]['lig_gen_fit']
 
+                self.compute_grid_metrics(idx, 'lig_fit', lig_fit_grid, lig_grid)
+                self.compute_grid_metrics(idx, 'lig_gen_fit', lig_gen_fit_grid, lig_gen_grid)
+
                 lig_struct = lig_grid.info['src_struct']
                 lig_fit_struct = lig_fit_grid.info['src_struct']
                 lig_gen_fit_struct = lig_gen_fit_grid.info['src_struct']
 
-                self.compute_fit_metrics(
-                    idx, 'lig', lig_grid, lig_fit_grid,
-                    lig_struct, lig_fit_struct
-                )
-                self.compute_fit_metrics(
-                    idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid,
-                    lig_struct, lig_gen_fit_struct
-                )
+                self.compute_struct_metrics(idx, 'lig', lig_struct)
+                self.compute_struct_metrics(idx, 'lig_fit', lig_fit_struct, lig_struct)
+                self.compute_struct_metrics(idx, 'lig_gen_fit', lig_gen_fit_struct, lig_struct)
 
-                self.compute_mol_validity(
-                    idx, 'lig', lig_struct, lig_fit_struct
-                )
-                self.compute_mol_validity(
-                    idx, 'lig_gen', lig_struct, lig_gen_fit_struct
-                )
+                lig_mol = lig_struct.info['src_mol']
+                lig_add_mol = lig_struct.info['add_mol']
+                lig_fit_add_mol = lig_fit_struct.info['add_mol']
+                lig_gen_fit_add_mol = lig_gen_fit_struct.info['add_mol']
+
+                self.compute_mol_metrics(idx, 'lig', lig_mol)
+                self.compute_mol_metrics(idx, 'lig_add', lig_add_mol, lig_mol)
+                self.compute_mol_metrics(idx, 'lig_fit_add', lig_fit_add_mol, lig_mol)
+                self.compute_mol_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_mol, lig_mol)
 
         if self.verbose:
             print(self.metrics.loc[lig_name].loc[sample_idxs])
 
-    def compute_grid_metrics(
-        self,
-        idx,
-        prefix,
-        true_grid,
-        gen_grid,
-        latent_vec,
-        true_grid_mean,
-        gen_grid_mean,
-        latent_mean,
-    ):
+    def compute_grid_metrics(self, idx, grid_type, grid, ref_grid=None, mean_grid=None):
         m = self.metrics
 
         # density magnitude
-        m.loc[idx, prefix+'_norm'] = np.linalg.norm(true_grid.values)
-        m.loc[idx, prefix+'_gen_norm'] = np.linalg.norm(gen_grid.values)
+        m.loc[idx, grid_type+'_norm'] = np.linalg.norm(grid.values)
+
+        if mean_grid is not None:
+
+            # density variance
+            # (divide by n_samples (+1) for sample (population) variance)
+            variance = (
+                (grid.values - grid_mean)**2
+            ).sum().item()
+        else:
+            variance = np.nan
+
+        m.loc[idx, grid_type+'_variance'] = variance
+
+        if ref_grid is not None:
+
+            # density L2 loss
+            m.loc[idx, grid_type+'_L2_loss'] = (
+                (ref_grid.values - grid.values)**2
+            ).sum().item() / 2
+
+    def compute_latent_metrics(self, idx, latent_type, latent, mean_latent=None):
+        m = self.metrics
 
         # latent vector magnitude
-        m.loc[idx, prefix+'_latent_norm'] = np.linalg.norm(latent_vec)
+        m.loc[idx, latent_type+'_latent_norm'] = np.linalg.norm(latent)
 
-        # generated density L2 loss
-        m.loc[idx, prefix+'_gen_L2_loss'] = (
-            ((true_grid.values - gen_grid.values)**2).sum()/2
-        ).item()
+        if mean_latent is not None:
 
-        if self.batch_metrics: # compute batch "variance"
-            # (divide by n_samples (+1) for sample (population) variance)
-
-            lig_variance = (
-                (true_grid.values - true_grid_mean)**2
-            ).sum().item()
-
-            lig_gen_variance = (
-                (gen_grid.values - gen_grid_mean)**2
-            ).sum().item()
-
-            latent_variance = (
-                (latent_vec - latent_mean)**2
+            # latent vector variance
+            variance = (
+                (latent - mean_latent)**2
             ).sum()
-
         else:
-            lig_variance = np.nan
-            lig_gen_variance = np.nan
-            latent_variance = np.nan
+            variance = np.nan
 
-        m.loc[idx, prefix+'_variance'] = lig_variance
-        m.loc[idx, prefix+'_gen_variance'] = lig_gen_variance
-        m.loc[idx, prefix+'_latent_variance'] = latent_variance
+        m.loc[idx, latent_type+'_latent_variance'] = variance
 
-    def compute_fit_metrics(
-        self,
-        idx,
-        prefix,
-        true_grid,
-        fit_grid,
-        true_struct,
-        fit_struct
-    ):
+    def compute_struct_metrics(self, idx, struct_type, struct, ref_struct=None):
         m = self.metrics
-        is_gen_grid = prefix.endswith('_gen')
-
-        # fit density L2 loss
-        m.loc[idx, prefix+'_fit_L2_loss'] = (
-            ((true_grid.values - fit_grid.values)**2).sum()/2
-        ).item()
 
         # number of atoms
-        if not is_gen_grid:
-            m.loc[idx, prefix+'_n_atoms'] = true_struct.n_atoms
-        m.loc[idx, prefix+'_fit_n_atoms'] = fit_struct.n_atoms
+        m.loc[idx, struct_type+'_n_atoms'] = struct.n_atoms
 
-        # fit structure radius
-        if not is_gen_grid:
-            m.loc[idx, prefix+'_radius'] = true_struct.radius
-        m.loc[idx, prefix+'_fit_radius'] = fit_struct.radius
+        # maximum radius
+        m.loc[idx, struct_type+'_radius'] = struct.radius
 
-        n_types = len(true_struct.channels)
-        true_type_count = count_types(true_struct.c, n_types)
-        fit_type_count  = count_types(fit_struct.c, n_types)
+        if ref_struct is not None:
 
-        # fit type difference
-        m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(
-            true_type_count - fit_type_count, ord=1
-        )
-        m.loc[idx, prefix+'_est_type_diff'] = fit_struct.info['est_type_diff']
+            # get atom type counts
+            n_types = len(struct.channels)
+            types = count_types(struct.c, n_types)
+            ref_types = count_types(ref_struct.c, n_types)
 
-        m.loc[idx, prefix+'_fit_exact_types'] = (
-            m.loc[idx, prefix+'_fit_type_diff'] == 0
-        )
-        m.loc[idx, prefix+'_est_exact_types'] = (
-            m.loc[idx, prefix+'_est_type_diff'] == 0
-        )
-
-        # fit minimum RMSD
-        try:
-            rmsd = get_min_rmsd(
-                true_struct.xyz, true_struct.c, fit_struct.xyz, fit_struct.c
+            # type count difference
+            m.loc[idx, struct_type+'_type_diff'] = np.linalg.norm(
+                ref_types - types, ord=1
             )
-        except (ValueError, ZeroDivisionError):
-            rmsd = np.nan
+            m.loc[idx, struct_type+'_exact_types'] = (
+                m.loc[idx, struct_type+'_type_diff'] == 0
+            )
 
-        m.loc[idx, prefix+'_fit_RMSD'] = rmsd
+            # minimum typed-atom RMSD
+            try:
+                rmsd = get_min_rmsd(
+                    ref_struct.xyz, ref_struct.c, struct.xyz, struct.c
+                )
+            except (ValueError, ZeroDivisionError):
+                rmsd = np.nan
 
-        # fit time and number of visited structures
-        m.loc[idx, prefix+'_fit_time'] = fit_struct.info['time']
-        m.loc[idx, prefix+'_fit_n_visited'] = len(fit_grid.info['visited_structs'])
+            m.loc[idx, struct_type+'_RMSD'] = rmsd
 
-    def compute_mol_validity(self, idx, prefix, true_struct, fit_struct):
+        if struct_type.endswith('_fit'):
 
+            # fit time and number of visited structures
+            m.loc[idx, struct_type+'_time'] = struct.info['time']
+            m.loc[idx, struct_type+'_n_visited'] = len(struct.info['visited_structs'])
+
+            # accuracy of estimated type counts, whether or not
+            # they were actually used to constrain atom fitting
+            est_type = struct_type[:-4] + '_est'
+            m.loc[idx, est_type+'_type_diff'] = struct.info['est_type_diff']
+            m.loc[idx, est_type+'_exact_types'] = (
+                m.loc[idx, est_type+'_type_diff'] == 0
+            )
+
+    def compute_mol_metrics(self, idx, mol_type, mol, ref_mol=None):
         m = self.metrics
 
-        from_gen_grid = prefix.endswith('_gen')
-
-        true_mol = true_struct.info['ob_mol']
-        true_mol_min = true_struct.info['min_mol']
-
-        mol = fit_struct.info['add_mol']
-        mol_min = fit_struct.info['min_mol']
-
-        # sanity check- validity of true molecule
-        if not from_gen_grid:
-            n_frags, error, valid = true_struct.info['ob_validity']
-            m.loc[idx, prefix+'_ob_n_frags'] = n_frags
-            m.loc[idx, prefix+'_ob_error'] = error
-            m.loc[idx, prefix+'_ob_valid'] = valid
-
-        # check mol validity of openbabel bond connecting
-        n_frags, error, valid = fit_struct.info['ob_validity']
-        m.loc[idx, prefix+'_fit_ob_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_ob_error'] = error
-        m.loc[idx, prefix+'_fit_ob_valid'] = valid
-
-        # check validity after custom bond adding
-        n_frags, error, valid = fit_struct.info['add_validity']
-        m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_add_error'] = error
-        m.loc[idx, prefix+'_fit_add_valid'] = valid
-        m.loc[idx, prefix+'_fit_add_mismatches'] = fit_struct.info.get('mismatches', np.nan)
-
-        # convert to SMILES string
-        true_smi = Chem.MolToSmiles(true_mol, canonical=True)
-        smi = Chem.MolToSmiles(mol,  canonical=True)
-
-        if not from_gen_grid:
-            m.loc[idx, prefix+'_add_SMILES'] = true_smi
-
-        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
-        m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
-
-        # fingerprint similarity
-        m.loc[idx, prefix+'_fit_add_ob_sim']  = get_ob_smi_similarity(
-            true_smi, smi
-        )
-        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(
-            true_mol, mol, 'morgan'
-        )
-        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(
-            true_mol, mol, 'rdkit'
-        )
-        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(
-            true_mol, mol, 'maccs'
-        )
+        # check molecular validity
+        n_frags, error, valid = get_rd_mol_validity(mol)
+        m.loc[idx, mol_type+'_n_frags'] = n_frags
+        m.loc[idx, mol_type+'_error'] = error
+        m.loc[idx, mol_type+'_valid'] = valid
 
         # other molecular descriptors
-        if not from_gen_grid:
-            m.loc[idx, prefix+'_add_MW'] = get_rd_mol_weight(true_mol)
-            m.loc[idx, prefix+'_add_logP'] = get_rd_mol_logP(true_mol)
-            m.loc[idx, prefix+'_add_QED'] = get_rd_mol_QED(true_mol)
-            m.loc[idx, prefix+'_add_SAS'] = get_rd_mol_SAS(true_mol)
-            m.loc[idx, prefix+'_add_NPS'] = get_rd_mol_NPS(true_mol, nps_model)
+        m.loc[idx, mol_type+'_MW'] = get_rd_mol_weight(mol)
+        m.loc[idx, mol_type+'_logP'] = get_rd_mol_logP(mol)
+        m.loc[idx, mol_type+'_QED'] = get_rd_mol_QED(mol)
+        m.loc[idx, mol_type+'_SAS'] = get_rd_mol_SAS(mol)
+        m.loc[idx, mol_type+'_NPS'] = get_rd_mol_NPS(mol, nps_model)
 
-        m.loc[idx, prefix+'_fit_add_MW'] = get_rd_mol_weight(mol)
-        m.loc[idx, prefix+'_fit_add_logP'] = get_rd_mol_logP(mol)
-        m.loc[idx, prefix+'_fit_add_QED'] = get_rd_mol_QED(mol)
-        m.loc[idx, prefix+'_fit_add_SAS'] = get_rd_mol_SAS(mol)
-        m.loc[idx, prefix+'_fit_add_NPS'] = get_rd_mol_NPS(mol, nps_model)
+        # convert to SMILES string
+        smi = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)
+        m.loc[idx, mol_type+'_SMILES'] = smi
+
+        if ref_mol is not None: # compare to ref_mol
+
+            # get reference SMILES strings
+            ref_smi = Chem.MolToSmiles(ref_mol, canonical=True, isomericSmiles=False)
+            m.loc[idx, mol_type+'_SMILES_match'] = (smi == ref_smi)
+
+            # fingerprint similarity
+            m.loc[idx, mol_type+'_ob_sim']  = get_ob_smi_similarity(
+                ref_smi, smi
+            )
+            m.loc[idx, mol_type+'_morgan_sim'] = get_rd_mol_similarity(
+                ref_mol, mol, 'morgan'
+            )
+            m.loc[idx, mol_type+'_rdkit_sim']  = get_rd_mol_similarity(
+                ref_mol, mol, 'rdkit'
+            )
+            m.loc[idx, mol_type+'_maccs_sim']  = get_rd_mol_similarity(
+                ref_mol, mol, 'maccs'
+            )
 
         # UFF energy minimization
-        E_init_t, E_min_t, error = true_struct.info['min_result']
-        if not from_gen_grid:
-            m.loc[idx, prefix+'_add_E'] = E_init_t
-            m.loc[idx, prefix+'_add_min_E'] = E_min_t
-            m.loc[idx, prefix+'_add_dE_min'] = E_min_t - E_init_t
-            m.loc[idx, prefix+'_add_min_error'] = error
-            m.loc[idx, prefix+'_add_RMSD_min'] = get_aligned_rmsd(true_mol_min, true_mol)
+        min_mol = mol.info['min_mol']
+        E_init = mol.info['E_init']
+        E_min = mol.info['E_min']
 
-        E_init, E_min, error = fit_struct.info['min_result']
-        m.loc[idx, prefix+'_fit_add_E'] = E_init
-        m.loc[idx, prefix+'_fit_add_min_E'] = E_min
-        m.loc[idx, prefix+'_fit_add_dE_min'] = E_min - E_init
-        m.loc[idx, prefix+'_fit_add_min_error'] = error
-        m.loc[idx, prefix+'_fit_add_RMSD_min']  = get_aligned_rmsd(mol_min, mol)
+        m.loc[idx, mol_type+'_E'] = E_init
+        m.loc[idx, mol_type+'_min_E'] = E_min
+        m.loc[idx, mol_type+'_dE_min'] = E_min - E_init
+        m.loc[idx, mol_type+'_min_error'] = mol.info['min_error']
+        m.loc[idx, mol_type+'_min_time'] = mol.info['min_time']
+        m.loc[idx, mol_type+'_RMSD_min']  = get_aligned_rmsd(min_mol, mol)
 
-        # compare energy to true mol, pre- and post-minimize
-        m.loc[idx, prefix+'_fit_add_dE_true'] = E_init - E_init_t
-        m.loc[idx, prefix+'_fit_add_min_dE_true'] = E_min - E_min_t
+        if ref_mol is not None:
 
-        # get aligned RMSD to true mol, pre-minimize
-        m.loc[idx, prefix+'_fit_add_RMSD_true'] = get_aligned_rmsd(true_mol, mol)
+            # compare energy to ref mol, pre and post-minimization
+            min_ref_mol = ref_mol.info['min_mol']
+            E_init_ref = ref_mol.info['E_init']
+            E_min_ref = ref_mol.info['E_init']
 
-        # get aligned RMSD to true mol, post-minimize
-        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = get_aligned_rmsd(true_mol_min, mol_min)
+            m.loc[idx, mol_type+'_dE_ref'] = E_init - E_init_ref
+            m.loc[idx, mol_type+'_min_dE_ref'] = E_min - E_min_ref
+
+            # get aligned RMSD to ref mol, pre-minimize
+            m.loc[idx, mol_type+'_RMSD_ref'] = get_aligned_rmsd(ref_mol, mol)
+
+            # get aligned RMSD to true mol, post-minimize
+            m.loc[idx, mol_type+'_min_RMSD_ref'] = get_aligned_rmsd(min_ref_mol, min_mol)
 
 
 def catch_exc(func, exc=Exception, default=np.nan):
@@ -1344,7 +1324,7 @@ def get_ob_smi_similarity(smi1, smi2):
     return fgp1 | fgp2
 
 
-def uff_minimize_rd_mol(rd_mol, max_iters=1000):
+def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     try:
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
         ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
@@ -1654,11 +1634,11 @@ def n_lines_in_file(file):
         return sum(1 for line in f)
 
 
-def write_pymol_script(pymol_file, out_prefix, dx_prefixes, struct_files, centers=[]):
+def write_pymol_script(pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[]):
     '''
-    Write a pymol script with a map object for each of dx_files, a
-    group of all map objects (if any), a rec_file, a lig_file, and
-    an optional fit_file.
+    Write a pymol script that loads all .dx files with a given
+    prefix into a single group, then loads a set of sdf_files
+    and translates them to the origin, if centers are provided.
     '''
     with open(pymol_file, 'w') as f:
 
@@ -1668,13 +1648,13 @@ def write_pymol_script(pymol_file, out_prefix, dx_prefixes, struct_files, center
             group_name = m.group(1) + '_grids'
             f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
-        for struct_file in struct_files: # load structures
-            m = re.match('^{}_(.*)\\.sdf$'.format(out_prefix), struct_file)
+        for sdf_file in sdf_files: # load structures
+            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
-            f.write('load {}, {}\n'.format(struct_file, obj_name))
+            f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
-        for struct_file, (x,y,z) in zip(struct_files, centers): # center structures
-            m = re.match('^{}_(.*)\\.sdf$'.format(out_prefix), struct_file)
+        for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
+            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
@@ -1833,7 +1813,7 @@ def get_temp_data_file(examples):
     return data_file
 
 
-def read_examples_from_data_file(data_file, data_root=''):
+def read_examples_from_data_file(data_file, data_root='', n=-1):
     '''
     Read list of (rec_file, lig_file) examples from
     data_file, optionally prepended with data_root.
@@ -1846,6 +1826,8 @@ def read_examples_from_data_file(data_file, data_root=''):
                 rec_file = os.path.join(data_root, rec_file)
                 lig_file = os.path.join(data_root, lig_file)
             examples.append((rec_file, lig_file))
+            if len(examples) == n:
+                break
     return examples
 
 
@@ -2230,11 +2212,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     ex = examples[batch_idx]
 
                 lig_coord_set = ex.coord_sets[1]
-                lig_src_file = lig_coord_set.src
-                struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
-                types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
+                lig_src = lig_coord_set.src
+                lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
+                types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
 
-                lig_src_no_ext = os.path.splitext(lig_src_file)[0]
+                lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
 
                 try: # get true mol from the original sdf file
@@ -2246,16 +2228,19 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         lig_sdf_base = lig_src_no_ext + '.sdf'
                         idx = 0
                     lig_sdf_file = os.path.join(args.data_root, lig_sdf_base)
-                    mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
+                    lig_mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
                     print('Found true molecule in data root')
-                    struct.info['src_mol'] = mol
+
+                    atom_fitter.uff_minimize(lig_mol)
+                    lig_struct.info['src_mol'] = lig_mol
 
                 except Exception as e: # get true mol from openbabel
                     print('Did not find true molecule in data root')
-                    struct.info['src_mol'] = None
+                    lig_struct.info['src_mol'] = None
 
-                atom_fitter.validify(struct, use_ob=True)
-                print('True molecule for {} has {} atoms'.format(lig_name, struct.n_atoms))
+                print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+
+                atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
                 latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
@@ -2285,14 +2270,14 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid = MolGrid(
                         values=np.array(grid_data),
                         channels=grid_channels,
-                        center=struct.center,
+                        center=lig_struct.center,
                         resolution=grid_maker.get_resolution(),
                     )
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
                     if grid_name == 'lig': # store true structure for input ligand grids
-                        grid.info['src_struct'] = struct
+                        grid.info['src_struct'] = lig_struct
 
                     elif grid_name == 'lig_gen': # store latent vector for generated grids
                         grid.info['latent_vec'] = latent_vec

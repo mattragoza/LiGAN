@@ -1,15 +1,9 @@
-import sys, os, argparse
+import sys, os, argparse, glob
+from collections import defaultdict
+import pandas as pd
+from rdkit import Chem
 
 import generate as g
-
-
-class DummyGrid(g.MolGrid):
-    '''
-    Does not actually contain a density grid, just
-    satisfies the OutputWriter.write() interface.
-    '''
-    def __init__(self, **info):
-        self.info = info
 
 
 class ValidMolMaker(g.AtomFitter, g.OutputWriter):
@@ -18,57 +12,142 @@ class ValidMolMaker(g.AtomFitter, g.OutputWriter):
         self,
         dkoes_make_mol,
         out_prefix,
+        output_sdf,
+        output_visited,
         n_samples,
         verbose,
     ):
-        # atom fitter settings
         self.dkoes_make_mol = dkoes_make_mol
 
-        # output writer settings
-        super(g.OutputWriter, self).__init__(
-            out_prefix=out_prefix,
-            output_dx=False,
-            output_sdf=True,
-            output_channels=True,
-            output_visited=False,
-            n_samples=n_samples,
-            blob_names=['lig', 'lig_gen'],
-            fit_atoms=True,
-            batch_metrics=False,
-            verbose=True,
-        )
+        self.out_prefix = out_prefix
+        self.output_sdf = output_sdf
+        self.output_visited = output_visited
+        self.n_samples = n_samples
 
-    def write(self, lig_name, grid_name, sample_idx, struct):
+        self.metric_file = '{}.gen_metrics'.format(out_prefix)
+        columns = ['lig_name', 'sample_idx']
+        self.metrics = pd.DataFrame(columns=columns).set_index(columns)
+
+        self.pymol_file = '{}.pymol'.format(out_prefix)
+        self.sdf_files = []
+        self.centers = []
+
+        self.verbose = verbose
+
+        # organize structs by lig_name, sample_idx, struct_type
+        self.structs = defaultdict(lambda: defaultdict(dict))
+
+    def write(self, lig_name, struct_type, sample_idx, struct):
         '''
         Write output files and compute metrics for struct.
         '''
-        self.validify(struct)
-        grid = DummyGrid(src_struct=struct)
-        super(g.OutputWriter, self).write(
-            lig_name, grid_name, sample_idx, grid
-        )
+        struct_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, struct_type)
+        src_sample_prefix = struct_prefix + '_src_' + str(sample_idx)
+        add_sample_prefix = struct_prefix + '_add_' + str(sample_idx)
+        is_fit_struct = struct_type.endswith('_fit')
 
-    def compute_grid_metrics(self, *args, **kwargs):
-        pass
+        if self.output_sdf:
 
-    def compute_fit_metrics(self, *args, **kwargs):
-        pass
+            if not is_fit_struct: # write real input molecule
 
+                src_mol_file = src_sample_prefix + '.sdf'
+                if self.verbose:
+                    print('Writing ' + src_mol_file)
 
+                src_mol = struct.info['src_mol']
+                if self.output_visited:
+                    rd_mols = src_mol.info['visited_mols']
+                else:
+                    rd_mols = [src_mol]
+                g.write_rd_mols_to_sdf_file(src_mol_file, rd_mols)
+                self.sdf_files.append(src_mol_file)
+                self.centers.append(struct.center)
+
+            add_mol_file = add_sample_prefix + '.sdf'
+            if self.verbose:
+                print('Writing ' + add_mol_file)
+
+            add_mol = struct.info['add_mol']
+            if self.output_visited:
+                rd_mols = add_mol.info['visited_mols']
+            else:
+                rd_mols = [add_mol]
+            g.write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
+            self.sdf_files.append(add_mol_file)
+            self.centers.append(struct.center)
+
+        # store struct until ready to compute output metrics
+        self.structs[lig_name][sample_idx][struct_type] = struct
+        lig_structs = self.structs[lig_name]
+
+        # store until structs for all samples are ready
+        has_all_samples = len(lig_structs) == self.n_samples
+        has_all_structs = all(len(lig_structs[i]) == 3 for i in lig_structs)
+        
+        if has_all_samples and has_all_structs:
+
+            if self.verbose:
+                print('Computing metrics for all ' + lig_name + 'samples')
+
+            self.compute_metrics(lig_name, range(self.n_samples))
+
+            if self.verbose:
+                print('Writing ' + self.metric_file)
+
+            self.metrics.to_csv(self.metric_file, sep=' ')
+
+            if self.verbose:
+                print('Writing ' + self.pymol_file)
+
+            g.write_pymol_script(
+                self.pymol_file,
+                self.out_prefix,
+                [],
+                self.sdf_files,
+                self.centers,
+            )
+            del self.structs[lig_name]
+
+    def compute_metrics(self, lig_name, sample_idxs):
+
+        lig_structs = self.structs[lig_name]
+
+        for sample_idx in sample_idxs:
+            idx = (lig_name, sample_idx)
+
+            lig_struct = lig_structs[sample_idx]['lig']
+            lig_fit_struct = lig_structs[sample_idx]['lig_fit']
+            lig_gen_fit_struct = lig_structs[sample_idx]['lig_gen_fit']
+
+            lig_mol = lig_struct.info['src_mol']
+            lig_add_mol = lig_struct.info['add_mol']
+            lig_fit_add_mol = lig_fit_struct.info['add_mol']
+            lig_gen_fit_add_mol = lig_gen_fit_struct.info['add_mol']
+
+            self.compute_mol_metrics(idx, 'lig', lig_mol)
+            self.compute_mol_metrics(idx, 'lig_add', lig_add_mol, lig_mol)
+            self.compute_mol_metrics(idx, 'lig_fit_add', lig_fit_add_mol, lig_mol)
+            self.compute_mol_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_mol, lig_mol)
+
+        if self.verbose:
+            pd.set_option('display.max_columns', 100)
+            print(self.metrics.loc[lig_name].loc[sample_idxs])
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument('--in_dir', required=True)
     parser.add_argument('--data_file', required=True)
+    parser.add_argument('--data_root', required=True)
     parser.add_argument('--n_examples', required=True, type=int)
     parser.add_argument('--n_samples', required=True, type=int)
-    parser.add_argument('--in_prefix', required=True)
-    parser.add_argument('--n_job_scripts', default=1, type=int)
-    parser.add_argument('--job_script_idx', default=0, type=int)
-    parser.add_argument('--lig_map', default='my_lig_map')
+    parser.add_argument('--lig_map', required=True)
     parser.add_argument('--dkoes_make_mol', default=False, action='store_true')
-    #parser.add_argument('--out_prefix')
+    parser.add_argument('--out_prefix', required=True)
+    parser.add_argument('--output_sdf', default=False, action='store_true')
+    parser.add_argument('--output_visited', default=False, action='store_true')
+    parser.add_argument('--verbose', default=False, action='store_true')
     return parser.parse_args(argv)
-
+   
 
 def main(argv):
     args = parse_args(argv)
@@ -78,39 +157,68 @@ def main(argv):
         name_prefix='Ligand',
     )
 
-    mol_maker = ValidMolMaker(args.dkoes_make_mol)
+    mol_maker = ValidMolMaker(
+        dkoes_make_mol=args.dkoes_make_mol,
+        out_prefix=args.out_prefix,
+        output_sdf=args.output_sdf,
+        output_visited=args.output_visited,
+        n_samples=args.n_samples,
+        verbose=args.verbose,
+    )
 
-    examples = g.read_examples_from_data_file(args.data_file)
+    job_name = os.path.basename(args.in_dir)
+    examples = g.read_examples_from_data_file(args.data_file, n=args.n_examples)
 
-    for example_idx in range(args.n_examples):
+    for example_idx, example in enumerate(examples):
 
-        array_idx = example_idx*args.n_job_scripts + args.job_script_idx + 1
+        # get the lig_name and source molecule
+        lig_src = example[1]
+        lig_src_no_ext = os.path.splitext(lig_src)[0]
+        lig_name = os.path.basename(lig_src_no_ext)
 
-        for sample_idx in range(args.n_samples):
+        lig_mol_file = os.path.join(args.data_root, lig_src_no_ext + '.sdf')
+        lig_mol = g.read_rd_mols_from_sdf_file(lig_mol_file)[0]
+        lig_mol = Chem.RemoveHs(lig_mol)
+        
+        # then get all of the derived typed-atom structs
+        for struct_type in ['lig', 'lig_fit', 'lig_gen_fit']:
 
-            lig_src_file = examples[example_idx][1]
-            lig_src_no_ext = os.path.splitext(lig_src_file)[0]
-            lig_name = os.path.basename(lig_src_no_ext)
-            
-            for grid_name in ['lig', 'lig_fit', 'lig_gen_fit']:
+            struct_file = os.path.join(
+                args.in_dir,
+                '_'.join([
+                    job_name,
+                    '*', # don't know array_idx...
+                    lig_name,
+                    struct_type,
+                ])
+            ) + '.sdf'
+            try:
+                struct_file = glob.glob(struct_file)[0]
+            except IndexError:
+                pass # next line will raise a more informative error
 
-                struct_file = os.path.join(
-                    args.in_prefix,
-                    '_'.join([
-                        args.in_prefix,
-                        str(array_idx),
-                        lig_name,
-                        grid_name,
-                        str(sample_idx),
-                    ])
-                ) + '.sdf'
-                try:
-                    struct = g.MolStruct.from_sdf(struct_file, lig_channels)
-                    mol_maker.write(struct)
+            # these aren't validified molecules, just fit atom coords
+            fit_mols = g.read_rd_mols_from_sdf_file(struct_file)
+        
+            for sample_idx in range(args.n_samples):
 
-                except OSError as e:
-                    print(e)
-                    continue
+                # need the channels to recover the typed-atom struct
+                channels_file = struct_file.replace('.sdf', '_{}.channels'.format(sample_idx))
+                c = g.read_channels_from_file(channels_file, lig_channels)
+
+                # get the typed-atom struct from fit_mol coords and types
+                struct = g.MolStruct.from_rd_mol(fit_mols[sample_idx], c, lig_channels)
+
+                # validify the struct
+                mol_maker.validify(struct)
+
+                if struct_type == 'lig':
+                    lig_mol_ = Chem.RWMol(lig_mol)
+                    Chem.rdMolAlign.AlignMol(lig_mol_, struct.info['add_mol'])
+                    mol_maker.uff_minimize(lig_mol_)
+                    struct.info['src_mol'] = lig_mol_
+
+                mol_maker.write(lig_name, struct_type, sample_idx, struct)
 
 
 if __name__ == '__main__':
