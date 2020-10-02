@@ -122,7 +122,7 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
     types_true = torch.tensor(types,dtype=torch.float32,device=device)
     types_est = torch.tensor(types_est,dtype=torch.float32,device=device)
 
-    print(types_est)
+    #print(types_est)
 
     #setup gridder
     gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution,
@@ -283,12 +283,6 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
         best_radii[i] = ch.atomic_radius
 
     #create struct and grid from coordinates
-    grid_best = generate.MolGrid(
-        values=gridder.forward(best_coords,best_types,best_radii).cpu().detach().numpy(),
-        channels=mgrid.channels,
-        center=mgrid.center,
-        resolution=mgrid.resolution)
-
     struct_best = generate.MolStruct(
         xyz=best_coords.cpu().numpy(),
         c=best_typeindices,
@@ -300,7 +294,16 @@ def simple_atom_fit(mgrid,types,iters=10,tol=0.01):
         n_steps=numfixes,
     )
 
-    return grid_best, struct_best
+    grid_pred = generate.MolGrid(
+        values=gridder.forward(best_coords,best_types,best_radii).cpu().detach().numpy(),
+        channels=mgrid.channels,
+        center=mgrid.center,
+        resolution=mgrid.resolution,
+        visited_structs=[],
+        src_struct=struct_best,
+    )
+
+    return grid_pred
 
 
 def fixup(atoms, mol, struct):
@@ -486,8 +489,8 @@ def make_mol(struct,verbose=False):
             if verbose:
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
         
-
-    return pybel.Molecule(mol),mismatches
+    mol.DeleteHydrogens()
+    return mol,mismatches
 
 
 def fitmol(fname,niters=10):
@@ -506,7 +509,8 @@ def fitmol(fname,niters=10):
     mgrid = generate.MolGrid(mgrid_values, channels, np.zeros(3), 0.5)
     types = generate.count_types(cset.type_index.tonumpy().astype(int), cset.num_types(), dtype=np.int16)
 
-    grid, struct = simple_atom_fit(mgrid, types, niters)
+    grid = simple_atom_fit(mgrid, types, niters)
+    struct = grid.info['src_struct']
     loss = struct.info['loss']
     fittime = struct.info['time']
     fixes = struct.info['n_steps']
@@ -531,6 +535,7 @@ if __name__ == '__main__':
             start = time.time()
             struct, fittime, loss, fixes, rmsd = fitmol(fname,25)
             mol,misses = make_mol(struct)
+            mol = pybel.Molecule(mol)
             
             totaltime = time.time()-start
             ligname = os.path.split(fname)[1]    

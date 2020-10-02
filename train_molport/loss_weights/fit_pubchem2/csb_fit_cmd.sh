@@ -40,6 +40,31 @@ cd $SCR_DIR
 
 trap "cp *.{types,model,caffemodel,dx,sdf,pymol,gen_metrics} ${WORK_DIR}" EXIT
 
-python3 $LIGAN_ROOT/generate.py --data_model ../<MODEL_DIR>/<DATA_MODEL_NAME>.model --gen_model ../<MODEL_DIR>/<GEN_MODEL_NAME>.model --gen_weights ../<WEIGHTS_DIR>/${GEN_WEIGHTS_NAME}.caffemodel -r ${REC} -l ${LIG} --data_root $PUBCHEM_ROOT -b lig -b lig_gen --fit_atoms --output_sdf --output_channels --verbose 3 --gpu --n_samples <N_SAMPLES> <GEN_OPTIONS> --threshold <THRESHOLD> --peak_value <PEAK_VALUE> --min_dist <MIN_DIST> --interm_gd_iters <INTERM_GD_ITERS> --final_gd_iters <FINAL_GD_ITERS> --learning_rate <LEARNING_RATE> --beta1 <BETA1> --beta2 <BETA2> --weight_decay <WEIGHT_DECAY> -o <JOB_NAME>_${SLURM_ARRAY_TASK_ID}
+python3 $LIGAN_ROOT/generate.py \
+	--data_model ../<MODEL_DIR>/<DATA_MODEL_NAME>.model \
+	--gen_model ../<MODEL_DIR>/<GEN_MODEL_NAME>.model \
+	--gen_weights ../<WEIGHTS_DIR>/${GEN_WEIGHTS_NAME}.caffemodel \
+	-r ${REC} \
+	-l ${LIG} \
+	--data_root $PUBCHEM_ROOT \
+	-b lig \
+	-b lig_gen \
+	--fit_atoms \
+	--output_sdf \
+	--output_channels \
+	--verbose 3 \
+	--gpu \
+	--n_samples <N_SAMPLES> \
+	<GEN_OPTIONS> \
+	--threshold <THRESHOLD> \
+	--peak_value <PEAK_VALUE> \
+	--min_dist <MIN_DIST> \
+	--interm_gd_iters <INTERM_GD_ITERS> \
+	--final_gd_iters <FINAL_GD_ITERS> \
+	--learning_rate <LEARNING_RATE> \
+	--beta1 <BETA1> \
+	--beta2 <BETA2> \
+	--weight_decay <WEIGHT_DECAY> -\
+	o <JOB_NAME>_${SLURM_ARRAY_TASK_ID}
 
 exit

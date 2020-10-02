@@ -32,6 +32,7 @@ nps_model = npscorer.readNPModel()
 import molgrid
 import caffe_util
 import atom_types
+import simple_fit
 from results import get_terminal_size
 
 
@@ -76,7 +77,7 @@ class MolGrid(object):
 
 class MolStruct(object):
     '''
-    An atomic structure.
+    A typed atomic structure.
     '''
     def __init__(self, xyz, c, channels, bonds=None, **info):
 
@@ -113,12 +114,12 @@ class MolStruct(object):
         self.info = info
 
     @classmethod
-    def from_gninatypes(self, gtypes_file, channels, **info):
+    def from_gninatypes(cls, gtypes_file, channels, **info):
         xyz, c = read_gninatypes_file(gtypes_file, channels)
         return MolStruct(xyz, c, channels, **info)
 
     @classmethod
-    def from_coord_set(self, coord_set, channels, **info):
+    def from_coord_set(cls, coord_set, channels, **info):
         if not coord_set.has_indexed_types():
             raise ValueError(
                 'can only make MolStruct from CoordinateSet with indexed types'
@@ -126,6 +127,18 @@ class MolStruct(object):
         xyz = coord_set.coords.tonumpy()
         c = coord_set.type_index.tonumpy().astype(int)
         return MolStruct(xyz, c, channels, **info)
+
+    @classmethod
+    def from_rd_mol(cls, rd_mol, c, channels, **info):
+        xyz = rd_mol.GetConformer(0).GetPositions()
+        return cls(xyz, c, channels, **info)
+
+    @classmethod
+    def from_sdf(cls, sdf_file, channels, **info):
+        rd_mol = read_rd_mols_from_sdf_file(sdf_file)[0]
+        channels_file = os.path.splitext(sdf_file)[0] + '.channels'
+        c = read_channels_from_file(channels_file, channels)
+        return cls.from_rd_mol(rd_mol, c, channels)
 
     def to_ob_mol(self):
         mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
@@ -164,7 +177,7 @@ class AtomFitter(object):
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
-        output_visited,
+        dkoes_make_mol,
         output_kernel,
         device,
         verbose=0,
@@ -190,7 +203,9 @@ class AtomFitter(object):
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
 
-        self.output_visited = output_visited
+        # use alternate bond adding method
+        self.dkoes_make_mol = dkoes_make_mol
+
         self.output_kernel = output_kernel
         self.device = device
         self.verbose = verbose
@@ -369,7 +384,7 @@ class AtomFitter(object):
 
         return xyz.detach(), c.detach()
 
-    def get_estimate_types(self, grid, channels, resolution):
+    def get_types_estimate(self, grid, channels, resolution):
         '''
         Since atom density is additive and non-negative, estimate
         the atom type counts by dividing the total density in each
@@ -400,15 +415,15 @@ class AtomFitter(object):
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
 
         if self.estimate_types: # estimate atom type counts from grid density
-            types_est = self.get_estimate_types(
+            types_est = self.get_types_estimate(
                 grid_true.values,
                 grid_true.channels,
                 grid_true.resolution,
             )
-            est_type_diff = (types - types_est).abs().sum().item()
+            est_type_loss = (types - types_est).abs().sum().item()
             types = types_est
         else:
-            est_type_diff = np.nan
+            est_type_loss = np.nan
 
         # initialize empty struct
         print('initializing empty struct 0')
@@ -416,15 +431,15 @@ class AtomFitter(object):
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
 
-        fit_loss = (grid_true.values**2).sum() / 2.0
+        L2_loss = (grid_true.values**2).sum() / 2.0
         type_loss = types.abs().sum()
 
         # to constrain types, order structs first by type diff, then by L2 loss
         if self.constrain_types:
-            objective = (type_loss.item(), fit_loss.item())
+            objective = (type_loss.item(), L2_loss.item())
 
         else: # otherwise, order structs only by L2 loss
-            objective = fit_loss.item()
+            objective = L2_loss.item()
 
         # get next atom init locations and channels
         print('getting next atoms for struct 0')
@@ -466,7 +481,7 @@ class AtomFitter(object):
                     c_new = torch.cat([c, c_next])
 
                     # compute diff and loss after gradient descent
-                    xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
+                    xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
                         grid_true, xyz_new, c_new, self.interm_gd_iters
                     )
 
@@ -474,9 +489,9 @@ class AtomFitter(object):
                     type_loss = type_diff.abs().sum()
 
                     if self.constrain_types:
-                        objective_new = (type_loss.item(), fit_loss.item())
+                        objective_new = (type_loss.item(), L2_loss.item())
                     else:
-                        objective_new = fit_loss.item()
+                        objective_new = L2_loss.item()
 
                     # check if new structure is one of the best yet
                     if any(objective_new < s[0] for s in best_structs):
@@ -512,7 +527,7 @@ class AtomFitter(object):
                         c_new = torch.cat([c, c_next_.unsqueeze(0)])
 
                         # compute diff and loss after gradient descent
-                        xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
+                        xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
                             grid_true, xyz_new, c_new, self.interm_gd_iters
                         )
 
@@ -520,9 +535,9 @@ class AtomFitter(object):
                         type_loss = type_diff.abs().sum()
 
                         if self.constrain_types:
-                            objective_new = (type_loss.item(), fit_loss.item())
+                            objective_new = (type_loss.item(), L2_loss.item())
                         else:
-                            objective_new = fit_loss.item()
+                            objective_new = L2_loss.item()
 
                         # check if new structure is one of the best yet
                         if any(objective_new < s[0] for s in best_structs):
@@ -548,10 +563,9 @@ class AtomFitter(object):
                             struct_count += 1
 
                 visited.add(struct_id)
-                if self.output_visited:
-                    visited_structs.append(
-                        (objective, struct_id, time.time()-t_start, xyz, c)
-                    )
+                visited_structs.append(
+                    (objective, struct_id, time.time()-t_start, xyz, c)
+                )
 
             if found_new_best_struct: # determine new set of best structures
 
@@ -575,69 +589,65 @@ class AtomFitter(object):
                         )
                     )
 
+        # done searching for atomic structures
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
+        type_loss = (types - c_best.sum(dim=0)).abs().sum().item()
 
-        # perform final gradient descent
-        xyz_best, grid_pred, grid_diff, fit_loss = self.fit_gd(
-            grid_true, xyz_best, c_best, self.final_gd_iters
+        if self.final_gd_iters > 0: # perform final gradient descent
+
+            xyz_best, grid_pred, grid_diff, L2_loss = self.fit_gd(
+                grid_true, xyz_best, c_best, self.final_gd_iters
+            )
+
+            if self.constrain_types:
+                best_objective = (type_loss.item(), L2_loss.item())
+            else:
+                best_objective = L2_loss.item()
+
+            visited_structs.append(
+                (best_objective, best_id+1, time.time()-t_start, xyz_best, c_best)
+            )
+
+        # finalize the visited atomic structures
+        visited_structs_ = iter(visited_structs)
+        visited_structs = []
+        for objective, struct_id, fit_time, xyz, c in visited_structs_:
+
+            struct = MolStruct(
+                xyz=xyz.cpu().detach().numpy(),
+                c=one_hot_to_index(c).cpu().detach().numpy(),
+                channels=grid.channels,
+                L2_loss=L2_loss,
+                type_diff=type_diff,
+                est_type_diff=est_type_loss,
+                time=fit_time,
+            )
+            visited_structs.append(struct)
+
+        # finalize the best fit atomic structure and density grid
+        struct_best = MolStruct(
+            xyz=xyz_best.cpu().detach().numpy(),
+            c=one_hot_to_index(c_best).cpu().detach().numpy(),
+            channels=grid.channels,
+            L2_loss=L2_loss,
+            type_diff=type_loss,
+            est_type_diff=est_type_loss,
+            time=time.time()-t_start,
+            visited_structs=visited_structs,
         )
 
-        type_diff = (types - c_best.sum(dim=0)).abs().sum().item()
+        self.validify(struct_best)
 
         grid_pred = MolGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
+            visited_structs=visited_structs,
+            src_struct=struct_best,
         )
 
-        if self.output_visited: # return all visited structures
-
-            struct_best = []
-            for objective, struct_id, fit_time, xyz, c in visited_structs:
-
-                if self.constrain_types:
-                    type_diff, fit_loss = objective
-                else:
-                    fit_loss = objective
-                    type_diff = (types - c.sum(dim=0)).abs().sum().item()
-
-                if len(c) > 0:
-                    c = torch.argmax(c, dim=1)
-                else:
-                    c = torch.zeros((0,))
-
-                struct = MolStruct(
-                    xyz=xyz.cpu().detach().numpy(),
-                    c=c.cpu().detach().numpy(),
-                    channels=grid.channels,
-                    loss=fit_loss,
-                    type_diff=type_diff,
-                    est_type_diff=est_type_diff,
-                    time=fit_time,
-                    n_steps=len(visited)-1,
-                )
-                struct_best.append(struct)
-
-        else: # return only the best structure
-
-            if len(c_best) > 0:
-                c_best = torch.argmax(c_best, dim=1)
-            else:
-                c_best = torch.zeros((0,))
-
-            struct_best = MolStruct(
-                xyz=xyz_best.cpu().detach().numpy(),
-                c=c_best.cpu().detach().numpy(),
-                channels=grid.channels,
-                loss=fit_loss,
-                type_diff=type_diff,
-                est_type_diff=est_type_diff,
-                time=time.time()-t_start,
-                n_steps=len(visited)-1,
-            )
-
-        return grid_pred, struct_best
+        return grid_pred
 
     def fit_gd(self, grid, xyz, c, n_iters):
 
@@ -677,21 +687,94 @@ class AtomFitter(object):
             loss.detach()
         )
 
+    def validify(self, struct, use_ob=False):
+        '''
+        Attempt to construct a valid molecule from an atomic
+        structure by inferring bonds, setting aromaticity
+        and connecting fragments, then minimizing energy.
+        '''
+        # initial struct from atom fitting (no bonds)
+        rd_mol = struct.to_rd_mol()
+        visited_mols = [rd_mol]
+
+        # connect the dots using openbabel
+        ob_mol = rd_mol_to_ob_mol(rd_mol)
+        ob_mol.ConnectTheDots()
+        rd_mol = ob_mol_to_rd_mol(ob_mol)
+        visited_mols.append(rd_mol)
+
+        # perceive bonds in openbabel and evaluate "geometric validity"
+        # i.e. validity of molecule inferred purely using openbabel
+        ob_mol.PerceiveBondOrders()
+        rd_mol = ob_mol_to_rd_mol(ob_mol)
+        visited_mols.append(rd_mol)
+
+        if not use_ob:
+
+            if self.dkoes_make_mol:
+
+                ob_mol, mismatches = simple_fit.make_mol(struct)
+                rd_mol = ob_mol_to_rd_mol(ob_mol)
+                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+                struct.info['add_mol'] = rd_mol
+                struct.info['mismatches'] = mismatches
+                visited_mols.append(rd_mol)
+
+            else: # try to fix it up using fragment connection and channel info
+
+                # connect fragments by adding min distance bonds
+                rd_mol = Chem.RWMol(rd_mol)
+                connect_rd_mol_frags(rd_mol)
+                visited_mols.append(rd_mol)
+
+                # make aromatic rings using channel info
+                rd_mol = Chem.RWMol(rd_mol)
+                set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
+                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
+                struct.info['add_mol'] = rd_mol
+                visited_mols.append(rd_mol)
+
+        rd_mol.info = dict()
+        rd_mol.info['visited_mols'] = visited_mols
+        self.uff_minimize(rd_mol)
+
+        struct.info['add_mol'] = rd_mol
+
+    def uff_minimize(self, mol):
+        t_start = time.time()
+        min_mol, E_init, E_min, error = uff_minimize_rd_mol(mol)
+
+        if not hasattr(mol, 'info'):
+            mol.info = dict()
+
+        if 'visited_mols' not in mol.info:
+            mol.info['visited_mols'] = []
+
+        mol.info['visited_mols'].append(min_mol)
+        mol.info['min_mol'] = min_mol
+        mol.info['E_init'] = E_init
+        mol.info['E_min'] = E_min
+        mol.info['min_error'] = error
+        mol.info['min_time'] = time.time() - t_start
+
 
 class DkoesAtomFitter(AtomFitter):
 
-    def __init__(self, iters=25, tol=0.01):
+    def __init__(self, iters=25, tol=0.01, dkoes_make_mol=True):
         self.iters = iters
         self.tol = tol
+        self.dkoes_make_mol = dkoes_make_mol
 
     def fit(self, grid, types):
-        from simple_fit import simple_atom_fit
-        return simple_atom_fit(
+        fit_grid = simple_fit.simple_atom_fit(
             mgrid=grid,
             types=types,
             iters=self.iters,
             tol=self.tol
         )
+        fit_struct = fit_grid.info['src_struct']
+        fit_struct.info['add_mol'] = self.validify(fit_struct)
+        return grid_pred
 
 
 class OutputWriter(object):
@@ -707,9 +790,11 @@ class OutputWriter(object):
         output_sdf,
         output_channels,
         output_latent,
+        output_visited,
         n_samples,
         blob_names,
         fit_atoms,
+        batch_metrics,
         verbose
     ):
 
@@ -718,19 +803,14 @@ class OutputWriter(object):
         self.output_sdf = output_sdf
         self.output_channels = output_channels
         self.output_latent = output_latent
-        self.fit_atoms = fit_atoms
-
-        # organize grids and structs by lig_name, grid_name, sample_idx
-        self.grids = defaultdict(lambda: defaultdict(dict))
-        self.structs = defaultdict(lambda: defaultdict(dict))
-
-        # compute the number of grids to expect
-        self.n_grids = 0
-        for b in blob_names:
-            self.n_grids += 1
-            if fit_atoms and b.startswith('lig'):
-                self.n_grids += 1
+        self.output_visited = output_visited
         self.n_samples = n_samples
+        self.blob_names = blob_names
+        self.fit_atoms = fit_atoms
+        self.batch_metrics = batch_metrics
+
+        # organize grids by lig_name, sample_idx, grid_name
+        self.grids = defaultdict(lambda: defaultdict(dict))
 
         # accumulate metrics in dataframe
         self.metric_file = '{}.gen_metrics'.format(out_prefix)
@@ -740,410 +820,391 @@ class OutputWriter(object):
         # write a pymol script when finished
         self.pymol_file = '{}.pymol'.format(out_prefix)
         self.dx_prefixes = []
-        self.struct_files = []
+        self.sdf_files = []
         self.centers = []
 
         self.verbose = verbose
 
-    def write(self, lig_name, grid_name, sample_idx, grid, struct):
+    def write(self, lig_name, grid_name, sample_idx, grid):
         '''
-        Add grid and struct to the data structure and write output
-        for lig_name, if all expected grids and structs are present.
+        Write output files for grid and compute metrics in
+        data frame, if all necessary data is present.
         '''
-        if self.verbose:
-            print('out_writer got {} {} {}'.format(lig_name, grid_name, sample_idx))
+        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
+        sample_prefix = grid_prefix + '_' + str(sample_idx)
+        src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
+        add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
 
-        self.grids[lig_name][grid_name][sample_idx] = grid
-        self.structs[lig_name][grid_name][sample_idx] = struct
+        is_gen_grid = grid_name.endswith('_gen')
+        is_fit_grid = grid_name.endswith('_fit')
+        is_real_grid = not (is_gen_grid or is_fit_grid)
+        has_struct = is_real_grid or is_fit_grid
 
-        has_all_grids = (len(self.grids[lig_name]) == self.n_grids)
-        has_all_samples = all(
-            len(g) == self.n_samples for g in self.grids[lig_name].values()
-        )
+        # write output files
+        if self.output_dx: # write density grid files
 
-        if not (has_all_grids and has_all_samples):
-            return False
+            if self.verbose:
+                print('Writing ' + sample_prefix + ' .dx files')
 
-        if self.verbose:
-            print('out_writer has all grids for ' + lig_name)
+            grid.to_dx(sample_prefix, center=np.zeros(3))
+            self.dx_prefixes.append(sample_prefix)
 
+        if has_struct and self.output_sdf: # write structure files
+
+            # write typed atom structure
+            struct_file = sample_prefix + '.sdf'
+            if self.verbose:
+                print('Writing ' + struct_file)
+
+            struct = grid.info['src_struct']
+            if is_fit_grid and self.output_visited:
+                visited_structs = struct.info['visited_structs']
+                rd_mols = [s.to_rd_mol() for s in visited_structs]
+            else:
+                rd_mols = [struct.to_rd_mol()]
+            write_rd_mols_to_sdf_file(struct_file, rd_mols)
+            self.sdf_files.append(struct_file)
+            self.centers.append(struct.center)
+
+            if is_real_grid: # write real input molecule
+
+                src_mol_file = src_sample_prefix + '.sdf'
+                if self.verbose:
+                    print('Writing ' + src_mol_file)
+
+                src_mol = struct.info['src_mol']
+                if self.output_visited:
+                    rd_mols = src_mol.info['visited_mols']
+                else:
+                    rd_mols = [src_mol]
+                write_rd_mols_to_sdf_file(src_mol_file, rd_mols)
+                self.sdf_files.append(src_mol_file)
+                self.centers.append(struct.center)
+
+            # write molecule with added bonds
+            add_mol_file = add_sample_prefix + '.sdf'
+            if self.verbose:
+                print('Writing ' + add_mol_file)
+
+            add_mol = struct.info['add_mol']
+            if self.output_visited:
+                rd_mols = add_mol.info['visited_mols']
+            else:
+                rd_mols = [add_mol]
+            write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
+            self.sdf_files.append(add_mol_file)
+            self.centers.append(struct.center)
+
+            # write atom type channels
+            if self.output_channels:
+
+                channels_file = sample_prefix + '.channels'
+                if self.verbose:
+                    print('Writing ' + channels_file)
+
+                write_channels_to_file(
+                    channels_file, struct.c, struct.channels
+                )
+
+        # write latent vector
+        if is_gen_grid and self.output_latent:
+
+            latent_file = sample_prefix + '.latent'
+            if self.verbose:
+                print('Writing ' + latent_file)
+
+            latent_vec = grid.info['latent_vec']
+            write_latent_vecs_to_file(latent_file, [latent_vec])
+
+        # store grid until ready to compute output metrics
+        self.grids[lig_name][sample_idx][grid_name] = grid
         lig_grids = self.grids[lig_name]
-        lig_structs = self.structs[lig_name]
-        lig_prefix = '{}_{}'.format(self.out_prefix, lig_name)
 
-        if self.output_dx: # load ligand grids in a single pymol group
-            self.dx_prefixes.append(lig_prefix)
+        n_grids = len(self.blob_names) * 2 if self.fit_atoms else 1
 
-        for grid_name in lig_grids:
-            grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
+        if self.batch_metrics: # store until grids for all samples are ready
+            has_all_samples = len(lig_grids) == self.n_samples
+            has_all_grids = all(len(lig_grids[i]) == n_grids for i in lig_grids)
 
-            if self.output_dx:
+            if has_all_samples and has_all_grids:
 
-                for sample_idx, grid in lig_grids[grid_name].items():
-                    sample_prefix = grid_prefix + '_' + str(sample_idx)
-                    if self.verbose:
-                        print('out_writer writing ' + sample_prefix + ' .dx files')
-                    grid.to_dx(sample_prefix, center=np.zeros(3))
+                # compute batch metrics
+                if self.verbose:
+                    print('Computing metrics for all ' + lig_name + ' samples')
 
-            if self.output_sdf and not grid_name.endswith('_gen'):
-
-                best_structs = []
-                for sample_idx, struct in lig_structs[grid_name].items():
-                    sample_prefix = grid_prefix + '_' + str(sample_idx)
-
-                    if isinstance(struct, list): # all visited structs
-                        struct_file = sample_prefix + '.sdf'
-                        if self.verbose:
-                            print('out_writer writing ' + struct_file)
-                        write_rd_mols_to_sdf_file(
-                            struct_file, [s.to_rd_mol() for s in struct]
-                        )
-                        self.struct_files.append(struct_file)
-
-                        # best struct
-                        struct = sorted(struct, key=lambda s: s.info['loss'])[0]
-                        lig_structs[grid_name][sample_idx] = struct
-                        self.centers.append(struct.center)
-
-                    if struct is not None:
-                        best_structs.append(struct)
-
-                        if self.output_channels:
-                            channels_file = '{}.channels'.format(sample_prefix)
-                            if self.verbose:
-                                print('out_writer writing ' + channels_file)
-                            write_channels_to_file(
-                                channels_file, struct.c, struct.channels
-                            )
-
-                # write best stucts to single sdf file so that they
-                # are loaded into diff states of single pymol object
-                if best_structs:
-                    struct_file = grid_prefix + '.sdf'
-                    if self.verbose:
-                        print('out_writer writing ' + struct_file)
-                    write_rd_mols_to_sdf_file(
-                        struct_file, [s.to_rd_mol() for s in best_structs]
-                    )
-                    self.struct_files.append(struct_file)
-                    self.centers.append(best_structs[0].center)
-
-            if self.output_latent and grid_name.endswith('_gen'):
-
-                latent_vecs = []
-                for sample_idx, grid in lig_grids[grid_name].items():
-                    latent_vecs.append(grid.info['latent_vec'])
-
-                latent_file = grid_prefix + '.latent'
+                self.compute_metrics(lig_name, range(self.n_samples))
 
                 if self.verbose:
-                    print('out_writer writing ' + latent_file)
+                    print('Writing ' + self.metric_file)
 
-                write_latent_vecs_to_file(latent_file, latent_vecs)
+                self.metrics.to_csv(self.metric_file, sep=' ')
 
-        if self.verbose:
-            print('out_writer computing metrics for ' + lig_name)
-        lig_mols = self.compute_metrics(lig_name, lig_grids, lig_structs)
+                if self.verbose:
+                    print('Writing ' + self.pymol_file)
 
-        if self.verbose:
-            print('out_writer writing ' + self.metric_file)
-        self.metrics.to_csv(self.metric_file, sep=' ')
+                write_pymol_script(
+                    self.pymol_file,
+                    self.out_prefix,
+                    self.dx_prefixes,
+                    self.sdf_files,
+                    self.centers,
+                )
+                del self.grids[lig_name]
 
-        for grid_name in lig_mols:
-            grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
+        else: # only store until grids for this sample are ready
+            has_all_grids = len(lig_grids[sample_idx]) == n_grids
 
-            if self.output_sdf:
+            if has_all_grids:
 
-                final_mols = []
-                for sample_idx, mols in lig_mols[grid_name].items():
+                # compute sample metrics
+                if self.verbose:
+                    print('Computing metrics for {} sample {}'.format(
+                        lig_name, sample_idx
+                    ))
 
-                    sample_prefix = grid_prefix + '_add_' + str(sample_idx)
-                    sdf_file = sample_prefix + '.sdf'
-                    if self.verbose:
-                        print('out_writer writing ' + sdf_file)
-                    write_rd_mols_to_sdf_file(sdf_file, mols)
-                    self.struct_files.append(sdf_file)
+                self.compute_metrics(lig_name, [sample_idx])
 
-                    try:
-                        final_mol = mols[-2] # don't use minimized mol
-                    except IndexError:
-                        final_mol = mols[0]
-                    center = np.mean(final_mol.GetConformer(0).GetPositions(), axis=0)
-                    self.centers.append(center)
-                    final_mols.append(final_mol)
+                if self.verbose:
+                    print('Writing ' + self.metric_file)
 
-                if final_mols: # write final mols to single sdf file
-                    sdf_file = grid_prefix + '_add.sdf'
-                    if self.verbose:
-                        print('out_writer writing ' + sdf_file)
-                    write_rd_mols_to_sdf_file(sdf_file, final_mols)
-                    self.struct_files.append(sdf_file)
-                    self.centers.append(center)
+                self.metrics.to_csv(self.metric_file, sep=' ')
 
-        if self.verbose:
-            print('out_writer writing ' + self.pymol_file)
-        write_pymol_script(
-            self.pymol_file, self.dx_prefixes, self.struct_files, self.centers
-        )
+                if self.verbose:
+                    print('Writing ' + self.pymol_file)
 
-        if self.verbose:
-            print('out_writer freeing ' + lig_name)
-        del self.grids[lig_name] # free memory
-        del self.structs[lig_name]
+                write_pymol_script(
+                    self.pymol_file,
+                    self.out_prefix,
+                    self.dx_prefixes,
+                    self.sdf_files,
+                    self.centers,
+                )
+                del self.grids[lig_name][sample_idx]
 
-        return True
-
-    def compute_metrics(self, lig_name, grids, structs):
+    def compute_metrics(self, lig_name, sample_idxs):
         '''
-        Compute metrics on generated density grids, fit atoms, and valid
-        molecules for a given ligand and insert in metrics data frame.
+        Compute metrics for density grids, fit atom types, and
+        bonded molecules for a given ligand in metrics data frame.
         '''
-        # use mean grids to evaluate variability
-        lig_grid_mean = sum(
-            g.values for g in grids['lig'].values()
-        ) / self.n_samples
+        lig_grids = self.grids[lig_name]
 
-        lig_gen_grid_mean = sum(
-            g.values for g in grids['lig_gen'].values()
-        ) / self.n_samples
+        if self.batch_metrics:
 
-        # return dict of rdkit mols
-        mols = defaultdict(dict)
+            lig_grid_mean = sum(
+                lig_grids[i]['lig'].values for i in sample_idxs
+            ) / self.n_samples
 
-        for i in range(self.n_samples):
-            idx = (lig_name, i)
+            lig_gen_grid_mean = sum(
+                lig_grids[i]['lig_gen'].values for i in sample_idxs
+            ) / self.n_samples
 
-            lig_grid     = grids['lig'][i]
-            lig_gen_grid = grids['lig_gen'][i]
+            latent_mean = sum(
+                lig_grids[i]['lig_gen'].info['latent_vec'] for i in sample_idxs
+            ) / self.n_samples
 
-            self.compute_grid_metrics(
-                idx, 'lig', lig_grid, lig_gen_grid, lig_grid_mean, lig_gen_grid_mean
-            )
+        else:
+            lig_grid_mean = None
+            lig_gen_grid_mean = None
+            lig_latent_mean = None
 
-            if not self.fit_atoms: # start of atom fitting metrics
-                continue
+        for sample_idx in sample_idxs:
+            idx = (lig_name, sample_idx)
 
-            lig_fit_grid     = grids['lig_fit'][i]
-            lig_gen_fit_grid = grids['lig_gen_fit'][i]
+            lig_grid = lig_grids[sample_idx]['lig']
+            lig_gen_grid = lig_grids[sample_idx]['lig_gen']
 
-            lig_struct         = structs['lig'][i]
-            lig_fit_struct     = structs['lig_fit'][i]
-            lig_gen_fit_struct = structs['lig_gen_fit'][i]
+            self.compute_grid_metrics(idx, 'lig', lig_grid, mean_grid=lig_grid_mean)
+            self.compute_grid_metrics(idx, 'lig_gen', lig_gen_grid, lig_grid, lig_gen_grid_mean)
 
-            self.compute_fit_metrics(
-                idx, 'lig', lig_grid, lig_fit_grid, lig_struct, lig_fit_struct
-            )
-            self.compute_fit_metrics(
-                idx, 'lig_gen', lig_gen_grid, lig_gen_fit_grid, lig_struct, lig_gen_fit_struct
-            )
+            lig_latent = lig_gen_grid.info['latent_vec']
+            self.compute_latent_metrics(idx, 'lig', lig_latent, lig_latent_mean)
 
-            lig_mol = Chem.RWMol(lig_struct.info['src_mol'])
-            lig_fit_mols = self.compute_mol_validity(
-                idx, 'lig', lig_mol, lig_fit_struct
-            )
-            lig_gen_fit_mols = self.compute_mol_validity(
-                idx, 'lig_gen', lig_mol, lig_gen_fit_struct
-            )
+            if self.fit_atoms:
 
-            mols['lig'][i] = [lig_mol]
-            mols['lig_fit'][i] = lig_fit_mols
-            mols['lig_gen_fit'][i] = lig_gen_fit_mols
+                lig_fit_grid = lig_grids[sample_idx]['lig_fit']
+                lig_gen_fit_grid = lig_grids[sample_idx]['lig_gen_fit']
+
+                self.compute_grid_metrics(idx, 'lig_fit', lig_fit_grid, lig_grid)
+                self.compute_grid_metrics(idx, 'lig_gen_fit', lig_gen_fit_grid, lig_gen_grid)
+
+                lig_struct = lig_grid.info['src_struct']
+                lig_fit_struct = lig_fit_grid.info['src_struct']
+                lig_gen_fit_struct = lig_gen_fit_grid.info['src_struct']
+
+                self.compute_struct_metrics(idx, 'lig', lig_struct)
+                self.compute_struct_metrics(idx, 'lig_fit', lig_fit_struct, lig_struct)
+                self.compute_struct_metrics(idx, 'lig_gen_fit', lig_gen_fit_struct, lig_struct)
+
+                lig_mol = lig_struct.info['src_mol']
+                lig_add_mol = lig_struct.info['add_mol']
+                lig_fit_add_mol = lig_fit_struct.info['add_mol']
+                lig_gen_fit_add_mol = lig_gen_fit_struct.info['add_mol']
+
+                self.compute_mol_metrics(idx, 'lig', lig_mol)
+                self.compute_mol_metrics(idx, 'lig_add', lig_add_mol, lig_mol)
+                self.compute_mol_metrics(idx, 'lig_fit_add', lig_fit_add_mol, lig_mol)
+                self.compute_mol_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_mol, lig_mol)
 
         if self.verbose:
-            print(self.metrics.loc[lig_name])
+            print(self.metrics.loc[lig_name].loc[sample_idxs])
 
-        return mols
-
-    def compute_grid_metrics(
-        self,
-        idx,
-        prefix,
-        true_grid,
-        gen_grid,
-        true_grid_mean,
-        gen_grid_mean,
-    ):
-
+    def compute_grid_metrics(self, idx, grid_type, grid, ref_grid=None, mean_grid=None):
         m = self.metrics
 
         # density magnitude
-        m.loc[idx, prefix+'_norm'] = np.linalg.norm(true_grid.values)
-        m.loc[idx, prefix+'_gen_norm'] = np.linalg.norm(gen_grid.values)
+        m.loc[idx, grid_type+'_norm'] = np.linalg.norm(grid.values)
 
-        # latent sample magnitude
-        m.loc[idx, prefix+'_latent_norm'] = np.linalg.norm(gen_grid.info['latent_vec'])
+        if mean_grid is not None:
 
-        # generated density L2 loss
-        m.loc[idx, prefix+'_gen_L2_loss'] = \
-            (((true_grid.values - gen_grid.values)**2).sum()/2).item()
+            # density variance
+            # (divide by n_samples (+1) for sample (population) variance)
+            variance = (
+                (grid.values - grid_mean)**2
+            ).sum().item()
+        else:
+            variance = np.nan
 
-        # density variance (divide by n_samples(+1) for sample (population) variance)
-        m.loc[idx, prefix+'_variance'] = (
-            (true_grid.values - true_grid_mean)**2
-        ).sum().item()
+        m.loc[idx, grid_type+'_variance'] = variance
 
-        m.loc[idx, prefix+'_gen_variance'] = (
-            (gen_grid.values  - gen_grid_mean)**2
-        ).sum().item()
+        if ref_grid is not None:
 
-    def compute_fit_metrics(
-        self,
-        idx,
-        prefix,
-        true_grid,
-        fit_grid,
-        true_struct,
-        fit_struct
-    ):
+            # density L2 loss
+            m.loc[idx, grid_type+'_L2_loss'] = (
+                (ref_grid.values - grid.values)**2
+            ).sum().item() / 2
 
+    def compute_latent_metrics(self, idx, latent_type, latent, mean_latent=None):
         m = self.metrics
 
-        # fit density L2 loss
-        m.loc[idx, prefix+'_fit_L2_loss'] = (
-            ((true_grid.values - fit_grid.values)**2).sum()/2
-        ).item()
+        # latent vector magnitude
+        m.loc[idx, latent_type+'_latent_norm'] = np.linalg.norm(latent)
+
+        if mean_latent is not None:
+
+            # latent vector variance
+            variance = (
+                (latent - mean_latent)**2
+            ).sum()
+        else:
+            variance = np.nan
+
+        m.loc[idx, latent_type+'_latent_variance'] = variance
+
+    def compute_struct_metrics(self, idx, struct_type, struct, ref_struct=None):
+        m = self.metrics
 
         # number of atoms
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_n_atoms'] = true_struct.n_atoms
-        m.loc[idx, prefix+'_fit_n_atoms'] = fit_struct.n_atoms
+        m.loc[idx, struct_type+'_n_atoms'] = struct.n_atoms
 
-        # fit structure radius
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_radius'] = true_struct.radius
-        m.loc[idx, prefix+'_fit_radius'] = fit_struct.radius
+        # maximum radius
+        m.loc[idx, struct_type+'_radius'] = struct.radius
 
-        n_types = len(true_struct.channels)
-        true_type_count = count_types(true_struct.c, n_types)
-        fit_type_count  = count_types(fit_struct.c, n_types)
+        if ref_struct is not None:
 
-        # fit type difference
-        m.loc[idx, prefix+'_fit_type_diff'] = np.linalg.norm(
-            true_type_count - fit_type_count, ord=1
-        )
-        m.loc[idx, prefix+'_est_type_diff'] = fit_struct.info['est_type_diff']
+            # get atom type counts
+            n_types = len(struct.channels)
+            types = count_types(struct.c, n_types)
+            ref_types = count_types(ref_struct.c, n_types)
 
-        m.loc[idx, prefix+'_fit_exact_types'] = (m.loc[idx, prefix+'_fit_type_diff'] == 0)
-        m.loc[idx, prefix+'_est_exact_types'] = (m.loc[idx, prefix+'_est_type_diff'] == 0)
-
-        # fit minimum RMSD
-        try:
-            rmsd = get_min_rmsd(
-                true_struct.xyz, true_struct.c, fit_struct.xyz, fit_struct.c
+            # type count difference
+            m.loc[idx, struct_type+'_type_diff'] = np.linalg.norm(
+                ref_types - types, ord=1
             )
-        except (ValueError, ZeroDivisionError):
-            rmsd = np.nan
-        m.loc[idx, prefix+'_fit_RMSD'] = rmsd
+            m.loc[idx, struct_type+'_exact_types'] = (
+                m.loc[idx, struct_type+'_type_diff'] == 0
+            )
 
-        # fit time and number of steps
-        m.loc[idx, prefix+'_fit_time'] = fit_struct.info['time']
-        m.loc[idx, prefix+'_fit_n_steps'] = fit_struct.info['n_steps']
+            # minimum typed-atom RMSD
+            try:
+                rmsd = get_min_rmsd(
+                    ref_struct.xyz, ref_struct.c, struct.xyz, struct.c
+                )
+            except (ValueError, ZeroDivisionError):
+                rmsd = np.nan
 
-    def compute_mol_validity(self, idx, prefix, true_mol, fit_struct):
+            m.loc[idx, struct_type+'_RMSD'] = rmsd
 
+        if struct_type.endswith('_fit'):
+
+            # fit time and number of visited structures
+            m.loc[idx, struct_type+'_time'] = struct.info['time']
+            m.loc[idx, struct_type+'_n_visited'] = len(struct.info['visited_structs'])
+
+            # accuracy of estimated type counts, whether or not
+            # they were actually used to constrain atom fitting
+            est_type = struct_type[:-4] + '_est'
+            m.loc[idx, est_type+'_type_diff'] = struct.info['est_type_diff']
+            m.loc[idx, est_type+'_exact_types'] = (
+                m.loc[idx, est_type+'_type_diff'] == 0
+            )
+
+    def compute_mol_metrics(self, idx, mol_type, mol, ref_mol=None):
         m = self.metrics
-        mols = [] # return mols from each step of processing
 
-        # initial struct with no bonds, from atom fitting
-        mol_fit = fit_struct.to_rd_mol()
-
-        # perceive bonds in openbabel
-        ob_mol = fit_struct.to_ob_mol()
-        ob_mol.ConnectTheDots()
-        ob_mol.PerceiveBondOrders()
-        mol_ob = ob_mol_to_rd_mol(ob_mol)
-        # do everything else in rdkit
-
-        # sanity check- validity of true molecule
-        n_frags, error, valid = get_rd_mol_validity(true_mol)
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_n_frags'] = n_frags
-            m.loc[idx, prefix+'_error'] = error
-            m.loc[idx, prefix+'_valid'] = valid
-
-        # check mol validity prior to bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol_ob)
-        m.loc[idx, prefix+'_fit_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_error'] = error
-        m.loc[idx, prefix+'_fit_valid'] = valid
-
-        # make aromatic rings using channel info
-        mol_add = Chem.RWMol(mol_ob)
-        set_rd_mol_aromatic(mol_add, fit_struct.c, fit_struct.channels)
-
-        # try to connect fragments by adding min distance bonds
-        connect_rd_mol_frags(mol_add)
-
-        # check validity after bond adding
-        n_frags, error, valid = get_rd_mol_validity(mol_add)
-        m.loc[idx, prefix+'_fit_add_n_frags'] = n_frags
-        m.loc[idx, prefix+'_fit_add_error'] = error
-        m.loc[idx, prefix+'_fit_add_valid'] = valid
-
-        # convert to smiles string
-        true_smi = Chem.MolToSmiles(true_mol, canonical=True)
-        smi = Chem.MolToSmiles(mol_add,  canonical=True)
-
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_SMILES'] = true_smi
-
-        m.loc[idx, prefix+'_fit_add_SMILES'] = smi
-        m.loc[idx, prefix+'_fit_add_SMILES_match'] = (smi == true_smi)
-
-        # fingerprint similarity
-        m.loc[idx, prefix+'_fit_add_ob_sim']  = get_ob_smi_similarity(true_smi, smi)
-
-        m.loc[idx, prefix+'_fit_add_morgan_sim'] = get_rd_mol_similarity(
-            true_mol, mol_add, 'morgan'
-        )
-        m.loc[idx, prefix+'_fit_add_rdkit_sim']  = get_rd_mol_similarity(
-            true_mol, mol_add, 'rdkit'
-        )
-        m.loc[idx, prefix+'_fit_add_maccs_sim']  = get_rd_mol_similarity(
-            true_mol, mol_add, 'maccs'
-        )
+        # check molecular validity
+        n_frags, error, valid = get_rd_mol_validity(mol)
+        m.loc[idx, mol_type+'_n_frags'] = n_frags
+        m.loc[idx, mol_type+'_error'] = error
+        m.loc[idx, mol_type+'_valid'] = valid
 
         # other molecular descriptors
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_MW'] = get_rd_mol_weight(true_mol)
-            m.loc[idx, prefix+'_logP'] = get_rd_mol_logP(true_mol)
-            m.loc[idx, prefix+'_QED'] = get_rd_mol_QED(true_mol)
-            m.loc[idx, prefix+'_SAS'] = get_rd_mol_SAS(true_mol)
-            m.loc[idx, prefix+'_NPS'] = get_rd_mol_NPS(true_mol, nps_model)
+        m.loc[idx, mol_type+'_MW'] = get_rd_mol_weight(mol)
+        m.loc[idx, mol_type+'_logP'] = get_rd_mol_logP(mol)
+        m.loc[idx, mol_type+'_QED'] = get_rd_mol_QED(mol)
+        m.loc[idx, mol_type+'_SAS'] = get_rd_mol_SAS(mol)
+        m.loc[idx, mol_type+'_NPS'] = get_rd_mol_NPS(mol, nps_model)
 
-        m.loc[idx, prefix+'_fit_add_MW'] = get_rd_mol_weight(mol_add)
-        m.loc[idx, prefix+'_fit_add_logP'] = get_rd_mol_logP(mol_add)
-        m.loc[idx, prefix+'_fit_add_QED'] = get_rd_mol_QED(mol_add)
-        m.loc[idx, prefix+'_fit_add_SAS'] = get_rd_mol_SAS(mol_add)
-        m.loc[idx, prefix+'_fit_add_NPS'] = get_rd_mol_NPS(mol_add, nps_model)
+        # convert to SMILES string
+        smi = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)
+        m.loc[idx, mol_type+'_SMILES'] = smi
 
-        # energy minimization with UFF
-        true_mol_min, init_E_t, min_E_t, error = uff_minimize_rd_mol(true_mol)
-        if not prefix.endswith('_gen'):
-            m.loc[idx, prefix+'_E'] = init_E_t
-            m.loc[idx, prefix+'_min_E'] = min_E_t
-            m.loc[idx, prefix+'_dE_min'] = min_E_t - init_E_t
-            m.loc[idx, prefix+'_min_error'] = error
-            m.loc[idx, prefix+'_RMSD_min'] = get_aligned_rmsd(true_mol_min, true_mol)
+        if ref_mol is not None: # compare to ref_mol
 
-        mol_min, init_E, min_E, error = uff_minimize_rd_mol(mol_add)
-        m.loc[idx, prefix+'_fit_add_E'] = init_E
-        m.loc[idx, prefix+'_fit_add_min_E'] = min_E
-        m.loc[idx, prefix+'_fit_add_dE_min'] = min_E - init_E
-        m.loc[idx, prefix+'_fit_add_min_error'] = error
-        m.loc[idx, prefix+'_fit_add_RMSD_min']  = get_aligned_rmsd(mol_min, mol_add)
+            # get reference SMILES strings
+            ref_smi = Chem.MolToSmiles(ref_mol, canonical=True, isomericSmiles=False)
+            m.loc[idx, mol_type+'_SMILES_match'] = (smi == ref_smi)
 
-        # compare energy to true mol, pre- and post-minimize
-        m.loc[idx, prefix+'_fit_add_dE_true']     = init_E - init_E_t
-        m.loc[idx, prefix+'_fit_add_min_dE_true'] = min_E  - min_E_t
+            # fingerprint similarity
+            m.loc[idx, mol_type+'_ob_sim']  = get_ob_smi_similarity(
+                ref_smi, smi
+            )
+            m.loc[idx, mol_type+'_morgan_sim'] = get_rd_mol_similarity(
+                ref_mol, mol, 'morgan'
+            )
+            m.loc[idx, mol_type+'_rdkit_sim']  = get_rd_mol_similarity(
+                ref_mol, mol, 'rdkit'
+            )
+            m.loc[idx, mol_type+'_maccs_sim']  = get_rd_mol_similarity(
+                ref_mol, mol, 'maccs'
+            )
 
-        # get aligned RMSD to true mol, pre-minimize
-        m.loc[idx, prefix+'_fit_add_RMSD_true'] = get_aligned_rmsd(true_mol, mol_add)
+        # UFF energy minimization
+        min_mol = mol.info['min_mol']
+        E_init = mol.info['E_init']
+        E_min = mol.info['E_min']
 
-        # get aligned RMSD to true mol, post-minimize
-        m.loc[idx, prefix+'_fit_add_min_RMSD_true'] = get_aligned_rmsd(true_mol_min, mol_min)
+        m.loc[idx, mol_type+'_E'] = E_init
+        m.loc[idx, mol_type+'_min_E'] = E_min
+        m.loc[idx, mol_type+'_dE_min'] = E_min - E_init
+        m.loc[idx, mol_type+'_min_error'] = mol.info['min_error']
+        m.loc[idx, mol_type+'_min_time'] = mol.info['min_time']
+        m.loc[idx, mol_type+'_RMSD_min']  = get_aligned_rmsd(min_mol, mol)
 
-        return mol_fit, mol_ob, mol_add, mol_min
+        if ref_mol is not None:
+
+            # compare energy to ref mol, pre and post-minimization
+            min_ref_mol = ref_mol.info['min_mol']
+            E_init_ref = ref_mol.info['E_init']
+            E_min_ref = ref_mol.info['E_init']
+
+            m.loc[idx, mol_type+'_dE_ref'] = E_init - E_init_ref
+            m.loc[idx, mol_type+'_min_dE_ref'] = E_min - E_min_ref
+
+            # get aligned RMSD to ref mol, pre-minimize
+            m.loc[idx, mol_type+'_RMSD_ref'] = get_aligned_rmsd(ref_mol, mol)
+
+            # get aligned RMSD to true mol, post-minimize
+            m.loc[idx, mol_type+'_min_RMSD_ref'] = get_aligned_rmsd(min_ref_mol, min_mol)
 
 
 def catch_exc(func, exc=Exception, default=np.nan):
@@ -1161,6 +1222,11 @@ get_rd_mol_QED    = catch_exc(Chem.QED.default)
 get_rd_mol_SAS    = catch_exc(sascorer.calculateScore)
 get_rd_mol_NPS    = catch_exc(npscorer.scoreMol)
 get_aligned_rmsd  = catch_exc(AllChem.GetBestRMS)
+
+
+@catch_exc
+def get_gpu_usage(gpu_id=0):
+    return getGPUs()[gpu_id].memoryUtil
 
 
 def set_rd_mol_aromatic(rd_mol, c, channels):
@@ -1192,10 +1258,6 @@ def set_rd_mol_aromatic(rd_mol, c, channels):
                 atom1.SetIsAromatic(True)
                 atom2.SetIsAromatic(True)
                 bond.SetBondType(Chem.BondType.AROMATIC)
-    try:
-        Chem.Kekulize(rd_mol, clearAromaticFlags=True)
-    except: # failed to kekulize raises an exception
-        pass
 
 
 def connect_rd_mol_frags(rd_mol):
@@ -1216,9 +1278,13 @@ def connect_rd_mol_frags(rd_mol):
             frag_idx = np.array([frag_map[i] for i in range(rd_mol.GetNumAtoms())])
             diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
 
-            can_bond = np.array([a.GetExplicitValence() <
-                                 pt.GetDefaultValence(a.GetAtomicNum())
-                                 for a in rd_mol.GetAtoms()])
+            can_bond = []
+            for a in rd_mol.GetAtoms():
+                n_bonds = sum(b.GetBondTypeAsDouble() for b in a.GetBonds())
+                max_bonds = pt.GetDefaultValence(a.GetAtomicNum())
+                can_bond.append(n_bonds < max_bonds)
+
+            can_bond = np.array(can_bond)
             can_bond = can_bond[nax,:] & can_bond[:,nax]
 
             cond_dist2 = np.where(diff_frags & can_bond & (dist2<25), dist2, np.inf)
@@ -1262,7 +1328,7 @@ def get_ob_smi_similarity(smi1, smi2):
     return fgp1 | fgp2
 
 
-def uff_minimize_rd_mol(rd_mol, max_iters=1000):
+def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     try:
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
         ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
@@ -1309,6 +1375,7 @@ def ob_mol_to_rd_mol(ob_mol):
 
     for ob_atom in ob.OBMolAtomIter(ob_mol):
         rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        rd_atom.SetIsAromatic(ob_atom.IsAromatic())
         #TODO copy format charge
         i = rd_mol.AddAtom(rd_atom)
         ob_coords = ob_atom.GetVector()
@@ -1325,30 +1392,65 @@ def ob_mol_to_rd_mol(ob_mol):
         j = ob_bond.GetEndAtomIdx()-1
         bond_order = ob_bond.GetBondOrder()
         if ob_bond.IsAromatic():
-            rd_mol.AddBond(i, j, Chem.BondType.AROMATIC)
+            bond_type = Chem.BondType.AROMATIC
         elif bond_order == 1:
-            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+            bond_type = Chem.BondType.SINGLE
         elif bond_order == 2:
-            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
+            bond_type = Chem.BondType.DOUBLE
         elif bond_order == 3:
-            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
+            bond_type = Chem.BondType.TRIPLE
         else:
             raise Exception('unknown bond order {}'.format(bond_order))
+        rd_mol.AddBond(i, j, bond_type)
 
     return rd_mol
 
 
+def rd_mol_to_ob_mol(rd_mol):
+
+    ob_mol = ob.OBMol()
+    rd_conf = rd_mol.GetConformer(0)
+
+    for i, rd_atom in enumerate(rd_mol.GetAtoms()):
+        atomic_num = rd_atom.GetAtomicNum()
+        rd_coords = rd_conf.GetAtomPosition(i)
+        x = rd_coords.x
+        y = rd_coords.y
+        z = rd_coords.z
+        ob_atom = ob_mol.NewAtom()
+        ob_atom.SetAtomicNum(atomic_num)
+        ob_atom.SetAromatic(rd_atom.GetIsAromatic())
+        ob_atom.SetVector(x, y, z)
+
+    for k, rd_bond in enumerate(rd_mol.GetBonds()):
+        i = rd_bond.GetBeginAtomIdx()+1
+        j = rd_bond.GetEndAtomIdx()+1
+        bond_type = rd_bond.GetBondType()
+        bond_flags = 0
+        if bond_type == Chem.BondType.AROMATIC:
+            bond_order = 1
+            bond_flags |= ob.OB_AROMATIC_BOND
+        elif bond_type == Chem.BondType.SINGLE:
+            bond_order = 1
+        elif bond_type == Chem.BondType.DOUBLE:
+            bond_order = 2
+        elif bond_type == Chem.BondType.TRIPLE:
+            bond_order = 3
+        ob_mol.AddBond(i, j, bond_order, bond_flags)
+
+    return ob_mol
+                   
+
 def make_rd_mol(xyz, c, bonds, channels):
 
-    n_atoms = 0
     rd_mol = Chem.RWMol()
 
     for c_ in c:
         atomic_num = channels[c_].atomic_num
         rd_atom = Chem.Atom(atomic_num)
         rd_mol.AddAtom(rd_atom)
-        n_atoms += 1
 
+    n_atoms = rd_mol.GetNumAtoms()
     rd_conf = Chem.Conformer(n_atoms)
 
     for i, (x, y, z) in enumerate(xyz):
@@ -1410,6 +1512,7 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
     writer = Chem.SDWriter(sdf_file)
+    writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
 
@@ -1429,146 +1532,6 @@ def write_latent_vecs_to_file(latent_file, latent_vecs):
         for v in latent_vecs:
             line = ' '.join('{:.5f}'.format(x) for x in v) + '\n'
             f.write(line)
-
-
-def get_atom_density(atom_pos, atom_radius, points, radius_multiple):
-    '''
-    Compute the density value of an atom at a set of points.
-    '''
-    dist2 = np.sum((points - atom_pos)**2, axis=1)
-    dist = np.sqrt(dist2)
-    h = 0.5*atom_radius
-    ie2 = np.exp(-2)
-    zero_cond = dist >= radius_multiple * atom_radius
-    gauss_cond = dist <= atom_radius
-    gauss_val = np.exp(-dist2 / (2*h**2))
-    quad_val = dist2*ie2/(h**2) - 6*dist*ie2/h + 9*ie2
-    return np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val))
-
-
-def get_atom_density2(atom_pos, atom_radius, points, radius_multiple):
-    return np.exp(-2*np.sum((points - atom_pos)**2, axis=1)/atom_radius**2)
-
-
-def get_atom_gradient(atom_pos, atom_radius, points, radius_multiple):
-    '''
-    Compute the derivative of an atom's density with respect
-    to a set of points.
-    '''
-    diff = points - atom_pos
-    dist2 = np.sum(diff**2, axis=1)
-    dist = np.sqrt(dist2)
-    h = 0.5*atom_radius
-    ie2 = np.exp(-2)
-    zero_cond = np.logical_or(dist >= radius_multiple * atom_radius, np.isclose(dist, 0))
-    gauss_cond = dist <= atom_radius
-    gauss_val = -dist / h**2 * np.exp(-dist2 / (2*h**2))
-    quad_val = 2*dist*ie2/(h**2) - 6*ie2/h
-    return -diff * np.where(zero_cond, 0.0, np.where(gauss_cond, gauss_val, quad_val) / dist)[:,np.newaxis]
-
-
-def get_bond_length_energy(distance, bond_length, bonds):
-    '''
-    Compute the interatomic potential energy between an atom and a set of atoms.
-    '''
-    exp = np.exp(bond_length - distance)
-    return (1 - exp)**2 * bonds
-
-
-def get_bond_length_gradient(distance, bond_length, bonds):
-    '''
-    Compute the derivative of interatomic potential energy between an atom
-    and a set of atoms with respect to the position of the first atom.
-    '''
-    exp = np.exp(bond_length - distance)
-    return 2 * (1 - exp) * exp * bonds
-    return (-diff * (d_energy / dist)[:,np.newaxis])
-
-
-def fit_atoms_by_GMM(points, density, xyz_init, atom_radius, radius_multiple, max_iter, 
-                     noise_model='', noise_params_init={}, gof_crit='nll', verbose=0):
-    '''
-    Fit atom positions to a set of points with the given density values with
-    a Gaussian mixture model (and optional noise model). Return the final atom
-    positions and a goodness-of-fit criterion (negative log likelihood, Akaike
-    information criterion, or L2 loss).
-    '''
-    assert gof_crit in {'nll', 'aic', 'L2'}, 'Invalid value for gof_crit argument'
-    n_points = len(points)
-    n_atoms = len(xyz_init)
-    xyz = np.array(xyz_init)
-    atom_radius = np.array(atom_radius)
-    cov = (0.5*atom_radius)**2
-    n_params = xyz.size
-
-    assert noise_model in {'d', 'p', ''}, 'Invalid value for noise_model argument'
-    if noise_model == 'd':
-        noise_mean = noise_params_init['mean']
-        noise_cov = noise_params_init['cov']
-        n_params += 2
-    elif noise_model == 'p':
-        noise_prob = noise_params_init['prob']
-        n_params += 1
-
-    # initialize uniform prior over components
-    n_comps = n_atoms + bool(noise_model)
-    assert n_comps > 0, 'Need at least one component (atom or noise model) to fit GMM'
-    P_comp = np.full(n_comps, 1.0/n_comps) # P(comp_j)
-    n_params += n_comps - 1
-
-    # maximize expected log likelihood
-    ll = -np.inf
-    i = 0
-    while True:
-
-        L_point = np.zeros((n_points, n_comps)) # P(point_i|comp_j)
-        for j in range(n_atoms):
-            L_point[:,j] = multivariate_normal.pdf(points, mean=xyz[j], cov=cov[j])
-        if noise_model == 'd':
-            L_point[:,-1] = multivariate_normal.pdf(density, mean=noise_mean, cov=noise_cov)
-        elif noise_model == 'p':
-            L_point[:,-1] = noise_prob
-
-        P_joint = P_comp * L_point          # P(point_i, comp_j)
-        P_point = np.sum(P_joint, axis=1)   # P(point_i)
-        gamma = (P_joint.T / P_point).T     # P(comp_j|point_i) (E-step)
-
-        # compute expected log likelihood
-        ll_prev, ll = ll, np.sum(density * np.log(P_point))
-        if ll - ll_prev < 1e-3 or i == max_iter:
-            break
-
-        # estimate parameters that maximize expected log likelihood (M-step)
-        for j in range(n_atoms):
-            xyz[j] = np.sum(density * gamma[:,j] * points.T, axis=1) \
-                   / np.sum(density * gamma[:,j])
-        if noise_model == 'd':
-            noise_mean = np.sum(gamma[:,-1] * density) / np.sum(gamma[:,-1])
-            noise_cov = np.sum(gamma[:,-1] * (density - noise_mean)**2) / np.sum(gamma[:,-1])
-            if noise_cov == 0.0 or np.isnan(noise_cov): # reset noise
-                noise_mean = noise_params_init['mean']
-                noise_cov = noise_params_init['cov']
-        elif noise_model == 'p':
-            noise_prob = noise_prob
-        if noise_model and n_atoms > 0:
-            P_comp[-1] = np.sum(density * gamma[:,-1]) / np.sum(density)
-            P_comp[:-1] = (1.0 - P_comp[-1])/n_atoms
-        i += 1
-        if verbose > 2:
-            print('iteration = {}, nll = {} ({})'.format(i, -ll, -(ll - ll_prev)), file=sys.stderr)
-
-    # compute the goodness-of-fit
-    if gof_crit == 'L2':
-        density_pred = np.zeros_like(density)
-        for j in range(n_atoms):
-            density_pred += get_atom_density(xyz[j], atom_radius[j], points, radius_multiple)
-        gof = np.sum((density_pred - density)**2)/2
-    elif gof_crit == 'aic':
-        gof = 2*n_params - 2*ll
-    else:
-        gof = -ll
-
-    return xyz, gof
 
 
 def conv_grid(grid, kernel):
@@ -1640,365 +1603,6 @@ def grid_to_points_and_values(grid, center, resolution):
     return points, grid.flatten()
 
 
-def get_atom_density_kernel(shape, resolution, atom_radius, radius_mult):
-    '''
-    Return atom density function as a grid with the
-    given shape, resolution, and atom radius.
-    '''
-    center = np.zeros(len(shape))
-    points = get_grid_points(shape, center, resolution)
-    density = get_atom_density(center, atom_radius, points, radius_mult)
-    return density.reshape(shape)
-
-
-def fit_atoms_by_GD(points, density, xyz, c, bonds, atomic_radii, max_iter, 
-                    lr, mo, lambda_E=0.0, radius_multiple=1.5, verbose=0,
-                    density_pred=None, density_diff=None):
-    '''
-    Fit atom positions, provided by arrays xyz initial positions, c channel indices, 
-    and optional bonds matrix, to arrays of points with the given channel density values.
-    Minimize the L2 loss (and optionally interatomic energy) between the provided density
-    and fitted density by gradient descent with momentum. Return the final atom positions
-    and loss.
-    '''
-    n_atoms = len(xyz)
-
-    xyz = np.array(xyz)
-    d_loss_d_xyz = np.zeros_like(xyz)
-    d_loss_d_xyz_prev = np.zeros_like(xyz)
-    
-    if density_pred is None:
-        density_pred = np.zeros_like(density)
-
-    if density_diff is None:
-        density_diff = np.zeros_like(density)
-
-    ax = np.newaxis
-    if lambda_E:
-        xyz_diff = np.zeros((n_atoms, n_atoms, 3))
-        xyz_dist = np.zeros((n_atoms, n_atoms))
-        bond_length = atomic_radii[:,ax] + atomic_radii[ax,:]
-
-    # minimize loss by gradient descent
-    loss = np.inf
-    i = 0
-    while True:
-        loss_prev = loss
-
-        # L2 loss between predicted and true density
-        density_pred[...] = 0.0
-        for j in range(n_atoms):
-            density_pred[:,c[j]] += get_atom_density(xyz[j], atomic_radii[j], points, radius_multiple)
-
-        density_diff[...] = density - density_pred
-        loss = (density_diff**2).sum()
-
-        # interatomic energy of predicted atom positions
-        if lambda_E:
-            xyz_diff[...] = xyz[:,ax,:] - xyz[ax,:,:]
-            xyz_dist[...] = np.linalg.norm(xyz_diff, axis=2)
-            for j in range(n_atoms):
-                loss += lambda_E * get_bond_length_energy(xyz_dist[j,j+1:], bond_length[j,j+1:], bonds[j,j+1:]).sum()
-
-        delta_loss = loss - loss_prev
-        if verbose > 2:
-            print('n_atoms = {}\titer = {}\tloss = {} ({})'.format(n_atoms, i, loss, delta_loss), file=sys.stderr)
-
-        if n_atoms == 0 or i == max_iter or abs(delta_loss)/(abs(loss_prev) + 1e-8) < 1e-2:
-            break
-
-        # compute derivatives and descend loss gradient
-        d_loss_d_xyz_prev[...] = d_loss_d_xyz
-        d_loss_d_xyz[...] = 0.0
-
-        for j in range(n_atoms):
-            d_density_d_xyz = get_atom_gradient(xyz[j], atomic_radii[j], points, radius_multiple)
-            d_loss_d_xyz[j] += (-2*density_diff[:,c[j],ax] * d_density_d_xyz).sum(axis=0)
-
-        if lambda_E:
-            for j in range(n_atoms-1):
-                d_E_d_dist = get_bond_length_gradient(xyz_dist[j,j+1], bond_length[j,j+1], bonds[j,j+1:])
-                d_E_d_xyz = xyz_diff[j,j+1:] * (d_E_d_dist / xyz_dist[j,j+1:])[:,ax]
-                d_xyz[j] += lambda_E * d_E_d_xyz.sum(axis=0)
-                d_xyz[j+1:,:] -= lambda_E * d_E_d_xyz
-
-        xyz[...] -= lr*(mo*d_loss_d_xyz_prev + (1-mo)*d_loss_d_xyz)
-        i += 1
-
-    return xyz, density_pred, density_diff, loss
-
-
-def get_top_n_index(tensor, n):
-    '''
-    Return indices of top-n values in tensor.
-    '''
-    idx = tensor.reshape(-1).topk(n).indices
-    return np.unravel_index(idx, tensor.size)
-
-
-def add_mol_density(xyz, t, r, density, points):
-    raise NotImplementedError('TODO')
-    for xyz_, t_, r_ in zip(xyz, t, r):
-        density[:,t_] += get_atom_density(xyz_, r_, points)
-
-
-def fit_L2_loss(xyz, t, r, density):
-    raise NotImplementedError('TODO')
-    return np.sum((density_true - density_pred)**2)
-
-
-def grad_fit_L2_loss(xyz_pred, density_true):
-    raise NotImplementedError('TODO')
-    return density_true - density_pred
-
-
-def fit_atoms_to_grid(grid, channels, center, resolution, beam_size, atom_init,
-                      interm_iters, final_iters, lr, mo, lambda_E, radius_multiple,
-                      bonded, max_init_bond_E, fit_channels, verbose, device):
-    '''
-    Fit atoms to grid by iteratively placing atoms and then optimizing their
-    positions by gradient descent on L2 loss between the provided grid density
-    and the density associated with the fitted atoms.
-    '''
-    t_start = time.time()
-
-    center = torch.tensor(center, device=device)
-    radii = torch.tensor([c.atomic_radius for c in channels], device=device)
-    max_bonds = torch.tensor([atom_types.get_max_bonds(c.atomic_num) for c in channels], device=device)
-    rm = radius_multiple
-
-    # configure the gridmaker
-    dimension = resolution*(grid.shape[1]-1)
-    gmaker = molgrid.GridMaker()
-    gmaker.set_resolution(resolution)
-    gmaker.set_radius_type_indexed(False)
-    c2grid = molgrid.Coords2Grid(gmaker, center)
-
-    # convert input grid to tensor
-    n_channels, grid_shape = grid.shape[0], grid.shape[1:]
-    points = get_grid_points(grid_shape, center, resolution)
-    grid_true = torch.tensor(grid, device=device)
-
-    # get empty initial structure
-    xyz = torch.zeros((0, 3), device=device)
-    c = torch.zeros(0, dtype=int, device=device)
-    bonds = torch.zeros((0, 0), device=device)
-
-    # initial predicted grid, diff, and loss
-    grid_pred = torch.zeros_like(grid_true, device=device)
-    grid_diff = grid_true - grid_pred
-    loss = (grid_diff**2).sum()
-
-    # get centered atoms to make kernels
-    xyz_kernel = center.unsqueeze(0).repeat(n_channels, device=device)
-    c_kernel = torch.arange(n_channels, dtype=int, device=device)
-
-    # init atom density kernels
-    kernel_size = 15 # ceil(2*rm*max(radii)/resolution + 1)
-    kernel_shape = (n_channels, n_channels, kernel_size, kernel_size, kernel_size)
-    gmaker.set_dimension(resolution*(kernel_size-1)) # TODO check that this affects c2grid
-    kernel = c2grid(xyz_kernel, c_kernel, radii)
-
-    #################### PICK UP HERE ########################
-
-    # select possible next atoms from remaining density
-    next_idx = get_top_n_index(density_diff, beam_size)
-
-    # keep track of a set of best structures
-    best_structs = [(xyz, c, loss, next_idx)]
-    
-    best_structs_changed = True
-
-    # search until the set of best structures doesn't change
-    while best_structs_changed:
-
-        # try to expand each current best structure
-        new_structs = []
-        best_structs_changed = False
-        for xyz, c, loss, next_idx in best_structs:
-
-            # evaluate each possible next atom
-            for xyz_next_idx, c_next in zip(*next_idx):
-                xyz_next = points[xyz_next_idx]
-
-                # expand the stucture with the next atom
-                xyz_new = torch.cat([xyz, xyz_next])
-                c_new = torch.cat([c, c_next])
-
-                # compute remaining density and loss
-                xyz_new, density_pred, density_diff, loss_new = \
-                    fit_atoms_by_GD(points, density_true, xyz_new, c_new, bonds, radii[c_new],
-                                    interm_iters, lr=lr, mo=mo, lambda_E=lambda_E,
-                                    radius_multiple=radius_multiple, verbose=verbose)
-
-                # check if the structure is one of the best
-                if any(loss_new < x[2] for x in best_structs):
-
-                    # get next atom init locations
-                    if atom_init == 'conv':
-
-                        torch.nn.functional.conv3d()
-
-                        conv = np.zeros_like(grid)
-                        for i in range(n_channels):
-                            conv[i] = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
-                            conv[i] = np.roll(conv[i], np.array(grid_shape)//2, range(len(grid_shape)))
-                        score = conv.reshape((n_channels, -1)).T
-
-                    elif atom_init == 'deconv':
-                        deconv = np.zeros_like(grid)
-                        for i in range(n_channels):
-                            deconv[i] = wiener_deconv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
-                            deconv[i] = np.roll(deconv[i], np.array(grid_shape)//2, range(len(grid_shape)))
-                        score = deconv.reshape((n_channels, -1)).T
-
-                    else:
-                        score = density_diff
-                    next_idx_new = get_top_n_index(score, beam_size)
-
-                    # keep track of the new structure
-                    new_structs.append((xyz_new, c_new, loss_new, next_idx_new))
-
-        # determine new set of best structures
-        if new_structs: 
-            best_structs += new_structs
-            best_structs = sorted(best_structs, key=lambda x: x[2])[:beam_size]
-            best_structs_changed = True
-
-            # NOTE: When 0 < len(new_structs) < beam_size, not all
-            # structs in best_structs will be different, so some
-            # structs are expanded more than once.
-            #
-            # One way to handle this is would be to expand to diff
-            # next atoms each time, by keeping track of next_idx
-            # larger than beam_size, and counting the number of
-            # times the structure has been expanded.
-
-    while False:
-
-        # optimize atom positions by gradient descent
-        xyz, density_pred, density_diff, loss = \
-            fit_atoms_by_GD(points, density, xyz, c, bonds, radii[c], interm_iters, lr=lr, mo=mo,
-                            lambda_E=lambda_E, radius_multiple=radius_multiple, verbose=verbose,
-                            density_pred=density_pred, density_diff=density_diff)
-
-        if verbose > 1:
-            print('n_atoms = {}\t\t\tloss = {}'.format(len(xyz), loss))
-
-        # init next atom position on remaining density
-        xyz_new = []
-        c_new = []
-        if fit_channels is not None:
-            try:
-                i = fit_channels[len(c)]
-                conv = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
-                conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
-                xyz_new.append(points[conv.argmax()])
-                c_new.append(i)
-            except IndexError:
-                pass
-        else:
-            c_new = []
-            for i in range(n_channels):
-                conv = conv_grid(density_diff[:,i].reshape(grid_shape), kernels[i])
-                conv = np.roll(conv, np.array(grid_shape)//2, range(len(grid_shape)))
-                if np.any(conv > (kernels[i]**2).sum()/2): # check if L2 loss decreases
-                    xyz_new.append(points[conv.argmax()])
-                    c_new.append(i)
-
-        # stop if a new atom was not added
-        if not xyz_new:
-            break
-
-        xyz = np.vstack([xyz, xyz_new])
-        c = np.append(c, c_new)
-
-        if bonded: # add new bonds as row and column
-            raise NotImplementedError('TODO add bonds_new')
-            bonds = np.vstack([bonds, bonds_new])
-            bonds = np.hstack([bonds, np.append(bonds_new, 0)])
-
-    # get best structure
-    xyz, c, loss, next_idx = best_structs[0]
-
-    # final optimization
-    xyz, density_pred, density_diff, loss = \
-        fit_atoms_by_GD(points, density_true, xyz, c, bonds, radii[c],
-                        final_iters, lr=lr, mo=mo, lambda_E=lambda_E,
-                        radius_multiple=radius_multiple, verbose=verbose)
-
-    grid_pred = density_pred.T.reshape(grid.shape)
-    return xyz, c, bonds, grid_pred, loss, time.time() - t_start
-
-
-def get_next_atom(points, density, xyz_init, c, atom_radius, bonded, bonds, max_n_bonds, max_init_bond_E=0.5):
-    '''
-    Get next atom tuple (xyz_new, c_new, bonds_new) of initial position,
-    channel index, and bonds to other atoms. Select the atom as maximum
-    density point within some distance range from the other atoms, given
-    by positions xyz_init and channel indices c.
-    '''
-    xyz_new = None
-    c_new = None
-    bonds_new = None
-    d_max = 0.0
-
-    if bonded:
-        # bond_length2[i,j] = length^2 of bond between channel[i] and channel[j]
-        bond_length2 = (atom_radius[:,np.newaxis] + atom_radius[np.newaxis,:])**2
-        min_bond_length2 = bond_length2 - np.log(1 + np.sqrt(max_init_bond_E))
-        max_bond_length2 = bond_length2 - np.log(1 - np.sqrt(max_init_bond_E))
-
-    # can_bond[i] = xyz_init[i] has less than its max number of bonds
-    can_bond = np.sum(bonds, axis=1) < max_n_bonds[c]
-
-    for p, d in zip(points, density):
-
-        # more_density[i] = p has more density in channel[i] than best point so far
-        more_density = d > d_max
-        if np.any(more_density):
-
-            if len(xyz_init) == 0:
-                xyz_new = p
-                c_new = np.argmax(d)
-                bonds_new = np.array([])
-                d_max = d[c_new]
-
-            else:
-                # dist2[i] = distance^2 between p and xyz_init[i]
-                dist2 = np.sum((p[np.newaxis,:] - xyz_init)**2, axis=1)
-
-                # dist_min2[i,j] = min distance^2 between p and xyz_init[i] in channel[j]
-                # dist_max2[i,j] = max distance^2 between p and xyz_init[i] in channel[j]
-                if bonded:
-                    dist_min2 = min_bond_length2[c]
-                    dist_max2 = max_bond_length2[c]
-                else:
-                    dist_min2 = atom_radius[c,np.newaxis]
-                    dist_max2 = np.full_like(dist_min2, np.inf)
-
-                # far_enough[i,j] = p is far enough from xyz_init[i] in channel[j]
-                # near_enough[i,j] = p is near enough to xyz_init[i] in channel[j]
-                far_enough = dist2[:,np.newaxis] > dist_min2
-                near_enough = dist2[:,np.newaxis] < dist_max2
-
-                # in_range[i] = p is far enough from all xyz_init and near_enough to
-                # some xyz_init that can bond to make a bond in channel[i]
-                in_range = np.all(far_enough, axis=0) & \
-                           np.any(near_enough & can_bond[:,np.newaxis], axis=0)
-
-                if np.any(in_range & more_density):
-                    xyz_new = p
-                    c_new = np.argmax(in_range*more_density*d)
-                    if bonded:
-                        bonds_new = near_enough[:,c_new] & can_bond
-                    else:
-                        bonds_new = np.zeros(len(xyz_init))
-                    d_max = d[c_new]
-
-    return xyz_new, c_new, bonds_new
-
-
 def rec_and_lig_at_index_in_data_file(file, index):
     '''
     Read receptor and ligand names at a specific line number in a data file.
@@ -2034,72 +1638,28 @@ def n_lines_in_file(file):
         return sum(1 for line in f)
 
 
-def best_loss_rec_and_lig(model_file, weights_file, data_file, data_root, loss_name, best=max):
+def write_pymol_script(pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[]):
     '''
-    Return the names of the receptor and ligand that have the best loss
-    using a provided model, weights, and data file.
-    '''
-    n_batches = n_lines_in_file(data_file)
-    with instantiate_model(model_file, data_file, data_file, data_root, 1) as model_file:
-        net = caffe.Net(model_file, weights_file, caffe.TEST)
-        index = best_loss_batch_index_from_net(net, loss_name, n_batches, best)
-    return rec_and_lig_at_index_in_data_file(data_file, index)
-
-
-def combine_element_grids_and_channels(grids, channels):
-    '''
-    Return new grids and channels by combining channels
-    of provided grids that are the same element.
-    '''
-    element_to_idx = dict()
-    new_grid = []
-    new_channels = []
-
-    for grid, channel in zip(grids, channels):
-
-        atomic_num = channel.atomic_num
-        if atomic_num not in element_to_idx:
-
-            element_to_idx[atomic_num] = len(element_to_idx)
-
-            new_grid.append(np.zeros_like(grid))
-
-            name = atom_types.get_name(atomic_num)
-            symbol = channel.symbol
-            atomic_radius = channel.atomic_radius
-
-            new_channel = atom_types.channel(name, atomic_num, symbol, atomic_radius)
-            new_channels.append(new_channel)
-
-        new_grid[element_to_idx[atomic_num]] += grid
-
-    return np.array(new_grid), new_channels
-
-
-def write_pymol_script(pymol_file, dx_prefixes, struct_files, centers=[]):
-    '''
-    Write a pymol script with a map object for each of dx_files, a
-    group of all map objects (if any), a rec_file, a lig_file, and
-    an optional fit_file.
+    Write a pymol script that loads all .dx files with a given
+    prefix into a single group, then loads a set of sdf_files
+    and translates them to the origin, if centers are provided.
     '''
     with open(pymol_file, 'w') as f:
+
         for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            dx_group = '{}_grids'.format(os.path.basename(dx_prefix))
-            f.write('load_group {}, {}\n'.format(dx_pattern, dx_group))
+            m = re.match('^{}_(.*)$'.format(out_prefix), dx_prefix)
+            group_name = m.group(1) + '_grids'
+            f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
-        for struct_file in struct_files: # load structures
-            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
-            m = re.match(r'^(.*_fit)_(\d+)$', obj_name)
-            if m and False:
-                obj_name = m.group(1)
-                state = int(m.group(2)) + 1
-                f.write('load {}, {}, state={}\n'.format(struct_file, obj_name, state))
-            else:
-                f.write('load {}, {}\n'.format(struct_file, obj_name))
+        for sdf_file in sdf_files: # load structures
+            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            obj_name = m.group(1)
+            f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
-        for struct_file, (x,y,z) in zip(struct_files, centers): # center structures
-            obj_name = os.path.splitext(os.path.basename(struct_file))[0]
+        for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
+            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
 
@@ -2145,6 +1705,13 @@ def make_one_hot(x, n, dtype=None, device=None):
     return y
 
 
+def one_hot_to_index(x):
+    if len(x) > 0:
+        return torch.argmax(x, dim=1)
+    else:
+        return torch.zeros((0,))
+
+
 def write_structs_to_sdf_file(sdf_file, structs):
     mols = (s.to_ob_mol() for s in structs)
     write_ob_mols_to_sdf_file(sdf_file, mols)
@@ -2157,40 +1724,16 @@ def write_channels_to_file(channels_file, c, channels):
             f.write(channel.name+'\n')
 
 
-def write_xyz_elems_bonds_to_sdf_file(sdf_file, xyz_elems_bonds):
-    '''
-    Write tuples of (xyz, elemes, bonds) atom positions and
-    corresponding elements and bond matrix as chemical structures
-    in an .sdf file.
-    '''
-    out = open(sdf_file, 'w')
-    for xyz, elems, bonds in xyz_elems_bonds:
-        out.write('\n mattragoza\n\n')
-        n_atoms = xyz.shape[0]
-        n_bonds = 0
-        for i in range(n_atoms):
-            for j in range(i+1, n_atoms):
-                if bonds[i,j]:
-                    n_bonds += 1
-        out.write('{:3d}'.format(n_atoms))
-        out.write('{:3d}'.format(n_bonds))
-        out.write('  0  0  0  0  0  0  0  0')
-        out.write('999 V2000\n')
-        for (x, y, z), element in zip(xyz, elems):
-            out.write('{:10.4f}'.format(x))
-            out.write('{:10.4f}'.format(y))
-            out.write('{:10.4f}'.format(z))
-            out.write(' {:3}'.format(element))
-            out.write(' 0  0  0  0  0  0  0  0  0  0  0  0\n')
-        for i in range(n_atoms):
-            for j in range(i+1, n_atoms):
-                if bonds[i,j]:
-                    out.write('{:3d}'.format(i+1))
-                    out.write('{:3d}'.format(j+1))
-                    out.write('  1  0  0  0\n')
-        out.write('M  END\n')
-        out.write('$$$$\n')
-    out.close()
+def read_channels_from_file(channels_file, channels):
+    channel_map = {
+        ch.name: i for i, ch in enumerate(channels)
+    }
+    c = []
+    with open(channels_file, 'r') as f:
+        for line in f:
+            channel_name = line.rstrip()
+            c.append(channel_map[channel_name])
+    return np.array(c)
 
 
 def write_grid_to_dx_file(dx_file, grid, center, resolution):
@@ -2274,7 +1817,7 @@ def get_temp_data_file(examples):
     return data_file
 
 
-def read_examples_from_data_file(data_file, data_root=''):
+def read_examples_from_data_file(data_file, data_root='', n=-1):
     '''
     Read list of (rec_file, lig_file) examples from
     data_file, optionally prepended with data_root.
@@ -2287,6 +1830,8 @@ def read_examples_from_data_file(data_file, data_root=''):
                 rec_file = os.path.join(data_root, rec_file)
                 lig_file = os.path.join(data_root, lig_file)
             examples.append((rec_file, lig_file))
+            if len(examples) == n:
+                break
     return examples
 
 
@@ -2295,26 +1840,6 @@ def find_blobs_in_net(net, blob_pattern):
     Find all blob_names in net that match blob_pattern.
     '''
     return re.findall('^{}$'.format(blob_pattern), '\n'.join(net.blobs), re.MULTILINE)
-
-
-def get_layer_index(net, layer_name):
-    return net._layer_names.index(layer_name)
-
-
-def lazy_forward(net, layer):
-    '''
-    Compute the forward pass of a layer by recursively
-    calling forward on each input layer.
-    '''
-    raise NotImplementedError
-
-    stack = [layer]
-    visited = set()
-    for bottom in net.layer_dict[layer].layer_param.bottom:
-        for layer in input_map[bottom]:
-            if layer not in visited:
-                lazy_forward(net, layer)
-                visited.add(layer)
 
 
 def count_types(c, n_types, dtype=None):
@@ -2502,7 +2027,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     gen_net.forward() # this is necessary for proper latent sampling
 
     print('Creating atom fitter and output writer')
-    if args.parallel: # compute metrics and write output in a separate thread
+
+    if args.parallel: # compute metrics and write output in separate thread
 
         out_queue = mp.Queue()
         out_thread = threading.Thread(
@@ -2521,23 +2047,26 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
     else: # compute metrics, write output, and fit atoms in single thread
 
-        output = OutputWriter(
+        out_writer = OutputWriter(
             out_prefix=args.out_prefix,
             output_dx=args.output_dx,
             output_sdf=args.output_sdf,
             output_channels=args.output_channels,
             output_latent=args.output_latent,
+            output_visited=args.output_visited,
             n_samples=args.n_samples,
+            batch_metrics=args.batch_metrics,
             blob_names=args.blob_name,
             fit_atoms=args.fit_atoms,
             verbose=args.verbose,
         )
 
         if args.fit_atoms:
+
             if args.dkoes_simple_fit:
-                fitter = DkoesAtomFitter()
+                atom_fitter = DkoesAtomFitter()
             else:
-                fitter = AtomFitter(
+                atom_fitter = AtomFitter(
                     multi_atom=args.multi_atom, 
                     beam_size=args.beam_size,
                     apply_conv=args.apply_conv,
@@ -2554,7 +2083,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         betas=(args.beta1, args.beta2),
                         weight_decay=args.weight_decay,
                     ),
-                    output_visited=args.output_visited,
+                    dkoes_make_mol=args.dkoes_make_mol,
                     output_kernel=args.output_kernel,
                     device=device,
                     verbose=args.verbose,
@@ -2691,15 +2220,14 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     ex = examples[batch_idx]
 
                 lig_coord_set = ex.coord_sets[1]
-                lig_src_file = lig_coord_set.src
-                struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
-                types = count_types(struct.c, lig_map.num_types(), dtype=np.int16)
+                lig_src = lig_coord_set.src
+                lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
+                types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
 
-                lig_src_no_ext = os.path.splitext(lig_src_file)[0]
+                lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
 
                 try: # get true mol from the original sdf file
-                    print('Looking for true molecule in data root')
                     m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
                     if m:
                         lig_sdf_base = m.group(1) + '_docked.sdf.gz'
@@ -2708,18 +2236,22 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         lig_sdf_base = lig_src_no_ext + '.sdf'
                         idx = 0
                     lig_sdf_file = os.path.join(args.data_root, lig_sdf_base)
-                    mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
-                    struct.info['src_mol'] = mol
+                    lig_mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
+                    print('Found true molecule in data root')
+
+                    atom_fitter.uff_minimize(lig_mol)
+                    lig_struct.info['src_mol'] = lig_mol
 
                 except Exception as e: # get true mol from openbabel
-                    print('Inferring true molecule using OpenBabel')
-                    mol = struct.to_ob_mol()
-                    mol.ConnectTheDots()
-                    mol.PerceiveBondOrders()
-                    mol = ob_mol_to_rd_mol(mol)
-                    struct.info['src_mol'] = mol
+                    print('Did not find true molecule in data root')
+                    lig_struct.info['src_mol'] = None
 
-                print('True molecule for {} has {} atoms'.format(lig_name, struct.n_atoms))
+                print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+
+                atom_fitter.validify(lig_struct)
+
+                # get latent vector for current example
+                latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
 
                 # get data from blob, process, and write output
                 for blob_name in args.blob_name:
@@ -2727,6 +2259,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     print('Getting grid from {} blob'.format(blob_name))
 
                     grid_blob = gen_net.blobs[blob_name]
+                    grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
 
                     if blob_name == 'rec':
                         grid_channels = rec_channels
@@ -2745,59 +2278,42 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     grid = MolGrid(
                         values=np.array(grid_data),
                         channels=grid_channels,
-                        center=struct.center,
+                        center=lig_struct.center,
                         resolution=grid_maker.get_resolution(),
                     )
-
                     grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
-                    if grid_name == 'lig_gen': # store latent vector for generated grids
-                        latent_blob = gen_net.blobs[latent_sample]
-                        latent_vec = np.array(latent_blob.data[batch_idx])
+                    if grid_name == 'lig': # store true structure for input ligand grids
+                        grid.info['src_struct'] = lig_struct
+
+                    elif grid_name == 'lig_gen': # store latent vector for generated grids
                         grid.info['latent_vec'] = latent_vec
 
                     if args.verbose:
-                        try:
-                            gpu_usage = getGPUs()[0].memoryUtil
-                        except:
-                            gpu_usage = np.nan
+                        gpu_usage = get_gpu_usage(0)
 
-                        print('Main thread produced {} {} {} (norm={}\tGPU={})'.format(
+                        print('Produced {} {} {} (norm={}\tGPU={})'.format(
                             lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage
                         ), flush=True)
 
-                    if args.fit_atoms and blob_name.startswith('lig'):
-                        if args.parallel:
-                            fit_queue.put(
-                                (lig_name, grid_name, sample_idx, grid, struct)
-                            )
-                        else:
-                            output.write(
-                                lig_name, grid_name, sample_idx, grid, struct
-                            )
-                            grid_fit, struct_fit = fitter.fit(grid, types)
-                            output.write(
-                                lig_name, grid_name+'_fit', sample_idx, grid_fit, struct_fit
-                            )
+                    if args.parallel:
+                        out_queue.put((lig_name, grid_name, sample_idx, grid))
+                        if grid_needs_fit:
+                            fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
                     else:
-                        if args.parallel:
-                            out_queue.put(
-                                (lig_name, grid_name, sample_idx, grid, struct)
-                            )
-                        else:
-                            output.write(
-                                lig_name, grid_name, sample_idx, grid, struct
-                            )
+                        out_writer.write(lig_name, grid_name, sample_idx, grid)
+                        if grid_needs_fit:
+                            grid_fit = atom_fitter.fit(grid, types)
+                            grid_fit_name = grid_name + '_fit'
+                            out_writer.write(lig_name, grid_fit_name, sample_idx, grid_fit)
     finally:
         if args.parallel:
-
             if args.fit_atoms:
                 #for i in range(args.n_fit_workers):
                 #    fit_queue.put(None)
                 fit_procs.close()
                 fit_procs.join()
-
             out_queue.put(None)
             out_thread.join()
 
@@ -2808,9 +2324,9 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 def fit_worker_main(fit_queue, out_queue, args):
 
     if args.dkoes_simple_fit:
-        fitter = DkoesAtomFitter()
+        atom_fitter = DkoesAtomFitter()
     else:
-        fitter = AtomFitter(
+        atom_fitter = AtomFitter(
             multi_atom=args.multi_atom,
             beam_size=args.beam_size,
             apply_conv=args.apply_conv,
@@ -2827,7 +2343,7 @@ def fit_worker_main(fit_queue, out_queue, args):
                 betas=(args.beta1, args.beta2),
                 weight_decay=args.weight_decay,
             ),
-            output_visited=args.output_visited,
+            dkoes_make_mol=args.dkoes_make_mol,
             output_kernel=args.output_kernel,
             device='cpu', # can't fit on gpu in multiple threads
             verbose=args.verbose,
@@ -2841,25 +2357,22 @@ def fit_worker_main(fit_queue, out_queue, args):
         if task is None:
             break
 
-        lig_name, grid_name, sample_idx, grid, struct = task
+        lig_name, grid_name, sample_idx, grid, types = task
+
         if args.verbose:
             print('Fit worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
 
-        out_queue.put(
-            (lig_name, grid_name, sample_idx, grid, struct)
-        )
+        out_queue.put((lig_name, grid_name, sample_idx, grid))
 
-        types = count_types(struct.c, len(struct.channels), dtype=int16)
-        grid_fit, struct_fit = fitter.fit(grid, types)
-        grid_name += '_fit'
+        grid_fit = atom_fitter.fit(grid, types)
+        grid_fit_name = grid_name + '_fit'
+
         if args.verbose:
             print('Fit worker produced {} {} {} ({} atoms, {}s)'.format(
                 lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time
             ), flush=True)
 
-        out_queue.put(
-            (lig_name, grid_name, sample_idx, grid_fit, struct_fit)
-        )
+        out_queue.put((lig_name, grid_fit_name, sample_idx, grid_fit))
 
     if args.verbose:
         print('Fit worker exit')
@@ -2867,13 +2380,15 @@ def fit_worker_main(fit_queue, out_queue, args):
 
 def out_worker_main(out_queue, args):
 
-    output = OutputWriter(
+    out_writer = OutputWriter(
         out_prefix=args.out_prefix,
         output_dx=args.output_dx,
         output_sdf=args.output_sdf,
         output_channels=args.output_channels,
         output_latent=args.output_latent,
+        output_visited=args.output_visited,
         n_samples=args.n_samples,
+        batch_metrics=args.batch_metrics,
         blob_names=args.blob_name,
         fit_atoms=args.fit_atoms,
         verbose=args.verbose,
@@ -2883,7 +2398,7 @@ def out_worker_main(out_queue, args):
         task = out_queue.get()
         if task is None:
             break
-        output.write(*task)
+        out_writer.write(*task)
 
     if args.verbose:
         print('Output worker exit')
@@ -2915,7 +2430,8 @@ def parse_args(argv=None):
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
     parser.add_argument('--output_latent', action='store_true', help='output latent vectors for each generated density grid')
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
-    parser.add_argument('--dkoes_simple_fit', action='store_true', help='fit atoms using simple_fit.py functions by dkoes')
+    parser.add_argument('--dkoes_simple_fit', default=False, action='store_true', help='fit atoms using alternate functions by dkoes')
+    parser.add_argument('--dkoes_make_mol', default=False, action='store_true', help="validify molecule using alternate functions by dkoes")
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
@@ -2930,6 +2446,7 @@ def parse_args(argv=None):
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight decay for Adam optimizer')
+    parser.add_argument('--batch_metrics', default=False, action='store_true', help="compute variance metrics across different samples")
     parser.add_argument('--verbose', default=0, type=int, help="verbose output level")
     parser.add_argument('--debug', default=False, action='store_true', help='debug mode')
     parser.add_argument('--gpu', action='store_true', help="generate grids from model on GPU")

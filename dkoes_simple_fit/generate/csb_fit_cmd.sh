@@ -38,7 +38,7 @@ cp ../<LIGAN_DIR>/my_{rec,lig}_map $SCR_DIR
 
 cd $SCR_DIR
 
-trap "cp *.{types,model,caffemodel,dx,sdf,pymol,gen_metrics} ${WORK_DIR}" EXIT
+trap "cp *.{types,model,caffemodel,dx,sdf,channels,latent,pymol,gen_metrics} ${WORK_DIR}" EXIT
 
 python3 ../../<LIGAN_DIR>/generate.py \
 	--data_model ../../<MODEL_DIR>/<DATA_MODEL_NAME>.model \
@@ -55,8 +55,8 @@ python3 ../../<LIGAN_DIR>/generate.py \
 	--verbose 3 \
 	--gpu \
 	--n_samples <N_SAMPLES> \
+	--batch_metrics \
 	<GEN_OPTIONS> \
-	--dkoes_simple_fit \
 	-o <JOB_NAME>_${SLURM_ARRAY_TASK_ID}
 
 exit
