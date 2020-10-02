@@ -48,8 +48,10 @@ def select_atom_starts(mgrid, G, radius):
         maskedG = G.cpu().numpy()
         maskedG[~M] = 0
         flatG = maskedG.flatten()
-        total = flatG.sum()
-        cnt = int(np.ceil(float(total)/per_atom_volume))  #pretty sure this can only underestimate
+        total = float(flatG.sum())
+        if total < .1*per_atom_volume:
+            continue #should be very conservative given a 0.5 THRESHOLD
+        cnt = int(np.ceil(total/per_atom_volume))  #pretty sure this can only underestimate
         #counting this way is especially problematic for large molecules that go to the box edge
         if cnt == 0:
             continue
@@ -65,7 +67,7 @@ def select_atom_starts(mgrid, G, radius):
     return retcoords   
        
     
-def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
+def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     '''Fit atoms to MolGrid.  types are ignored as the number of 
     atoms of each type is always inferred from the density.
     Returns the MolGrid of the placed atoms and the MolStruct'''
@@ -98,8 +100,8 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
     typeindices = np.array(typeindices)
 
     #setup gridder
-    gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution,
-                                                    gaussian_radius_multiple=-1.5),center=mgrid.center)
+    gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution, 
+                                                    gaussian_radius_multiple=grm),center=mgrid.center)
     mgrid.values = mgrid.values.to(device)
 
     #having setup input coordinates, optimize with BFGS
