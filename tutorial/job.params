@@ -1,7 +1,7 @@
 ligan_dir = '..'
 model_dir = 'models'
 solver_dir = 'solvers'
-data_root = '/net/pulsar/home/koes/mtr22/gan/data'
+data_root = '/net/pulsar/home/koes/mtr22/molport'
 data_dir = '/net/pulsar/home/koes/mtr22/gan/data'
 data_prefix = 'molportFULL_rand_'
 data_model_name = 'data'
