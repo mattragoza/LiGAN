@@ -1,6 +1,6 @@
 # What is liGAN?
 
-liGAN is a research codebase for training and evaluating  deep generative models for *de novo* drug design based on 3D atomic density grids. It is built on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe). It includes scripts for creating model architectures and job scripts from parameter files, as well as for submitting and managing experiments on Slurm or Torque-based computing clusters.
+liGAN is a research codebase for training and evaluating deep generative models for *de novo* drug design based on 3D atomic density grids. It is based on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe). It includes scripts for creating model architectures and job scripts from parameter files, as well as for submitting and managing experiments on Slurm or Torque-based computing clusters.
 
 ## Dependencies
 
@@ -172,12 +172,12 @@ This command is also contained in `submit.sh`.
 
 ### Checking job errors
 
-`python3 ../job_errors.py train_*/ --job_type train --print_errors`
+`python3 ../job_errors.py */csb_train.sh --print_errors`
 
 This command is also contained in `errors.sh`.
 
 ### Collecting job output
 
-`python3 ../job_errors.py train_*/ --job_type train --output_file tutorial.training_output`
+`python3 ../job_errors.py */csb_train.sh --output_file tutorial.training_output`
 
 This command is also contained in `output.sh`.
