@@ -11,6 +11,7 @@ class ValidMolMaker(g.AtomFitter, g.OutputWriter):
     def __init__(
         self,
         dkoes_make_mol,
+        use_openbabel,
         out_prefix,
         output_sdf,
         output_visited,
@@ -18,6 +19,7 @@ class ValidMolMaker(g.AtomFitter, g.OutputWriter):
         verbose,
     ):
         self.dkoes_make_mol = dkoes_make_mol
+        self.use_openbabel = use_openbabel
 
         self.out_prefix = out_prefix
         self.output_sdf = output_sdf
@@ -138,10 +140,11 @@ def parse_args(argv):
     parser.add_argument('--in_dir', required=True)
     parser.add_argument('--data_file', required=True)
     parser.add_argument('--data_root', required=True)
-    parser.add_argument('--n_examples', required=True, type=int)
+    parser.add_argument('--n_examples', type=int)
     parser.add_argument('--n_samples', required=True, type=int)
     parser.add_argument('--lig_map', required=True)
     parser.add_argument('--dkoes_make_mol', default=False, action='store_true')
+    parser.add_argument('--use_openbabel', default=False, action='store_true')
     parser.add_argument('--out_prefix', required=True)
     parser.add_argument('--output_sdf', default=False, action='store_true')
     parser.add_argument('--output_visited', default=False, action='store_true')
@@ -167,6 +170,7 @@ def main(argv):
 
     mol_maker = ValidMolMaker(
         dkoes_make_mol=args.dkoes_make_mol,
+        use_openbabel=args.use_openbabel,
         out_prefix=args.out_prefix,
         output_sdf=args.output_sdf,
         output_visited=args.output_visited,
@@ -226,7 +230,11 @@ def main(argv):
                         struct_file = glob.glob(struct_file)[0]
                     except IndexError:
                         pass
-                    fit_mol = g.read_rd_mols_from_sdf_file(struct_file)[-1]                   
+                    try:
+                        fit_mol = g.read_rd_mols_from_sdf_file(struct_file)[-1]
+                    except OSError as e:
+                        print('Warning: {}'.format(e))
+                        continue           
 
                 # these aren't validified molecules, just fit atom coords
                 add_mols = g.read_rd_mols_from_sdf_file(struct_file)
