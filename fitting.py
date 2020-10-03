@@ -223,11 +223,11 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
                 
                 #if maxerr hasn't improved, give up
                 newerr = float(torch.square(agrid[t]-mgrid.values[t]).max())
-                #print(t,'newerr',newerr,'maxerr',maxerr,'maxdiff',maxdiff,'missing',missing_density)
+                #print(t,'newerr',newerr,'maxerr',maxerr,'maxdiff',maxdiff,'mindiff',mindiff,'missing',missing_density)
                 if newerr >= maxerr:
                     #don't give up if there's still a lot left to fit
-                    #and the missing density isn't all shallow
-                    if missing_density < per_atom_volume or maxdiff < 0.01: #magic number! 
+                    #and the missing density isn't all (very) shallow
+                    if missing_density < per_atom_volume or mindiff > -0.1: #magic number! 
                         break
                 else:
                     maxerr = newerr
