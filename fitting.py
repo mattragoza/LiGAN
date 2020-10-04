@@ -416,6 +416,31 @@ def make_obmol(struct,verbose=False):
     
     mol.AddHydrogens()
     fixup(atoms, mol, struct)
+    
+    #make rings all aromatic if majority of carbons are aromatic
+    for ring in ob.OBMolRingIter(mol):
+        if 5 <= ring.Size() <= 6:
+            carbon_cnt = 0
+            aromatic_ccnt = 0
+            for ai in ring._path:
+                a = mol.GetAtom(ai)
+                if a.GetAtomicNum() == 6:
+                    carbon_cnt += 1
+                    if a.IsAromatic():
+                        aromatic_ccnt += 1
+            if aromatic_ccnt/carbon_cnt >= .5 and aromatic_ccnt != ring.Size():
+                #set all ring atoms to be aromatic
+                for ai in ring._path:
+                    a = mol.GetAtom(ai)
+                    a.SetAromatic(True)                                
+    
+    #bonds must be marked aromatic for smiles to match
+    for bond in ob.OBMolBondIter(mol):
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if a1.IsAromatic() and a2.IsAromatic():
+            bond.SetAromatic(True)
+            
     mismatches = 0
     for (a,t) in zip(atoms,struct.c):
         ch = struct.channels[t]
