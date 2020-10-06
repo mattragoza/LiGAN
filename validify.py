@@ -19,6 +19,7 @@ class ValidMolMaker(g.AtomFitter, g.OutputWriter):
         verbose,
     ):
         self.dkoes_make_mol = dkoes_make_mol
+        self.mtr22_make_mol = False
         self.use_openbabel = use_openbabel
 
         self.out_prefix = out_prefix

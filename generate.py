@@ -2457,7 +2457,7 @@ def parse_args(argv=None):
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--dkoes_simple_fit', default=False, action='store_true', help='fit atoms using alternate functions by dkoes')
     parser.add_argument('--dkoes_make_mol', default=False, action='store_true', help="validify molecule using alternate functions by dkoes")
-    parser.add_argument('--use_openbabel', default=False, action='store_true', help="validify molecule using alternate functions by dkoes")
+    parser.add_argument('--use_openbabel', default=False, action='store_true', help="validify molecule using OpenBabel only")
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
