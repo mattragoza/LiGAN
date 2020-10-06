@@ -48,8 +48,10 @@ def select_atom_starts(mgrid, G, radius):
         maskedG = G.cpu().numpy()
         maskedG[~M] = 0
         flatG = maskedG.flatten()
-        total = flatG.sum()
-        cnt = int(np.ceil(float(total)/per_atom_volume))  #pretty sure this can only underestimate
+        total = float(flatG.sum())
+        if total < .1*per_atom_volume:
+            continue #should be very conservative given a 0.5 THRESHOLD
+        cnt = int(np.ceil(total/per_atom_volume))  #pretty sure this can only underestimate
         #counting this way is especially problematic for large molecules that go to the box edge
         if cnt == 0:
             continue
@@ -65,7 +67,7 @@ def select_atom_starts(mgrid, G, radius):
     return retcoords   
        
     
-def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
+def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     '''Fit atoms to MolGrid.  types are ignored as the number of 
     atoms of each type is always inferred from the density.
     Returns the MolGrid of the placed atoms and the MolStruct'''
@@ -98,8 +100,8 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
     typeindices = np.array(typeindices)
 
     #setup gridder
-    gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution,
-                                                    gaussian_radius_multiple=-1.5),center=mgrid.center)
+    gridder = molgrid.Coords2Grid(molgrid.GridMaker(dimension=mgrid.dimension,resolution=mgrid.resolution, 
+                                                    gaussian_radius_multiple=grm),center=mgrid.center)
     mgrid.values = mgrid.values.to(device)
 
     #having setup input coordinates, optimize with BFGS
@@ -221,11 +223,11 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda'):
                 
                 #if maxerr hasn't improved, give up
                 newerr = float(torch.square(agrid[t]-mgrid.values[t]).max())
-                #print(t,'newerr',newerr,'maxerr',maxerr,'maxdiff',maxdiff,'missing',missing_density)
+                #print(t,'newerr',newerr,'maxerr',maxerr,'maxdiff',maxdiff,'mindiff',mindiff,'missing',missing_density)
                 if newerr >= maxerr:
                     #don't give up if there's still a lot left to fit
-                    #and the missing density isn't all shallow
-                    if missing_density < per_atom_volume or maxdiff < 0.01: #magic number! 
+                    #and the missing density isn't all (very) shallow
+                    if missing_density < per_atom_volume or mindiff > -0.1: #magic number! 
                         break
                 else:
                     maxerr = newerr
@@ -416,6 +418,31 @@ def make_obmol(struct,verbose=False):
     
     mol.AddHydrogens()
     fixup(atoms, mol, struct)
+    
+    #make rings all aromatic if majority of carbons are aromatic
+    for ring in ob.OBMolRingIter(mol):
+        if 5 <= ring.Size() <= 6:
+            carbon_cnt = 0
+            aromatic_ccnt = 0
+            for ai in ring._path:
+                a = mol.GetAtom(ai)
+                if a.GetAtomicNum() == 6:
+                    carbon_cnt += 1
+                    if a.IsAromatic():
+                        aromatic_ccnt += 1
+            if aromatic_ccnt/carbon_cnt >= .5 and aromatic_ccnt != ring.Size():
+                #set all ring atoms to be aromatic
+                for ai in ring._path:
+                    a = mol.GetAtom(ai)
+                    a.SetAromatic(True)                                
+    
+    #bonds must be marked aromatic for smiles to match
+    for bond in ob.OBMolBondIter(mol):
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if a1.IsAromatic() and a2.IsAromatic():
+            bond.SetAromatic(True)
+            
     mismatches = 0
     for (a,t) in zip(atoms,struct.c):
         ch = struct.channels[t]
