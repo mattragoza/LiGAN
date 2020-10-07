@@ -169,6 +169,7 @@ def main(argv):
         name_prefix='Ligand',
     )
 
+    print('Initializing valid molecule maker')
     mol_maker = ValidMolMaker(
         dkoes_make_mol=args.dkoes_make_mol,
         use_openbabel=args.use_openbabel,
@@ -179,85 +180,110 @@ def main(argv):
         verbose=args.verbose,
     )
 
+    print('Reading {} examples from {}'.format(args.n_examples, args.data_file))
     job_name = os.path.basename(args.in_dir)
     examples = g.read_examples_from_data_file(args.data_file, n=args.n_examples)
 
     for example_idx, example in enumerate(examples):
+        progress = '[{}/{}] '.format(example_idx, args.n_examples)
 
-        # get the lig_name and source molecule
-        lig_src = example[1]
+        # get the lig_name from data example
+        rec_src, lig_src = example
         lig_src_no_ext = os.path.splitext(lig_src)[0]
         lig_name = os.path.basename(lig_src_no_ext)
 
+        # read the source molecule from data root
         lig_mol_file = os.path.join(args.data_root, lig_src_no_ext + '.sdf')
-        lig_mol = g.read_rd_mols_from_sdf_file(lig_mol_file)[0]
-        lig_mol = Chem.RemoveHs(lig_mol)
+        print(progress + 'Reading ' + lig_mol_file)
+        src_mol = g.read_rd_mols_from_sdf_file(lig_mol_file)[0]
+        src_mol = Chem.RemoveHs(src_mol)
         
-        # then get all of the derived typed-atom structs
+        # then get all of the derived atom type structs
         for struct_type in ['lig', 'lig_fit', 'lig_gen_fit']:
 
-            try:
+            # first, look for files that contain all samples
+            # of a given (lig_name, struct_type)
+
+            try: # if array idx is in filename, we need to glob
                 struct_file = os.path.join(
                     args.in_dir,
                     '_'.join([
                         job_name,
-                        '*', # don't know array_idx...
+                        '*', # array_idx
                         lig_name,
                         struct_type,
                     ])
                 ) + '.sdf'
+                print(progress + 'Globbing ' + struct_file)
                 struct_file = glob.glob(struct_file)[0]
-                fit_mols = g.read_rd_mols_from_sdf_file(struct_file)
+                print(progress + 'Reading ' + struct_file)
+                xyz_mols = g.read_rd_mols_from_sdf_file(struct_file)
                 found_structs = True
+
             except (IndexError, OSError):
+                print(progress + 'No structs in glob')
                 found_structs = False
 
             for sample_idx in range(args.n_samples):
 
+                # get the atom coords for this sample_idx
                 if found_structs:
-                    fit_mol = fit_mols[sample_idx]
+                    xyz_mol = xyz_mols[sample_idx]
+
                 else:
+                    # otherwise look for files that contain a
+                    # single (lig_name, struct_type, sample_idx)
+
+                    # again, need to glob if the array_idx is in filename
                     struct_file = os.path.join(
                         args.in_dir,
                         '_'.join([
                             job_name,
-                            '*', # don't know array_idx...
+                            '*', # array_idx
                             lig_name,
                             struct_type,
                             str(sample_idx),
                         ])
                     ) + '.sdf'
+
                     try:
+                        print(progress + 'Globbing ' + struct_file)
                         struct_file = glob.glob(struct_file)[0]
                     except IndexError:
+                        # read_mols will raise a better error message
                         pass
+
                     try:
-                        fit_mol = g.read_rd_mols_from_sdf_file(struct_file)[-1]
+                        print(progress + 'Reading ' + struct_file)
+                        # these aren't validified molecules, just fit atom coords
+                        xyz_mol = g.read_rd_mols_from_sdf_file(struct_file)[-1]
                     except OSError as e:
-                        print('Warning: {}'.format(e))
+                        print(progress + 'Warning: ' + str(e))
                         continue           
 
-                # these aren't validified molecules, just fit atom coords
-                add_mols = g.read_rd_mols_from_sdf_file(struct_file)
-
-                # need the channels to recover the typed-atom struct
+                # get the atom types from channels file
                 channels_file = struct_file.replace('.sdf', '_{}.channels'.format(sample_idx))
+                print(progress + 'Reading ' + channels_file)
                 c = g.read_channels_from_file(channels_file, lig_channels)
 
-                # get the typed-atom struct from fit_mol coords and types
-                struct = g.MolStruct.from_rd_mol(fit_mols[sample_idx], c, lig_channels)
+                # get the struct from mol coords and atom types
+                struct = g.MolStruct.from_rd_mol(xyz_mol, c, lig_channels)
 
-                # validify the struct
+                print(progress + 'Validifying {} {} {} struct'.format(lig_name, struct_type, sample_idx))
+
+                # validify the atom types and coords into a molecule
                 mol_maker.validify(struct)
 
-                if struct_type == 'lig':
-                    lig_mol_ = Chem.RWMol(lig_mol)
+                # for real atom types, also align, minimize, and store the real molecule
+                if struct_type == 'lig': 
+                    print(progress + 'Minimizing {} {} {} molecule'.format(lig_name, struct_type, sample_idx))
+                    src_mol_ = Chem.RWMol(src_mol)
                     try:
-                        Chem.rdMolAlign.AlignMol(lig_mol_, struct.info['add_mol'])
+                        Chem.rdMolAlign.AlignMol(src_mol_, struct.info['add_mol'])
                     except RuntimeError as e:
-                        print('Warning: {}'.format(e))
-                    mol_maker.uff_minimize(lig_mol_)
-                    struct.info['src_mol'] = lig_mol_
+                        print(progress + 'Warning: ' + str(e))
+                    mol_maker.uff_minimize(src_mol_)
+                    struct.info['src_mol'] = src_mol_
 
                 mol_maker.write(lig_name, struct_type, sample_idx, struct)
 
