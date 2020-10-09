@@ -401,7 +401,7 @@ class AtomFitter(object):
 
     def fit(self, grid, types):
         '''
-        Fit atomic structure to mol grid.
+        Fit atom types and coordinates to atomic density grid.
         '''
         t_start = time.time()
 
@@ -1544,6 +1544,33 @@ def read_rd_mols_from_sdf_file(sdf_file):
     return [mol for mol in suppl]
 
 
+def find_real_mol_in_data_root(data_root, lig_src_no_ext):
+    '''
+    Try to find the real molecule in data_root using the
+    source path found in the data file, without extension.
+    '''
+    try: # docked PDBbind ligands are gzipped together
+        m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
+        lig_mol_base = m.group(1) + '_docked.sdf.gz'
+        idx = int(m.group(2))
+        lig_mol_file = os.path.join(data_root, lig_mol_base)
+        lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[idx]
+
+    except AttributeError:
+
+        try: # cross-docked set has extra underscore
+            lig_mol_base = lig_src_no_ext + '_.sdf'
+            lig_mol_file = os.path.join(data_root, lig_mol_base)
+            lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[0]
+
+        except OSError:
+            lig_mol_base = lig_src_no_ext + '.sdf'
+            lig_mol_file = os.path.join(data_root, lig_mol_base)
+            lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[0]
+
+    return lig_mol
+
+
 def write_latent_vecs_to_file(latent_file, latent_vecs):
 
     with open(latent_file, 'w') as f:
@@ -2230,43 +2257,32 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     # decode latent samples to generate grids
                     gen_net.forward(start=lig_dec_start, end=lig_dec_end)
 
-                print('Getting true molecule for current example')
-
                 # get current example ligand
                 if args.interpolate:
                     ex = examples[endpoint_idx]
                 else:
                     ex = examples[batch_idx]
 
+                print('Getting real atom types and coords')
                 lig_coord_set = ex.coord_sets[1]
                 lig_src = lig_coord_set.src
                 lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
                 types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
 
+                # then get the real source molecule from data_root
                 lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
 
-                try: # get true mol from the original sdf file
-                    m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
-                    if m:
-                        lig_sdf_base = m.group(1) + '_docked.sdf.gz'
-                        idx = int(m.group(2))
-                    else:
-                        lig_sdf_base = lig_src_no_ext + '.sdf'
-                        idx = 0
-                    lig_sdf_file = os.path.join(args.data_root, lig_sdf_base)
-                    lig_mol = read_rd_mols_from_sdf_file(lig_sdf_file)[idx]
-                    print('Found true molecule in data root')
+                print('Getting real molecule from data root')
+                lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                    atom_fitter.uff_minimize(lig_mol)
-                    lig_struct.info['src_mol'] = lig_mol
-
-                except Exception as e: # get true mol from openbabel
-                    print('Did not find true molecule in data root')
-                    lig_struct.info['src_mol'] = None
+                print('Minimizing real molecule')
+                atom_fitter.uff_minimize(lig_mol)
+                lig_struct.info['src_mol'] = lig_mol
 
                 print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
+                print('Validifying real atom types and coords')
                 atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
