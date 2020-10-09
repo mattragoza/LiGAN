@@ -14,7 +14,7 @@ except ImportError:
     izip = zip
 from functools import partial
 from scipy.stats import multivariate_normal
-import caffe
+
 import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
@@ -30,9 +30,8 @@ from NP_Score import npscorer
 nps_model = npscorer.readNPModel()
 
 import molgrid
-import caffe_util
 import atom_types
-import simple_fit
+import fitting as dkoes_fitting
 from results import get_terminal_size
 
 
@@ -178,6 +177,7 @@ class AtomFitter(object):
         final_gd_iters,
         gd_kwargs,
         dkoes_make_mol,
+        use_openbabel,
         output_kernel,
         device,
         verbose=0,
@@ -203,8 +203,10 @@ class AtomFitter(object):
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
 
-        # use alternate bond adding method
+        # alternate bond adding methods
         self.dkoes_make_mol = dkoes_make_mol
+        self.mtr22_make_mol = False
+        self.use_openbabel = use_openbabel
 
         self.output_kernel = output_kernel
         self.device = device
@@ -697,30 +699,35 @@ class AtomFitter(object):
         rd_mol = struct.to_rd_mol()
         visited_mols = [rd_mol]
 
-        # connect the dots using openbabel
-        ob_mol = rd_mol_to_ob_mol(rd_mol)
-        ob_mol.ConnectTheDots()
-        rd_mol = ob_mol_to_rd_mol(ob_mol)
-        visited_mols.append(rd_mol)
+        if self.dkoes_make_mol:
 
-        # perceive bonds in openbabel and evaluate "geometric validity"
-        # i.e. validity of molecule inferred purely using openbabel
-        ob_mol.PerceiveBondOrders()
-        rd_mol = ob_mol_to_rd_mol(ob_mol)
-        visited_mols.append(rd_mol)
+            pb_mol, misses = dkoes_fitting.make_obmol(struct, self.verbose)
+            ob_mol = pb_mol.OBMol
+            visited_mols.append(ob_mol_to_rd_mol(ob_mol))
 
-        if not use_ob:
+            rd_mol = dkoes_fitting.convert_ob_mol_to_rd_mol(ob_mol)
+            visited_mols.append(rd_mol)
 
-            if self.dkoes_make_mol:
+        elif self.mtr22_make_mol:
 
-                ob_mol, mismatches = simple_fit.make_mol(struct)
-                rd_mol = ob_mol_to_rd_mol(ob_mol)
-                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
-                struct.info['add_mol'] = rd_mol
-                struct.info['mismatches'] = mismatches
-                visited_mols.append(rd_mol)
+            # trying to derive the bonds by principled "inverse atom typing"
+            # where we use the atom types to constrain the molecule in OB
 
-            else: # try to fix it up using fragment connection and channel info
+            ob_mol = struct.to_ob_mol()
+            # TODO
+
+        else:
+            # connect the dots using openbabel
+            ob_mol = struct.to_ob_mol()
+            ob_mol.ConnectTheDots()
+            visited_mols.append(ob_mol_to_rd_mol(ob_mol))
+
+            # perceive bonds in openbabel
+            ob_mol.PerceiveBondOrders()
+            rd_mol = ob_mol_to_rd_mol(ob_mol)
+            visited_mols.append(rd_mol)
+
+            if not self.use_openbabel:
 
                 # connect fragments by adding min distance bonds
                 rd_mol = Chem.RWMol(rd_mol)
@@ -730,12 +737,10 @@ class AtomFitter(object):
                 # make aromatic rings using channel info
                 rd_mol = Chem.RWMol(rd_mol)
                 set_rd_mol_aromatic(rd_mol, struct.c, struct.channels)
-                struct.info['add_validity'] = get_rd_mol_validity(rd_mol)
-                struct.info['add_mol'] = rd_mol
                 visited_mols.append(rd_mol)
 
-        rd_mol.info = dict()
-        rd_mol.info['visited_mols'] = visited_mols
+        # be careful, this info is lost when the mol is copied
+        rd_mol.info = {'visited_mols': visited_mols}
         self.uff_minimize(rd_mol)
 
         struct.info['add_mol'] = rd_mol
@@ -760,21 +765,22 @@ class AtomFitter(object):
 
 class DkoesAtomFitter(AtomFitter):
 
-    def __init__(self, iters=25, tol=0.01, dkoes_make_mol=True):
+    def __init__(self, dkoes_make_mol, use_openbabel, iters=25, tol=0.01):
         self.iters = iters
         self.tol = tol
+
         self.dkoes_make_mol = dkoes_make_mol
+        self.use_openbabel = use_openbabel
 
     def fit(self, grid, types):
-        fit_grid = simple_fit.simple_atom_fit(
+        fit_grid = dkoes_fitting.simple_atom_fit(
             mgrid=grid,
             types=types,
             iters=self.iters,
             tol=self.tol
         )
-        fit_struct = fit_grid.info['src_struct']
-        fit_struct.info['add_mol'] = self.validify(fit_struct)
-        return grid_pred
+        self.validify(fit_grid.info['src_struct'])
+        return fit_grid
 
 
 class OutputWriter(object):
@@ -1141,6 +1147,11 @@ class OutputWriter(object):
     def compute_mol_metrics(self, idx, mol_type, mol, ref_mol=None):
         m = self.metrics
 
+        # standardize mols
+        mol_info = mol.info
+        mol = Chem.RemoveHs(mol, sanitize=False)
+        mol.info = mol_info
+
         # check molecular validity
         n_frags, error, valid = get_rd_mol_validity(mol)
         m.loc[idx, mol_type+'_n_frags'] = n_frags
@@ -1155,13 +1166,17 @@ class OutputWriter(object):
         m.loc[idx, mol_type+'_NPS'] = get_rd_mol_NPS(mol, nps_model)
 
         # convert to SMILES string
-        smi = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=False)
+        smi = get_smiles_string(mol)
         m.loc[idx, mol_type+'_SMILES'] = smi
 
         if ref_mol is not None: # compare to ref_mol
 
+            ref_mol_info = ref_mol.info
+            ref_mol = Chem.RemoveHs(ref_mol, sanitize=False)
+            ref_mol.info = ref_mol_info
+
             # get reference SMILES strings
-            ref_smi = Chem.MolToSmiles(ref_mol, canonical=True, isomericSmiles=False)
+            ref_smi = get_smiles_string(ref_mol)
             m.loc[idx, mol_type+'_SMILES_match'] = (smi == ref_smi)
 
             # fingerprint similarity
@@ -1217,11 +1232,80 @@ def catch_exc(func, exc=Exception, default=np.nan):
 
 
 get_rd_mol_weight = catch_exc(Chem.Descriptors.MolWt)
-get_rd_mol_logP   = catch_exc(Chem.Crippen.MolLogP)
-get_rd_mol_QED    = catch_exc(Chem.QED.default)
-get_rd_mol_SAS    = catch_exc(sascorer.calculateScore)
-get_rd_mol_NPS    = catch_exc(npscorer.scoreMol)
+get_rd_mol_logP = catch_exc(Chem.Crippen.MolLogP)
+get_rd_mol_QED = catch_exc(Chem.QED.default)
+get_rd_mol_SAS = catch_exc(sascorer.calculateScore)
+get_rd_mol_NPS = catch_exc(npscorer.scoreMol)
 get_aligned_rmsd  = catch_exc(AllChem.GetBestRMS)
+
+
+@catch_exc
+def get_smiles_string(rd_mol):
+    return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
+
+
+@catch_exc
+def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
+
+    if fingerprint == 'morgan':
+        fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
+        fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
+
+    elif fingerprint == 'rdkit':
+        fgp1 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol1)
+        fgp2 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol2)
+
+    elif fingerprint == 'maccs':
+        fgp1 = AllChem.GetMACCSKeysFingerprint(rd_mol1)
+        fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
+
+    return DataStructs.TanimotoSimilarity(fgp1, fgp2)
+
+
+@catch_exc
+def get_ob_smi_similarity(smi1, smi2):
+    fgp1 = pybel.readstring('smi', smi1).calcfp()
+    fgp2 = pybel.readstring('smi', smi2).calcfp()
+    return fgp1 | fgp2
+
+
+def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+    try:
+        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+        ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+        ff.Initialize()
+        E_init = ff.CalcEnergy()
+        try:
+            res = ff.Minimize(maxIts=max_iters)
+            E_final = ff.CalcEnergy()
+            rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
+            if res == 0:
+                e = None
+            else:
+                e = RuntimeError('minimization not converged')
+            return rd_mol, E_init, E_final, e
+        except RuntimeError as e:
+            return Chem.RWMol(rd_mol), E_init, np.nan, e
+    except Exception as e:
+        return Chem.RWMol(rd_mol), np.nan, np.nan, e
+
+
+@catch_exc
+def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
+    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+    ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+    return ff.CalcEnergy()
+
+
+def get_rd_mol_validity(rd_mol):
+    n_frags = len(Chem.GetMolFrags(rd_mol))
+    try:
+        Chem.SanitizeMol(rd_mol)
+        error = None
+    except Exception as e:
+        error = e
+    valid = n_frags == 1 and error is None
+    return n_frags, error, valid
 
 
 @catch_exc
@@ -1301,70 +1385,6 @@ def connect_rd_mol_frags(rd_mol):
 
             frags = Chem.GetMolFrags(rd_mol)
             n_frags = len(frags)
-
-
-@catch_exc
-def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
-
-    if fingerprint == 'morgan':
-        fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
-        fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
-
-    elif fingerprint == 'rdkit':
-        fgp1 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol1)
-        fgp2 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol2)
-
-    elif fingerprint == 'maccs':
-        fgp1 = AllChem.GetMACCSKeysFingerprint(rd_mol1)
-        fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
-
-    return DataStructs.TanimotoSimilarity(fgp1, fgp2)
-
-
-@catch_exc
-def get_ob_smi_similarity(smi1, smi2):
-    fgp1 = pybel.readstring('smi', smi1).calcfp()
-    fgp2 = pybel.readstring('smi', smi2).calcfp()
-    return fgp1 | fgp2
-
-
-def uff_minimize_rd_mol(rd_mol, max_iters=10000):
-    try:
-        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-        ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
-        ff.Initialize()
-        E_init = ff.CalcEnergy()
-        try:
-            res = ff.Minimize(maxIts=max_iters)
-            E_final = ff.CalcEnergy()
-            rd_mol = Chem.RemoveHs(rd_mol_H)
-            if res == 0:
-                e = None
-            else:
-                e = RuntimeError('minimization not converged')
-            return rd_mol, E_init, E_final, e
-        except RuntimeError as e:
-            return Chem.RWMol(rd_mol), E_init, np.nan, e
-    except Exception as e:
-        return Chem.RWMol(rd_mol), np.nan, np.nan, e
-
-
-@catch_exc
-def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
-    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-    ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
-    return ff.CalcEnergy()
-
-
-def get_rd_mol_validity(rd_mol):
-    n_frags = len(Chem.GetMolFrags(rd_mol))
-    try:
-        Chem.SanitizeMol(rd_mol)
-        error = None
-    except Exception as e:
-        error = e
-    valid = n_frags == 1 and error is None
-    return n_frags, error, valid
 
 
 def ob_mol_to_rd_mol(ob_mol):
@@ -1817,7 +1837,7 @@ def get_temp_data_file(examples):
     return data_file
 
 
-def read_examples_from_data_file(data_file, data_root='', n=-1):
+def read_examples_from_data_file(data_file, data_root='', n=None):
     '''
     Read list of (rec_file, lig_file) examples from
     data_file, optionally prepended with data_root.
@@ -1830,7 +1850,7 @@ def read_examples_from_data_file(data_file, data_root='', n=-1):
                 rec_file = os.path.join(data_root, rec_file)
                 lig_file = os.path.join(data_root, lig_file)
             examples.append((rec_file, lig_file))
-            if len(examples) == n:
+            if n is not None and len(examples) == n:
                 break
     return examples
 
@@ -2084,6 +2104,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         weight_decay=args.weight_decay,
                     ),
                     dkoes_make_mol=args.dkoes_make_mol,
+                    use_openbabel=args.use_openbabel,
                     output_kernel=args.output_kernel,
                     device=device,
                     verbose=args.verbose,
@@ -2324,7 +2345,10 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 def fit_worker_main(fit_queue, out_queue, args):
 
     if args.dkoes_simple_fit:
-        atom_fitter = DkoesAtomFitter()
+        atom_fitter = DkoesAtomFitter(
+            dkoes_make_mol=args.dkoes_make_mol,
+            use_openbabel=args.use_openbabel,
+        )
     else:
         atom_fitter = AtomFitter(
             multi_atom=args.multi_atom,
@@ -2344,6 +2368,7 @@ def fit_worker_main(fit_queue, out_queue, args):
                 weight_decay=args.weight_decay,
             ),
             dkoes_make_mol=args.dkoes_make_mol,
+            use_openbabel=args.use_openbabel,
             output_kernel=args.output_kernel,
             device='cpu', # can't fit on gpu in multiple threads
             verbose=args.verbose,
@@ -2432,6 +2457,7 @@ def parse_args(argv=None):
     parser.add_argument('--fit_atoms', action='store_true', help='fit atoms to density grids and print the goodness-of-fit')
     parser.add_argument('--dkoes_simple_fit', default=False, action='store_true', help='fit atoms using alternate functions by dkoes')
     parser.add_argument('--dkoes_make_mol', default=False, action='store_true', help="validify molecule using alternate functions by dkoes")
+    parser.add_argument('--use_openbabel', default=False, action='store_true', help="validify molecule using OpenBabel only")
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
@@ -2464,6 +2490,9 @@ def parse_args(argv=None):
 
 
 def main(argv):
+    import caffe
+    import caffe_util
+
     args = parse_args(argv)
 
     pd.set_option('display.max_columns', 100)

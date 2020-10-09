@@ -321,10 +321,16 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
     
     Assumes no hydrogens or existing bonds.
     '''
+<<<<<<< HEAD
     pt = Chem.GetPeriodicTable()
     
     mol.BeginModify()
+=======
+    if len(atoms) == 0:
+        return
+>>>>>>> upstream/master
 
+    mol.BeginModify()
 
     #just going to to do n^2 comparisons, can worry about efficiency later
     coords = np.array([(a.GetX(),a.GetY(),a.GetZ()) for a in atoms])
@@ -360,7 +366,7 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
         ideal = openbabel.GetCovalentRad(a1.GetAtomicNum()) + openbabel.GetCovalentRad(a2.GetAtomicNum()) 
         stretch = bdist-ideal
         binfo.append((stretch,bdist,bond))
-    binfo.sort(reverse=True) #most stretched bonds first
+    binfo.sort(reverse=True, key=lambda t: t[:2]) #most stretched bonds first
     
     for stretch,bdist,bond in binfo:
         #can we remove this bond without disconnecting the molecule?
@@ -497,9 +503,6 @@ def convert_ob_mol_to_rd_mol(ob_mol):
 
     rd_mol.AddConformer(rd_conf)
 
-    nonsingles = []
-    positions = rd_mol.GetConformer().GetPositions()
-    
     for ob_bond in ob.OBMolBondIter(ob_mol):
         i = ob_bond.GetBeginAtomIdx()-1
         j = ob_bond.GetEndAtomIdx()-1
@@ -517,19 +520,20 @@ def convert_ob_mol_to_rd_mol(ob_mol):
             bond = rd_mol.GetBondBetweenAtoms (i,j)
             bond.SetIsAromatic(True)    
             
-            
     rd_mol = Chem.RemoveHs(rd_mol, sanitize=False)
                 
     pt = Chem.GetPeriodicTable()
     #if double/triple bonds are connected to hypervalent atoms, decrement the order
-    nosingles = []
+
+    positions = rd_mol.GetConformer().GetPositions()
+    nonsingles = []
     for bond in rd_mol.GetBonds():
         if bond.GetBondType() == Chem.BondType.DOUBLE or bond.GetBondType() == Chem.BondType.TRIPLE:
             i = bond.GetBeginAtomIdx()
             j = bond.GetEndAtomIdx()
             dist = np.linalg.norm(positions[i]-positions[j])
             nonsingles.append((dist,bond))
-    nonsingles.sort(reverse=True)
+    nonsingles.sort(reverse=True, key=lambda t: t[0])
     
     for (d,bond) in nonsingles:
         a1 = bond.GetBeginAtom()
@@ -551,8 +555,11 @@ def convert_ob_mol_to_rd_mol(ob_mol):
     rd_mol = Chem.AddHs(rd_mol,addCoords=True)
     #Kekulize will lose our aromatic flags :-()
 
-    Chem.SanitizeMol(rd_mol,Chem.SANITIZE_ALL^Chem.SANITIZE_KEKULIZE)
-        
+    try:
+        Chem.SanitizeMol(rd_mol,Chem.SANITIZE_ALL^Chem.SANITIZE_KEKULIZE)
+    except: # mtr22 - don't assume mols will pass this
+        pass
+
     #but at some point stop trying to enforce our aromaticity -
     #openbabel and rdkit have different aromaticity models so they
     #won't always agree.  Remove any aromatic bonds to non-aromatic atoms

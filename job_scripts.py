@@ -60,6 +60,8 @@ def fill_job_template(job_template, job_params):
             value = expand_train_options(value)
         if param == 'gen_options':
             value = expand_gen_options(value)
+        if param == 'val_options':
+            value = expand_val_options(value)
         job = re.sub('<'+param.upper()+'>', str(value), job)
     return job
 
@@ -88,6 +90,13 @@ def expand_gen_options(args):
         a='--alt_bond_adding',
         d='--dkoes_simple_fit',
         D='--dkoes_make_mol',
+    )[a] for a in args)
+
+
+def expand_val_options(args):
+    return ' '.join(dict(
+        D='--dkoes_make_mol',
+        o='--use_openbabel',
     )[a] for a in args)
 
 
