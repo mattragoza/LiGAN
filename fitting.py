@@ -355,6 +355,13 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
     
+    #remove any impossible bonds between halogens
+    for bond in openbabel.OBMolBondIter(mol):
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if atom_maxb[a1.GetIdx()] == 1 and atom_maxb[a2.GetIdx()] == 1:
+            mol.DeleteBond(bond)
+        
     def get_bond_info(biter):
         '''Return bonds sorted by their distortion'''
         bonds = [b for b in biter]
