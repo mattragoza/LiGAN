@@ -11,6 +11,7 @@ from atom_types import *
 from collections import namedtuple
 from scipy.spatial.distance import pdist
 from scipy.spatial.distance import squareform
+import pickle
 
 def grid_to_xyz(gcoords, mgrid):
     return mgrid.center+(np.array(gcoords)-((mgrid.size-1)/2))*mgrid.resolution
@@ -320,6 +321,8 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
     
     Assumes no hydrogens or existing bonds.
     '''
+    pt = Chem.GetPeriodicTable()
+    
     mol.BeginModify()
 
 
@@ -339,11 +342,10 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
                 if 'Aromatic' in types[i] and 'Aromatic' in types[j]:
                     flag = openbabel.OB_AROMATIC_BOND
                 mol.AddBond(a.GetIdx(),b.GetIdx(),1,flag)
-
-    #cleanup = remove long bonds
+                
     atom_maxb = {}
     for (i,a) in enumerate(atoms):
-        maxb = openbabel.GetMaxBonds(a.GetAtomicNum()) #don't exceed this
+        maxb = pt.GetDefaultValence(a.GetAtomicNum()) #don't exceed this - note using RDKit values
         if 'Donor' in types[i]:
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
@@ -460,7 +462,7 @@ def make_obmol(struct,verbose=False):
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
         
 
-    return pybel.Molecule(mol),mismatches
+    return mol,mismatches
     
 def calc_valence(rdatom):
     '''Can call GetExplicitValence before sanitize, but need to
@@ -471,6 +473,7 @@ def calc_valence(rdatom):
     return cnt
     
 def convert_ob_mol_to_rd_mol(ob_mol):
+  try:  
     '''Convert OBMol to RDKit mol, fixing up issues'''
     ob_mol.DeleteHydrogens()
     n_atoms = ob_mol.NumAtoms()
@@ -539,10 +542,11 @@ def convert_ob_mol_to_rd_mol(ob_mol):
                 btype = Chem.BondType.DOUBLE
             bond.SetBondType(btype)  
             
-    #set nitrogens with 4 neighbors to have a charge
+    
     for atom in rd_mol.GetAtoms():
+        #set nitrogens with 4 neighbors to have a charge
         if atom.GetAtomicNum() == 7 and atom.GetDegree() == 4:
-            atom.SetFormalCharge(1)
+            atom.SetFormalCharge(1)               
             
     rd_mol = Chem.AddHs(rd_mol,addCoords=True)
     #Kekulize will lose our aromatic flags :-()
@@ -562,8 +566,12 @@ def convert_ob_mol_to_rd_mol(ob_mol):
             bond.SetIsAromatic(True)
     
     return rd_mol
+  except:
+    pickle.dump(ob_mol,open('badstruct.pkl','wb'))
+    raise    
     
 def make_rdmol(struct,verbose=False):
     '''Create RDKIT mol from MolStruct trying to respect types.'''
-    mol,misses = make_mol(struct,verbose)
-    return ob_mol_to_rd_mol(mol.OBMol)
+    mol,misses = make_obmol(struct,verbose)
+    return convert_ob_mol_to_rd_mol(mol.OBMol)
+
