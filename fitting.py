@@ -11,6 +11,7 @@ from atom_types import *
 from collections import namedtuple
 from scipy.spatial.distance import pdist
 from scipy.spatial.distance import squareform
+import pickle
 
 def grid_to_xyz(gcoords, mgrid):
     return mgrid.center+(np.array(gcoords)-((mgrid.size-1)/2))*mgrid.resolution
@@ -320,6 +321,8 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
     
     Assumes no hydrogens or existing bonds.
     '''
+    pt = Chem.GetPeriodicTable()
+    
     if len(atoms) == 0:
         return
 
@@ -334,52 +337,79 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
         for (j,b) in enumerate(atoms):
             if a == b:
                 break
-            if dists[i,j] < 0.4:
+            if dists[i,j] < 0.01:  #reduce from 0.4
                 continue #don't bond too close atoms
             if dists[i,j] < maxbond:
                 flag = 0
                 if 'Aromatic' in types[i] and 'Aromatic' in types[j]:
                     flag = openbabel.OB_AROMATIC_BOND
                 mol.AddBond(a.GetIdx(),b.GetIdx(),1,flag)
-
-    #cleanup = remove long bonds
+                
     atom_maxb = {}
     for (i,a) in enumerate(atoms):
-        maxb = openbabel.GetMaxBonds(a.GetAtomicNum()) #don't exceed this
+        #set max valance to the smallest max allowed by openbabel or rdkit
+        #since we want the molecule to be valid for both (rdkit is usually lower)
+        maxb = openbabel.GetMaxBonds(a.GetAtomicNum())
+        maxb = min(maxb,pt.GetDefaultValence(a.GetAtomicNum())) 
         if 'Donor' in types[i]:
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
     
-    bonds = [b for b in openbabel.OBMolBondIter(mol)]
-    binfo = []
-    for bond in bonds:
-        bdist = bond.GetLength()
-        #compute how far away from optimal we are
-        a1 = bond.GetBeginAtom()
-        a2 = bond.GetEndAtom()
-        ideal = openbabel.GetCovalentRad(a1.GetAtomicNum()) + openbabel.GetCovalentRad(a2.GetAtomicNum()) 
-        stretch = bdist-ideal
-        binfo.append((stretch,bdist,bond))
-    binfo.sort(reverse=True, key=lambda t: t[:2]) #most stretched bonds first
+    def get_bond_info(biter):
+        '''Return bonds sorted by their distortion'''
+        bonds = [b for b in biter]
+        binfo = []
+        for bond in bonds:
+            bdist = bond.GetLength()
+            #compute how far away from optimal we are
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            ideal = openbabel.GetCovalentRad(a1.GetAtomicNum()) + openbabel.GetCovalentRad(a2.GetAtomicNum()) 
+            stretch = bdist-ideal
+            binfo.append((stretch,bdist,bond))
+        binfo.sort(reverse=True, key=lambda t: t[:2]) #most stretched bonds first
+        return binfo
+        
+    #prioritize removing hypervalency causing bonds, do more valent 
+    #constrained atoms first since their bonds introduce the most problems
+    #with reachability (e.g. oxygen)
+    hypers = sorted([(atom_maxb[a.GetIdx()],a.GetExplicitValence() - atom_maxb[a.GetIdx()], a) for a in atoms],key=lambda aa: (aa[0],-aa[1]))
+    for mb,diff,a in hypers:
+        if a.GetExplicitValence() <= atom_maxb[a.GetIdx()]:
+            continue
+        binfo = get_bond_info(openbabel.OBAtomBondIter(a))            
+        for stretch,bdist,bond in binfo:
+            #can we remove this bond without disconnecting the molecule?
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+
+            #get right valence
+            if a1.GetExplicitValence() > atom_maxb[a1.GetIdx()] or \
+                a2.GetExplicitValence() > atom_maxb[a2.GetIdx()]:
+                #don't fragment the molecule
+                if not reachable(a1,a2):
+                    continue
+                mol.DeleteBond(bond)
+                if a.GetExplicitValence() <= atom_maxb[a.GetIdx()]:
+                    break #let nbr atoms choose what bonds to throw out
+                
     
+    binfo = get_bond_info(openbabel.OBMolBondIter(mol))
+    #now eliminate geometrically poor bonds
     for stretch,bdist,bond in binfo:
         #can we remove this bond without disconnecting the molecule?
         a1 = bond.GetBeginAtom()
         a2 = bond.GetEndAtom()
-        #don't fragment the molecule
-        if not reachable(a1,a2):
-            continue
 
         #as long as we aren't disconnecting, let's remove things
         #that are excessively far away (0.45 from ConnectTheDots)
         #get bonds to be less than max allowed
         #also remove tight angles, because that is what ConnectTheDots does
-        if stretch > 0.45 or  \
-            a1.GetExplicitValence() > atom_maxb[a1.GetIdx()] or \
-            a2.GetExplicitValence() > atom_maxb[a2.GetIdx()] or \
-            forms_small_angle(a1,a2) or forms_small_angle(a2,a1):
+        if stretch > 0.45 or forms_small_angle(a1,a2) or forms_small_angle(a2,a1):
+            #don't fragment the molecule
+            if not reachable(a1,a2):
+                continue
             mol.DeleteBond(bond)
-            continue                        
             
     mol.EndModify()
             
@@ -472,7 +502,7 @@ def calc_valence(rdatom):
         cnt += bond.GetBondTypeAsDouble()
     return cnt
     
-def convert_ob_mol_to_rd_mol(ob_mol):
+def convert_ob_mol_to_rd_mol(ob_mol,struct):
     '''Convert OBMol to RDKit mol, fixing up issues'''
     ob_mol.DeleteHydrogens()
     n_atoms = ob_mol.NumAtoms()
@@ -539,10 +569,11 @@ def convert_ob_mol_to_rd_mol(ob_mol):
                 btype = Chem.BondType.DOUBLE
             bond.SetBondType(btype)  
             
-    #set nitrogens with 4 neighbors to have a charge
+    
     for atom in rd_mol.GetAtoms():
+        #set nitrogens with 4 neighbors to have a charge
         if atom.GetAtomicNum() == 7 and atom.GetDegree() == 4:
-            atom.SetFormalCharge(1)
+            atom.SetFormalCharge(1)               
             
     rd_mol = Chem.AddHs(rd_mol,addCoords=True)
     #Kekulize will lose our aromatic flags :-()
@@ -551,6 +582,14 @@ def convert_ob_mol_to_rd_mol(ob_mol):
         Chem.SanitizeMol(rd_mol,Chem.SANITIZE_ALL^Chem.SANITIZE_KEKULIZE)
     except: # mtr22 - don't assume mols will pass this
         pass
+        # dkoes - but we want to make failures as rare as possible and should debug them        
+        m = pybel.Molecule(ob_mol)
+        i = np.random.randint(1000000)
+        outname = 'bad%d.sdf'%i
+        print("WRITING",outname)
+        m.write('sdf',outname,overwrite=True)
+        pickle.dump(struct,open('bad%d.pkl'%i,'wb'))
+        
 
     #but at some point stop trying to enforce our aromaticity -
     #openbabel and rdkit have different aromaticity models so they
@@ -565,8 +604,10 @@ def convert_ob_mol_to_rd_mol(ob_mol):
             bond.SetIsAromatic(True)
     
     return rd_mol
+        
     
 def make_rdmol(struct,verbose=False):
     '''Create RDKIT mol from MolStruct trying to respect types.'''
-    mol,misses = make_obmol(struct, verbose)
+    mol,misses = make_obmol(struct,verbose)
     return convert_ob_mol_to_rd_mol(mol.OBMol)
+

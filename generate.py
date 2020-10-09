@@ -475,7 +475,7 @@ class AtomFitter(object):
                 if struct_id in visited:
                     continue
 
-                print('expanding struct {} to {} next atoms'.format(struct_id, len(c_next)))
+                #print('expanding struct {} to {} next atoms'.format(struct_id, len(c_next)))
 
                 if self.multi_atom: # evaluate all next atoms simultaneously
 
@@ -700,12 +700,10 @@ class AtomFitter(object):
         visited_mols = [rd_mol]
 
         if self.dkoes_make_mol:
-
             pb_mol, misses = dkoes_fitting.make_obmol(struct, self.verbose)
             ob_mol = pb_mol.OBMol
             visited_mols.append(ob_mol_to_rd_mol(ob_mol))
-
-            rd_mol = dkoes_fitting.convert_ob_mol_to_rd_mol(ob_mol)
+            rd_mol = dkoes_fitting.convert_ob_mol_to_rd_mol(ob_mol,struct)
             visited_mols.append(rd_mol)
 
         elif self.mtr22_make_mol:
@@ -1226,7 +1224,7 @@ def catch_exc(func, exc=Exception, default=np.nan):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except exc as e:
+        except exc as e:            
             return default
     return wrapper
 
