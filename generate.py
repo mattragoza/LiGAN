@@ -428,7 +428,7 @@ class AtomFitter(object):
             est_type_loss = np.nan
 
         # initialize empty struct
-        print('initializing empty struct 0')
+        print('Initializing empty struct 0')
         n_channels = len(grid.channels)
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
@@ -444,7 +444,7 @@ class AtomFitter(object):
             objective = L2_loss.item()
 
         # get next atom init locations and channels
-        print('getting next atoms for struct 0')
+        print('Getting next atoms for struct 0')
         xyz_next, c_next = self.get_next_atoms(
             grid_true.values,
             grid_true.channels,
@@ -498,7 +498,7 @@ class AtomFitter(object):
                     # check if new structure is one of the best yet
                     if any(objective_new < s[0] for s in best_structs):
 
-                        print('found new best as struct {}'.format(struct_count))
+                        print('Found new best struct {}'.format(struct_count))
 
                         xyz_new_next, c_new_next = self.get_next_atoms(
                             grid_diff,
@@ -544,6 +544,8 @@ class AtomFitter(object):
                         # check if new structure is one of the best yet
                         if any(objective_new < s[0] for s in best_structs):
 
+                            print('Found new best struct {}'.format(struct_count))
+
                             xyz_new_next, c_new_next = self.get_next_atoms(
                                 grid_diff,
                                 grid_true.channels,
@@ -586,7 +588,7 @@ class AtomFitter(object):
                     except:
                         gpu_usage = np.nan
                     print(
-                        'best struct # {} (objective={}, n_atoms={}, GPU={})'.format(
+                        'Best struct {} (objective={}, n_atoms={}, GPU={})'.format(
                             best_id, best_objective, best_n_atoms, gpu_usage
                         )
                     )
@@ -813,7 +815,7 @@ class OutputWriter(object):
         self.fit_atoms = fit_atoms
         self.batch_metrics = batch_metrics
 
-        # organize grids by lig_name, sample_idx, grid_name
+        # organize grids by lig_name, sample_idx, grid_type
         self.grids = defaultdict(lambda: defaultdict(dict))
 
         # accumulate metrics in dataframe
@@ -829,18 +831,18 @@ class OutputWriter(object):
 
         self.verbose = verbose
 
-    def write(self, lig_name, grid_name, sample_idx, grid):
+    def write(self, lig_name, grid_type, sample_idx, grid):
         '''
         Write output files for grid and compute metrics in
         data frame, if all necessary data is present.
         '''
-        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
+        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_type)
         sample_prefix = grid_prefix + '_' + str(sample_idx)
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
 
-        is_gen_grid = grid_name.endswith('_gen')
-        is_fit_grid = grid_name.endswith('_fit')
+        is_gen_grid = grid_type.endswith('_gen')
+        is_fit_grid = grid_type.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
         has_struct = is_real_grid or is_fit_grid
 
@@ -921,14 +923,18 @@ class OutputWriter(object):
             write_latent_vecs_to_file(latent_file, [latent_vec])
 
         # store grid until ready to compute output metrics
-        self.grids[lig_name][sample_idx][grid_name] = grid
+        self.grids[lig_name][sample_idx][grid_type] = grid
         lig_grids = self.grids[lig_name]
 
-        n_grids = len(self.blob_names) * 2 if self.fit_atoms else 1
+        # determine how many grid_types to expect
+        n_grid_types = len(self.blob_names)
+        if self.fit_atoms:
+            n_grid_types *= 2
 
         if self.batch_metrics: # store until grids for all samples are ready
-            has_all_samples = len(lig_grids) == self.n_samples
-            has_all_grids = all(len(lig_grids[i]) == n_grids for i in lig_grids)
+
+            has_all_samples = (len(lig_grids) == self.n_samples)
+            has_all_grids = all(len(lig_grids[i]) == n_grid_types for i in lig_grids)
 
             if has_all_samples and has_all_grids:
 
@@ -956,7 +962,8 @@ class OutputWriter(object):
                 del self.grids[lig_name]
 
         else: # only store until grids for this sample are ready
-            has_all_grids = len(lig_grids[sample_idx]) == n_grids
+
+            has_all_grids = len(lig_grids[sample_idx]) == n_grid_types
 
             if has_all_grids:
 
@@ -1472,8 +1479,7 @@ def make_rd_mol(xyz, c, bonds, channels):
     rd_conf = Chem.Conformer(n_atoms)
 
     for i, (x, y, z) in enumerate(xyz):
-        rd_coords = Geometry.Point3D(x, y, z)
-        rd_conf.SetAtomPosition(i, rd_coords)
+        rd_conf.SetAtomPosition(i, (x, y, z))
 
     rd_mol.AddConformer(rd_conf)
 
@@ -2269,18 +2275,16 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
                 types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
 
-                # then get the real source molecule from data_root
+                print('Getting real molecule from data root')
                 lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
-
-                print('Getting real molecule from data root')
                 lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
                 print('Minimizing real molecule')
                 atom_fitter.uff_minimize(lig_mol)
                 lig_struct.info['src_mol'] = lig_mol
 
-                print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+                print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
                 print('Validifying real atom types and coords')
                 atom_fitter.validify(lig_struct)
@@ -2293,6 +2297,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     print('Getting grid from {} blob'.format(blob_name))
 
+                    grid_type = blob_name
                     grid_blob = gen_net.blobs[blob_name]
                     grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
 
@@ -2316,32 +2321,31 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         center=lig_struct.center,
                         resolution=grid_maker.get_resolution(),
                     )
-                    grid_name = blob_name
                     grid_norm = np.linalg.norm(grid.values)
 
-                    if grid_name == 'lig': # store true structure for input ligand grids
+                    if grid_type == 'lig': # store true structure for input ligand grids
                         grid.info['src_struct'] = lig_struct
 
-                    elif grid_name == 'lig_gen': # store latent vector for generated grids
+                    elif grid_type == 'lig_gen': # store latent vector for generated grids
                         grid.info['latent_vec'] = latent_vec
 
                     if args.verbose:
                         gpu_usage = get_gpu_usage(0)
 
                         print('Produced {} {} {} (norm={}\tGPU={})'.format(
-                            lig_name, grid_name.ljust(7), sample_idx, grid_norm, gpu_usage
+                            lig_name, grid_type.ljust(7), sample_idx, grid_norm, gpu_usage
                         ), flush=True)
 
                     if args.parallel:
-                        out_queue.put((lig_name, grid_name, sample_idx, grid))
+                        out_queue.put((lig_name, grid_type, sample_idx, grid))
                         if grid_needs_fit:
-                            fit_queue.put((lig_name, grid_name, sample_idx, grid, types))
+                            fit_queue.put((lig_name, grid_type, sample_idx, grid, types))
                     else:
-                        out_writer.write(lig_name, grid_name, sample_idx, grid)
+                        out_writer.write(lig_name, grid_type, sample_idx, grid)
                         if grid_needs_fit:
-                            grid_fit = atom_fitter.fit(grid, types)
-                            grid_fit_name = grid_name + '_fit'
-                            out_writer.write(lig_name, grid_fit_name, sample_idx, grid_fit)
+                            grid = atom_fitter.fit(grid, types)
+                            grid_type = grid_type + '_fit'
+                            out_writer.write(lig_name, grid_type, sample_idx, grid)
     finally:
         if args.parallel:
             if args.fit_atoms:
@@ -2396,22 +2400,22 @@ def fit_worker_main(fit_queue, out_queue, args):
         if task is None:
             break
 
-        lig_name, grid_name, sample_idx, grid, types = task
+        lig_name, grid_type, sample_idx, grid, types = task
 
         if args.verbose:
-            print('Fit worker got {} {} {}'.format(lig_name, grid_name, sample_idx))
+            print('Fit worker got {} {} {}'.format(lig_name, grid_type, sample_idx))
 
-        out_queue.put((lig_name, grid_name, sample_idx, grid))
+        out_queue.put((lig_name, grid_type, sample_idx, grid))
 
-        grid_fit = atom_fitter.fit(grid, types)
-        grid_fit_name = grid_name + '_fit'
+        grid = atom_fitter.fit(grid, types)
+        grid_type = grid_type + '_fit'
 
         if args.verbose:
             print('Fit worker produced {} {} {} ({} atoms, {}s)'.format(
-                lig_name, grid_name, sample_idx, struct_fit.n_atoms, struct_fit.fit_time
+                lig_name, grid_type, sample_idx, struct_fit.n_atoms, struct_fit.fit_time
             ), flush=True)
 
-        out_queue.put((lig_name, grid_fit_name, sample_idx, grid_fit))
+        out_queue.put((lig_name, grid_type, sample_idx, grid))
 
     if args.verbose:
         print('Fit worker exit')

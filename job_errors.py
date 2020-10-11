@@ -92,7 +92,7 @@ def read_job_output(job_dir, output_pat):
     for m in match_files_in_dir(job_dir, output_pat):
         output_file = os.path.join(job_dir, m.group(0))
         print(output_file)
-        job_df = pd.read_csv(output_file, sep=' ')
+        job_df = pd.read_csv(output_file, sep=' ', error_bad_lines=False)
         job_df['job_name']  = os.path.split(job_dir)[-1]
         try:
             array_idx = int(m.group(2))
