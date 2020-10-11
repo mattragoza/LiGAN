@@ -8,6 +8,7 @@ from collections import defaultdict, Counter
 import threading
 import contextlib
 import tempfile
+import traceback
 try:
     from itertools import izip
 except ImportError:
@@ -34,6 +35,30 @@ import atom_types
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
+def remove_tensors(s):
+    '''recursively traverse an object, converting pytorch tensors to numpy arrays *in place*'''
+    if not (type(s) == MolGrid or type(s) == MolStruct or type(s) == list or type(s) == dict):
+        #avoid traversing everything
+        return s
+
+    D = None
+    if type(s) == dict:
+        D = s
+    elif hasattr(s,'__dict__'):
+        D = s.__dict__
+        
+    if D:
+        for k,v in D.items():
+            if type(v) == torch.Tensor:
+                D[k] = v.cpu().detach().numpy()
+            else:
+                D[k] = remove_tensors(v)
+    elif type(s) == list:
+        for i,v in enumerate(s):
+            s[i] = remove_tensors(s[i])
+    
+    return s
+            
 
 class MolGrid(object):
     '''
@@ -649,7 +674,7 @@ class AtomFitter(object):
             src_struct=struct_best,
         )
 
-        return grid_pred
+        return remove_tensors(grid_pred)
 
     def fit_gd(self, grid, xyz, c, n_iters):
 
@@ -766,19 +791,29 @@ class DkoesAtomFitter(AtomFitter):
     def __init__(self, dkoes_make_mol, use_openbabel, iters=25, tol=0.01):
         self.iters = iters
         self.tol = tol
-
+        self.verbose=False
         self.dkoes_make_mol = dkoes_make_mol
         self.use_openbabel = use_openbabel
 
     def fit(self, grid, types):
-        fit_grid = dkoes_fitting.simple_atom_fit(
+        struct, grid_pred = dkoes_fitting.simple_atom_fit(
             mgrid=grid,
             types=types,
             iters=self.iters,
-            tol=self.tol
+            tol=self.tol,
+            grm=1.0
         )
-        self.validify(fit_grid.info['src_struct'])
-        return fit_grid
+        self.validify(struct)
+        
+        grid_pred = MolGrid(
+            values=grid_pred.cpu().detach().numpy(),
+            channels=grid.channels,
+            center=grid.center,
+            resolution=grid.resolution,
+            visited_structs=[struct],
+            src_struct=struct_best,
+        )        
+        return remove_tensors(struct)
 
 
 class OutputWriter(object):
@@ -838,6 +873,7 @@ class OutputWriter(object):
         sample_prefix = grid_prefix + '_' + str(sample_idx)
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
+        uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
 
         is_gen_grid = grid_name.endswith('_gen')
         is_fit_grid = grid_name.endswith('_fit')
@@ -899,6 +935,11 @@ class OutputWriter(object):
             self.sdf_files.append(add_mol_file)
             self.centers.append(struct.center)
 
+            if add_mol.info['min_mol']:
+                uff_file = uff_sample_prefix+'.sdf'
+                write_rd_mols_to_sdf_file(uff_file,[add_mol.info['min_mol']])
+                self.sdf_files.append(uff_file)
+                
             # write atom type channels
             if self.output_channels:
 
@@ -1283,8 +1324,15 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
                 e = RuntimeError('minimization not converged')
             return rd_mol, E_init, E_final, e
         except RuntimeError as e:
+            w = Chem.SDWriter('badmol.sdf')
+            w.write(rd_mol)
+            w.close()
+            print("NumAtoms",rd_mol.GetNumAtoms())
+            traceback.print_exception(e,file=sys.stdout)
             return Chem.RWMol(rd_mol), E_init, np.nan, e
     except Exception as e:
+        print("UFF Exception")
+        traceback.print_exc(file=sys.stdout)
         return Chem.RWMol(rd_mol), np.nan, np.nan, e
 
 
@@ -2109,7 +2157,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         if args.fit_atoms:
 
             if args.dkoes_simple_fit:
-                atom_fitter = DkoesAtomFitter()
+                atom_fitter = DkoesAtomFitter(args.dkoes_make_mol,args.use_openbabel)
             else:
                 atom_fitter = AtomFitter(
                     multi_atom=args.multi_atom, 
