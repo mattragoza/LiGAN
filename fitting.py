@@ -73,6 +73,7 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     atoms of each type is always inferred from the density.
     Returns the MolGrid of the placed atoms and the MolStruct'''
 
+    t_start = time.time()
     #for every channel, select some coordinates and setup the type/radius vectors
     initcoords = []
     typevecs = []
@@ -80,6 +81,7 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     typeindices = []    
     numatoms = 0
     tcnts = {}
+    mgrid.values = torch.tensor(mgrid.values)
     for (t,G) in enumerate(mgrid.values):
         ch = mgrid.channels[t]
         coords = select_atom_starts(mgrid, G, ch.atomic_radius)
@@ -105,6 +107,9 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
                                                     gaussian_radius_multiple=grm),center=mgrid.center)
     mgrid.values = mgrid.values.to(device)
 
+    if not initcoords: #no atoms
+        return (np.info,0,0,MolStruct(np.zeros((0,3)),np.zeros(0), mgrid.channels))    
+  
     #having setup input coordinates, optimize with BFGS
     coords = torch.tensor(initcoords,dtype=torch.float32,requires_grad=True,device=device)
     types = torch.tensor(typevecs,dtype=torch.float32,device=device)
@@ -240,10 +245,15 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
                 
             offset += tcnts[t]
             
+    agrid = gridder.forward(best_coords,best_typeindices,radii)   
     #create struct from coordinates
-    mol = MolStruct(best_coords.numpy(), best_typeindices, mgrid.channels)
+    mol = MolStruct(best_coords.numpy(), best_typeindices, mgrid.channels,            
+            L2_loss=float(best_loss),
+            time=time.time()-t_start,
+            iterations=inum,
+            numfixes=numfixes)
     #print('losses',final_loss,best_loss)
-    return (float(best_loss),inum,numfixes,mol)
+    return mol,agrid
 
 
 def fixup(atoms, mol, struct):
@@ -355,6 +365,13 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
     
+    #remove any impossible bonds between halogens
+    for bond in openbabel.OBMolBondIter(mol):
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if atom_maxb[a1.GetIdx()] == 1 and atom_maxb[a2.GetIdx()] == 1:
+            mol.DeleteBond(bond)
+        
     def get_bond_info(biter):
         '''Return bonds sorted by their distortion'''
         bonds = [b for b in biter]
@@ -502,7 +519,7 @@ def calc_valence(rdatom):
         cnt += bond.GetBondTypeAsDouble()
     return cnt
     
-def convert_ob_mol_to_rd_mol(ob_mol,struct):
+def convert_ob_mol_to_rd_mol(ob_mol,struct=None):
     '''Convert OBMol to RDKit mol, fixing up issues'''
     ob_mol.DeleteHydrogens()
     n_atoms = ob_mol.NumAtoms()
@@ -569,14 +586,23 @@ def convert_ob_mol_to_rd_mol(ob_mol,struct):
                 btype = Chem.BondType.DOUBLE
             bond.SetBondType(btype)  
             
-    
+        
     for atom in rd_mol.GetAtoms():
         #set nitrogens with 4 neighbors to have a charge
         if atom.GetAtomicNum() == 7 and atom.GetDegree() == 4:
             atom.SetFormalCharge(1)               
             
     rd_mol = Chem.AddHs(rd_mol,addCoords=True)
-    #Kekulize will lose our aromatic flags :-()
+
+    positions = rd_mol.GetConformer().GetPositions()
+    center = np.mean(positions[np.all(np.isfinite(positions),axis=1)],axis=0)
+    for atom in rd_mol.GetAtoms():
+        i = atom.GetIdx()
+        pos = positions[i]
+        if not np.all(np.isfinite(pos)):
+            #hydrogens on C fragment get set to nan (shouldn't, but they do)
+            rd_mol.GetConformer().SetAtomPosition(i,center)
+    
 
     try:
         Chem.SanitizeMol(rd_mol,Chem.SANITIZE_ALL^Chem.SANITIZE_KEKULIZE)
