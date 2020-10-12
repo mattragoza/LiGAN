@@ -1577,10 +1577,13 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
 
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
-    writer = Chem.SDWriter(gzip.open(sdf_file+'.gz','wt'))
+    outfile = gzip.open(sdf_file+'.gz','wt')
+    writer = Chem.SDWriter(outfile)
     writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
+    writer.close()
+    outfile.close()
 
 
 def read_rd_mols_from_sdf_file(sdf_file):
