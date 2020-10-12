@@ -1567,17 +1567,17 @@ def make_ob_mol(xyz, c, bonds, channels):
 
 def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv = ob.OBConversion()
-    conv.SetOutFormat('sdf')
+    conv.SetOutFormat('sdf.gz')
     for i, mol in enumerate(mols):
         if i == 0:
-            conv.WriteFile(mol, sdf_file)
+            conv.WriteFile(mol, sdf_file+'.gz')
         else:
             conv.Write(mol)
     conv.CloseOutFile()
 
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
-    writer = Chem.SDWriter(sdf_file)
+    writer = Chem.SDWriter(gzip.open(sdf_file+'.gz','wt'))
     writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
