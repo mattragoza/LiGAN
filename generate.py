@@ -1333,7 +1333,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     except Exception as e:
         print("UFF Exception")
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), np.nan, np.nan, e
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
 
 
 @catch_exc
