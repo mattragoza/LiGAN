@@ -1340,7 +1340,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     except Exception as e:
         print("UFF Exception")
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), np.nan, np.nan, e
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
 
 
 @catch_exc
@@ -1573,20 +1573,23 @@ def make_ob_mol(xyz, c, bonds, channels):
 
 def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv = ob.OBConversion()
-    conv.SetOutFormat('sdf')
+    conv.SetOutFormat('sdf.gz')
     for i, mol in enumerate(mols):
         if i == 0:
-            conv.WriteFile(mol, sdf_file)
+            conv.WriteFile(mol, sdf_file+'.gz')
         else:
             conv.Write(mol)
     conv.CloseOutFile()
 
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
-    writer = Chem.SDWriter(sdf_file)
+    outfile = gzip.open(sdf_file+'.gz','wt')
+    writer = Chem.SDWriter(outfile)
     writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
+    writer.close()
+    outfile.close()
 
 
 def read_rd_mols_from_sdf_file(sdf_file):
