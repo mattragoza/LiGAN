@@ -173,7 +173,12 @@ class MolStruct(object):
         return mol
 
     def to_sdf(self, sdf_file):
-        write_rd_mols_to_sdf_file(sdf_file, [self.to_rd_mol()])
+        if sdf_file.endswith('.gz'):
+            outfile = gzip.open(sdf_file,'wt')
+        else:
+            outfile = open(sdf_file,'wt')
+        write_rd_mols_to_sdf_file(outfile, [self.to_rd_mol()])
+        outfile.close()
 
     def add_bonds(self, tol=0.0):
 
@@ -863,22 +868,21 @@ class OutputWriter(object):
         self.centers = []
 
         self.verbose = verbose
+        
+        self.outfiles = dict()  #one file for all samples of given lig/grid
 
     def write(self, lig_name, grid_name, sample_idx, grid):
         '''
         Write output files for grid and compute metrics in
         data frame, if all necessary data is present.
         '''
-        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)
-        sample_prefix = grid_prefix + '_' + str(sample_idx)
-        src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
-        add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
-        uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
-
+        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)                    
+        
         is_gen_grid = grid_name.endswith('_gen')
         is_fit_grid = grid_name.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
         has_struct = is_real_grid or is_fit_grid
+        is_generated = is_gen_grid or grid_name.endswith('gen_fit')
 
         # write output files
         if self.output_dx: # write density grid files
@@ -891,55 +895,7 @@ class OutputWriter(object):
 
         if has_struct and self.output_sdf: # write structure files
 
-            # write typed atom structure
-            struct_file = sample_prefix + '.sdf'
-            if self.verbose:
-                print('Writing ' + struct_file)
-
             struct = grid.info['src_struct']
-            if is_fit_grid and self.output_visited:
-                visited_structs = struct.info['visited_structs']
-                rd_mols = [s.to_rd_mol() for s in visited_structs]
-            else:
-                rd_mols = [struct.to_rd_mol()]
-            write_rd_mols_to_sdf_file(struct_file, rd_mols)
-            self.sdf_files.append(struct_file)
-            self.centers.append(struct.center)
-
-            if is_real_grid: # write real input molecule
-
-                src_mol_file = src_sample_prefix + '.sdf'
-                if self.verbose:
-                    print('Writing ' + src_mol_file)
-
-                src_mol = struct.info['src_mol']
-                if self.output_visited:
-                    rd_mols = src_mol.info['visited_mols']
-                else:
-                    rd_mols = [src_mol]
-                write_rd_mols_to_sdf_file(src_mol_file, rd_mols)
-                self.sdf_files.append(src_mol_file)
-                self.centers.append(struct.center)
-
-            # write molecule with added bonds
-            add_mol_file = add_sample_prefix + '.sdf'
-            if self.verbose:
-                print('Writing ' + add_mol_file)
-
-            add_mol = struct.info['add_mol']
-            if self.output_visited:
-                rd_mols = add_mol.info['visited_mols']
-            else:
-                rd_mols = [add_mol]
-            write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
-            self.sdf_files.append(add_mol_file)
-            self.centers.append(struct.center)
-
-            if add_mol.info['min_mol']:
-                uff_file = uff_sample_prefix+'.sdf'
-                write_rd_mols_to_sdf_file(uff_file,[add_mol.info['min_mol']])
-                self.sdf_files.append(uff_file)
-                
             # write atom type channels
             if self.output_channels:
 
@@ -950,6 +906,58 @@ class OutputWriter(object):
                 write_channels_to_file(
                     channels_file, struct.c, struct.channels
                 )
+                             
+            start_fname = grid_prefix+'.sdf.gz'
+            add_fname = grid_prefix+'_add.sdf.gz'
+            min_fname = grid_prefix+'_uff.sdf.gz'
+
+            def write_sdfs(fname, out, mol):
+                '''write out sdfs as necessary'''
+                if sample_idx == 0:
+                    self.sdf_files.append(fname)
+                    self.centers.append(struct.center)
+
+                if sample_idx == 0 or is_generated:
+                    if self.verbose:
+                        print('Writing %s %d'%(fname,sample_idx))
+                        
+                    if mol == struct:
+                        if self.output_visited and is_fit_grid:
+                            rd_mols = [s.to_rd_mol() for s in visited_structs]
+                        else:
+                            rd_mols = [struct.to_rd_mol()]
+                    else:
+                        if self.output_visited and 'visited_mols' in mol.info:
+                            rd_mols = mol.info['visited_mols']
+                        else:
+                            rd_mols = [mol]
+                    write_rd_mols_to_sdf_file(out, rd_mols,str(sample_idx))
+                
+                if sample_idx == self.n_samples-1 or not is_generated:
+                    out.close()
+
+            if grid_prefix not in self.outfiles:
+                self.outfiles[grid_prefix] = {}
+                #open output files for generated samples                
+                self.outfiles[grid_prefix][start_fname] = gzip.open(start_fname,'wt')
+                self.outfiles[grid_prefix][add_fname] = gzip.open(add_fname,'wt')                                
+                self.outfiles[grid_prefix][min_fname] = gzip.open(min_fname,'wt')
+
+                #only output src file once
+                if is_real_grid: # write real input molecule
+                    src_mol_fname = grid_prefix + '_src.sdf.gz'                    
+                    src_mol_file = gzip.open(src_mol_fname,'wt')
+                    src_mol = struct.info['src_mol']
+                    write_sdfs(src_mol_fname, src_mol_file, src_mol)
+
+            # write typed atom structure
+            write_sdfs(start_fname, self.outfiles[grid_prefix][start_fname], struct)
+            # write molecule with added bonds
+            add_mol = struct.info['add_mol']
+            write_sdfs(add_fname, self.outfiles[grid_prefix][add_fname], add_mol)                            
+
+            if add_mol.info['min_mol']:
+                write_sdfs(min_fname, self.outfiles[grid_prefix][min_fname], add_mol.info['min_mol'])                   
 
         # write latent vector
         if is_gen_grid and self.output_latent:
@@ -1328,7 +1336,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
             w.write(rd_mol)
             w.close()
             print("NumAtoms",rd_mol.GetNumAtoms())
-            traceback.print_exception(e,file=sys.stdout)
+            traceback.print_exc(file=sys.stdout)
             return Chem.RWMol(rd_mol), E_init, np.nan, e
     except Exception as e:
         print("UFF Exception")
@@ -1576,14 +1584,13 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv.CloseOutFile()
 
 
-def write_rd_mols_to_sdf_file(sdf_file, mols):
-    outfile = gzip.open(sdf_file+'.gz','wt')
+def write_rd_mols_to_sdf_file(outfile, mols,name=''):
     writer = Chem.SDWriter(outfile)
     writer.SetKekulize(False)
     for mol in mols:
+        if name: mol.SetProp('_Name',name)
         writer.write(mol)
     writer.close()
-    outfile.close()
 
 
 def read_rd_mols_from_sdf_file(sdf_file):
@@ -1749,12 +1756,12 @@ def write_pymol_script(pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[
             f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
         for sdf_file in sdf_files: # load structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^{}_(.*)\.sdf(.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
         for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^{}_(.*)\.sdf(.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
