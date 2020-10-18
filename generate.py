@@ -917,7 +917,7 @@ class OutputWriter(object):
                     self.sdf_files.append(fname)
                     self.centers.append(struct.center)
 
-                if sample_idx == 0 or is_generated:
+                if sample_idx == 0 or not is_real_grid:
                     if self.verbose:
                         print('Writing %s %d'%(fname,sample_idx))
                         
@@ -931,9 +931,9 @@ class OutputWriter(object):
                             rd_mols = mol.info['visited_mols']
                         else:
                             rd_mols = [mol]
-                    write_rd_mols_to_sdf_file(out, rd_mols,str(sample_idx))
+                    write_rd_mols_to_sdf_file(out, rd_mols, str(sample_idx))
                 
-                if sample_idx == self.n_samples-1 or not is_generated:
+                if sample_idx == self.n_samples-1 or is_real_grid:
                     out.close()
 
             if grid_prefix not in self.outfiles:
@@ -2326,22 +2326,22 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_src = lig_coord_set.src
                 lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
                 types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
-
                 # then get the real source molecule from data_root
                 lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
+                                        
+                if not args.gen_only:
+                    print('Getting real molecule from data root')
+                    lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                print('Getting real molecule from data root')
-                lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
+                    print('Minimizing real molecule')
+                    atom_fitter.uff_minimize(lig_mol)
+                    lig_struct.info['src_mol'] = lig_mol
 
-                print('Minimizing real molecule')
-                atom_fitter.uff_minimize(lig_mol)
-                lig_struct.info['src_mol'] = lig_mol
+                    print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
-                print('True molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
-
-                print('Validifying real atom types and coords')
-                atom_fitter.validify(lig_struct)
+                    print('Validifying real atom types and coords')
+                    atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
                 latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
@@ -2350,6 +2350,8 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 for blob_name in args.blob_name:
 
                     print('Getting grid from {} blob'.format(blob_name))
+                    if args.gen_only and blob_name != 'lig_gen':
+                        continue
 
                     grid_blob = gen_net.blobs[blob_name]
                     grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
@@ -2558,6 +2560,7 @@ def parse_args(argv=None):
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--parallel', default=False, action='store_true', help='run atom fitting in separate worker processes')
     parser.add_argument('--n_fit_workers', default=8, type=int, help='number of worker processes for parallel atom fitting')
+    parser.add_argument('--gen_only',action='store_true',help='Only produce generated molecules; do not perform fitting on true ligand')
     return parser.parse_args(argv)
 
 
