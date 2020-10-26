@@ -440,11 +440,9 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             print('  {} elapsed ({:.1f}% training, {:.1f}% testing)'
                   .format(t_total, pct_train, pct_test))
             print("Disc cnt/time: %d %f, Gen cnt/time: %d %f"%(dcnt,dtime,gcnt,gtime))
-            if args.wandb: wandb.log({'discnt':dcnt,'disctime':dtime,'gencnt':gcnt,'gentime':gtime,'iteration':i})
+            tolog = {'discnt':dcnt,'disctime':dtime,'gencnt':gcnt,'gentime':gtime,'iteration':i}
             dcnt = gcnt = dtime = gtime = 0
-            print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))
-            sys.stdout.flush()
-            tolog = {}
+            print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))            
             for d in test_data:
                 for m in sorted(loss_df.columns):
                     print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
@@ -453,7 +451,8 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
                 wandb.log(tolog)
 
             write_and_plot_metrics(loss_df, loss_file, plot_file)
-
+            sys.stdout.flush()
+            
         if i == args.max_iter: # return after final test evaluation
             return
 
@@ -622,7 +621,7 @@ def main(argv):
     if args.lr_policy is not None:
         solver_param.lr_policy = args.lr_policy
     if args.base_lr is not None:
-        solver_param.lr_policy = args.lr_policy
+        solver_param.base_lr = args.base_lr
     if args.weight_decay is not None:
         solver_param.weight_decay = args.weight_decay
         
