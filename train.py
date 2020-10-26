@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 from __future__ import print_function, division
+
 import matplotlib
 matplotlib.use('Agg')
 import sys, os, argparse, time
@@ -7,6 +9,7 @@ import itertools
 import datetime as dt
 import numpy as np
 import pandas as pd
+import interrupt
 import matplotlib.pyplot as plt
 
 import seaborn as sns
@@ -20,6 +23,10 @@ import generate
 from caffe_util import NetParameter, SolverParameter, Net, Solver
 from results import plot_lines
 
+try:
+    import wandb
+except:
+    print("wandb not available")
 
 def get_gradient_norm(net, ord=2):
     '''
@@ -134,18 +141,18 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
         if real: # get real receptors and ligands
 
             data.forward()
-            rec = data.blobs['rec'].data
-            lig = data.blobs['lig'].data
+            rec = data.blobs['rec']
+            lig = data.blobs['lig']
 
-            disc.net.blobs['rec'].data[...] = rec
-            disc.net.blobs['lig'].data[...] = lig
-            disc.net.blobs['label'].data[...] = 1.0
+            disc.net.blobs['rec'].copyfrom(rec)
+            disc.net.blobs['lig'].copyfrom(lig)
+            disc.net.blobs['label'].set_data(1.0)
 
         else: # generate fake ligands
 
             # reuse rec and lig from last real forward pass
-            gen.net.blobs['rec'].data[...] = rec
-            gen.net.blobs['lig'].data[...] = lig
+            gen.net.blobs['rec'].copyfrom(rec)
+            gen.net.blobs['lig'].copyfrom(lig)
 
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
@@ -156,15 +163,15 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             else: # prior
 
-                gen.net.blobs[latent_mean].data[...] = 0.0
-                gen.net.blobs[latent_std].data[...] = 1.0
+                gen.net.blobs[latent_mean].set_data(0.0)
+                gen.net.blobs[latent_std].set_data(1.0)
                 gen.net.forward(start=latent_noise) # assumes cond branch is after latent space
 
-            lig_gen = gen.net.blobs['lig_gen'].data
+            lig_gen = gen.net.blobs['lig_gen']
 
-            disc.net.blobs['rec'].data[...] = rec
-            disc.net.blobs['lig'].data[...] = lig_gen
-            disc.net.blobs['label'].data[...] = 0.0
+            disc.net.blobs['rec'].copyfrom(rec)
+            disc.net.blobs['lig'].copyfrom(lig_gen)
+            disc.net.blobs['label'].set_data(0.0)
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
@@ -200,7 +207,7 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.disc_grad_norm:
                 gradient_normalize(disc.net)
 
-            if compute_metrics:
+            if compute_metrics and False:
                 metrics['disc_grad_norm'][i] = get_gradient_norm(disc.net)
 
             if train:
@@ -240,14 +247,14 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             # get real receptors and ligands
             data.forward()
-            rec = data.blobs['rec'].data
-            lig = data.blobs['lig'].data
+            rec = data.blobs['rec']
+            lig = data.blobs['lig']
 
-            gen.net.blobs['rec'].data[...] = rec
-            gen.net.blobs['lig'].data[...] = lig
+            gen.net.blobs['rec'].copyfrom(rec)
+            gen.net.blobs['lig'].copyfrom(lig)
 
             if 'cond_rec' in gen.net.blobs:
-                gen.net.blobs['cond_rec'].data[...] = rec
+                gen.net.blobs['cond_rec'].copyfrom(rec)
 
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
@@ -269,19 +276,19 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
-            gen.net.blobs[latent_mean].data[...] = 0.0
-            gen.net.blobs[latent_std].data[...] = 1.0
+            gen.net.blobs[latent_mean].set_data(0.0)
+            gen.net.blobs[latent_std].set_data(1.0)
             gen.net.forward(start=latent_noise)
 
-        lig_gen = gen.net.blobs['lig_gen'].data
+        lig_gen = gen.net.blobs['lig_gen']
 
         # cross_entropy_loss(y_t, y_p) = -[y_t*log(y_p) + (1 - y_t)*log(1 - y_p)]
         # for original minmax GAN loss, set lig_gen label = 0.0 and ascend gradient
         # for non-saturating GAN loss, set lig_gen label = 1.0 and descend gradient
 
-        disc.net.blobs['rec'].data[...] = rec
-        disc.net.blobs['lig'].data[...] = lig_gen
-        disc.net.blobs['label'].data[...] = 1.0
+        disc.net.blobs['rec'].copyfrom(rec)
+        disc.net.blobs['lig'].copyfrom(lig_gen)
+        disc.net.blobs['label'].set_data(1.0)
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
@@ -313,7 +320,6 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         metrics['gen_iter'][i] = gen.iter
 
         if train or compute_metrics: # compute gradient
-
             disc.net.clear_param_diffs()
             disc.net.backward()
 
@@ -323,21 +329,22 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.disc_grad_norm:
                 gradient_normalize(disc.net)
 
-            gen.net.blobs['lig_gen'].diff[...] = disc.net.blobs['lig'].diff
+            gen.net.blobs['lig_gen'].copyfrom(disc.net.blobs['lig'],True)
             gen.net.clear_param_diffs()
 
             # set non-GAN loss weights
             for l, w in loss_weights.items():
-                gen.net.blobs[l].diff[...] = 0 if prior else w * args.loss_weight
+                gen.net.blobs[l].set_diff(0) if prior else w * args.loss_weight
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
-                gen.net.blobs[latent_mean].diff[...] = 0.0
-                gen.net.blobs[latent_std].diff[...] = 0.0
+                gen.net.blobs[latent_mean].set_diff(0.0)
+                gen.net.blobs[latent_std].set_diff(0.0)
                 gen.net.backward(start=latent_std)
 
-                lig_grad_norm = np.linalg.norm(gen.net.blobs['lig'].diff)
-                assert np.isclose(lig_grad_norm, 0), lig_grad_norm
+                #why check this? won't it have leftover values?
+                #lig_grad_norm = np.linalg.norm(gen.net.blobs['lig'].diff)
+                #assert np.isclose(lig_grad_norm, 0), lig_grad_norm
     
             else:
                 gen.net.backward()
@@ -347,8 +354,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             if args.gen_grad_norm:
                 gradient_normalize(gen.net)
-
-            if compute_metrics:
+            if compute_metrics and False: # dkoes - these are done on the CPU and are SUPER expensive
                 metrics['gen_grad_norm'][i] = get_gradient_norm(gen.net)
                 metrics['gen_adv_grad_norm'][i] = get_gradient_norm(disc.net)
                 metrics['gen_loss_weight'][i] = args.loss_weight
@@ -391,10 +397,13 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
     test_times = []
     train_times = []
-
+    dtime = 0
+    gtime = 0
+    dcnt = 0
+    gcnt = 0
     for i in range(args.cont_iter, args.max_iter+1):
 
-        if i % args.snapshot == 0:
+        if i % args.snapshot == 0 and i != 0:
             disc.snapshot()
             gen.snapshot()
 
@@ -402,6 +411,7 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             t_start = time.time()
 
             for d in test_data:
+
 
                 disc_metrics = disc_step(test_data[d], gen, disc, args.test_iter, args,
                                          train=False, compute_metrics=True)
@@ -429,10 +439,18 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             print('Iteration {} / {}'.format(i, args.max_iter))
             print('  {} elapsed ({:.1f}% training, {:.1f}% testing)'
                   .format(t_total, pct_train, pct_test))
+            print("Disc cnt/time: %d %f, Gen cnt/time: %d %f"%(dcnt,dtime,gcnt,gtime))
+            if args.wandb: wandb.log({'discnt':dcnt,'disctime':dtime,'gencnt':gcnt,'gentime':gtime,'iteration':i})
+            dcnt = gcnt = dtime = gtime = 0
             print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))
+            sys.stdout.flush()
+            tolog = {}
             for d in test_data:
                 for m in sorted(loss_df.columns):
                     print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
+                    tolog['{} {}'.format(d,m)] = loss_df.loc[(i,d),m]
+            if args.wandb:
+                wandb.log(tolog)
 
             write_and_plot_metrics(loss_df, loss_file, plot_file)
 
@@ -441,29 +459,38 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
         t_start = time.time()
 
-        # train nets
-        disc_step(train_data, gen, disc, args.disc_train_iter, args,
-                  train=train_disc, compute_metrics=False)
+        # disc then gen; don't have to do backward if doing balanced training,
+        # but still need forward for loss computation
+        dstart = time.time()
+        disc_metrics = disc_step(train_data, gen, disc, args.disc_train_iter, args,            
+              train=train_disc, compute_metrics=False)
+        dtime += time.time()-dstart
+        if train_disc: dcnt += 1
 
-        gen_step(train_data, gen, disc, args.gen_train_iter, args,
-                 train=train_gen, compute_metrics=False)
+        gstart = time.time()
+        gen_metrics = gen_step(train_data, gen, disc, args.gen_train_iter, args,
+             train=train_gen, compute_metrics=False)
+        gtime += time.time()-gstart
+        if train_gen: gcnt += 1
+
+        if 'disc_wass_loss' in disc_metrics:
+            train_gen_loss = gen_metrics['gen_adv_wass_loss']
+            train_disc_loss = disc_metrics['disc_wass_loss']
+            train_loss_balance = train_gen_loss - train_disc_loss
+        else:
+            train_gen_loss = gen_metrics['gen_adv_log_loss']
+            train_disc_loss = disc_metrics['disc_log_loss']
+            train_loss_balance = train_gen_loss / train_disc_loss
+            
+        assert np.isfinite(train_gen_loss)
+        assert np.isfinite(train_disc_loss)
 
         if i+1 == args.max_iter:
             train_disc = False
-            train_gen = False
-
+            train_gen = False            
         elif args.balance: # dynamically balance G/D training
 
             # how much better is D than G?
-            if 'disc_wass_loss' in disc_metrics:
-                train_gen_loss = gen_metrics['gen_adv_wass_loss']
-                train_disc_loss = disc_metrics['disc_wass_loss']
-                train_loss_balance = train_gen_loss - train_disc_loss
-            else:
-                train_gen_loss = gen_metrics['gen_adv_log_loss']
-                train_disc_loss = disc_metrics['disc_log_loss']
-                train_loss_balance = train_gen_loss / train_disc_loss
-
             if train_disc and train_loss_balance > 10:
                 train_disc = False
             if not train_disc and train_loss_balance < 2:
@@ -504,7 +531,7 @@ def parse_args(argv):
     parser.add_argument('-d', '--data_model_file', required=True, help='prototxt file for reading data')
     parser.add_argument('-g', '--gen_model_file', required=True, help='prototxt file for generative model')
     parser.add_argument('-a', '--disc_model_file', required=True, help='prototxt file for discriminative model')
-    parser.add_argument('-s', '--solver_file', required=True, help='prototxt file for solver hyperparameters')
+    parser.add_argument('-s', '--solver_file', required=False, help='prototxt file for solver hyperparameters, can be overriden by command line options')
     parser.add_argument('-p', '--data_prefix', required=True, help='prefix for data train/test fold files')
     parser.add_argument('-n', '--fold_nums', default='0,1,2,all', help='comma-separated fold numbers to run (default 0,1,2,all)')
     parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
@@ -513,11 +540,11 @@ def parse_args(argv):
     parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
     parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
-    parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
-    parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
+    parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 2)')
+    parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 2)')
     parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
-    parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
-    parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
+    parser.add_argument('--alternate', default=0, type=int, help='alternate between encoding and sampling latent prior')
+    parser.add_argument('--balance', default=0, type=int, help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
     parser.add_argument('--gen_grad_norm', default=False, action='store_true', help='gen gradient normalization')
     parser.add_argument('--disc_grad_norm', default=False, action='store_true', help='disc gradient normalization')
@@ -527,26 +554,78 @@ def parse_args(argv):
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
     parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
+    parser.add_argument('--batch_size',default=5, type=int, help='value to substitute for BATCH_SIZE in models')
+    parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
+    #solver arguments
+    parser.add_argument('--clip_gradients',type=float, help='amount to clip gradients by in solver')
+    parser.add_argument('--solver',type=str, help='solver to use')
+    parser.add_argument('--momentum',type=float, help='momentum')
+    parser.add_argument('--momentum2',type=float, help='momentum2 for adam')
+    parser.add_argument('--lr_policy',type=str, help='lr policy')
+    parser.add_argument('--base_lr',type=float, help='base learning rate')
+    parser.add_argument('--weight_decay',type=float, help='weight decay (L2 regularization)')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    # read solver and model param files and set general params
-    data_param = NetParameter.from_prototxt(args.data_model_file)
+    if args.wandb:
+        wandb.init(project='gentrain',config=args)
+        if args.out_prefix == '':
+            try:
+                os.mkdir('wandb_output')
+            except FileExistsError:
+                pass
+            args.out_prefix = 'wandb_output/'+wandb.run.id
+            sys.stderr.write("Setting output prefix to %s\n"%args.out_prefix)
 
-    gen_param = NetParameter.from_prototxt(args.gen_model_file)
-    disc_param = NetParameter.from_prototxt(args.disc_model_file)
+    config = open('%s.config'%args.out_prefix,'wt')
+    config.write('\n'.join(map(lambda kv: '%s : %s'%kv, vars(args).items())))
+    config.close()
+    
+    # read solver and model param files and set general params
+    # batch size is set through string replacement because
+    data_str = open(args.data_model_file).read()
+    data_str = data_str.replace('BATCH_SIZE',str(args.batch_size))
+    data_param = NetParameter.from_prototxt_str(data_str)
+
+    gen_str = open(args.gen_model_file).read()
+    gen_str = gen_str.replace('BATCH_SIZE',str(args.batch_size))
+    gen_param = NetParameter.from_prototxt_str(gen_str)
+    
+    disc_str = open(args.disc_model_file).read()
+    disc_str = disc_str.replace('BATCH_SIZE',str(args.batch_size))    
+    disc_param = NetParameter.from_prototxt_str(disc_str)
 
     gen_param.force_backward = True
     disc_param.force_backward = True
 
-    solver_param = SolverParameter.from_prototxt(args.solver_file)
+    if args.solver_file:
+        solver_param = SolverParameter.from_prototxt(args.solver_file)
+    else:
+        solver_param = SolverParameter()
     solver_param.max_iter = args.max_iter
     solver_param.test_interval = args.max_iter + 1
     solver_param.random_seed = args.random_seed
-
+    caffe.set_random_seed(args.random_seed) #this should be redundant
+    
+    #check for cmdline overrides
+    if args.solver is not None:
+        solver_param.type = args.solver
+    if args.clip_gradients is not None:        
+        solver_param.clip_gradients = args.clip_gradients
+    if args.momentum is not None:
+        solver_param.momentum = args.momentum
+    if args.momentum2 is not None:
+        solver_param.momentum2 = args.momentum2
+    if args.lr_policy is not None:
+        solver_param.lr_policy = args.lr_policy
+    if args.base_lr is not None:
+        solver_param.lr_policy = args.lr_policy
+    if args.weight_decay is not None:
+        solver_param.weight_decay = args.weight_decay
+        
     for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
 
         # create nets for producing train and test data
@@ -576,6 +655,7 @@ def main(argv):
 
         # continue previous training state, or start new training output file
         loss_file = '{}_{}.training_output'.format(args.out_prefix, fold)
+        print('loss file',loss_file)
         if args.cont_iter:
             gen.restore('{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter))
             disc.restore('{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter))
@@ -591,11 +671,13 @@ def main(argv):
         try:
             train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args)
         except:
+            raise
             gen.snapshot()
             disc.snapshot()
             raise
 
 
 if __name__ == '__main__':
+    interrupt.listen()
     main(sys.argv[1:])
 
