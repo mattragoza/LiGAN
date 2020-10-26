@@ -412,7 +412,6 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
             for d in test_data:
 
-
                 disc_metrics = disc_step(test_data[d], gen, disc, args.test_iter, args,
                                          train=False, compute_metrics=True)
 
@@ -429,7 +428,7 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             t_total = t_train + t_test
             pct_train = 100*t_train/t_total
             pct_test = 100*t_test/t_total
-            t_per_iter = t_total/(i - args.cont_iter)
+            t_per_iter = t_total/(i+1 - args.cont_iter)
             t_left = t_per_iter * (args.max_iter - i)
             t_total = dt.timedelta(seconds=t_total)
             if i > args.cont_iter:
