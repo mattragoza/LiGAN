@@ -6,7 +6,7 @@ import pandas as pd
 import caffe
 
 import molgrid
-import caffe_util
+import caffe_util as cu
 import params
 from benchmark import benchmark_net
 
@@ -89,7 +89,8 @@ def write_models(model_dir, param_space, scaffold=False, n_benchmark=0, verbose=
 
         if scaffold or n_benchmark > 0:
             df.loc[i, 'model_file'] = model_file
-            net = caffe_util.Net(model_file, caffe.TRAIN)
+            net = cu.CaffeNet.from_prototxt(model_file)
+            net.scaffold()
             result = benchmark_net(net, n=n_benchmark)
             for key, value in result.mean().items():
                 df.loc[i, key] = value
@@ -284,7 +285,7 @@ def make_model(
         arch_options='',
         n_filters=32,
         width_factor=2,
-        n_latent=None,
+        n_latent=0,
         loss_types='',
         batch_size=16,
         conv_kernel_size=3,
@@ -292,8 +293,8 @@ def make_model(
         pool_type='a',
         unpool_type='n',
         growth_rate=16,
-        rec_map='',
-        lig_map='',
+        rec_map='my_rec_map',
+        lig_map='my_lig_map',
         rec_molcache='',
         lig_molcache='',
         loss_weight_L1=1.0,
@@ -319,6 +320,7 @@ def make_model(
     init_conv_pool = 'i' in arch_options
     fully_conv = 'c' in arch_options
 
+    assert len(encoders) == 0 or n_latent > 0
     assert len(decoders) <= 1
     assert pool_type in ['c', 'm', 'a']
     assert unpool_type in ['c', 'n']
@@ -675,7 +677,7 @@ def make_model(
                 operation=caffe.params.Eltwise.SUM,
                 coeff=[-0.5, -1.0, 0.5, 0.5])
 
-            kldiv_batch = '{}_latent_kldiv_batch_sum'
+            kldiv_batch = '{}_latent_kldiv_batch_sum'.format(enc)
             net[kldiv_batch] = caffe.layers.Reduction(net[kldiv_term],
                 operation=caffe.params.Reduction.SUM)
 

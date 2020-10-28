@@ -32,6 +32,7 @@ nps_model = npscorer.readNPModel()
 
 import molgrid
 import atom_types
+import caffe_util as cu
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
@@ -183,6 +184,190 @@ class MolStruct(object):
         atom_dist2 = ((self.xyz[nax,:,:] - self.xyz[:,nax,:])**2).sum(axis=2)
         max_bond_dist2 = channel_radii[self.c][nax,:] + channel_radii[self.c][:,nax]
         self.bonds = (atom_dist2 < max_bond_dist2 + tol)
+
+
+class MolGridEncoder(cu.CaffeSubNet):
+
+    def __init__(self, net, start, end, variational):
+        super().__init__(net, start, end)
+        self.variational = variational
+
+    @classmethod
+    def find_in_net(cls, net, input_):
+
+        start = find_blobs_in_net(net, input_)[0]
+        try:
+            end = find_blobs_in_net(net, input_+'_latent_std')[0]
+            variational = True
+        except IndexError:
+            try:
+                end = find_blobs_in_net(net, input_+'_latent_defc')[0]
+            except IndexError:
+                end = find_blobs_in_net(net, input_+'_latent_fc')[0]
+            variational = False
+
+        return cls(net, start, end, variational)
+
+
+class MolGridLatentSpace(cu.CaffeSubNet):
+
+    @classmethod
+    def find_in_net(cls, net, input_):
+        try:
+            start = end = find_blobs_in_net(net, input_+'_latent_defc')[0]
+        except IndexError:
+            start = end = find_blobs_in_net(net, input_+'_latent_fc')[0]
+        return cls(net, start, end)
+
+    @property
+    def size(self):
+        return self.net.blobs[self.end].shape[1]
+
+
+class MolGridLatentVariable(MolGridLatentSpace):
+
+    def __init__(self, net, mean, std, noise, sample):
+        super().__init__(net, start=mean, end=sample)
+        self.mean = mean
+        self.std = std
+        self.noise = noise
+        self.sample = sample
+
+    @classmethod
+    def find_in_net(cls, net, input_):
+        mean = find_blobs_in_net(net, input_+'_mean')[0]
+        std = find_blobs_in_net(net, input_+'_std')[0]
+        noise = find_blobs_in_net(net, input_+'_noise')[0]
+        sample = find_blobs_in_net(net, input_+'_sample')[0]
+        return cls(net, mean, std, noise, sample)
+
+
+class MolGridDecoder(cu.CaffeSubNet):
+
+    @classmethod
+    def find_in_net(cls, net, n_inputs, output):
+
+        if n_inputs > 1:
+            start = find_blobs_in_net(net, 'latent_concat')[0]
+        else:
+            start = find_blobs_in_net(net, output+'_dec_fc')[0]
+
+        end = find_blobs_in_net(net, output+'_gen')[0]
+
+        return cls(net, start, end)
+
+
+class MolGridGenerator(object):
+
+    def __init__(self, net, forward=True, verbose=False):
+
+        # net should be a CaffeNet
+        self.net = net
+        self.verbose = verbose
+
+        self.variational = False
+        self.encoders = {}
+        self.latent = None
+        self.decoder = None
+        self.losses = {}
+
+        if verbose:
+            print('Finding important blobs in generator')
+        self.find_sub_nets()
+
+        if forward:
+            if verbose:
+                print('Testing generator forward')
+            # this is necessary for proper latent sampling
+            self.forward()
+
+    def find_sub_nets(self):
+
+        self.variational = False
+
+        # find rec, lig, and/or rec+lig (data) encoders
+        self.encoders = {}
+        for encoder_input in ['rec', 'lig', 'data']:
+            try:
+                encoder = MolGridEncoder.find_in_net(
+                    self.net, encoder_input
+                )
+            except IndexError:
+                continue
+
+            assert not (self.variational and encoder.variational), \
+                'cannot have more than one variational encoder'
+
+            self.encoders[encoder_input] = encoder
+
+            if encoder.variational:
+                self.variational = True
+
+            latent_input = encoder_input
+
+        assert len(self.encoders) > 0, \
+            'must have at least one encoder'
+
+        # find latent space
+        if self.variational:
+            self.latent = MolGridLatentVariable.find_in_net(
+                self.net, latent_input
+            )
+        else:
+            self.latent = MolGridLatentSpace.find_in_net(
+                self.net, latent_input
+            )
+
+        # find lig decoder
+        self.decoder = MolGridDecoder.find_in_net(
+            self.net, n_inputs=len(self.encoders), output='lig'
+        )
+
+        # find loss functions
+        self.losses = {}
+        for l in find_blobs_in_net(self.net, '.*_loss'):
+            self.losses[l] = cu.CaffeSubNet(self.net, start=l, end=l)
+
+    def forward(self, prior=False, **kwargs):
+
+        for i in self.encoders:
+            self.encoders[i].forward(kwargs.get(i, None))
+
+        if self.variational:
+            self.latent.forward()
+
+        self.decoder.forward()
+
+        for l in self.losses:
+            self.losses[l].forward()
+
+    def backward(self):
+
+        for l in self.losses:
+            self.losses[l].backward()
+
+        self.decoder.backward()
+
+        if self.variational:
+            self.latent.backward()
+
+        for i in self.encoders:
+            self.encoders[i].backward()
+
+    def generate(self, data, n_examples, n_samples):
+        pass # TODO
+
+    def print_blob_data_norms(self):
+        print('BLOB DATA NORMS')
+        for b in self.net.blobs:
+            blob_data = self.net.blobs[b].data
+            print('{:9.2f} {}'.format(np.linalg.norm(blob_data), b))
+
+    def print_blob_diff_norms(self):
+        print('BLOB DIFF NORMS')
+        for b in self.net.blobs:
+            blob_diff = self.net.blobs[b].diff
+            print('{:9.2f} {}'.format(np.linalg.norm(blob_diff), b))
 
 
 class AtomFitter(object):
@@ -2040,93 +2225,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
     grid_dims = grid_maker.grid_dimensions(rec_map.num_types() + lig_map.num_types())
     grid_true = torch.zeros(batch_size, *grid_dims, dtype=torch.float32, device=device)
 
-    print('Finding important blobs')
-    try: # find receptor encoder blobs
-        rec_enc_start = find_blobs_in_net(gen_net, 'rec')[0]
-        try:
-            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_std')[0]
-            rec_enc_is_var = True
-        except IndexError:
-            rec_enc_end = find_blobs_in_net(gen_net, 'rec_latent_fc')[0]
-            rec_enc_is_var = False
-        has_rec_enc = True
-    except IndexError:
-        has_rec_enc = False
-
-    if args.verbose:
-        print('has_rec_enc = {}'.format(has_rec_enc))
-        if has_rec_enc:
-            print('\trec_enc_is_var = {}'.format(rec_enc_is_var))
-            print('\trec_enc_start = {}'.format(repr(rec_enc_start)))
-            print('\trec_enc_end = {}'.format(repr(rec_enc_end)))
-
-    try: # find ligand encoder blobs
-        lig_enc_start = find_blobs_in_net(gen_net, 'lig')[0]
-        try:
-            lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_std')[0]
-            lig_enc_is_var = True
-        except IndexError:
-            try:
-                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_defc')[0]
-            except IndexError:
-                lig_enc_end = find_blobs_in_net(gen_net, 'lig_latent_fc')[0]
-            lig_enc_is_var = False
-        has_lig_enc = True
-    except IndexError:
-        has_lig_enc = False
-
-    if args.verbose:
-        print('has_lig_enc = {}'.format(has_lig_enc))
-        if has_lig_enc:
-            print('\tlig_enc_is_var = {}'.format(lig_enc_is_var))
-            print('\tlig_enc_start = {}'.format(repr(lig_enc_start)))
-            print('\tlig_enc_end = {}'.format(repr(lig_enc_end)))
-
-    # must have at least one encoder
-    assert (has_rec_enc or has_lig_enc)
-
-    # only one encoder can be variational
-    if has_rec_enc and has_lig_enc:
-        assert not (rec_enc_is_var and lig_enc_is_var)
-
-    try: # find latent variable blobs
-        latent_prefix = ('lig' if has_lig_enc else 'rec') + '_latent'
-        latent_mean = find_blobs_in_net(gen_net, latent_prefix+'_mean')[0]
-        latent_std = find_blobs_in_net(gen_net, latent_prefix+'_std')[0]
-        latent_noise = find_blobs_in_net(gen_net, latent_prefix+'_noise')[0]
-        latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_sample')[0]
-        variational = True
-    except IndexError:
-        try:
-            latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_defc')[0]
-        except IndexError:
-            latent_sample = find_blobs_in_net(gen_net, latent_prefix+'_fc')[0]
-        variational = False
-
-    if args.verbose:
-        print('variational = {}'.format(variational))
-        if variational:
-            print('\tlatent_mean = {}'.format(repr(latent_mean)))
-            print('\tlatent_std = {}'.format(repr(latent_std)))
-            print('\tlatent_noise = {}'.format(repr(latent_noise)))
-        print('\tlatent_sample = {}'.format(repr(latent_sample)))
-
-    # find ligand decoder blobs (required)
-    if has_rec_enc and has_lig_enc:
-        lig_dec_start = find_blobs_in_net(gen_net, 'latent_concat')[0]
-    else:
-        lig_dec_start = find_blobs_in_net(gen_net, 'lig_dec_fc')[0]
-    lig_dec_end = find_blobs_in_net(gen_net, 'lig_gen')[0]
-
-    if args.verbose:
-        print('has_lig_dec = True')
-        print('\tlig_dec_start = {}'.format(repr(lig_dec_start)))
-        print('\tlig_dec_end = {}'.format(repr(lig_dec_end)))
-
-    n_latent = gen_net.blobs[latent_sample].shape[1]
-
-    print('Testing generator forward')
-    gen_net.forward() # this is necessary for proper latent sampling
+    generator = MolGridGenerator(gen_net)
 
     print('Creating atom fitter and output writer')
 
@@ -2559,9 +2658,6 @@ def parse_args(argv=None):
 
 
 def main(argv):
-    import caffe
-    import caffe_util
-
     args = parse_args(argv)
 
     pd.set_option('display.max_columns', 100)
@@ -2572,50 +2668,40 @@ def main(argv):
         display_width = 185
     pd.set_option('display.width', display_width)
 
-    if not args.blob_name:
-        args.blob_name += ['lig', 'lig_gen']
+    # read data params
+    data_net_param = cu.NetParameter.from_prototxt(args.data_model_file)
+    assert data_net_param.layer[0].type == 'MolGridData'
+    data_param = data_net_param.layer[0].molgrid_data_param
 
-    # read the model param files and set atom gridding params
-    data_net_param = caffe_util.NetParameter.from_prototxt(args.data_model_file)
+    # read model params
     gen_net_param = caffe_util.NetParameter.from_prototxt(args.gen_model_file)
 
-    data_param = data_net_param.get_molgrid_data_param(caffe.TEST)
-    data_param.random_rotation = args.random_rotation
-    data_param.random_translate = args.random_translate
-    data_param.fix_center_to_origin = args.fix_center_to_origin
-    data_param.use_covalent_radius = args.use_covalent_radius
-    data_param.shuffle = False
-    data_param.balanced = False
+    data = MolGridData(
+        data_root=args.data_root,
+        batch_size=args.batch_size,
+        rec_map_file=data_param.recmap,
+        lig_map_file=data_param.ligmap,
+        resolution=data_param.resolution,
+        dimension=data_param.dimension,
+        shuffle=args.shuffle,
+        random_rotation=args.random_rotation,
+        random_translate=args.random_translate,
+        rec_molcache=data_param.rec_molcache,
+        lig_molcache=data_param.lig_molcache,
+    )
 
-    if args.batch_rotate_yaw:
-        data_param.batch_rotate = True
-        data_param.batch_rotate_yaw = 2*np.pi/data_param.batch_size
-
-    if args.batch_rotate_pitch:
-        data_param.batch_rotate = True
-        data_param.batch_rotate_pitch = 2*np.pi/data_param.batch_size
-
-    if args.batch_rotate_roll:
-        data_param.batch_rotate = True
-        data_param.batch_rotate_roll = 2*np.pi/data_param.batch_size
-
-    if not args.data_file: # use the set of (rec_file, lig_file) examples
+    if not args.data_file:
         assert len(args.rec_file) == len(args.lig_file)
-        examples = list(zip(args.rec_file, args.lig_file))
+        args.data_file = get_temp_data_file(zip(args.rec_file, args.lig_file))
 
-    else: # use the examples in data_file
-        examples = read_examples_from_data_file(args.data_file)
-
-    data_file = get_temp_data_file(e for e in examples for i in range(args.n_samples))
-    data_param.source = data_file
-    data_param.root_folder = args.data_root
+    data.populate(args.data_file)
 
     if args.gpu:
         print('Setting caffe to GPU mode')
-        caffe.set_mode_gpu()
+        cu.caffe.set_mode_gpu()
     else:
         print('Setting caffe to CPU mode')
-        caffe.set_mode_cpu()
+        cu.caffe.set_mode_cpu()
 
     # create the net in caffe
     print('Constructing generator in caffe')
@@ -2623,10 +2709,8 @@ def main(argv):
         gen_net_param, args.gen_weights_file, phase=caffe.TEST
     )
 
-    if args.all_blobs:
-        args.blob_name = [b for b in gen_net.blobs]
-
-    generate_from_model(gen_net, data_param, len(examples), args)
+    mgrid_gen = MolGridGenerator(gen_net)
+    mgrid_gen.generate()
 
 
 if __name__ == '__main__':
