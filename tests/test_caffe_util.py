@@ -2,7 +2,7 @@ import sys, os, pytest
 import numpy as np
 from numpy import isclose
 from numpy.linalg import norm
-os.environ['GLOG_minloglevel'] = '1'
+os.environ['GLOG_minloglevel'] = '0'
 
 sys.path.insert(0, '..')
 from caffe_util import CaffeNet, CaffeSubNet
@@ -16,6 +16,22 @@ rec_map = os.path.join(curr_dir, '../my_rec_map')
 lig_map = os.path.join(curr_dir, '../my_lig_map')
 
 
+def print_side_by_side(param1, param2):
+	lines1 = str(param1).split('\n')
+	lines2 = str(param2).split('\n')
+	n_lines_diff = len(lines1) - len(lines2)
+	if n_lines_diff > 0:
+		lines2 += [''] * n_lines_diff
+	elif n_lines_diff < 0:
+		lines1 += [''] * -n_lines_diff
+	max_line_len = 0
+	for line in lines1:
+		if len(line) > max_line_len:
+			max_line_len = len(line)
+	for line1, line2 in zip(lines1, lines2):
+		print(line1.ljust(max_line_len) + '|' + line2)
+
+
 class TestLig2Lig(object):
 
 	encode_type = '_l-l'
@@ -23,7 +39,9 @@ class TestLig2Lig(object):
 	inputs = ['lig']
 	losses = ['L2_loss']
 
-	def make_param(self):
+	########## CONSTRUCTORS ##########
+
+	def get_param(self):
 		'''
 		Returns a simple NetParameter.
 		'''
@@ -36,28 +54,15 @@ class TestLig2Lig(object):
 			loss_types='e',
 		)
 
-	def init_net(self):
-		'''
-		Returns a simple CaffeNet, no scaffold.
-		'''
-		param = self.make_param()
-		param.force_backward = True
-		return CaffeNet(param, scaffold=False)
+	def get_net(self, scaffold):
+		param = self.get_param()
+		return CaffeNet(param, scaffold=scaffold)
 
-	def scaffold_net(self):
-		'''
-		Returns a simple CaffeNet, with scaffold.
-		'''
-		net = self.init_net()
-		net.scaffold()
-		return net
+	def get_gen(self, forward):
+		net = self.get_net(scaffold=True)
+		return MolGridGenerator(net, forward=forward)
 
-	def init_generator(self):
-		'''
-		Returns a MolGridGenerator, no forward pass.
-		'''
-		net = self.scaffold_net()
-		return MolGridGenerator(net, forward=False)
+	########## CHECKS ##########
 
 	def loss_data_are_zero(self, gen): 
 		for l in self.losses:
@@ -88,15 +93,23 @@ class TestLig2Lig(object):
 	########## BEGIN TESTS ##########
 
 	def test_net_init(self):
-		net = self.init_net()
+		param = self.get_param()
+		net = CaffeNet(param, scaffold=False)
+		assert len(net.layers_) == len(param.layer)
+		assert set(net.layers_) == set(l.name for l in param.layer)
+		got_param = net.get_param()
+		print_side_by_side(param, got_param)
+		assert got_param == param
 		assert not net.has_scaffold()
 
 	def test_net_scaffold(self):
-		net = self.scaffold_net()
+		net = self.get_net(scaffold=True)
 		assert net.has_scaffold()
+		assert len(net.layers_) == len(net.layers)
+		assert len(net.blobs_) == len(net.blobs)
 
 	def test_generator_init(self):
-		gen = self.init_generator()
+		gen = self.get_gen(forward=False)
 		assert gen.variational == self.variational
 		assert len(gen.encoders) == len(self.inputs)
 		assert all(i in gen.encoders for i in self.inputs)
@@ -106,21 +119,21 @@ class TestLig2Lig(object):
 		assert all(i in gen.losses for i in self.losses)
 
 	def test_generator_forward_zero(self):
-		gen = self.init_generator()
+		gen = self.get_gen(forward=False)
 		gen.forward(**{i:0 for i in self.inputs})
 		assert all(self.input_data_are_zero(gen))
 		assert self.output_data_is_zero(gen)
 		assert all(self.loss_data_are_zero(gen))
 
 	def test_generator_forward_ones(self):
-		gen = self.init_generator()
+		gen = self.get_gen(forward=False)
 		gen.forward(**{i:1 for i in self.inputs})
 		assert not any(self.input_data_are_zero(gen))
 		assert not self.output_data_is_zero(gen)
 		assert not any(self.loss_data_are_zero(gen))
 
 	def test_generator_forward_zero_backward(self):
-		gen = self.init_generator()
+		gen = self.get_gen(forward=False)
 		gen.forward(**{i:0 for i in self.inputs})
 		gen.backward()
 		assert all(self.loss_data_are_zero(gen))
@@ -129,7 +142,7 @@ class TestLig2Lig(object):
 		assert all(self.input_diff_are_zero(gen))
 
 	def test_generator_forward_ones_backward(self):
-		gen = self.init_generator()
+		gen = self.get_gen(forward=False)
 		gen.print_blob_diff_norms()
 		gen.forward(**{i:1 for i in self.inputs})
 		gen.backward()
@@ -141,6 +154,6 @@ class TestLig2Lig(object):
 
 
 
-class TestRec2Lig(TestLig2Lig):
-	encode_type = '_r-l'
-	inputs = ['rec']
+#class TestRec2Lig(TestLig2Lig):
+#	encode_type = '_r-l'
+#	inputs = ['rec']

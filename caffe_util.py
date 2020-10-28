@@ -143,16 +143,17 @@ for msg_name in caffe_pb2.DESCRIPTOR.message_types_by_name:
 
 
 class CaffeNode(object):
-
+    '''
+    A node in a Caffe computation graph, which
+    can either be a CaffeBlob or a CaffeLayer.
+    '''
     # TODO
     # - allow lazy evaluation of net using graph
     # - allow multiple top-most blobs
-    # - handle split layers somehow
     # - allow in-place layer calls
-    # - allow pythonic usage/magic methods
     # - infer n_tops from layer type
     # - tuplify blob shapes where possible
-    # - more readable node names
+    # - more readable automatic node names
 
     def __init__(self, name=None):
         self.name = name or hex(id(self))
@@ -160,33 +161,53 @@ class CaffeNode(object):
         self.tops = []
         self.net = None
 
+    def add_bottom(self, bottom):
+        self.bottoms.append(bottom)
+
+    def add_top(self, top):
+        self.tops.append(top)
+
+    def replace_bottom(self, old, new):
+        for i, bottom in enumerate(self.bottoms):
+            if bottom is old:
+                break
+        assert bottom is old
+        self.bottoms[i] = new
+
+    def set_net(self, net):
+        self.net = net
+
     def has_scaffold(self):
         return self.net and self.net.has_scaffold()
 
-    def add_to_net(self, net):
-        for bottom in self.bottoms:
-            bottom.add_to_net(net)
-        self.net = net
-
     def find_in_net(self):
-        for bottom in self.bottoms:
-            bottom.find_in_net()
+        pass
 
     def scaffold(self):
         net = CaffeNet(scaffold=False)
-        self.add_to_net(net)
+        self.add_to_net(net) # TODO traverse graph
         net.scaffold()
-        self.find_in_net()
+        self.find_in_net() # TODO traverse graph
         return net
 
 
 class CaffeBlob(CaffeNode):
-
+    '''
+    A caffe blob of data and associated gradient, which
+    can be the input and/or output of a CaffeLayer.
+    '''
     def __init__(self, name=None):
         super().__init__(name=name)
 
+    def add_bottom(self, bottom):
+        assert isinstance(bottom, CaffeLayer)
+        super().add_bottom(bottom)
+
+    def add_top(self, top):
+        assert isinstance(top, CaffeLayer)
+        super().add_top(top)
+
     def find_in_net(self):
-        super().find_in_net()
         self.blob = self.net.blobs[self.name]
 
     def shape(self):
@@ -212,7 +233,10 @@ class CaffeBlob(CaffeNode):
 
 
 class CaffeLayer(CaffeNode):
-
+    '''
+    A caffe function that is applied to some number of
+    CaffeBlobs and produces CaffeBlobs as output.
+    '''
     # the protobuf message type that stores the params
     # that control what function the layer applies
     param_type = NotImplemented
@@ -253,6 +277,8 @@ class CaffeLayer(CaffeNode):
                 type(self).__name__ + ' has no params'
             )
 
+        self.loss_weight = None
+
     @classmethod
     def from_param(cls, param, blobs=None):
 
@@ -278,15 +304,20 @@ class CaffeLayer(CaffeNode):
             if b not in blobs:
                 blobs[b] = CaffeBlob(b)
             layer.add_bottom(blobs[b])
+            blobs[b].add_top(layer)
 
         for t in param.top:
             if t not in blobs:
                 blobs[t] = CaffeBlob(t)
             layer.add_top(blobs[t])
+            blobs[t].add_bottom(layer)
+
+        if param.loss_weight:
+            layer.loss_weight = param.loss_weight[0]
 
         return layer
 
-    def __call__(self, *args, name=None):
+    def __call__(self, *args, name=None, loss_weight=0):
         '''
         Calling a CaffeLayer on input CaffeBlobs
         returns output CaffeBlobs that result from
@@ -308,6 +339,9 @@ class CaffeLayer(CaffeNode):
         if name:
             layer.name = name
 
+        if loss_weight:
+            layer.loss_weight = loss_weight
+
         # apply the layer to the provided bottom blobs
         for bottom in args:
             layer.add_bottom(bottom)
@@ -317,30 +351,31 @@ class CaffeLayer(CaffeNode):
             return
 
         elif layer.n_tops == 1:
-            layer.add_top(CaffeBlob())
-            return layer.tops[0]
+            top = CaffeBlob()
+            top.add_bottom(layer)
+            layer.add_top(top)
+            return top
 
         else:
             for i in range(layer.n_tops):
-                layer.add_top(CaffeBlob())
+                top = CaffeBlob()
+                top.add_bottom(layer)
+                layer.add_top(top)
+
             return layer.tops
 
     def add_bottom(self, bottom):
         assert isinstance(bottom, CaffeBlob)
-        self.bottoms.append(bottom)
-        bottom.tops.append(self)
+        super().add_bottom(bottom)
 
     def add_top(self, top):
         assert isinstance(top, CaffeBlob)
-        self.tops.append(top)
-        top.bottoms.append(self)
+        super().add_top(top)
 
-    def add_to_net(self, net):
-        super().add_to_net(net)
-        net.add_layer(self)
+    def is_in_place(self):
+        return len(set(self.bottoms + self.tops)) == 1
 
     def find_in_net(self):
-        super().find_in_net()
         self.blobs = self.net.layer_dict[self.name].blobs
 
     def blobs(self):
@@ -348,7 +383,7 @@ class CaffeLayer(CaffeNode):
 
     def __ror__(self, other):
         '''
-        Can use "|" to pipe CaffeLayer together.
+        Can use "|" to pipe CaffeLayers together.
         '''
         return self.__call__(other)
 
@@ -422,18 +457,20 @@ class CaffeNet(caffe.Net):
         scaffold=False,
         **kwargs
     ):
-        self.param = param or NetParameter()
-
-        for key, value in kwargs.items():
-            caffe.net_spec.assign_proto(self.param, key, value)
+        param = param or NetParameter()
+        update_composite_param(param, **kwargs)
 
         # can't overwrite Net.layers or Net.blobs
         self.layers_ = OrderedDict()
         self.blobs_ = OrderedDict()
 
-        for layer_param in self.param.layer:
+        # construct graph of net from layer params
+        for layer_param in param.layer:
             layer = CaffeLayer.from_param(layer_param, self.blobs_)
-            self.layers_[layer.name] = layer
+            self.add_layer(layer)
+            layer.set_net(self)
+            for top in layer.tops:
+                top.set_net(self)
 
         if scaffold:
             self.scaffold(weights, phase)
@@ -444,54 +481,101 @@ class CaffeNet(caffe.Net):
 
     def add_layer(self, layer):
         assert isinstance(layer, CaffeLayer)
-        if layer.name not in self.layers:
-            param = LayerParameter()
-            param.name = layer.name
-            param.bottom.extend([b.name for b in layer.bottoms])
-            param.top.extend([t.name for t in layer.tops])
-            if layer.param_type:
-                assign_field_param(param, layer.param_name, layer.param)
-            self.param.layer.append(param)
-            self.layers_[layer.name] = layer
+        assert layer.name not in self.layers_
+        self.layers_[layer.name] = layer
 
-    def scaffold(self, weights=None, phase=caffe.TEST):
+    def get_param(self):
+        '''
+        Return a NetParameter from the CaffeLayer list.
+        '''
+        param = NetParameter()
+        for layer in self.layers_.values():
 
-        with temp_prototxt(self.param) as temp_file:
+            layer_param = LayerParameter()
+            layer_param.name = layer.name
+            layer_param.type = type(layer).__name__
+
+            for bottom in layer.bottoms:
+                layer_param.bottom.append(bottom.name)
+
+            for top in layer.tops:
+                layer_param.top.append(top.name)
+
+            if layer.loss_weight is not None:
+                layer_param.loss_weight.append(layer.loss_weight)
+
+            if layer.param_type and layer.param.ListFields():
+                assign_field_param(
+                    layer_param, layer.param_name, layer.param
+                )
+
+            param.layer.append(layer_param)
+
+        return param
+
+    def scaffold(self, weights=None, train=False):
+        '''
+        Initialize the underlying layers and blobs
+        in caffe and link them to the graph. This
+        method inserts split layers as needed.
+        '''
+        # get NetParameter from graph
+        param = self.get_param()
+        phase = caffe.TRAIN if train else caffe.TEST
+
+        # initalize Net superclass from NetParameter
+        with temp_prototxt(param) as temp_file:
             super().__init__(
                 network_file=temp_file,
                 weights=weights,
                 phase=phase,
             )
 
-        for b, blob in list(self.blobs_.items()):
-            n_tops = len(blob.tops)
+        # insert split layers into graph
+        self.insert_splits()
 
-            if n_tops > 1: # insert split layer
+        print(self.get_param())
 
-                prev_tops, blob.tops = blob.tops, []
-                split_name = '{}_{}_0_split'.format(
-                       blob.name, blob.name
-                )
-                split_blobs = Split(n_tops=n_tops)(
-                    blob, name=split_name
-                )
-                assert len(split_blobs) == n_tops
+        # link graph to Net scaffold
+        for layer in self.layers_.values():
+            layer.find_in_net()
+
+        for blob in self.blobs_.values():
+            blob.find_in_net()
+
+    def insert_splits(self):
+        '''
+        Insert split layers after blobs with more than
+        one top layer that are not applied in-place.
+        '''
+        for blob in list(self.blobs_.values()):
+
+            in_place_tops = []
+            not_in_place_tops = []
+            for top in blob.tops:
+                if top.is_in_place():
+                    in_place_tops.append(top)
+                else:
+                    not_in_place_tops.append(top)
+
+            if len(not_in_place_tops) > 1: # insert split
+
+                blob.tops = in_place_tops
+                split_name = '{}_{}_0_split'.format(blob.name, blob.name)
+                split = Split(n_tops=len(not_in_place_tops))
+                split_blobs = split(blob, name=split_name)
 
                 for i, split_blob in enumerate(split_blobs):
-
                     split_blob.name = split_name + '_' + str(i)
-                    top = prev_tops[i]
+                    not_in_place_tops[i].replace_bottom(blob, split_blob)
+                    split_blob.add_top(not_in_place_tops[i])
 
-                    for j, bottom in enumerate(top.bottoms):
-                        if bottom is blob:
-                            break
-                    assert bottom is blob
-
-                    top.bottoms[j] = split_blob
-                    split_blob.tops.append(top)
-                    self.blobs_[split_blob.name] = split_blob
-
-                self.add_layer(split_blob.bottoms[0])
+                split = split_blob.bottoms[0]
+                self.add_layer(split)
+                split.set_net(self)
+                for top in split.tops:
+                    self.blobs_[top.name] = top
+                    top.set_net(self)
 
     def has_scaffold(self):
         try:
