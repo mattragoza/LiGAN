@@ -391,7 +391,10 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
     test_times = []
     train_times = []
-
+    dtime = 0
+    gtime = 0
+    dcnt = 0
+    gcnt = 0
     for i in range(args.cont_iter, args.max_iter+1):
 
         if i % args.snapshot == 0:
@@ -429,6 +432,8 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             print('Iteration {} / {}'.format(i, args.max_iter))
             print('  {} elapsed ({:.1f}% training, {:.1f}% testing)'
                   .format(t_total, pct_train, pct_test))
+            print("Disc cnt/time: %d %f, Gen cnt/time: %d %f"%(dcnt,dtime,gcnt,gtime))
+            dcnt = gcnt = dtime = gtime = 0
             print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))
             for d in test_data:
                 for m in sorted(loss_df.columns):
@@ -441,21 +446,26 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
         t_start = time.time()
 
-        # train nets
-        disc_step(train_data, gen, disc, args.disc_train_iter, args,
+        # train nets (do forward if want final metrics)
+        if train_disc or i == args.max_iter:
+            dstart = time.time()
+            disc_step(train_data, gen, disc, args.disc_train_iter, args,            
                   train=train_disc, compute_metrics=False)
+            dtime += time.time()-dstart
+            dcnt += 1
 
-        gen_step(train_data, gen, disc, args.gen_train_iter, args,
+        if train_gen or i == args.max_iter:
+            gstart = time.time()
+            gen_step(train_data, gen, disc, args.gen_train_iter, args,
                  train=train_gen, compute_metrics=False)
+            gtime += time.time()-gstart
+            gcnt += 1
 
-        if i+1 == args.max_iter:
-            train_disc = False
-            train_gen = False
-
-        elif args.balance: # dynamically balance G/D training
+        if args.balance: # dynamically balance G/D training
 
             # how much better is D than G?
             if 'disc_wass_loss' in disc_metrics:
+                dstart = time.time()
                 train_gen_loss = gen_metrics['gen_adv_wass_loss']
                 train_disc_loss = disc_metrics['disc_wass_loss']
                 train_loss_balance = train_gen_loss - train_disc_loss
@@ -513,8 +523,8 @@ def parse_args(argv):
     parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
     parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
-    parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
-    parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
+    parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 2)')
+    parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 2)')
     parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
     parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
@@ -527,6 +537,7 @@ def parse_args(argv):
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
     parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
+    parser.add_argument('--batch_size',default=5, type=int, help='value to substitute for BATCH_SIZE in models')
     return parser.parse_args(argv)
 
 
@@ -534,10 +545,18 @@ def main(argv):
     args = parse_args(argv)
 
     # read solver and model param files and set general params
-    data_param = NetParameter.from_prototxt(args.data_model_file)
+    # batch size is set through string replacement because
+    data_str = open(args.data_model_file).read()
+    data_str = data_str.replace('BATCH_SIZE',str(args.batch_size))
+    data_param = NetParameter.from_prototxt_str(data_str)
 
-    gen_param = NetParameter.from_prototxt(args.gen_model_file)
-    disc_param = NetParameter.from_prototxt(args.disc_model_file)
+    gen_str = open(args.gen_model_file).read()
+    gen_str = gen_str.replace('BATCH_SIZE',str(args.batch_size))
+    gen_param = NetParameter.from_prototxt_str(gen_str)
+    
+    disc_str = open(args.disc_model_file).read()
+    disc_str = disc_str.replace('BATCH_SIZE',str(args.batch_size))    
+    disc_param = NetParameter.from_prototxt_str(disc_str)
 
     gen_param.force_backward = True
     disc_param.force_backward = True

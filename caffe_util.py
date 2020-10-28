@@ -11,6 +11,11 @@ def read_prototxt(param, prototxt_file):
         text_format.Merge(f.read(), param)
 
 
+def from_prototxt_str(param_type, prototxt_str):
+    param = param_type()
+    text_format.Merge(prototxt_str, param)
+    return param
+
 def from_prototxt(param_type, prototxt_file):
     param = param_type()
     read_prototxt(param, prototxt_file)
@@ -83,6 +88,7 @@ def get_molgrid_data_param(net_param, phase=None):
 for name, cls in caffe_pb2.__dict__.items():
     if isinstance(cls, type) and issubclass(cls, message.Message):
         cls.from_prototxt = classmethod(from_prototxt)
+        cls.from_prototxt_str = classmethod(from_prototxt_str)
         cls.to_prototxt = write_prototxt
         cls.temp_prototxt = temp_prototxt
         cls.update = update_param
