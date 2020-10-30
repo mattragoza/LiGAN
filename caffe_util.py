@@ -1,11 +1,12 @@
-import os, copy
+import sys, os, copy
 import contextlib
 import tempfile
 from collections import namedtuple, OrderedDict
-from caffe.proto import caffe_pb2
 from google.protobuf import text_format, message
 from google.protobuf.descriptor import FieldDescriptor
 import caffe
+from caffe.proto import caffe_pb2
+from caffe.draw import draw_net_to_file
 
 
 def read_prototxt(param, prototxt_file):
@@ -34,11 +35,9 @@ def temp_prototxt(param):
 
 def assign_index_param(param, index, value):
 
-    if index == len(param): # append
-
+    if index == len(param): # append value
         try: # composite value
             param.add()
-
         except AttributeError:
             param.append(value)
             return
@@ -62,7 +61,21 @@ def update_repeated_param(param, *args):
         assign_index_param(param, i, value)
 
 
+def is_non_string_iterable(value):
+    # repeated containers don't have an __iter__
+    # attribute, but can still get an iterator
+    try:
+        return not isinstance(value, str) and iter(value)
+    except TypeError:
+        return False
+
+
 def assign_field_param(param, key, value):
+
+    # allow assigning a single value to repeated fields
+    if is_repeated_field(param, key):
+        if isinstance(value, dict) or not is_non_string_iterable(value):
+            value = [value]
 
     if isinstance(value, message.Message):
         getattr(param, key).CopyFrom(value)
@@ -70,7 +83,7 @@ def assign_field_param(param, key, value):
     elif isinstance(value, dict):
         update_composite_param(getattr(param, key), **value)
 
-    elif hasattr(value, '__len__'):
+    elif is_non_string_iterable(value):
         update_repeated_param(getattr(param, key), *value)
 
     else:
@@ -80,19 +93,29 @@ def assign_field_param(param, key, value):
 def update_composite_param(param, **kwargs):
 
     for key, value in kwargs.items():
-        try:
-            assign_field_param(param, key, value)
-        except AttributeError:
-            print(type(param), repr(key), type(value))
-            raise
+        assign_field_param(param, key, value)
 
 
-# protobuf message fields use an enum to specify their type
-# we don't have access to it, so recreate it with this hack
-field_type_enum = {}
-for type_name, i in vars(FieldDescriptor).items():
-    if type_name.startswith('TYPE_'):
-        field_type_enum[i] = type_name
+# protobuf message fields use enums to specify their type and label
+field_type_enum = {}  # enum_val -> type_name
+for key, val in vars(FieldDescriptor).items():
+    if key.startswith('TYPE_'):
+        field_type_enum[val] = key
+
+
+def is_optional_field(param, key):
+    label = getattr(type(param), key).DESCRIPTOR.label
+    return label == FieldDescriptor.LABEL_OPTIONAL
+
+
+def is_repeated_field(param, key):
+    label = getattr(type(param), key).DESCRIPTOR.label
+    return label == FieldDescriptor.LABEL_REPEATED
+
+
+def is_required_field(paran, key):
+    label = getattr(type(param), key).DESCRIPTOR.label
+    return label == FieldDescriptor.LABEL_REQUIRED
 
 
 def get_message_docstring(msg):
@@ -127,11 +150,15 @@ def get_message_docstring(msg):
     return '\n'.join(lines)
 
 
+def get_param_repr(param):
+    type_name, hex_id = type(param).__name__, hex(id(param))
+    return '<{} object at {}>'.format(type_name, hex_id)
+
+
 # we can't subclass protobuf messages,
 # so add convenience methods to generated classes
 # and import them to the module level
 for msg_name in caffe_pb2.DESCRIPTOR.message_types_by_name:
-
     cls = getattr(caffe_pb2, msg_name)
     cls.__init__ = update_composite_param
     cls.__setitem__ = assign_field_param
@@ -139,7 +166,48 @@ for msg_name in caffe_pb2.DESCRIPTOR.message_types_by_name:
     cls.to_prototxt = write_prototxt
     cls.temp_prototxt = temp_prototxt
     cls.__doc__ = get_message_docstring(cls.DESCRIPTOR)
+    cls.__repr__ = get_param_repr
     globals()[msg_name] = cls
+
+
+# create a mapping from protobuf message types
+# that store layer type-specific parameters
+# to the LayerParameter field name of that type
+# e.g.
+#   LayerParameter.input_param stores an InputParameter,
+#   so field_name_map[InputParameter] == 'input_param'
+field_name_map = {}
+for field in LayerParameter.DESCRIPTOR.fields:
+    if field.name.endswith('_param'):
+        param_type_name = getattr(
+            LayerParameter, field.name
+        ).DESCRIPTOR.message_type.name
+        param_type = globals()[param_type_name]
+        field_name_map[param_type] = field.name
+
+
+# create a mapping from layer type names
+# to protobuf message types that store
+# parameters specific to that layer type
+# e.g.
+#   Input layers use InputParameter
+#   so param_type_map['Input'] = InputParameter
+param_type_map = {}
+for layer_name in caffe.layer_type_list():
+    param_type_name = layer_name + 'Parameter'
+    if param_type_name in globals():
+        param_type_map[layer_name] = globals()[param_type_name]
+
+
+# special cases
+param_type_map['Deconvolution'] = ConvolutionParameter
+param_type_map['EuclideanLoss'] = LossParameter
+param_type_map['SigmoidCrossEntropyLoss'] = LossParameter
+param_type_map['MultinomialLogisticLoss'] = LossParameter
+param_type_map['SoftmaxWithLoss'] = SoftmaxParameter
+param_type_map['SoftmaxWithNoisyLabelLoss'] = SoftmaxParameter
+param_type_map['RNN'] = RecurrentParameter
+param_type_map['LSTM'] = RecurrentParameter
 
 
 class CaffeNode(object):
@@ -242,8 +310,8 @@ class CaffeLayer(CaffeNode):
     param_type = NotImplemented
 
     # the field name in LayerParameter that stores a
-    # protobuf message of the above type (param_type)
-    param_name = NotImplemented
+    # protobuf message of the above type
+    field_name = NotImplemented
 
     def __init__(self, *args, **kwargs):
         '''
@@ -256,6 +324,8 @@ class CaffeLayer(CaffeNode):
         # TODO determine n_tops from layer params
         # how many blobs to produce from __call__
         self.n_tops = kwargs.pop('n_tops', 1)
+        self.in_place = kwargs.pop('in_place', False)
+        assert not self.in_place or self.n_tops == 1
 
         if self.param_type:
             self.param = self.param_type()
@@ -278,6 +348,8 @@ class CaffeLayer(CaffeNode):
             )
 
         self.loss_weight = None
+        self.lr_mult = None
+        self.decay_mult = None
 
     @classmethod
     def from_param(cls, param, blobs=None):
@@ -292,7 +364,7 @@ class CaffeLayer(CaffeNode):
         # create the layer prototype
         layer = cls(**dict(
             (k.name, v) for k,v in getattr(
-                param, cls.param_name
+                param, cls.field_name
             ).ListFields()
         ))
 
@@ -315,7 +387,40 @@ class CaffeLayer(CaffeNode):
         if param.loss_weight:
             layer.loss_weight = param.loss_weight[0]
 
+        if param.param:
+            layer.lr_mult = param.param[0].lr_mult
+            layer.decay_mult = param.param[0].decay_mult
+
         return layer
+
+    def to_param(self):
+        '''
+        Return the CaffeLayer as a LayerParameter.
+        '''
+        param = LayerParameter()
+        param.name = self.name
+        param.type = type(self).__name__
+
+        for bottom in self.bottoms:
+            param.bottom.append(bottom.name)
+
+        for top in self.tops:
+            param.top.append(top.name)
+
+        if self.loss_weight is not None:
+            param.loss_weight.append(self.loss_weight)
+
+        if self.lr_mult is not None:
+            param.param.add()
+            param.param[0].lr_mult = self.lr_mult
+            param.param[0].decay_mult = self.decay_mult
+
+        if self.param_type and self.param.ListFields():
+            assign_field_param(
+                param, self.field_name, self.param
+            )
+
+        return param
 
     def __call__(self, *args, name=None, loss_weight=0):
         '''
@@ -324,9 +429,10 @@ class CaffeLayer(CaffeNode):
         applying the function defined by the layer
         to the input blobs.
         '''
-        if len(args) == 1 and hasattr(args[0], '__iter__'):
+        if len(args) == 1 and is_non_string_iterable(args[0]):
             args = tuple(args[0])
 
+        assert not self.in_place or len(args) == 1
         assert all(isinstance(a, CaffeBlob) for a in args)
 
         # copy the layer prototype
@@ -345,13 +451,14 @@ class CaffeLayer(CaffeNode):
         # apply the layer to the provided bottom blobs
         for bottom in args:
             layer.add_bottom(bottom)
+            bottom.add_top(layer)
 
         # create and return top blobs based on n_tops
         if layer.n_tops == 0:
             return
 
         elif layer.n_tops == 1:
-            top = CaffeBlob()
+            top = bottom if self.in_place else CaffeBlob()
             top.add_bottom(layer)
             layer.add_top(top)
             return top
@@ -401,50 +508,15 @@ class CaffeLayer(CaffeNode):
         '''
         # get the param type that stores the layer params
         param_type = param_type_map.get(layer_name, None)
-        param_name = param_name_map.get(param_type, None)
+        field_name = field_name_map.get(param_type, None)
         return type(
             layer_name,
             (cls,),
             dict(
-                param_name=param_name,
+                field_name=field_name,
                 param_type=param_type,
             )
         )
-
-
-# map from param types to param names (in layer param)
-param_name_map = {}
-for field in LayerParameter.DESCRIPTOR.fields:
-    if field.name.endswith('_param'):
-        param_type_name = getattr(
-            LayerParameter, field.name
-        ).DESCRIPTOR.message_type.name
-        param_type = globals()[param_type_name]
-        param_name_map[param_type] = field.name
-
-
-# map from layer names to param types
-param_type_map = {}
-for layer_name in caffe.layer_type_list():
-    param_type_name = layer_name + 'Parameter'
-    if param_type_name in globals():
-        param_type_map[layer_name] = globals()[param_type_name]
-
-
-# special cases
-param_type_map['Deconvolution'] = ConvolutionParameter
-param_type_map['EuclideanLoss'] = LossParameter
-param_type_map['SigmoidCrossEntropyLoss'] = LossParameter
-param_type_map['MultinomialLogisticLoss'] = LossParameter
-param_type_map['SoftmaxWithLoss'] = SoftmaxParameter
-param_type_map['SoftmaxWithNoisyLabelLoss'] = SoftmaxParameter
-param_type_map['RNN'] = RecurrentParameter
-param_type_map['LSTM'] = RecurrentParameter
-
-
-# dynamically subclass CaffeLayer for each caffe layer type
-for layer_name in caffe.layer_type_list():
-    globals()[layer_name] = CaffeLayer.make_subclass(layer_name)
 
 
 class CaffeNet(caffe.Net):
@@ -484,31 +556,14 @@ class CaffeNet(caffe.Net):
         assert layer.name not in self.layers_
         self.layers_[layer.name] = layer
 
-    def get_param(self):
+    def to_param(self):
         '''
-        Return a NetParameter from the CaffeLayer list.
+        Convert the CaffeNet to a NetParameter.
         '''
         param = NetParameter()
+
         for layer in self.layers_.values():
-
-            layer_param = LayerParameter()
-            layer_param.name = layer.name
-            layer_param.type = type(layer).__name__
-
-            for bottom in layer.bottoms:
-                layer_param.bottom.append(bottom.name)
-
-            for top in layer.tops:
-                layer_param.top.append(top.name)
-
-            if layer.loss_weight is not None:
-                layer_param.loss_weight.append(layer.loss_weight)
-
-            if layer.param_type and layer.param.ListFields():
-                assign_field_param(
-                    layer_param, layer.param_name, layer.param
-                )
-
+            layer_param = layer.to_param()
             param.layer.append(layer_param)
 
         return param
@@ -520,7 +575,7 @@ class CaffeNet(caffe.Net):
         method inserts split layers as needed.
         '''
         # get NetParameter from graph
-        param = self.get_param()
+        param = self.to_param()
         phase = caffe.TRAIN if train else caffe.TEST
 
         # initalize Net superclass from NetParameter
@@ -533,8 +588,6 @@ class CaffeNet(caffe.Net):
 
         # insert split layers into graph
         self.insert_splits()
-
-        print(self.get_param())
 
         # link graph to Net scaffold
         for layer in self.layers_.values():
@@ -611,6 +664,20 @@ class CaffeNet(caffe.Net):
                     min_width_name = blob_name
         return min_width
 
+    def print_norms(self):
+        print('data_norm diff_norm blob_name')
+        for b in self.blobs:
+            data_norm = np.linalg.norm(self.blobs[b].data)
+            diff_norm = np.linalg.norm(self.blobs[b].diff)
+            print('{:9.2f} {:9.2f} {}'.format(
+                data_norm, diff_norm, b  
+            ))
+
+    def draw(self, im_file, train=False, rank_dir='BT'):
+        param = self.to_param()
+        phase = caffe.TRAIN if train else caffe.TEST
+        draw_net_to_file(param, im_file, rank_dir, phase)
+
 
 # problem: I want to extend Solver and all its subclasses
 # (e.g. SGDSolver, AdamSolver) with the same functionality
@@ -661,7 +728,9 @@ class CaffeSolver(caffe._caffe.Solver):
 
 
 class CaffeSubNet(object):
-
+    '''
+    An inclusive range of layers in a CaffeNet.
+    '''
     def __init__(self, net, start, end):
         self.net = net
         self.start = start
@@ -675,4 +744,9 @@ class CaffeSubNet(object):
     def backward(self, gradient=None):
         if gradient is not None:
             self.net.blobs[self.end].diff[...] = gradient
-        self.net.backward(start=self.start, end=self.end)
+        self.net.backward(start=self.end, end=self.start)
+
+
+# dynamically subclass CaffeLayer for each caffe layer type
+for layer_name in caffe.layer_type_list():
+    globals()[layer_name] = CaffeLayer.make_subclass(layer_name)
