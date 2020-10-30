@@ -2,13 +2,13 @@ import sys, os, pytest
 import numpy as np
 from numpy import isclose
 from numpy.linalg import norm
-os.environ['GLOG_minloglevel'] = '0'
+
+os.environ['GLOG_minloglevel'] = '1'
+import caffe
 
 sys.path.insert(0, '..')
-from caffe_util import CaffeNet, CaffeSubNet
-from models import make_model
-from train import MolGridData
-from generate import MolGridGenerator
+import caffe_util
+import models
 
 
 curr_dir = os.path.dirname(__file__)
@@ -17,6 +17,9 @@ lig_map = os.path.join(curr_dir, '../my_lig_map')
 
 
 def print_side_by_side(param1, param2):
+	'''
+	Print two protobuf messages side-by-side.
+	'''
 	lines1 = str(param1).split('\n')
 	lines2 = str(param2).split('\n')
 	n_lines_diff = len(lines1) - len(lines2)
@@ -32,7 +35,13 @@ def print_side_by_side(param1, param2):
 		print(line1.ljust(max_line_len) + '|' + line2)
 
 
-class TestLig2Lig(object):
+class TestModels(object):
+
+	def test_encoder_decoder_init(self):
+		m = models.EncoderDecoder()
+
+
+class TestLig2LigAE(object):
 
 	encode_type = '_l-l'
 	variational = False
@@ -41,12 +50,10 @@ class TestLig2Lig(object):
 
 	########## CONSTRUCTORS ##########
 
-	def get_param(self):
-		'''
-		Returns a simple NetParameter.
-		'''
-		return make_model(
-			encode_type=self.encode_type,
+	def get_params(self):
+
+		return dict(
+			model_type=self.model_type,
 			data_dim=12,
 			rec_map=rec_map,
 			lig_map=lig_map,
@@ -54,13 +61,16 @@ class TestLig2Lig(object):
 			loss_types='e',
 		)
 
-	def get_net(self, scaffold):
-		param = self.get_param()
-		return CaffeNet(param, scaffold=scaffold)
+	def get_net_param(self):
+		'''
+		Returns a simple NetParameter.
+		'''
+		return make_model(**self.get_params())
 
+
+if False:
 	def get_gen(self, forward):
-		net = self.get_net(scaffold=True)
-		return MolGridGenerator(net, forward=forward)
+		return Generator(self.get_net(scaffold=True), forward=forward)
 
 	########## CHECKS ##########
 
@@ -97,7 +107,7 @@ class TestLig2Lig(object):
 		net = CaffeNet(param, scaffold=False)
 		assert len(net.layers_) == len(param.layer)
 		assert set(net.layers_) == set(l.name for l in param.layer)
-		got_param = net.get_param()
+		got_param = net.to_param()
 		print_side_by_side(param, got_param)
 		assert got_param == param
 		assert not net.has_scaffold()
@@ -143,10 +153,11 @@ class TestLig2Lig(object):
 
 	def test_generator_forward_ones_backward(self):
 		gen = self.get_gen(forward=False)
-		gen.print_blob_diff_norms()
+		gen.net.draw(type(self).__name__ + '.png')
+		gen.net.print_norms()
 		gen.forward(**{i:1 for i in self.inputs})
 		gen.backward()
-		gen.print_blob_diff_norms()
+		gen.net.print_norms()
 		assert not any(self.loss_data_are_zero(gen))
 		assert all(self.loss_diff_are_one(gen))
 		assert not self.output_diff_is_zero(gen)

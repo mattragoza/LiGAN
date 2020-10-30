@@ -186,7 +186,7 @@ class MolStruct(object):
         self.bonds = (atom_dist2 < max_bond_dist2 + tol)
 
 
-class MolGridEncoder(cu.CaffeSubNet):
+class Encoder(cu.CaffeSubNet):
 
     def __init__(self, net, start, end, variational):
         super().__init__(net, start, end)
@@ -209,7 +209,7 @@ class MolGridEncoder(cu.CaffeSubNet):
         return cls(net, start, end, variational)
 
 
-class MolGridLatentSpace(cu.CaffeSubNet):
+class LatentSpace(cu.CaffeSubNet):
 
     @classmethod
     def find_in_net(cls, net, input_):
@@ -224,7 +224,7 @@ class MolGridLatentSpace(cu.CaffeSubNet):
         return self.net.blobs[self.end].shape[1]
 
 
-class MolGridLatentVariable(MolGridLatentSpace):
+class LatentVariable(LatentSpace):
 
     def __init__(self, net, mean, std, noise, sample):
         super().__init__(net, start=mean, end=sample)
@@ -242,7 +242,7 @@ class MolGridLatentVariable(MolGridLatentSpace):
         return cls(net, mean, std, noise, sample)
 
 
-class MolGridDecoder(cu.CaffeSubNet):
+class Decoder(cu.CaffeSubNet):
 
     @classmethod
     def find_in_net(cls, net, n_inputs, output):
@@ -257,7 +257,7 @@ class MolGridDecoder(cu.CaffeSubNet):
         return cls(net, start, end)
 
 
-class MolGridGenerator(object):
+class Generator(object):
 
     def __init__(self, net, forward=True, verbose=False):
 
@@ -289,9 +289,7 @@ class MolGridGenerator(object):
         self.encoders = {}
         for encoder_input in ['rec', 'lig', 'data']:
             try:
-                encoder = MolGridEncoder.find_in_net(
-                    self.net, encoder_input
-                )
+                encoder = Encoder.find_in_net(self.net, encoder_input)
             except IndexError:
                 continue
 
@@ -310,23 +308,19 @@ class MolGridGenerator(object):
 
         # find latent space
         if self.variational:
-            self.latent = MolGridLatentVariable.find_in_net(
-                self.net, latent_input
-            )
+            self.latent = LatentVariable.find_in_net(self.net, latent_input)
         else:
-            self.latent = MolGridLatentSpace.find_in_net(
-                self.net, latent_input
-            )
+            self.latent = LatentSpace.find_in_net(self.net, latent_input)
 
         # find lig decoder
-        self.decoder = MolGridDecoder.find_in_net(
+        self.decoder = Decoder.find_in_net(
             self.net, n_inputs=len(self.encoders), output='lig'
         )
 
         # find loss functions
         self.losses = {}
         for l in find_blobs_in_net(self.net, '.*_loss'):
-            self.losses[l] = cu.CaffeSubNet(self.net, start=l, end=l)
+            self.losses[l] = cu.CaffeSubNet(self.net, start='lig_gen', end=l)
 
     def forward(self, prior=False, **kwargs):
 
@@ -357,17 +351,14 @@ class MolGridGenerator(object):
     def generate(self, data, n_examples, n_samples):
         pass # TODO
 
-    def print_blob_data_norms(self):
-        print('BLOB DATA NORMS')
+    def print_norms(self):
+        print('data_norm diff_norm blob_name')
         for b in self.net.blobs:
-            blob_data = self.net.blobs[b].data
-            print('{:9.2f} {}'.format(np.linalg.norm(blob_data), b))
-
-    def print_blob_diff_norms(self):
-        print('BLOB DIFF NORMS')
-        for b in self.net.blobs:
-            blob_diff = self.net.blobs[b].diff
-            print('{:9.2f} {}'.format(np.linalg.norm(blob_diff), b))
+            data_norm = np.linalg.norm(self.net.blobs[b].data)
+            diff_norm = np.linalg.norm(self.net.blobs[b].diff)
+            print('{:9.2f} {:9.2f} {}'.format(
+                data_norm, diff_norm, b  
+            ))
 
 
 class AtomFitter(object):

@@ -5,49 +5,473 @@ import numpy as np
 import pandas as pd
 import caffe
 
+import io, name_formats, params
 import molgrid
-import caffe_util as cu
-import params
+import caffe_util
 from benchmark import benchmark_net
 
 
-# format strings for mapping model params to unique names
-NAME_FORMATS = dict(
-    data=OrderedDict({
-        '11': 'data_{data_dim:d}_{resolution:g}{data_options}'
-    }),
-    gen=OrderedDict({
-        '110': '{encode_type}e11_{data_dim:d}_0',
-        '11': '{encode_type}e11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{pool_type}_{unpool_type}',
-        '12': '{encode_type}e12_{data_dim:d}_{resolution:g}_{n_levels:d}_{conv_per_level:d}_{n_filters:d}_{width_factor:d}_{loss_types}',
-        '13': '{encode_type}e13_{data_dim:d}_{resolution:g}{data_options}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{n_latent:d}_{loss_types}'
-    }),
-    disc=OrderedDict({
-        '00': 'disc{arch_options}',
-        '01': 'disc_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_in',
-        '11': 'd11_{data_dim:d}_{n_levels:d}_{conv_per_level:d}{arch_options}_{n_filters:d}_{width_factor:d}_{loss_types}',
-    }),
-    solver=OrderedDict({
-        '10': '{solver_name}',
-        '11': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}',
-        '12': '{solver_name}_{gen_train_iter:d}_{disc_train_iter:d}_{train_options}_{instance_noise:g}_{loss_weight:g}_{loss_weight_decay:g}',
-    }),
-)
+# mapping of valid model type codes to model types
+if False:
+    model_type_map = {}
+    model_type_map['_-l'] = LigGenerator
+    model_type_map['_l-l'] = Lig2LigAE
+    model_type_map['_r-l'] = Rec2LigCE
+    model_type_map['_vl-l'] = Lig2LigVAE
+    model_type_map['_vr-l'] = Rec2LigVCE
+    model_type_map['_vlr-l'] = RecLig2LigCVAE
+    model_type_map['_rvl-l'] = RecLig2LigCVAE
+    model_type_map['_vdr-l'] = RecComplex2LigCVAE
+    model_type_map['_rvd-l'] = RecComplex2LigCVAE
+    model_type_map['_l-'] = LigDiscriminator
+    model_type_map['_d-'] = ComplexDiscriminator
 
 
-def read_file(file_):
-    with open(file_, 'r') as f:
-        return f.read()
+# mapping of pool_types to PoolingParam.pool enum values
+pool_type_map = {}
+pool_type_map['a'] = caffe_util.Pooling.param_type.AVE
+pool_type_map['m'] = caffe_util.Pooling.param_type.MAX
 
 
-def count_lines_in_file(file_):
-    with open(file_, 'r') as f:
-        return sum(1 for line in f if line.rstrip())
+def caffe_shape(*args):
+    return dict(dim=list(*args))
 
 
-def write_file(file_, buf):
-    with open(file_, 'w') as f:
-        f.write(buf)
+class Model(object):
+
+    @classmethod
+    def from_type(cls, model_type, *args, **kwargs):
+        return model_type_map[model_type](*args, **kwargs)
+
+
+class Sequential(Model):
+
+    def __init__(self, n_filters, grid_dim, pool_factors=[]):
+
+        # sequence of CaffeLayer prototypes to apply
+        self.layers = []
+
+        # track convolutional output shape
+        self.n_filters = n_filters
+        self.grid_dim = grid_dim
+
+        # track pooling factors
+        self.pool_factors = list(pool_factors) or []
+
+        # track last layer with num_output
+        self.last_output = None
+
+    def __call__(self, input):
+        for layer in self.layers:
+            output = layer(input)
+            input = output
+        return output
+
+    def add_layer(self, layer):
+        self.layers.append(layer)
+
+    def add_relu(self, leak):
+        relu = caffe_util.ReLU(negative_slope=leak, in_place=True)
+        self.add_layer(relu)
+
+    def add_sigmoid(self):
+        self.add_layer(caffe_util.Sigmoid())
+
+    def add_identity(self):
+        self.add_layer(caffe_util.Power())
+
+    def add_fc(self, n_output, relu_leak=None):
+        assert n_output > 0
+
+        fc = caffe_util.InnerProduct(
+            num_output=n_output,
+            weight_filler=dict(type='xavier'),
+        )
+        self.add_layer(fc)
+        self.last_output = fc
+
+        if relu_leak is not None:
+            self.add_relu(relu_leak)
+
+    def add_conv(self, n_filters, kernel_size, relu_leak=None):
+        assert n_filters > 0
+        assert kernel_size > 0
+        
+        conv = caffe_util.Convolution(
+            num_output=n_filters,
+            kernel_size=kernel_size,
+            pad=kernel_size//2,
+            weight_filler=dict(type='xavier'),
+        )
+        self.add_layer(conv)
+        self.n_filters = n_filters
+        self.last_output = conv
+
+        if relu_leak is not None:
+            self.add_relu(relu_leak)
+
+    def add_deconv(self, n_filters, kernel_size, relu_leak=None):
+        assert n_filters > 0
+        assert kernel_size > 0
+        
+        deconv = caffe_util.Deconvolution(
+            num_output=n_filters,
+            kernel_size=kernel_size,
+            pad=kernel_size//2,
+            weight_filler=dict(type='xavier'),
+        )
+        self.add_layer(deconv)
+        self.n_filters = n_filters
+        self.last_output = deconv
+
+        if relu_leak is not None:
+            self.add_relu(relu_leak)
+
+    def add_pool(self, pool_type, pool_factor=None):
+
+        if pool_factor is None:
+            pool_factor = least_prime_factor(self.grid_dim)
+
+        assert self.grid_dim >= pool_factor > 1
+        assert pool_type in {'m', 'a', 'c'}
+        
+        if pool_type in pool_type_map: # max or average pooling
+
+            pool = caffe_util.Pooling(
+                pool=pool_type_map[pool_type],
+                kernel_size=pool_factor,
+                stride=pool_factor,
+            )
+
+        elif pool_type == 'c': # strided convolution
+
+            pool = caffe_util.Convolution(
+                num_output=self.n_filters,
+                group=self.n_filters,
+                weight_filler=dict(type='xavier'),
+                kernel_size=pool_factor,
+                stride=pool_factor,
+                engine=caffe_util.Convolution.param_type.CAFFE,
+            )
+
+        else:
+            raise ValueError('unknown pool_type ' + repr(pool_type))
+
+        self.add_layer(pool)
+        self.grid_dim //= pool_factor
+        self.pool_factors.append(pool_factor)
+
+    def add_unpool(self, unpool_type, unpool_factor=None):
+
+        if unpool_factor is None:
+            unpool_factor = self.pool_factors.pop()
+
+        assert unpool_factor > 1
+        assert unpool_type in {'n', 'c'}
+
+        if unpool_type == 'n': # nearest-neighbor
+
+            unpool = caffe_util.Deconvolution(
+                num_output=self.n_filters,
+                group=self.n_filters,
+                kernel_size=unpool_factor,
+                stride=unpool_factor,
+                weight_filler=dict(type='constant', value=1),
+                bias_term=False,
+                engine=caffe_util.Convolution.param_type.CAFFE,
+            )
+            unpool.lr_mult = 0
+            unpool.decay_mult = 0
+
+        elif unpool_type == 'c': # strided deconvolution
+
+            unpool = caffe_util.Deconvolution(
+                num_output=self.n_filters,
+                group=self.n_filters,
+                kernel_size=unpool_factor,
+                stride=unpool_factor,
+                weight_filler=dict(type='xavier'),
+                engine=caffe_util.Convolution.param_type.CAFFE,
+            )
+
+        self.add_layer(unpool)
+        self.grid_dim *= unpool_factor
+
+    def add_reshape(self, shape):
+        reshape = caffe_util.Reshape(shape=caffe_shape(shape))
+        self.add_layer(reshape)
+
+    def add_conv_and_pool(
+        self,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        pool_type,
+        pool_factor=None,
+    ):
+        self.add_conv(n_filters, kernel_size, relu_leak)
+        self.add_pool(pool_type, pool_factor)
+
+    def add_conv_block(
+        self,
+        n_conv,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        dense_net,
+    ):
+        assert n_conv > 0
+
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
+
+        for i in range(n_conv):
+            self.add_conv(n_filters, kernel_size, relu_leak)
+
+    def add_deconv_block(
+        self,
+        n_deconv,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        dense_net,
+    ):
+        assert n_deconv > 0
+
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
+
+        for i in range(n_deconv):
+            self.add_deconv(n_filters, kernel_size, relu_leak)
+
+    def add_unpool_and_deconv(
+        self,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        unpool_type,
+        unpool_factor=None,
+    ):
+        self.add_unpool(unpool_type, unpool_factor)
+        self.add_deconv(n_filters, kernel_size, relu_leak)
+
+    def add_fixed_conv(self, kernel_size):
+
+        conv = caffe_util.Convolution(
+            num_output=self.n_filters,
+            group=self.n_filters,
+            kernel_size=kernel_size,
+            pad=kernel_size//2,
+            weight_filler=dict(type='constant', value=0),
+            bias_term=False,
+            engine=caffe_util.Convolution.param_type.CAFFE,
+        )
+        conv.lr_mult = 0
+        conv.decay_mult = 0
+
+        self.add_layer(conv)
+
+    def add_self_att(self):
+        raise NotImplementedError('TODO self-attention')
+
+    def add_batch_disc(self):
+        raise NotImplementedError('TODO batch discrimination')
+
+
+class Encoder(Sequential):
+    
+    def __init__(
+        self,
+        n_channels,
+        grid_dim,
+        n_filters,
+        width_factor,
+        n_levels,
+        conv_per_level,
+        kernel_size,
+        relu_leak,
+        pool_type,
+        n_output,
+        init_conv_pool=False,
+        self_attention=False,
+        dense_net=False,
+        batch_disc=False,
+        fully_conv=False,
+    ):
+        super().__init__(n_channels, grid_dim)
+
+        if init_conv_pool:
+
+            self.add_conv_and_pool(
+                n_filters,
+                kernel_size,
+                relu_leak,
+                pool_type,
+            )
+
+        for level in range(n_levels):
+
+            if level > 0: # downsample between conv blocks
+
+                self.add_pool(pool_type)
+                n_filters *= width_factor
+
+            if self_attention:
+                self.add_self_att()
+
+            self.add_conv_block(
+                conv_per_level,
+                n_filters,
+                kernel_size,
+                relu_leak,
+                dense_net,
+            )
+
+        if batch_disc:
+            raise NotImplementedError('TODO batch_disc')
+
+        if fully_conv:
+            raise NotImplementedError('TODO fully_conv')
+        else:
+            self.add_fc(n_output)
+
+
+class Decoder(Sequential):
+
+    def __init__(
+        self,
+        n_filters,
+        grid_dim,
+        pool_factors,
+        width_factor,
+        n_levels,
+        deconv_per_level,
+        kernel_size,
+        relu_leak,
+        unpool_type,
+        n_channels,
+        final_unpool_deconv=False,
+        self_attention=False,
+        dense_net=False,
+        fully_conv=False,
+        kernel_output=False,
+    ):
+        super().__init__(n_filters, grid_dim, pool_factors)
+
+        if fully_conv:
+            raise NotImplementedError('TODO fully_conv')
+
+        else: # first layer maps to initial grid shape
+
+            grid_shape = (0, -1) + (grid_dim,)*3
+            self.add_fc(n_filters*grid_dim**3, relu_leak)
+            self.add_reshape(grid_shape)
+
+        for level in reversed(range(n_levels)):
+
+            if level+1 < n_levels: # upsample between conv blocks
+                
+                self.add_unpool(unpool_type)
+                n_filters //= width_factor
+
+            self.add_deconv_block(
+                deconv_per_level,
+                n_filters,
+                kernel_size,
+                relu_leak,
+                dense_net,
+            )
+
+            if self_attention:
+                self.add_self_att()
+
+        if final_unpool_deconv:
+
+            self.add_unpool_and_deconv(
+                n_channels,
+                kernel_size,
+                relu_leak,
+                unpool_type,
+            )
+
+        if kernel_output:
+            self.add_fixed_conv(kernel_size=7)
+
+        # make sure the output has correct n_channels
+        if isinstance(self.last_output, caffe_util.InnerProduct):
+            self.last_output.param.num_output = n_channels*grid_dim**3
+        else:
+            self.last_output.param.num_output = n_channels
+
+
+class EncoderDecoder(Model):
+
+    def __init__(
+        self,
+        n_channels=19,
+        grid_dim=48,
+        n_filters=32,
+        width_factor=2,
+        n_levels=4,
+        conv_per_level=3,
+        kernel_size=3,
+        relu_leak=0.1,
+        pool_type='a',
+        unpool_type='n',
+        n_latent=1024,
+        init_conv_pool=False,
+    ):
+
+        self.encoder = Encoder(
+            n_channels=n_channels,
+            grid_dim=grid_dim,
+            init_conv_pool=init_conv_pool,
+            n_filters=n_filters,
+            width_factor=width_factor,
+            n_levels=n_levels,
+            conv_per_level=conv_per_level,
+            kernel_size=kernel_size,
+            relu_leak=relu_leak,
+            pool_type=pool_type,
+            n_output=n_latent,
+        )
+
+        print(self.encoder.n_filters)
+        print(self.encoder.grid_dim)
+        print(self.encoder.pool_factors)
+
+        self.decoder = Decoder(
+            n_filters=self.encoder.n_filters,
+            grid_dim=self.encoder.grid_dim,
+            pool_factors=self.encoder.pool_factors,
+            width_factor=width_factor,
+            n_levels=n_levels,
+            deconv_per_level=conv_per_level,
+            kernel_size=kernel_size,
+            relu_leak=relu_leak,
+            unpool_type=unpool_type,
+            final_unpool_deconv=init_conv_pool,
+            n_channels=n_channels,
+        )
+
+    def __call__(self, input):
+        latent = self.encoder(input)
+        return self.decoder(latent)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def write_model(model_file, net_param, model_params={}):
@@ -59,7 +483,7 @@ def write_model(model_file, net_param, model_params={}):
     if model_params:
         buf += params.format_params(model_params, '# ')
     buf += str(net_param)
-    write_file(model_file, buf)
+    io.write_file(model_file, buf)
 
 
 def write_models(model_dir, param_space, scaffold=False, n_benchmark=0, verbose=False):
@@ -89,7 +513,7 @@ def write_models(model_dir, param_space, scaffold=False, n_benchmark=0, verbose=
 
         if scaffold or n_benchmark > 0:
             df.loc[i, 'model_file'] = model_file
-            net = cu.CaffeNet.from_prototxt(model_file)
+            net = caffe_util.CaffeNet.from_prototxt(model_file)
             net.scaffold()
             result = benchmark_net(net, n=n_benchmark)
             for key, value in result.mean().items():
@@ -118,12 +542,7 @@ def parse_params(buf, line_start='', delim='=', prefix='', converter=ast.literal
     return params
 
 
-def read_params(params_file):
-    '''
-    Read lines from params_file as param = value pairs.
-    '''
-    buf = read_file(params_file)
-    return parse_params(buf)
+
 
 
 def read_params_from_model(model_file, prefix=''):
@@ -176,99 +595,38 @@ def param_space_latin_hypercube(n, param_space): #TODO fix this
         yield dict(zip(param_space, value))
 
 
-def parse_name(name, name_format, prefix=''):
-    pattern = '^' + name_format.replace('{',   r'(?P<') \
-                               .replace(':d}', r'>\d+)') \
-                               .replace(':f}', r'>[-+]?(\d*\.\d+|\d+)') \
-                               .replace(':g}', r'>[-+]?(\d*\.\d+|\d+)(e[-+]?\d+)?)') \
-                               .replace('}',   r'>.*)') + '$'
-    try:
-        return OrderedDict((prefix+p, v) for p,v in re.match(pattern, name).groupdict().items())
-    except AttributeError:
-        raise Exception('failed to parse {} with format {}'.format(repr(name), name_format))
-
-
-def parse_gan_name(gan_model_name):
-
-    print('Parsing GAN model name {}'.format(gan_model_name))
-
-    m = re.match(r'^(.+)_([^_]+e(\d+).+)_((d(isc|(\d+)).*))$', gan_model_name)
-    params = dict(
-        solver_name=m.group(1),
-        gen_model_name=m.group(2),
-        gen_model_version=m.group(3),
-        disc_model_name=m.group(4),
-        disc_model_version='00' if m.group(4) in {'disc', 'disc2'} else \
-            ('01' if m.group(5) == 'disc' else m.group(6))
-    )
-    try:
-        params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['12'], 'job_params.'))
-    except:
-        try:
-            params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['11'], 'job_params.'))
-        except:
-            params.update(parse_name(params['solver_name'], NAME_FORMATS['solver']['10'], 'job_params.'))
-    try:
-        solver_file = 'solvers/{}.solver'.format(params['job_params.solver_name'])
-        params.update(**read_params_from_solver(solver_file, 'job_params.solver_params.'))
-    except IOError:
-        params.update(**read_params_from_solver('solvers/adam0.solver', 'job_params.solver_params.'))
-    params.update(parse_name(params['gen_model_name'], NAME_FORMATS['gen'][params['gen_model_version']], 'job_params.gen_model_params.'))
-    params.update(parse_name(params['disc_model_name'], NAME_FORMATS['disc'][params['disc_model_version']], 'job_params.disc_model_params.'))
-    params['job_params.gen_model_params.loss_types'] += 'g'
-    return params
-
-
-def parse_gen_name(gen_model_name):
-
-    m = re.match(r'[^_]+e(\d+).+', gen_model_name)
-    params = dict(gen_model_version=m.group(1))
-    try:
-        params.update(parse_name(gen_model_name, NAME_FORMATS['gen'][params['gen_model_version']], 'job_params.gen_model_params.'))
-    except Exception as e:
-        if params['gen_model_version'] == '11':
-            try:
-                params.update(parse_name(gen_model_name, NAME_FORMATS['gen']['110'], 'job_params.gen_model_params.'))
-            except:
-                raise e
-        else:
-            raise e
-    params.update(**read_params_from_solver('solvers/adam0.solver', 'job_params.solver_params.'))
-    return params
-
-
-def standardize_encode_type(encode_type):
-    if encode_type == 'data':
+def standardize_model_type(model_type):
+    if model_type == 'data':
         return '-'
-    if encode_type == 'disc':
+    if model_type == 'disc':
         return '_d-'
-    m = re.match(r'(_)?(v)?(a|c)', encode_type)
+    m = re.match(r'(_)?(v)?(a|c)', model_type)
     if m:
-        encode_type = encode_type.replace('a', 'd-d')
-        encode_type = encode_type.replace('c', 'r-l')
-    return encode_type
+        model_type = model_type.replace('a', 'd-d')
+        model_type = model_type.replace('c', 'r-l')
+    return model_type
 
 
-def parse_encode_type(encode_type):
-    encode_type = standardize_encode_type(encode_type)
+def parse_model_type(model_type):
+    model_type = standardize_model_type(model_type)
     enc_pat = r'(v)?(d|r|l)'
     dec_pat = r'(d|r|l|y)'
     pat = r'(_)?(?P<enc>({})*)-(?P<dec>({})*)'.format(enc_pat, dec_pat)
-    m = re.match(pat, encode_type)
+    m = re.match(pat, model_type)
     try:
-        molgrid_data = not m.group(1)
+        has_data = not m.group(1)
         map_ = dict(r='rec', l='lig', d='data')
         encoders = [(bool(v), map_[e]) for v,e in re.findall(enc_pat, m.group('enc'))]
         decoders = [map_[d] for d in re.findall(dec_pat, m.group('dec'))]
-        return molgrid_data, encoders, decoders
+        return has_data, encoders, decoders
     except AttributeError:
         raise Exception('could not parse encode_type {} with pattern {}'.format(encode_type, pat))
 
 
-def format_encode_type(molgrid_data, encoders, decoders):
+def format_model_type(has_data, encoders, decoders):
     encode_str = ''.join(v+e for v,e in encoders)
     decode_str = ''.join(decoders)
-    return '{}{}-{}'.format(('_', '')[molgrid_data], encode_str, decode_str)
+    return '{}{}-{}'.format(('_', '')[has_data], encode_str, decode_str)
 
 
 def least_prime_factor(n):
@@ -276,7 +634,7 @@ def least_prime_factor(n):
 
 
 def make_model(
-        encode_type='data',
+        model_type='data',
         data_dim=24,
         resolution=0.5,
         data_options='',
@@ -305,7 +663,7 @@ def make_model(
         verbose=False
     ):
 
-    molgrid_data, encoders, decoders = parse_encode_type(encode_type)
+    molgrid_data, encoders, decoders = parse_model_type(model_type)
 
     use_covalent_radius = 'c' in data_options
     binary_atoms = 'b' in data_options
