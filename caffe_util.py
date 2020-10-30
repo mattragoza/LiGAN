@@ -33,6 +33,15 @@ def temp_prototxt(param):
     os.remove(prototxt_file)
 
 
+def is_non_string_iterable(value):
+    # repeated containers don't have an __iter__
+    # attribute, but can still get an iterator
+    try:
+        return not isinstance(value, str) and iter(value)
+    except TypeError:
+        return False
+
+
 def assign_index_param(param, index, value):
 
     if index == len(param): # append value
@@ -61,15 +70,6 @@ def update_repeated_param(param, *args):
         assign_index_param(param, i, value)
 
 
-def is_non_string_iterable(value):
-    # repeated containers don't have an __iter__
-    # attribute, but can still get an iterator
-    try:
-        return not isinstance(value, str) and iter(value)
-    except TypeError:
-        return False
-
-
 def assign_field_param(param, key, value):
 
     # allow assigning a single value to repeated fields
@@ -90,13 +90,21 @@ def assign_field_param(param, key, value):
         setattr(param, key, value)
 
 
-def update_composite_param(param, **kwargs):
+def update_composite_param(param, *args, **kwargs):
+
+    for i, value in enumerate(args):
+        key = get_field_name_by_index(self.param, i)
+        if key in kwargs:
+            raise TypeError(
+                type(self).__name__ + ' got multiple values for ' + repr(key)
+            )
+        kwargs[key] = value
 
     for key, value in kwargs.items():
         assign_field_param(param, key, value)
 
 
-# protobuf message fields use enums to specify their type and label
+# protobuf message fields use enums to specify their type
 field_type_enum = {}  # enum_val -> type_name
 for key, val in vars(FieldDescriptor).items():
     if key.startswith('TYPE_'):
@@ -113,9 +121,13 @@ def is_repeated_field(param, key):
     return label == FieldDescriptor.LABEL_REPEATED
 
 
-def is_required_field(paran, key):
+def is_required_field(param, key):
     label = getattr(type(param), key).DESCRIPTOR.label
     return label == FieldDescriptor.LABEL_REQUIRED
+
+
+def get_field_name_by_index(param, i):
+    return param.DESCRIPTOR.fields[i].name
 
 
 def get_message_docstring(msg):
@@ -216,9 +228,8 @@ class CaffeNode(object):
     can either be a CaffeBlob or a CaffeLayer.
     '''
     # TODO
-    # - allow lazy evaluation of net using graph
-    # - allow multiple top-most blobs
-    # - allow in-place layer calls
+    # - lazy/partial evaluation of graph
+    # - create param through graph traversal
     # - infer n_tops from layer type
     # - tuplify blob shapes where possible
     # - more readable automatic node names
@@ -236,11 +247,10 @@ class CaffeNode(object):
         self.tops.append(top)
 
     def replace_bottom(self, old, new):
-        for i, bottom in enumerate(self.bottoms):
-            if bottom is old:
-                break
-        assert bottom is old
-        self.bottoms[i] = new
+        self.bottoms[self.bottoms.index(old)] = new
+
+    def replace_top(self, old, new):
+        self.tops[self.tops.index(old)] = new
 
     def set_net(self, net):
         self.net = net
@@ -299,6 +309,9 @@ class CaffeBlob(CaffeNode):
     def sum(self, axis=0):
         return Reduction(Reduction.param_type.SUM, axis=axis)(self)
 
+    def reshape(self, shape):
+        return Reshape(shape=dict(dim=list(shape)))(self)
+
 
 class CaffeLayer(CaffeNode):
     '''
@@ -327,20 +340,11 @@ class CaffeLayer(CaffeNode):
         self.in_place = kwargs.pop('in_place', False)
         assert not self.in_place or self.n_tops == 1
 
+        self.param = None
         if self.param_type:
+
             self.param = self.param_type()
-
-            for i, val in enumerate(args):
-                key = self.param.DESCRIPTOR.fields[i].name
-                if key in kwargs:
-                    raise TypeError(
-                        type(self).__name__ + 
-                        ' got multiple values for param ' + 
-                        key
-                    )
-                kwargs[key] = val
-
-            update_composite_param(self.param, **kwargs)
+            update_composite_param(self.param, *args, **kwargs)
 
         elif args or kwargs:
             raise TypeError(
@@ -435,41 +439,31 @@ class CaffeLayer(CaffeNode):
         assert not self.in_place or len(args) == 1
         assert all(isinstance(a, CaffeBlob) for a in args)
 
-        # copy the layer prototype
-        layer_type = type(self)
-        layer = layer_type(n_tops=self.n_tops)
-
-        if self.param_type:
-            layer.param.CopyFrom(self.param)
-
         if name:
-            layer.name = name
-
-        if loss_weight:
-            layer.loss_weight = loss_weight
+            self.name = name
 
         # apply the layer to the provided bottom blobs
         for bottom in args:
-            layer.add_bottom(bottom)
-            bottom.add_top(layer)
+            self.add_bottom(bottom)
+            bottom.add_top(self)
 
         # create and return top blobs based on n_tops
-        if layer.n_tops == 0:
+        if self.n_tops == 0:
             return
 
-        elif layer.n_tops == 1:
+        elif self.n_tops == 1:
             top = bottom if self.in_place else CaffeBlob()
-            top.add_bottom(layer)
-            layer.add_top(top)
+            top.add_bottom(self)
+            self.add_top(top)
             return top
 
         else:
-            for i in range(layer.n_tops):
+            for i in range(self.n_tops):
                 top = CaffeBlob()
-                top.add_bottom(layer)
-                layer.add_top(top)
+                top.add_bottom(self)
+                self.add_top(top)
 
-            return layer.tops
+            return self.tops
 
     def add_bottom(self, bottom):
         assert isinstance(bottom, CaffeBlob)

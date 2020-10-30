@@ -7,8 +7,7 @@ os.environ['GLOG_minloglevel'] = '1'
 import caffe
 
 sys.path.insert(0, '..')
-import caffe_util
-import models
+import caffe_util as cu
 
 
 curr_dir = os.path.dirname(__file__)
@@ -35,37 +34,220 @@ def print_side_by_side(param1, param2):
 		print(line1.ljust(max_line_len) + '|' + line2)
 
 
-class TestModels(object):
-
-	def test_encoder_decoder_init(self):
-		m = models.EncoderDecoder()
+def get_caffe_nodes(n):
+	return (cu.CaffeNode() for i in range(n))
 
 
-class TestLig2LigAE(object):
+def get_caffe_blobs(n):
+	return (cu.CaffeBlob() for i in range(n))
 
-	encode_type = '_l-l'
-	variational = False
-	inputs = ['lig']
-	losses = ['L2_loss']
 
-	########## CONSTRUCTORS ##########
+def get_caffe_layers(n):
+	return (cu.Split() for i in range(n))
 
-	def get_params(self):
 
-		return dict(
-			model_type=self.model_type,
-			data_dim=12,
-			rec_map=rec_map,
-			lig_map=lig_map,
-			n_latent=128,
-			loss_types='e',
-		)
+class TestCaffeNode(object):
 
-	def get_net_param(self):
-		'''
-		Returns a simple NetParameter.
-		'''
-		return make_model(**self.get_params())
+	def test_init(self):
+		x = cu.CaffeNode()
+		assert x.name == hex(id(x))
+		assert x.bottoms == []
+		assert x.tops == []
+		assert x.net is None
+
+	def test_init_name(self):
+		x = cu.CaffeNode(name='asdf')
+		assert x.name == 'asdf'
+
+	def test_add_bottom(self):
+		x, y = get_caffe_nodes(2)
+		x.add_bottom(y)
+		assert x.bottoms == [y]
+		assert y.tops == []
+
+	def test_add_top(self):
+		x, y = get_caffe_nodes(2)
+		x.add_top(y)
+		assert x.tops == [y]
+		assert y.bottoms == []
+
+	def test_replace_bottom(self):
+		x, y, z = get_caffe_nodes(3)
+		x.add_bottom(y)
+		x.replace_bottom(y, z)
+		assert x.bottoms == [z]
+		assert y.tops == []
+		assert z.tops == []
+
+	def test_replace_bottom_dup(self):
+		x, y, z = get_caffe_nodes(3)
+		x.add_bottom(y)
+		x.add_bottom(y)
+		x.replace_bottom(y, z)
+		assert x.bottoms == [z, y]
+
+	def test_replace_bottom_err(self):
+		x, y, z = get_caffe_nodes(3)
+		with pytest.raises(ValueError):
+			x.replace_bottom(y, z)
+
+	def test_replace_top(self):
+		x, y, z = get_caffe_nodes(3)
+		x.add_top(y)
+		x.replace_top(y, z)
+		assert x.tops == [z]
+		assert y.bottoms == []
+		assert z.bottoms == []
+
+	def test_replace_top_dup(self):
+		x, y, z = get_caffe_nodes(3)
+		x.add_top(y)
+		x.add_top(y)
+		x.replace_top(y, z)
+		assert x.tops == [z, y]
+
+	def test_replace_top_err(self):
+		x, y, z = get_caffe_nodes(3)
+		with pytest.raises(ValueError):
+			x.replace_top(y, z)
+
+
+class TestCaffeBlob(object):
+
+	def test_init(self):
+		x = cu.CaffeBlob()
+		assert x.name == hex(id(x))
+		assert x.bottoms == []
+		assert x.tops == []
+		assert x.net is None
+
+	def test_init_name(self):
+		x = cu.CaffeBlob(name='asdf')
+		assert x.name == 'asdf'
+
+	def add_bottom(self):
+		x = cu.CaffeBlob()
+		f = cu.Split()
+		x.add_bottom(f)
+		assert x.bottoms == [f]
+		assert f.tops == []
+
+	def add_bottom_err(self):
+		x, y = get_caffe_blobs(2)
+		with pytest.raises(AssertionError):
+			x.add_bottom(y)
+
+	def test_add_top(self):
+		x = cu.CaffeBlob()
+		f = cu.Split()
+		x.add_top(f)
+		assert x.tops == [f]
+		assert f.bottoms == []
+
+	def test_add_top_err(self):
+		x, y = get_caffe_blobs(2)
+		with pytest.raises(AssertionError):
+			x.add_top(y)
+
+
+class TestCaffeLayer(object):
+
+	def test_base_init(self):
+		with pytest.raises(TypeError):
+			f = cu.CaffeLayer()
+
+	def test_subclass_init(self):
+		for layer_name in caffe.layer_type_list():
+			f = getattr(cu, layer_name)()
+			assert f.n_tops == 1
+			assert f.in_place == False
+			assert f.loss_weight is None
+			assert f.lr_mult is None
+			assert f.decay_mult is None
+			if layer_name in cu.param_type_map:
+				param_type = cu.param_type_map[layer_name]
+				assert isinstance(f.param, param_type)
+			else:
+				assert f.param is None
+
+	def add_bottom(self):
+		x = cu.CaffeBlob()
+		f = cu.Split()
+		f.add_bottom(x)
+		assert f.bottoms == [x]
+		assert x.tops == []
+
+	def add_bottom_err(self):
+		f, g = get_caffe_layers(2)
+		with pytest.raises(AssertionError):
+			f.add_bottom(g)
+
+	def test_add_top(self):
+		x = cu.CaffeBlob()
+		f = cu.Split()
+		f.add_top(x)
+		assert f.tops == [x]
+		assert x.bottoms == []
+
+	def test_add_top_err(self):
+		f, g = get_caffe_layers(2)
+		with pytest.raises(AssertionError):
+			f.add_top(g)
+
+	def test_call(self):
+		x = cu.CaffeBlob()
+		f = cu.Split()
+		y = f(x)
+		assert isinstance(y, cu.CaffeBlob)
+		assert y.bottoms == [f]
+		assert f.bottoms == [x]
+		assert x.tops == [f]
+		assert f.tops == [y]
+
+	def test_call_n_tops(self):
+		x = cu.CaffeBlob()
+		f = cu.Split(n_tops=2)
+		y = f(x)
+		assert len(y) == 2
+		assert isinstance(y[0], cu.CaffeBlob)
+		assert isinstance(y[1], cu.CaffeBlob)
+		assert y[0] != y[1]
+		assert y[0].bottoms == [f]
+		assert y[1].bottoms == [f]
+		assert f.tops == y
+
+	def test_call_two_args(self):
+		x, y = get_caffe_blobs(2)
+		f = cu.Split()
+		z = f(x, y)
+		assert f.bottoms == [x, y]
+		assert x.tops == [f]
+		assert y.tops == [f]
+
+	def test_call_tuple_arg(self):
+		x, y = get_caffe_blobs(2)
+		f = cu.Split()
+		z = f((x, y))
+		assert f.bottoms == [x, y]
+		assert x.tops == [f]
+		assert y.tops == [f]
+
+	def test_call_in_place(self):
+		x = cu.CaffeBlob()
+		f = cu.Split(in_place=True)
+		y = f(x)
+		assert y is x
+
+	def test_call_in_place_err(self):
+		with pytest.raises(AssertionError):
+			f = cu.Split(in_place=True, n_tops=2)
+
+	def test_call_in_place_err2(self):
+		x, y = get_caffe_blobs(2)
+		f = cu.Split(in_place=True)
+		with pytest.raises(AssertionError):
+			f(x, y)
+
 
 
 if False:
