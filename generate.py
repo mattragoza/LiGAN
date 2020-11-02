@@ -672,7 +672,6 @@ class AtomFitter(object):
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
-            visited_structs=visited_structs,
             src_struct=struct_best,
         )
 
@@ -727,6 +726,7 @@ class AtomFitter(object):
         visited_mols = [rd_mol]
 
         if self.dkoes_make_mol:
+
             pb_mol, misses = dkoes_fitting.make_obmol(struct, self.verbose)
             ob_mol = pb_mol.OBMol
             visited_mols.append(ob_mol_to_rd_mol(ob_mol))
@@ -735,11 +735,9 @@ class AtomFitter(object):
 
         elif self.mtr22_make_mol:
 
-            # trying to derive the bonds by principled "inverse atom typing"
+            # TODO try to derive the bonds by principled "inverse atom typing"
             # where we use the atom types to constrain the molecule in OB
-
             ob_mol = struct.to_ob_mol()
-            # TODO
 
         else:
             # connect the dots using openbabel
@@ -798,6 +796,14 @@ class DkoesAtomFitter(AtomFitter):
         self.use_openbabel = use_openbabel
 
     def fit(self, grid, types):
+
+        grid = MolGrid(
+            values=torch.tensor(grid.values),
+            channels=grid.channels,
+            center=grid.center,
+            resolution=grid.resolution,
+        )
+
         struct, grid_pred = dkoes_fitting.simple_atom_fit(
             mgrid=grid,
             types=types,
@@ -805,17 +811,17 @@ class DkoesAtomFitter(AtomFitter):
             tol=self.tol,
             grm=1.0
         )
+        struct.info['visited_structs'] = [struct]
         self.validify(struct)
-        
+
         grid_pred = MolGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
-            visited_structs=[struct],
-            src_struct=struct_best,
-        )        
-        return remove_tensors(struct)
+            src_struct=struct,
+        )
+        return remove_tensors(grid_pred)
 
 
 class OutputWriter(object):
@@ -1185,7 +1191,7 @@ class OutputWriter(object):
             # accuracy of estimated type counts, whether or not
             # they were actually used to constrain atom fitting
             est_type = struct_type[:-4] + '_est'
-            m.loc[idx, est_type+'_type_diff'] = struct.info['est_type_diff']
+            m.loc[idx, est_type+'_type_diff'] = struct.info.get('est_type_diff', np.nan)
             m.loc[idx, est_type+'_exact_types'] = (
                 m.loc[idx, est_type+'_type_diff'] == 0
             )

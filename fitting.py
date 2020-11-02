@@ -108,7 +108,13 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     mgrid.values = mgrid.values.to(device)
 
     if not initcoords: #no atoms
-        return (np.info,0,0,MolStruct(np.zeros((0,3)),np.zeros(0), mgrid.channels))    
+        mol = MolStruct(initcoords.reshape(0,3), typeindices, mgrid.channels,            
+                L2_loss=(mgrid.values**2).sum(),
+                time=time.time()-t_start,
+                iterations=0,
+                numfixes=0,
+                )
+        return mol, torch.zeros(mgrid.values.shape, device='cpu')
   
     #having setup input coordinates, optimize with BFGS
     coords = torch.tensor(initcoords,dtype=torch.float32,requires_grad=True,device=device)
@@ -259,6 +265,7 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
 def fixup(atoms, mol, struct):
     '''Set atom properties to match channel.  Keep doing this
     to beat openbabel over the head with what we want to happen.'''
+
     mol.SetAromaticPerceived(True)  #avoid perception
     for atom,t in zip(atoms,struct.c):
         ch = struct.channels[t]
@@ -489,7 +496,7 @@ def make_obmol(struct,verbose=False):
         a2 = bond.GetEndAtom()
         if a1.IsAromatic() and a2.IsAromatic():
             bond.SetAromatic(True)
-            
+
     mismatches = 0
     for (a,t) in zip(atoms,struct.c):
         ch = struct.channels[t]
@@ -507,7 +514,6 @@ def make_obmol(struct,verbose=False):
             mismatches += 1
             if verbose:
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
-        
 
     return pybel.Molecule(mol),mismatches
     
