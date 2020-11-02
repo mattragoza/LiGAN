@@ -7,137 +7,126 @@ import caffe
 
 import io, name_formats, params
 import molgrid
-import caffe_util
+import caffe_util as cu
 from benchmark import benchmark_net
 
 
-# mapping of valid model type codes to model types
-if False:
-    model_type_map = {}
-    model_type_map['_-l'] = LigGenerator
-    model_type_map['_l-l'] = Lig2LigAE
-    model_type_map['_r-l'] = Rec2LigCE
-    model_type_map['_vl-l'] = Lig2LigVAE
-    model_type_map['_vr-l'] = Rec2LigVCE
-    model_type_map['_vlr-l'] = RecLig2LigCVAE
-    model_type_map['_rvl-l'] = RecLig2LigCVAE
-    model_type_map['_vdr-l'] = RecComplex2LigCVAE
-    model_type_map['_rvd-l'] = RecComplex2LigCVAE
-    model_type_map['_l-'] = LigDiscriminator
-    model_type_map['_d-'] = ComplexDiscriminator
-
-
 # mapping of pool_types to PoolingParam.pool enum values
-pool_type_map = {}
-pool_type_map['a'] = caffe_util.Pooling.param_type.AVE
-pool_type_map['m'] = caffe_util.Pooling.param_type.MAX
+pool_type_map = dict(
+    a=cu.Pooling.param_type.AVE,
+    m=cu.Pooling.param_type.MAX,
+    s=cu.Pooling.param_type.STOCHASTIC,
+)
 
 
-def caffe_shape(*args):
-    return dict(dim=list(*args))
+class Module(object):
+    # TODO decide what functionality belongs in here
+    # e.g. scaffolding, finding layers/blobs in net?
+    pass
 
 
-class Model(object):
+class Sequential(Module):
 
-    @classmethod
-    def from_type(cls, model_type, *args, **kwargs):
-        return model_type_map[model_type](*args, **kwargs)
+    def __init__(self, *args):
+        self.modules = []
+        for arg in args:
+            self.add_module(arg)
+
+    def add_module(self, module):
+        self.modules.append(module)
+
+    def __call__(self, bottom):
+        for module in self.modules:
+            top = module(bottom)
+            bottom = top
+        return top
 
 
-class Sequential(Model):
+class ConvReLU(Sequential):
 
-    def __init__(self, n_filters, grid_dim, pool_factors=[]):
+    def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
-        # sequence of CaffeLayer prototypes to apply
-        self.layers = []
-
-        # track convolutional output shape
-        self.n_filters = n_filters
-        self.grid_dim = grid_dim
-
-        # track pooling factors
-        self.pool_factors = list(pool_factors) or []
-
-        # track last layer with num_output
-        self.last_output = None
-
-    def __call__(self, input):
-        for layer in self.layers:
-            output = layer(input)
-            input = output
-        return output
-
-    def add_layer(self, layer):
-        self.layers.append(layer)
-
-    def add_relu(self, leak):
-        relu = caffe_util.ReLU(negative_slope=leak, in_place=True)
-        self.add_layer(relu)
-
-    def add_sigmoid(self):
-        self.add_layer(caffe_util.Sigmoid())
-
-    def add_identity(self):
-        self.add_layer(caffe_util.Power())
-
-    def add_fc(self, n_output, relu_leak=None):
-        assert n_output > 0
-
-        fc = caffe_util.InnerProduct(
-            num_output=n_output,
-            weight_filler=dict(type='xavier'),
-        )
-        self.add_layer(fc)
-        self.last_output = fc
-
-        if relu_leak is not None:
-            self.add_relu(relu_leak)
-
-    def add_conv(self, n_filters, kernel_size, relu_leak=None):
-        assert n_filters > 0
-        assert kernel_size > 0
-        
-        conv = caffe_util.Convolution(
-            num_output=n_filters,
+        conv = cu.Convolution(
+            n_filters=n_output,
             kernel_size=kernel_size,
             pad=kernel_size//2,
             weight_filler=dict(type='xavier'),
         )
-        self.add_layer(conv)
-        self.n_filters = n_filters
-        self.last_output = conv
+        relu = cu.ReLU(
+            negative_slope=relu_leak,
+            in_place=True,
+        )
+        self.add_module(conv)
+        self.add_module(relu)
 
-        if relu_leak is not None:
-            self.add_relu(relu_leak)
 
-    def add_deconv(self, n_filters, kernel_size, relu_leak=None):
-        assert n_filters > 0
-        assert kernel_size > 0
-        
-        deconv = caffe_util.Deconvolution(
-            num_output=n_filters,
+class ConvBlock(Sequential):
+
+    def __init__(
+        self,
+        n_convs,
+        n_input,
+        n_output,
+        kernel_size,
+        relu_leak,
+        dense_net=False,
+    ):
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
+
+        for i in range(n_convs):
+            conv_relu = ConvReLU(n_input, n_output, kernel_size, relu_leak)
+            n_input = n_output
+            self.add_module(conv_relu)
+
+
+class DeconvReLU(Sequential):
+
+    def __init__(self, n_input, n_output, kernel_size, relu_leak):
+
+        deconv = cu.Deconvolution(
+            n_filters=n_filters,
             kernel_size=kernel_size,
             pad=kernel_size//2,
             weight_filler=dict(type='xavier'),
         )
-        self.add_layer(deconv)
-        self.n_filters = n_filters
-        self.last_output = deconv
+        relu = cu.ReLU(
+            negative_slope=relu_leak,
+            in_place=True,
+        )
+        self.add_module(deconv)
+        self.add_module(relu)
 
-        if relu_leak is not None:
-            self.add_relu(relu_leak)
 
-    def add_pool(self, pool_type, pool_factor=None):
+class DeconvBlock(Sequential):
 
-        if pool_factor is None:
-            pool_factor = least_prime_factor(self.grid_dim)
+    def __init__(
+        self,
+        n_deconvs,
+        n_input, 
+        n_output,
+        kernel_size,
+        relu_leak,
+        dense_net=False,
+    ):
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
 
-        assert self.grid_dim >= pool_factor > 1
-        assert pool_type in {'m', 'a', 'c'}
-        
-        if pool_type in pool_type_map: # max or average pooling
+        for i in range(n_deconvs):
+            deconv_relu = DeconvReLU(
+                n_input, n_output, kernel_size, relu_leak
+            )
+            n_input = n_output
+            self.add_module(deconv_relu)
 
-            pool = caffe_util.Pooling(
+
+class Pooling(Sequential):
+
+    def __init__(self, n_input, pool_type, pool_factor):
+
+        if pool_type in pool_type_map:
+
+            pool = cu.Pooling(
                 pool=pool_type_map[pool_type],
                 kernel_size=pool_factor,
                 stride=pool_factor,
@@ -145,140 +134,77 @@ class Sequential(Model):
 
         elif pool_type == 'c': # strided convolution
 
-            pool = caffe_util.Convolution(
-                num_output=self.n_filters,
-                group=self.n_filters,
-                weight_filler=dict(type='xavier'),
+            pool = cu.Convolution(
+                num_output=n_input,
+                group=n_input,
                 kernel_size=pool_factor,
                 stride=pool_factor,
-                engine=caffe_util.Convolution.param_type.CAFFE,
+                weight_filler=dict(type='xavier'),
+                engine=cu.Convolution.param_type.CAFFE,
             )
 
         else:
             raise ValueError('unknown pool_type ' + repr(pool_type))
 
-        self.add_layer(pool)
-        self.grid_dim //= pool_factor
-        self.pool_factors.append(pool_factor)
+        self.add_module(pool)
 
-    def add_unpool(self, unpool_type, unpool_factor=None):
 
-        if unpool_factor is None:
-            unpool_factor = self.pool_factors.pop()
+class Unpooling(Sequential):
 
-        assert unpool_factor > 1
-        assert unpool_type in {'n', 'c'}
+    def __init__(self, n_input, unpool_type, unpool_factor):
 
         if unpool_type == 'n': # nearest-neighbor
 
-            unpool = caffe_util.Deconvolution(
-                num_output=self.n_filters,
-                group=self.n_filters,
+            unpool = cu.Deconvolution(
+                num_output=n_input,
+                group=n_input,
                 kernel_size=unpool_factor,
                 stride=unpool_factor,
                 weight_filler=dict(type='constant', value=1),
                 bias_term=False,
-                engine=caffe_util.Convolution.param_type.CAFFE,
+                engine=cu.Convolution.param_type.CAFFE,
             )
             unpool.lr_mult = 0
             unpool.decay_mult = 0
 
         elif unpool_type == 'c': # strided deconvolution
 
-            unpool = caffe_util.Deconvolution(
-                num_output=self.n_filters,
-                group=self.n_filters,
+            unpool = cu.Deconvolution(
+                num_output=n_input,
+                group=n_input,
                 kernel_size=unpool_factor,
                 stride=unpool_factor,
                 weight_filler=dict(type='xavier'),
-                engine=caffe_util.Convolution.param_type.CAFFE,
+                engine=cu.Convolution.param_type.CAFFE,
             )
 
-        self.add_layer(unpool)
-        self.grid_dim *= unpool_factor
+        else:
+            raise ValueError('unknown unpool_type ' + repr(unpool_type))
 
-    def add_reshape(self, shape):
-        reshape = caffe_util.Reshape(shape=caffe_shape(shape))
-        self.add_layer(reshape)
+        self.add_module(unpool)
 
-    def add_conv_and_pool(
-        self,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        pool_type,
-        pool_factor=None,
-    ):
-        self.add_conv(n_filters, kernel_size, relu_leak)
-        self.add_pool(pool_type, pool_factor)
 
-    def add_conv_block(
-        self,
-        n_conv,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        dense_net,
-    ):
-        assert n_conv > 0
+class FcReshape(Module):
 
-        if dense_net:
-            raise NotImplementedError('TODO densely-connected')
-
-        for i in range(n_conv):
-            self.add_conv(n_filters, kernel_size, relu_leak)
-
-    def add_deconv_block(
-        self,
-        n_deconv,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        dense_net,
-    ):
-        assert n_deconv > 0
-
-        if dense_net:
-            raise NotImplementedError('TODO densely-connected')
-
-        for i in range(n_deconv):
-            self.add_deconv(n_filters, kernel_size, relu_leak)
-
-    def add_unpool_and_deconv(
-        self,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        unpool_type,
-        unpool_factor=None,
-    ):
-        self.add_unpool(unpool_type, unpool_factor)
-        self.add_deconv(n_filters, kernel_size, relu_leak)
-
-    def add_fixed_conv(self, kernel_size):
-
-        conv = caffe_util.Convolution(
-            num_output=self.n_filters,
-            group=self.n_filters,
-            kernel_size=kernel_size,
-            pad=kernel_size//2,
-            weight_filler=dict(type='constant', value=0),
-            bias_term=False,
-            engine=caffe_util.Convolution.param_type.CAFFE,
+    def __init__(self, n_input, out_shape, relu_leak):
+        self.fc = cu.InnerProduct(
+            num_output=np.prod(out_shape),
+            weight_filler=dict(type='xavier'),
         )
-        conv.lr_mult = 0
-        conv.decay_mult = 0
+        self.relu = cu.ReLU(negative_slope=relu_leak, in_place=True)
+        self.out_shape = dict(dim=[-1] + list(out_shape))
 
-        self.add_layer(conv)
-
-    def add_self_att(self):
-        raise NotImplementedError('TODO self-attention')
-
-    def add_batch_disc(self):
-        raise NotImplementedError('TODO batch discrimination')
+    def __call__(self, bottom):
+        return self.relu(self.fc(bottom)).reshape(self.out_shape)
 
 
 class Encoder(Sequential):
+
+    # TODO reimplement the following:
+    # - self-attention
+    # - densely-connected
+    # - batch discrimination
+    # - fully-convolutional
     
     def __init__(
         self,
@@ -291,120 +217,123 @@ class Encoder(Sequential):
         kernel_size,
         relu_leak,
         pool_type,
+        pool_factor,
         n_output,
         init_conv_pool=False,
-        self_attention=False,
-        dense_net=False,
-        batch_disc=False,
-        fully_conv=False,
     ):
-        super().__init__(n_channels, grid_dim)
+        # track changing dimensions
+        self.n_channels = n_channels
+        self.grid_dim = grid_dim
 
         if init_conv_pool:
+            self.add_conv(n_filters, kernel_size, relu_leak)
+            self.add_pool(pool_type, pool_factor)
 
-            self.add_conv_and_pool(
-                n_filters,
-                kernel_size,
-                relu_leak,
-                pool_type,
-            )
+        for i in range(n_levels):
 
-        for level in range(n_levels):
-
-            if level > 0: # downsample between conv blocks
-
-                self.add_pool(pool_type)
+            if i > 0: # pool between conv blocks
+                self.add_pool(pool_type, pool_factor)
                 n_filters *= width_factor
 
-            if self_attention:
-                self.add_self_att()
-
             self.add_conv_block(
-                conv_per_level,
-                n_filters,
-                kernel_size,
-                relu_leak,
-                dense_net,
+                conv_per_level, n_filters, kernel_size, relu_leak
             )
 
-        if batch_disc:
-            raise NotImplementedError('TODO batch_disc')
+        self.add_fc(n_output)
 
-        if fully_conv:
-            raise NotImplementedError('TODO fully_conv')
-        else:
-            self.add_fc(n_output)
+    def add_conv(self, n_filters, kernel_size, relu_leak):
+        conv = ConvReLU(self.n_channels, n_filters, kernel_size, relu_leak)
+        self.add_module(conv)
+        self.n_channels = n_filters
+
+    def add_pool(self, pool_type, pool_factor):
+        pool = Pooling(self.n_channels, pool_type, pool_factor)
+        self.add_module(pool)
+        self.grid_dim //= pool_factor
+
+    def add_conv_block(self, n_convs, n_filters, kernel_size, relu_leak):
+        conv_block = ConvBlock(
+            n_convs, self.n_channels, n_filters, kernel_size, relu_leak
+        )
+        self.add_module(conv_block)
+        self.n_channels = n_filters
+
+    def add_fc(self, n_output):
+        fc = cu.InnerProduct(n_output, weight_filler=dict(type='xavier'))
+        self.add_module(fc)
 
 
 class Decoder(Sequential):
 
+    # TODO re-implement the following:
+    # - self-attention
+    # - densely-connected
+    # - fully-convolutional
+    # - gaussian output
+
     def __init__(
         self,
-        n_filters,
+        n_input,
         grid_dim,
-        pool_factors,
+        n_channels,
         width_factor,
         n_levels,
         deconv_per_level,
         kernel_size,
         relu_leak,
         unpool_type,
-        n_channels,
-        final_unpool_deconv=False,
-        self_attention=False,
-        dense_net=False,
-        fully_conv=False,
-        kernel_output=False,
+        unpool_factor,
+        n_output,
+        final_unpool=False,
     ):
-        super().__init__(n_filters, grid_dim, pool_factors)
+        # first fc layer maps to initial grid shape
+        self.add_fc_reshape(n_input, n_channels, grid_dim, relu_leak)
+        n_filters = n_channels
 
-        if fully_conv:
-            raise NotImplementedError('TODO fully_conv')
+        for i in reversed(range(n_levels)):
 
-        else: # first layer maps to initial grid shape
-
-            grid_shape = (0, -1) + (grid_dim,)*3
-            self.add_fc(n_filters*grid_dim**3, relu_leak)
-            self.add_reshape(grid_shape)
-
-        for level in reversed(range(n_levels)):
-
-            if level+1 < n_levels: # upsample between conv blocks
-                
-                self.add_unpool(unpool_type)
+            if i + 1 < n_levels: # unpool between deconv blocks
+                self.add_unpool(unpool_type, unpool_factor)
                 n_filters //= width_factor
 
             self.add_deconv_block(
-                deconv_per_level,
-                n_filters,
-                kernel_size,
-                relu_leak,
-                dense_net,
+                deconv_per_level, n_filters, kernel_size, relu_leak
             )
 
-            if self_attention:
-                self.add_self_att()
+        if final_unpool:
+            self.add_unpool(unpool_type, unpool_factor)
 
-        if final_unpool_deconv:
+        # final deconv maps to correct n_output channels
+        self.add_deconv(n_output, kernel_size, relu_leak)
 
-            self.add_unpool_and_deconv(
-                n_channels,
-                kernel_size,
-                relu_leak,
-                unpool_type,
-            )
+    def add_fc_reshape(self, n_input, n_channels, grid_dim, relu_leak):
+        out_shape = (n_channels,) + (grid_dim,)*3
+        fc_reshape = FcReshape(n_input, out_shape, relu_leak)
+        self.add_module(fc_reshape)
+        self.n_channels = n_channels
+        self.grid_dim = grid_dim
 
-        if kernel_output:
-            self.add_fixed_conv(kernel_size=7)
+    def add_unpool(self, unpool_type, unpool_factor):
+        unpool = Unpooling(self.n_channels, unpool_type, unpool_factor)
+        self.add_module(unpool)
+        self.grid_dim *= unpool_factor
 
-        # make sure the output has correct n_channels
-        if isinstance(self.last_output, caffe_util.InnerProduct):
-            self.last_output.param.num_output = n_channels*grid_dim**3
-        else:
-            self.last_output.param.num_output = n_channels
+    def add_deconv(self, n_filters, kernel_size, relu_leak):
+        deconv = DeconvReLU(
+            self.n_channels, n_filters, kernel_size, relu_leak
+        )
+        self.add_module(deconv)
+        self.n_channels = n_filters
+
+    def add_deconv_block(self, n_deconvs, n_filters, kernel_size, relu_leak):
+        deconv_block = DeconvBlock(
+            n_deconvs, self.n_channels, n_filters, kernel_size, relu_leak
+        )
+        self.add_module(deconv_block)
+        self.n_channels = n_filters
 
 
-class EncoderDecoder(Model):
+class EncoderDecoder(Module):
 
     def __init__(
         self,
@@ -421,11 +350,9 @@ class EncoderDecoder(Model):
         n_latent=1024,
         init_conv_pool=False,
     ):
-
         self.encoder = Encoder(
             n_channels=n_channels,
             grid_dim=grid_dim,
-            init_conv_pool=init_conv_pool,
             n_filters=n_filters,
             width_factor=width_factor,
             n_levels=n_levels,
@@ -433,30 +360,28 @@ class EncoderDecoder(Model):
             kernel_size=kernel_size,
             relu_leak=relu_leak,
             pool_type=pool_type,
+            pool_factor=pool_factor,
             n_output=n_latent,
+            init_conv_pool=init_conv_pool,
         )
 
-        print(self.encoder.n_filters)
-        print(self.encoder.grid_dim)
-        print(self.encoder.pool_factors)
-
         self.decoder = Decoder(
-            n_filters=self.encoder.n_filters,
+            n_input=n_latent,
             grid_dim=self.encoder.grid_dim,
-            pool_factors=self.encoder.pool_factors,
+            n_channels=self.encoder.n_channels,
             width_factor=width_factor,
             n_levels=n_levels,
             deconv_per_level=conv_per_level,
             kernel_size=kernel_size,
             relu_leak=relu_leak,
             unpool_type=unpool_type,
-            final_unpool_deconv=init_conv_pool,
-            n_channels=n_channels,
+            unpool_factor=pool_factor,
+            n_output=n_channels,
+            final_unpool=init_conv_pool,
         )
 
-    def __call__(self, input):
-        latent = self.encoder(input)
-        return self.decoder(latent)
+    def __call__(self, bottom):
+        return self.decoder(self.encoder(bottom))
 
 
 
