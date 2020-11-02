@@ -204,7 +204,14 @@ class TestCaffeLayer(object):
 		assert x.tops == [f]
 		assert f.tops == [y]
 
-	def test_call_n_tops(self):
+	def test_call_no_tops(self):
+		x = cu.CaffeBlob()
+		f = cu.Split(n_tops=0)
+		y = f(x)
+		assert y is None
+		assert f.tops == []
+
+	def test_call_two_tops(self):
 		x = cu.CaffeBlob()
 		f = cu.Split(n_tops=2)
 		y = f(x)
@@ -247,6 +254,12 @@ class TestCaffeLayer(object):
 		f = cu.Split(in_place=True)
 		with pytest.raises(AssertionError):
 			f(x, y)
+
+
+class TestCaffeNet(object):
+
+	def test_init(self):
+		net = cu.CaffeNet()
 
 
 

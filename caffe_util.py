@@ -228,6 +228,8 @@ class CaffeNode(object):
     can either be a CaffeBlob or a CaffeLayer.
     '''
     # TODO
+    # - force explicit split layers by not
+    #   allowing blobs to have > 1 top or bottom
     # - lazy/partial evaluation of graph
     # - create param through graph traversal
     # - infer n_tops from layer type
@@ -252,20 +254,35 @@ class CaffeNode(object):
     def replace_top(self, old, new):
         self.tops[self.tops.index(old)] = new
 
-    def set_net(self, net):
-        self.net = net
+    def to_param(self):
+        pass
 
     def has_scaffold(self):
         return self.net and self.net.has_scaffold()
 
-    def find_in_net(self):
-        pass
+    def apply(self, func, visited=None):
+        visited = visited or {}
 
-    def scaffold(self):
-        net = CaffeNet(scaffold=False)
-        self.add_to_net(net) # TODO traverse graph
-        net.scaffold()
-        self.find_in_net() # TODO traverse graph
+        for bottom in self.bottoms:
+            if bottom not in visited:
+                bottom.apply(func, visited)
+
+        func(self)
+
+        for top in self.tops:
+            if top not in visited:
+                top.apply(func, visited)
+
+    def scaffold(self, *args, **kwargs):
+        '''
+        Traverse the entire graph creating a NetParameter,
+        then create a CaffeNet from the NetParameter, then
+        then find the graph nodes in the CaffeNet.
+        '''
+        net = CaffeNet()
+        self.apply(net.add_node)
+        net.scaffold(*args, **kwargs)
+        self.apply(net.link_node)
         return net
 
 
@@ -436,7 +453,7 @@ class CaffeLayer(CaffeNode):
         if len(args) == 1 and is_non_string_iterable(args[0]):
             args = tuple(args[0])
 
-        assert not self.in_place or len(args) == 1
+        assert not self.in_place or (len(args) == 1 and self.n_tops == 1)
         assert all(isinstance(a, CaffeBlob) for a in args)
 
         if name:
@@ -545,9 +562,13 @@ class CaffeNet(caffe.Net):
     def from_prototxt(cls, model_file):
         return cls(param=NetParameter.from_prototxt(model_file))
 
+    def add_node(self, node):
+        assert isinstance(node, CaffeNode)
+        if isinstance(node, CaffeLayer):
+            self.add_layer(node)
+
     def add_layer(self, layer):
         assert isinstance(layer, CaffeLayer)
-        assert layer.name not in self.layers_
         self.layers_[layer.name] = layer
 
     def to_param(self):
