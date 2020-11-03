@@ -35,29 +35,37 @@ import atom_types
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
-def remove_tensors(s):
-    '''recursively traverse an object, converting pytorch tensors to numpy arrays *in place*'''
-    if not (type(s) == MolGrid or type(s) == MolStruct or type(s) == list or type(s) == dict):
-        #avoid traversing everything
-        return s
 
-    D = None
-    if type(s) == dict:
-        D = s
-    elif hasattr(s,'__dict__'):
-        D = s.__dict__
+def remove_tensors(obj, visited=None):
+    '''
+    Recursively traverse an object converting pytorch tensors
+    to numpy arrays in-place.
+    '''
+    visited = visited or set()
+
+    if not isinstance(obj, (MolGrid, MolStruct, list, dict)) or id(obj) in visited:
+        #avoid traversing everything
+        return obj
+
+    visited.add(id(obj))
+
+    dct = None
+    if isinstance(obj, dict):
+        dct = obj
+    elif hasattr(obj, '__dict__'):
+        dct = obj.__dict__
         
-    if D:
-        for k,v in D.items():
-            if type(v) == torch.Tensor:
-                D[k] = v.cpu().detach().numpy()
+    if dct:
+        for k, v in dct.items():
+            if isinstance(v, torch.Tensor):
+                dct[k] = v.cpu().detach().numpy()
             else:
-                D[k] = remove_tensors(v)
-    elif type(s) == list:
-        for i,v in enumerate(s):
-            s[i] = remove_tensors(s[i])
+                dct[k] = remove_tensors(v, visited)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            obj[i] = remove_tensors(obj[i], visited)
     
-    return s
+    return obj
             
 
 class MolGrid(object):
@@ -116,7 +124,6 @@ class MolStruct(object):
         if any(c < 0) or any(c >= len(channels)):
             raise ValueError('invalid channel index in MolStruct c')
 
-        self.n_atoms = xyz.shape[0]
         self.xyz = xyz
         self.c = c
         self.channels = channels
@@ -163,6 +170,10 @@ class MolStruct(object):
         channels_file = os.path.splitext(sdf_file)[0] + '.channels'
         c = read_channels_from_file(channels_file, channels)
         return cls.from_rd_mol(rd_mol, c, channels)
+
+    @property
+    def n_atoms(self):
+        return self.xyz.shape[0]
 
     def to_ob_mol(self):
         mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
@@ -804,12 +815,23 @@ class DkoesAtomFitter(AtomFitter):
             resolution=grid.resolution,
         )
 
-        struct, grid_pred = dkoes_fitting.simple_atom_fit(
-            mgrid=grid,
-            types=types,
-            iters=self.iters,
-            tol=self.tol,
-            grm=1.0
+        xyz, c, channels, L2_loss, time_, n_iters, n_fixes, grid_pred = \
+            dkoes_fitting.simple_atom_fit(
+                mgrid=grid,
+                types=types,
+                iters=self.iters,
+                tol=self.tol,
+                grm=1.0
+            )
+
+        struct = MolStruct(
+            xyz=xyz,
+            c=c,
+            channels=channels,
+            L2_loss=L2_loss,
+            time=time_,
+            n_iters=n_iters,
+            n_fixes=n_fixes,
         )
         struct.info['visited_structs'] = [struct]
         self.validify(struct)
@@ -1322,6 +1344,8 @@ def get_ob_smi_similarity(smi1, smi2):
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+    if rd_mol.GetNumAtoms() == 0:
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
     try:
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
         ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
