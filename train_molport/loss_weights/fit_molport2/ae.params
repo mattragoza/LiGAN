@@ -1,3 +1,4 @@
+data_root = '/net/pulsar/home/koes/mtr22/molport'
 data_dir = '../../../data'
 model_dir = '../../../models'
 weights_dir = '../../weights'
@@ -9,7 +10,7 @@ disc_model_name = 'disc_x'
 train_data_name = 'molportFULL_rand_'
 train_fold = 0
 train_seed = [0]
-gen_options = ['r']
+gen_options = ['rdD']
 n_samples = 10
 beam_size = 1
 threshold = 0.1
