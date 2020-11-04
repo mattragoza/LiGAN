@@ -809,7 +809,7 @@ class DkoesAtomFitter(AtomFitter):
     def fit(self, grid, types):
 
         grid = MolGrid(
-            values=torch.tensor(grid.values),
+            values=grid.values,
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,

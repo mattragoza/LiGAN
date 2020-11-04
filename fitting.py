@@ -6,7 +6,7 @@ from openbabel import pybel
 import torch
 import numpy as np
 import seaborn as sns
-from rdkit.Geometry.rdGeometry import Point3D
+from rdkit import Geometry
 from skimage.segmentation import flood_fill
 from collections import namedtuple
 from scipy.spatial.distance import pdist
