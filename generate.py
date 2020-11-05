@@ -445,7 +445,8 @@ class AtomFitter(object):
 
         # get true atom type counts on appropriate device
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
-
+        print("grid max",grid.values.max())
+        print("grid min",grid.values.min())
         if self.estimate_types: # estimate atom type counts from grid density
             types_est = self.get_types_estimate(
                 grid_true.values,
@@ -498,7 +499,7 @@ class AtomFitter(object):
 
             new_best_structs = []
             found_new_best_struct = False
-
+ 
             # try to expand each current best structure
             for objective, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
@@ -620,6 +621,10 @@ class AtomFitter(object):
                             best_id, best_objective, best_n_atoms, gpu_usage
                         )
                     )
+                    
+                if len(xyz_new) >= 50:
+                    found_new_best_struct = False #dkoes: limit molecular size
+
 
         # done searching for atomic structures
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
@@ -644,7 +649,7 @@ class AtomFitter(object):
         visited_structs_ = iter(visited_structs)
         visited_structs = []
         for objective, struct_id, fit_time, xyz, c in visited_structs_:
-
+            print("struct_id",struct_id)
             struct = MolStruct(
                 xyz=xyz.cpu().detach().numpy(),
                 c=one_hot_to_index(c).cpu().detach().numpy(),
@@ -656,6 +661,7 @@ class AtomFitter(object):
             )
             visited_structs.append(struct)
 
+        print("select best")
         # finalize the best fit atomic structure and density grid
         struct_best = MolStruct(
             xyz=xyz_best.cpu().detach().numpy(),
@@ -808,6 +814,7 @@ class DkoesAtomFitter(AtomFitter):
             tol=self.tol,
             grm=1.0
         )
+        
         self.validify(struct)
         
         grid_pred = MolGrid(
@@ -816,9 +823,9 @@ class DkoesAtomFitter(AtomFitter):
             center=grid.center,
             resolution=grid.resolution,
             visited_structs=[struct],
-            src_struct=struct_best,
+            src_struct=struct,
         )        
-        return remove_tensors(struct)
+        return remove_tensors(grid_pred)
 
 
 class OutputWriter(object):
@@ -877,6 +884,7 @@ class OutputWriter(object):
         data frame, if all necessary data is present.
         '''
         grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_name)                    
+        sample_prefix = grid_prefix + '_' + str(sample_idx)
         
         is_gen_grid = grid_name.endswith('_gen')
         is_fit_grid = grid_name.endswith('_fit')
