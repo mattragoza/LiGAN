@@ -93,7 +93,7 @@ def assign_field_param(param, key, value):
 def update_composite_param(param, *args, **kwargs):
 
     for i, value in enumerate(args):
-        key = get_field_name_by_index(self.param, i)
+        key = get_field_name_by_index(param, i)
         if key in kwargs:
             raise TypeError(
                 type(self).__name__ + ' got multiple values for ' + repr(key)
@@ -261,13 +261,14 @@ class CaffeNode(object):
         return self.net and self.net.has_scaffold()
 
     def apply(self, func, visited=None):
-        visited = visited or {}
+        visited = visited or set()
 
         for bottom in self.bottoms:
             if bottom not in visited:
                 bottom.apply(func, visited)
 
         func(self)
+        visited.add(self)
 
         for top in self.tops:
             if top not in visited:

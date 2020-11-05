@@ -6,7 +6,7 @@ from numpy.linalg import norm
 os.environ['GLOG_minloglevel'] = '1'
 import caffe
 
-sys.path.insert(0, '..')
+sys.path.insert(0, os.environ['LIGAN_ROOT'])
 import caffe_util as cu
 
 
@@ -149,6 +149,48 @@ class TestCaffeBlob(object):
 		with pytest.raises(AssertionError):
 			x.add_top(y)
 
+	def test_op_add(self):
+		x, y = get_caffe_blobs(2)
+		z = x + y
+		assert isinstance(z.bottoms[0], cu.Eltwise)
+		assert z.bottoms[0].param.operation == cu.Eltwise.param_type.SUM
+		assert z.bottoms[0].bottoms == [x, y]
+
+	def test_op_subtract(self):
+		x, y = get_caffe_blobs(2)
+		z = x - y
+		assert isinstance(z.bottoms[0], cu.Eltwise)
+		assert z.bottoms[0].param.operation == cu.Eltwise.param_type.SUM
+		assert z.bottoms[0].param.coeff == [1, -1]
+		assert z.bottoms[0].bottoms == [x, y]
+
+	def test_op_multiply(self):
+		x, y = get_caffe_blobs(2)
+		z = x * y
+		assert isinstance(z.bottoms[0], cu.Eltwise)
+		assert z.bottoms[0].param.operation == cu.Eltwise.param_type.PROD
+		assert z.bottoms[0].bottoms == [x, y]
+
+	def test_op_sum(self):
+		x = cu.CaffeBlob()
+		y = x.sum()
+		assert isinstance(y.bottoms[0], cu.Reduction)
+		assert y.bottoms[0].param.operation == cu.Reduction.param_type.SUM
+		assert y.bottoms[0].bottoms == [x]
+
+	def test_op_reshape(self):
+		x = cu.CaffeBlob()
+		y = x.reshape(shape=(1,2,3))
+		assert isinstance(y.bottoms[0], cu.Reshape)
+		assert y.bottoms[0].param.shape.dim == [1,2,3]
+		assert y.bottoms[0].bottoms == [x]
+
+	def test_scaffold(self):
+		x, y = get_caffe_blobs(2)
+		z = x + y
+		net = z.scaffold()
+
+
 
 class TestCaffeLayer(object):
 
@@ -260,6 +302,7 @@ class TestCaffeNet(object):
 
 	def test_init(self):
 		net = cu.CaffeNet()
+
 
 
 
