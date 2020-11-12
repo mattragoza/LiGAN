@@ -450,6 +450,7 @@ def make_obmol(struct,verbose=False):
     correct atom typing'''
     mol = ob.OBMol()
     mol.BeginModify()
+    visited_mols = []
     
     
     atoms = []
@@ -460,24 +461,32 @@ def make_obmol(struct,verbose=False):
         atom.SetAtomicNum(ch.atomic_num)
         atom.SetVector(x,y,z)            
         atoms.append(atom)
-        
-    fixup(atoms, mol, struct)    
+    
+    fixup(atoms, mol, struct)   
+    visited_mols.append(ob.OBMol(mol)) 
+
     connect_the_dots(mol, atoms, struct)
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
+
     mol.EndModify()
 
     mol.AddPolarHydrogens() #make implicits explicit
+    visited_mols.append(ob.OBMol(mol))
     
     mol.PerceiveBondOrders()
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     for (i,a) in enumerate(atoms):
         ob.OBAtomAssignTypicalImplicitHydrogens(a)
 
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     mol.AddHydrogens()
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     #make rings all aromatic if majority of carbons are aromatic
     for ring in ob.OBMolRingIter(mol):
@@ -503,6 +512,8 @@ def make_obmol(struct,verbose=False):
         if a1.IsAromatic() and a2.IsAromatic():
             bond.SetAromatic(True)
 
+    visited_mols.append(ob.OBMol(mol))
+
     mismatches = 0
     for (a,t) in zip(atoms,struct.c):
         ch = struct.channels[t]
@@ -521,7 +532,7 @@ def make_obmol(struct,verbose=False):
             if verbose:
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
 
-    return pybel.Molecule(mol),mismatches
+    return pybel.Molecule(mol),mismatches,visited_mols
     
 def calc_valence(rdatom):
     '''Can call GetExplicitValence before sanitize, but need to
@@ -646,6 +657,8 @@ def convert_ob_mol_to_rd_mol(ob_mol,struct=None):
     
 def make_rdmol(struct,verbose=False):
     '''Create RDKIT mol from MolStruct trying to respect types.'''
-    mol,misses = make_obmol(struct,verbose)
-    return convert_ob_mol_to_rd_mol(mol.OBMol)
+    mol,misses,visited_mols = make_obmol(struct,verbose)
+    return convert_ob_mol_to_rd_mol(mol.OBMol), misses, [
+        convert_ob_mol_to_rd_mol(mol) for mol in visited_mols
+    ]
 

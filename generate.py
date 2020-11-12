@@ -633,20 +633,20 @@ class AtomFitter(object):
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
         type_loss = (types - c_best.sum(dim=0)).abs().sum().item()
 
-        if self.final_gd_iters > 0: # perform final gradient descent
+        # perform final gradient descent
+        xyz_best, grid_pred, grid_diff, L2_loss = self.fit_gd(
+            grid_true, xyz_best, c_best, self.final_gd_iters
+        )
 
-            xyz_best, grid_pred, grid_diff, L2_loss = self.fit_gd(
-                grid_true, xyz_best, c_best, self.final_gd_iters
-            )
+        if self.constrain_types:
+            best_objective = (type_loss.item(), L2_loss.item())
+        else:
+            best_objective = L2_loss.item()
 
-            if self.constrain_types:
-                best_objective = (type_loss.item(), L2_loss.item())
-            else:
-                best_objective = L2_loss.item()
-
-            visited_structs.append(
-                (best_objective, best_id+1, time.time()-t_start, xyz_best, c_best)
-            )
+        # make sure best struct is the last visited struct
+        visited_structs.append(
+            (best_objective, best_id+1, time.time()-t_start, xyz_best, c_best)
+        )
 
         # finalize the visited atomic structures
         visited_structs_ = iter(visited_structs)
@@ -658,7 +658,7 @@ class AtomFitter(object):
                 c=one_hot_to_index(c).cpu().detach().numpy(),
                 channels=grid.channels,
                 L2_loss=L2_loss,
-                type_diff=type_diff,
+                type_diff=type_loss,
                 est_type_diff=est_type_loss,
                 time=fit_time,
             )
@@ -738,11 +738,10 @@ class AtomFitter(object):
 
         if self.dkoes_make_mol:
 
-            pb_mol, misses = dkoes_fitting.make_obmol(struct, self.verbose)
-            ob_mol = pb_mol.OBMol
-            visited_mols.append(ob_mol_to_rd_mol(ob_mol))
-            rd_mol = dkoes_fitting.convert_ob_mol_to_rd_mol(ob_mol,struct)
-            visited_mols.append(rd_mol)
+            rd_mol, misses, dkoes_visited_mols = dkoes_fitting.make_rdmol(
+                struct, self.verbose
+            )
+            visited_mols += dkoes_visited_mols
 
         elif self.mtr22_make_mol:
 
@@ -2361,14 +2360,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_name = os.path.basename(lig_src_no_ext)
                 lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                print('Minimizing real molecule')
-                atom_fitter.uff_minimize(lig_mol)
-                lig_struct.info['src_mol'] = lig_mol
+                if args.fit_atoms:
+                    print('Minimizing real molecule')
+                    atom_fitter.uff_minimize(lig_mol)
+                    lig_struct.info['src_mol'] = lig_mol
 
-                print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+                    print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
-                print('Validifying real atom types and coords')
-                atom_fitter.validify(lig_struct)
+                    print('Validifying real atom types and coords')
+                    atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
                 latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
