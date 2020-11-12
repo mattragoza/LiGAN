@@ -76,8 +76,10 @@ class MolGrid(object):
 
         if len(values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
+
         if values.shape[0] != len(channels):
             raise ValueError('MolGrid values have wrong number of channels')
+
         if not (values.shape[1] == values.shape[2] == values.shape[3]):
             raise ValueError('last 3 dims of MolGrid values must be equal')
 
@@ -105,6 +107,14 @@ class MolGrid(object):
             channels=self.channels,
             center=self.center if center is None else center,
             resolution=self.resolution)
+
+    def new_like(self, values, **info):
+        '''
+        Return a MolGrid with the same grid settings but new values.
+        '''
+        return MolGrid(
+            values, self.channels, self.center, self.resolution, **info
+        )
 
 
 class MolStruct(object):
@@ -201,6 +211,7 @@ class AtomFitter(object):
     def __init__(
         self,
         multi_atom,
+        n_atoms_detect,
         beam_size,
         apply_conv,
         threshold,
@@ -221,6 +232,7 @@ class AtomFitter(object):
 
         # can place all detected atoms at once, or do beam search
         self.multi_atom = multi_atom
+        self.n_atoms_detect = n_atoms_detect
         self.beam_size = beam_size
 
         # settings for detecting next atoms to place on density grid
@@ -254,8 +266,8 @@ class AtomFitter(object):
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
-        Initialize the convolution kernel that is used
-        to propose next atom initializations on grids.
+        Initialize an atomic density kernel that can
+        can be used to detect atoms in density grids.
         '''
         n_channels = len(channels)
 
@@ -265,12 +277,18 @@ class AtomFitter(object):
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
         r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
 
+        self.grid_maker.set_radii_type_indexed(True)
+        self.grid_maker.set_resolution(resolution)
+
         # kernel must fit max radius atom
         kernel_radius = 1.5 * max(r).item()
+        self.grid_maker.set_dimension(2 * kernel_radius)
 
-        self.grid_maker.set_radii_type_indexed(True)
-        self.grid_maker.set_dimension(2 * kernel_radius) 
-        self.grid_maker.set_resolution(resolution)
+        # kernel must also have odd spatial dimension
+        if self.grid_maker.spatial_grid_dimensions()[0]%2 == 0:
+            self.grid_maker.set_dimension(
+                self.grid_maker.get_dimension() + resolution
+            )
 
         self.c2grid.center = (0.0, 0.0, 0.0)
         values = self.c2grid(xyz, c, r)
@@ -297,9 +315,21 @@ class AtomFitter(object):
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
-    def get_next_atoms(self, grid, channels, center, resolution, types=None):
+    def convolve(self, grid, channels, resolution):
+
+        if self.kernel is None:
+            self.init_kernel(channels, resolution)
+
+        return F.conv3d(
+            input=grid.unsqueeze(0),
+            weight=self.kernel.values.unsqueeze(1),
+            padding=self.kernel.values.shape[-1]//2,
+            groups=len(channels),
+        )[0]
+
+    def detect_atoms(self, grid, channels, center, resolution, types=None):
         '''
-        Get a set of atoms from a density grid by convolving
+        Detect a set of atoms in a density grid by convolving
         with a kernel, applying a threshold, and then returning
         atom types and coordinates ordered by grid value.
         '''
@@ -321,16 +351,10 @@ class AtomFitter(object):
 
         if self.apply_conv: # convolve grid with kernel
 
-            if self.kernel is None:
-                self.init_kernel(channels, resolution)
+            grid = self.convolve(grid, channels, resolution)
 
-            grid = F.conv3d(
-                input=grid.unsqueeze(0),
-                weight=self.kernel.values.unsqueeze(1),
-                padding=self.kernel.values.shape[-1]//2,
-                groups=n_channels,
-            )[0]
-
+            # since convolution modifies grid values with kernel,
+            # try to adjust peak_value and threshold accordingly
             kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
 
             if apply_peak_value:
@@ -379,8 +403,8 @@ class AtomFitter(object):
         origin = center - resolution * (float(grid_dim) - 1) / 2.0
         xyz = origin + resolution * idx_xyz.float()
 
-        # suppress atoms too close to a higher-value point
-        if suppress_non_max:
+        # suppress atoms too close to a higher-value atom
+        if suppress_non_max and self.n_atoms_detect > 1:
 
             r = torch.tensor(
                 [ch.atomic_radius for ch in channels],
@@ -412,10 +436,10 @@ class AtomFitter(object):
                 xyz = xyz[not_too_close]
                 idx_c = idx_c[not_too_close]
 
-        # limit number of atoms to beam size
-        if not self.multi_atom:
-            xyz = xyz[:self.beam_size]
-            idx_c = idx_c[:self.beam_size]
+        # limit total number of detected atoms
+        if self.n_atoms_detect >= 0:
+            xyz = xyz[:self.n_atoms_detect]
+            idx_c = idx_c[:self.n_atoms_detect]
 
         # convert atom type channel index to one-hot type vector
         c = F.one_hot(idx_c, n_channels).to(dtype=torch.float32, device=self.device)
@@ -481,7 +505,7 @@ class AtomFitter(object):
 
         # get next atom init locations and channels
         print('Getting next atoms for struct 0')
-        xyz_next, c_next = self.get_next_atoms(
+        xyz_next, c_next = self.detect_atoms(
             grid_true.values,
             grid_true.channels,
             grid_true.center,
@@ -489,14 +513,14 @@ class AtomFitter(object):
             types,
         )
 
-        # keept track of best structures so far
+        # keep track of best structures so far
         struct_id = 0
         best_structs = [(objective, struct_id, xyz, c, xyz_next, c_next)]
         found_new_best_struct = True
 
-        # keep track of visited structures
-        visited = set()
-        visited_structs = []
+        # keep track of visited and expanded structures
+        expanded_ids = set()
+        visited_structs = [(objective, struct_id, time.time()-t_start, xyz, c)]
         struct_count = 1
 
         # search until we can't find a better structure
@@ -508,9 +532,10 @@ class AtomFitter(object):
             # try to expand each current best structure
             for objective, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
-                if struct_id in visited:
+                if struct_id in expanded_ids:
                     continue
 
+                do_single_atom = True
                 #print('expanding struct {} to {} next atoms'.format(struct_id, len(c_next)))
 
                 if self.multi_atom: # evaluate all next atoms simultaneously
@@ -536,7 +561,7 @@ class AtomFitter(object):
 
                         print('Found new best struct {}'.format(struct_count))
 
-                        xyz_new_next, c_new_next = self.get_next_atoms(
+                        xyz_new_next, c_new_next = self.detect_atoms(
                             grid_diff,
                             grid_true.channels,
                             grid_true.center,
@@ -555,9 +580,15 @@ class AtomFitter(object):
                         )
                         found_new_best_struct = True
                         struct_count += 1
+                        do_single_atom = False
 
-                else: # evaluate each possible next atom individually
+                    visited_structs.append(
+                        (objective_new, struct_id, time.time()-t_start, xyz_new, c_new)
+                    )
 
+                if do_single_atom:
+
+                    # evaluate each possible next atom individually
                     for xyz_next_, c_next_ in zip(xyz_next, c_next):
 
                         # add next atom to structure
@@ -582,7 +613,7 @@ class AtomFitter(object):
 
                             print('Found new best struct {}'.format(struct_count))
 
-                            xyz_new_next, c_new_next = self.get_next_atoms(
+                            xyz_new_next, c_new_next = self.detect_atoms(
                                 grid_diff,
                                 grid_true.channels,
                                 grid_true.center,
@@ -602,18 +633,15 @@ class AtomFitter(object):
                             found_new_best_struct = True
                             struct_count += 1
 
-                visited.add(struct_id)
-                visited_structs.append(
-                    (objective, struct_id, time.time()-t_start, xyz, c)
-                )
+                        visited_structs.append(
+                            (objective_new, struct_id, time.time()-t_start, xyz_new, c_new)
+                        )
+
+                expanded_ids.add(struct_id)
 
             if found_new_best_struct: # determine new set of best structures
 
-                if self.multi_atom:
-                    best_structs = sorted(best_structs + new_best_structs)[:1]
-                else:
-                    best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
-
+                best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
                 best_objective = best_structs[0][0]
                 best_id = best_structs[0][1]
                 best_n_atoms = best_structs[0][2].shape[0]
@@ -859,6 +887,7 @@ class OutputWriter(object):
         output_channels,
         output_latent,
         output_visited,
+        output_conv,
         n_samples,
         blob_names,
         fit_atoms,
@@ -872,6 +901,7 @@ class OutputWriter(object):
         self.output_channels = output_channels
         self.output_latent = output_latent
         self.output_visited = output_visited
+        self.output_conv = output_conv
         self.n_samples = n_samples
         self.blob_names = blob_names
         self.fit_atoms = fit_atoms
@@ -903,6 +933,7 @@ class OutputWriter(object):
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
         uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
+        conv_sample_prefix = grid_prefix + '_conv_' + str(sample_idx)
 
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
@@ -917,6 +948,14 @@ class OutputWriter(object):
 
             grid.to_dx(sample_prefix, center=np.zeros(3))
             self.dx_prefixes.append(sample_prefix)
+
+            if self.output_conv and not is_fit_grid:
+
+                if self.verbose:
+                    print('Writing' + conv_sample_prefix + ' .dx files')
+
+                grid.info['conv_grid'].to_dx(conv_sample_prefix, center=np.zeros(3))
+                self.dx_prefixes.append(conv_sample_prefix)
 
         if has_struct and self.output_sdf: # write structure files
 
@@ -2185,6 +2224,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             output_channels=args.output_channels,
             output_latent=args.output_latent,
             output_visited=args.output_visited,
+            output_conv=args.output_conv,
             n_samples=args.n_samples,
             batch_metrics=args.batch_metrics,
             blob_names=args.blob_name,
@@ -2192,13 +2232,14 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             verbose=args.verbose,
         )
 
-        if args.fit_atoms:
+        if args.fit_atoms or args.output_conv:
 
             if args.dkoes_simple_fit:
-                atom_fitter = DkoesAtomFitter(args.dkoes_make_mol,args.use_openbabel)
+                atom_fitter = DkoesAtomFitter(args.dkoes_make_mol, args.use_openbabel)
             else:
                 atom_fitter = AtomFitter(
-                    multi_atom=args.multi_atom, 
+                    multi_atom=args.multi_atom,
+                    n_atoms_detect=args.n_atoms_detect,
                     beam_size=args.beam_size,
                     apply_conv=args.apply_conv,
                     threshold=args.threshold,
@@ -2417,6 +2458,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             lig_name, grid_type.ljust(7), sample_idx, grid_norm, gpu_usage
                         ), flush=True)
 
+                    if args.output_conv:
+                        grid.info['conv_grid'] = grid.new_like(
+                            values=atom_fitter.convolve(
+                                torch.tensor(grid.values, device=atom_fitter.device),
+                                grid.channels,
+                                grid.resolution,
+                            ).cpu().detach().numpy()
+                        )
+
                     if args.parallel:
                         out_queue.put((lig_name, grid_type, sample_idx, grid))
                         if grid_needs_fit:
@@ -2451,6 +2501,7 @@ def fit_worker_main(fit_queue, out_queue, args):
     else:
         atom_fitter = AtomFitter(
             multi_atom=args.multi_atom,
+            n_atoms_detect=args.n_atoms_detect,
             beam_size=args.beam_size,
             apply_conv=args.apply_conv,
             threshold=args.threshold,
@@ -2511,6 +2562,7 @@ def out_worker_main(out_queue, args):
         output_channels=args.output_channels,
         output_latent=args.output_latent,
         output_visited=args.output_visited,
+        output_conv=args.output_conv,
         n_samples=args.n_samples,
         batch_metrics=args.batch_metrics,
         blob_names=args.blob_name,
@@ -2549,6 +2601,7 @@ def parse_args(argv=None):
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')
+    parser.add_argument('--output_conv', action='store_true', help='output .dx files of atom density grids convolved with kernel')
     parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
@@ -2560,6 +2613,7 @@ def parse_args(argv=None):
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
+    parser.add_argument('--n_atoms_detect', default=1, type=int, help='max number of atoms to detect in each atom fitting step')
     parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
     parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
     parser.add_argument('--threshold', type=float, default=0.1, help='threshold value for detecting next atoms on grid')
