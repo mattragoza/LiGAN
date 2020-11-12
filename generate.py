@@ -220,6 +220,7 @@ class AtomFitter(object):
         constrain_types,
         constrain_frags,
         estimate_types,
+        fit_L1_loss,
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
@@ -247,6 +248,7 @@ class AtomFitter(object):
         self.estimate_types = estimate_types
 
         # can perform gradient descent at each step and/or at final step
+        self.fit_L1_loss = fit_L1_loss
         self.interm_gd_iters = interm_gd_iters
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
@@ -316,16 +318,22 @@ class AtomFitter(object):
             self.output_kernel = False # only write once
 
     def convolve(self, grid, channels, resolution):
-
+        '''
+        Compute a convolution between the provided
+        density grid and the atomic density kernel.
+        '''
         if self.kernel is None:
             self.init_kernel(channels, resolution)
+
+        # normalize convolved grid channels by kernel norm
+        kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3), keepdim=True)
 
         return F.conv3d(
             input=grid.unsqueeze(0),
             weight=self.kernel.values.unsqueeze(1),
             padding=self.kernel.values.shape[-1]//2,
             groups=len(channels),
-        )[0]
+        )[0] / kernel_norm2
 
     def detect_atoms(self, grid, channels, center, resolution, types=None):
         '''
@@ -350,18 +358,7 @@ class AtomFitter(object):
             threshold = torch.full((n_channels,), self.threshold, device=self.device)
 
         if self.apply_conv: # convolve grid with kernel
-
             grid = self.convolve(grid, channels, resolution)
-
-            # since convolution modifies grid values with kernel,
-            # try to adjust peak_value and threshold accordingly
-            kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
-
-            if apply_peak_value:
-                peak_value *= kernel_norm2
-
-            if apply_threshold:
-                threshold *= kernel_norm2
 
         # reflect grid values above peak value
         if apply_peak_value:
@@ -403,38 +400,45 @@ class AtomFitter(object):
         origin = center - resolution * (float(grid_dim) - 1) / 2.0
         xyz = origin + resolution * idx_xyz.float()
 
-        # suppress atoms too close to a higher-value atom
+        # suppress atoms too close to a higher-value atom of same type
         if suppress_non_max and self.n_atoms_detect > 1:
 
             r = torch.tensor(
                 [ch.atomic_radius for ch in channels],
                 device=self.device,
             )
-            if len(idx_c) > 1000:
+            if len(idx_c) < 1000: # use NxN matrices
+                same_type = (idx_c.unsqueeze(1) == idx_c.unsqueeze(0))
+                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
+                min_dist2 = (self.min_dist * bond_radius)**2
+                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
+                # the lower triangular part of a matrix under diagonal -1
+                #   gives those indices i,j such that i > j
+                # since atoms are sorted by decreasing density value,
+                #   i > j implies that atom i has lower value than atom j
+                # we use this to check a condition on each atom
+                #   only with respect to atoms of higher value 
+                too_close = torch.tril(
+                    (dist2 < min_dist2) & same_type, diagonal=-1
+                ).any(dim=1)
+                xyz = xyz[~too_close]
+                idx_c = idx_c[~too_close]
 
+            else: # use a for loop
                 xyz_max = xyz[0].unsqueeze(0)
                 idx_c_max = idx_c[0].unsqueeze(0)
 
                 for i in range(1, len(idx_c)):
+                    same_type = (idx_c[i] == idx_c_max)
                     bond_radius = r[idx_c[i]] + r[idx_c_max]
-                    min_dist = self.min_dist * bond_radius
-                    min_dist2 = min_dist**2
+                    min_dist2 = (self.min_dist * bond_radius)**2
                     dist2 = ((xyz[i].unsqueeze(0) - xyz_max)**2).sum(dim=1)
-                    if not (dist2 < min_dist2).any():
+                    if not ((dist2 < min_dist2) & same_type).any():
                         xyz_max = torch.cat([xyz_max, xyz[i].unsqueeze(0)])
                         idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
 
                 xyz = xyz_max
                 idx_c = idx_c_max
-
-            else:
-                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
-                min_dist = self.min_dist * bond_radius
-                min_dist2 = min_dist**2
-                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
-                not_too_close = ~torch.tril(dist2 < min_dist2, diagonal=-1).any(dim=1)
-                xyz = xyz[not_too_close]
-                idx_c = idx_c[not_too_close]
 
         # limit total number of detected atoms
         if self.n_atoms_detect >= 0:
@@ -493,15 +497,18 @@ class AtomFitter(object):
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
 
-        L2_loss = (grid_true.values**2).sum() / 2.0
+        if self.fit_L1_loss:
+            fit_loss = grid_true.values.abs().sum()
+        else:
+            fit_loss = (grid_true.values**2).sum() / 2.0
         type_loss = types.abs().sum()
 
         # to constrain types, order structs first by type diff, then by L2 loss
         if self.constrain_types:
-            objective = (type_loss.item(), L2_loss.item())
+            objective = (type_loss.item(), fit_loss.item())
 
         else: # otherwise, order structs only by L2 loss
-            objective = L2_loss.item()
+            objective = fit_loss.item()
 
         # get next atom init locations and channels
         print('Getting next atoms for struct 0')
@@ -544,7 +551,7 @@ class AtomFitter(object):
                     c_new = torch.cat([c, c_next])
 
                     # compute diff and loss after gradient descent
-                    xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
+                    xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
                         grid_true, xyz_new, c_new, self.interm_gd_iters
                     )
 
@@ -552,9 +559,9 @@ class AtomFitter(object):
                     type_loss = type_diff.abs().sum()
 
                     if self.constrain_types:
-                        objective_new = (type_loss.item(), L2_loss.item())
+                        objective_new = (type_loss.item(), fit_loss.item())
                     else:
-                        objective_new = L2_loss.item()
+                        objective_new = fit_loss.item()
 
                     # check if new structure is one of the best yet
                     if any(objective_new < s[0] for s in best_structs):
@@ -596,7 +603,7 @@ class AtomFitter(object):
                         c_new = torch.cat([c, c_next_.unsqueeze(0)])
 
                         # compute diff and loss after gradient descent
-                        xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
+                        xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
                             grid_true, xyz_new, c_new, self.interm_gd_iters
                         )
 
@@ -604,9 +611,9 @@ class AtomFitter(object):
                         type_loss = type_diff.abs().sum()
 
                         if self.constrain_types:
-                            objective_new = (type_loss.item(), L2_loss.item())
+                            objective_new = (type_loss.item(), fit_loss.item())
                         else:
-                            objective_new = L2_loss.item()
+                            objective_new = fit_loss.item()
 
                         # check if new structure is one of the best yet
                         if any(objective_new < s[0] for s in best_structs):
@@ -662,14 +669,18 @@ class AtomFitter(object):
         type_loss = (types - c_best.sum(dim=0)).abs().sum().item()
 
         # perform final gradient descent
-        xyz_best, grid_pred, grid_diff, L2_loss = self.fit_gd(
+        xyz_best, grid_pred, grid_diff, fit_loss = self.fit_gd(
             grid_true, xyz_best, c_best, self.final_gd_iters
         )
 
+        # compute the final L2 and L1 loss
+        L2_loss = (grid_diff**2).sum() / 2
+        L1_loss = grid_diff.abs().sum()
+
         if self.constrain_types:
-            best_objective = (type_loss.item(), L2_loss.item())
+            best_objective = (type_loss.item(), fit_loss.item())
         else:
-            best_objective = L2_loss.item()
+            best_objective = fit_loss.item()
 
         # make sure best struct is the last visited struct
         visited_structs.append(
@@ -686,6 +697,7 @@ class AtomFitter(object):
                 c=one_hot_to_index(c).cpu().detach().numpy(),
                 channels=grid.channels,
                 L2_loss=L2_loss,
+                L1_loss=L1_loss,
                 type_diff=type_loss,
                 est_type_diff=est_type_loss,
                 time=fit_time,
@@ -698,6 +710,7 @@ class AtomFitter(object):
             c=one_hot_to_index(c_best).cpu().detach().numpy(),
             channels=grid.channels,
             L2_loss=L2_loss,
+            L1_loss=L1_loss,
             type_diff=type_loss,
             est_type_diff=est_type_loss,
             time=time.time()-t_start,
@@ -722,7 +735,6 @@ class AtomFitter(object):
             [ch.atomic_radius for ch in grid.channels],
             device=self.device,
         )
-
         xyz = xyz.clone().detach().to(self.device)
         c = c.clone().detach().to(self.device)
         xyz.requires_grad = True
@@ -739,7 +751,10 @@ class AtomFitter(object):
 
             grid_pred = self.c2grid(xyz, c, r)
             grid_diff = grid.values - grid_pred
-            loss = (grid_diff**2).sum() / 2.0
+            if self.fit_L1_loss:
+                loss = grid_diff.abs().sum()
+            else:
+                loss = (grid_diff**2).sum() / 2.0
 
             if i == n_iters: # or converged
                 break
@@ -1190,6 +1205,11 @@ class OutputWriter(object):
             m.loc[idx, grid_type+'_L2_loss'] = (
                 (ref_grid.values - grid.values)**2
             ).sum().item() / 2
+
+            # density L1 loss
+            m.loc[idx, grid_type+'_L1_loss'] = (
+                np.abs(ref_grid.values - grid.values)
+            ).sum().item()
 
     def compute_latent_metrics(self, idx, latent_type, latent, mean_latent=None):
         m = self.metrics
@@ -2248,6 +2268,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     constrain_types=args.constrain_types,
                     constrain_frags=False,
                     estimate_types=args.estimate_types,
+                    fit_L1_loss=args.fit_L1_loss,
                     interm_gd_iters=args.interm_gd_iters,
                     final_gd_iters=args.final_gd_iters,
                     gd_kwargs=dict(
@@ -2510,6 +2531,7 @@ def fit_worker_main(fit_queue, out_queue, args):
             constrain_types=args.constrain_types,
             constrain_frags=False,
             estimate_types=args.estimate_types,
+            fit_L1_loss=args.fit_L1_loss,
             interm_gd_iters=args.interm_gd_iters,
             final_gd_iters=args.final_gd_iters,
             gd_kwargs=dict(
@@ -2619,6 +2641,7 @@ def parse_args(argv=None):
     parser.add_argument('--threshold', type=float, default=0.1, help='threshold value for detecting next atoms on grid')
     parser.add_argument('--peak_value', type=float, default=1.5, help='reflect grid values higher than this value before detecting next atoms')
     parser.add_argument('--min_dist', type=float, default=0.0, help='minimum distance between detected atoms, in terms of covalent bond length')
+    parser.add_argument('--fit_L1_loss', default=False, action='store_true')
     parser.add_argument('--interm_gd_iters', type=int, default=10, help='number of gradient descent iterations after each step of atom fitting')
     parser.add_argument('--final_gd_iters', type=int, default=100, help='number of gradient descent iterations after final step of atom fitting')
     parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')
