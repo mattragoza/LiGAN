@@ -207,12 +207,30 @@ class MolStruct(object):
 
 
 class AtomFitter(object):
+    '''
+    An algorithm for fitting atoms to density grids using
+    beam search, atom detection, and gradient descent.
 
+    Runs a beam search over structures of atom types and
+    coordinates where beam_size current best structures
+    are stored and expanded at each step. The objective
+    function is L2 loss of the density of the fit struct-
+    ure to the reference density.
+
+    Structures are expanded by detecting atoms in the rem-
+    aining density after subtracting the density of the
+    structure from the reference density.
+
+    Gradient descent is performed after adding atoms to
+    structures. If the resulting structure has lower loss
+    than any of the current best structures, it is stored,
+    otherwise that branch of the search is terminated.
+    '''
     def __init__(
         self,
+        beam_size,
         multi_atom,
         n_atoms_detect,
-        beam_size,
         apply_conv,
         threshold,
         peak_value,
@@ -230,13 +248,16 @@ class AtomFitter(object):
         device,
         verbose=0,
     ):
-
-        # can place all detected atoms at once, or do beam search
-        self.multi_atom = multi_atom
-        self.n_atoms_detect = n_atoms_detect
+        # number of best structures to store and expand during search
         self.beam_size = beam_size
 
-        # settings for detecting next atoms to place on density grid
+        # maximum number of atoms to detect in remaining density
+        self.n_atoms_detect = n_atoms_detect
+
+        # try placing all detected atoms at once, then try individually
+        self.multi_atom = multi_atom
+
+        # other settings for detecting atoms in remaining density
         self.apply_conv = apply_conv
         self.threshold = threshold
         self.peak_value = peak_value
@@ -277,14 +298,16 @@ class AtomFitter(object):
         # struct with one atom of each type at the center
         xyz = torch.zeros((n_channels, 3), device=self.device)
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
-        r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
-
+        r = torch.tensor(
+            [ch.atomic_radius for ch in channels], 
+            device=self.device
+        )
         self.grid_maker.set_radii_type_indexed(True)
         self.grid_maker.set_resolution(resolution)
 
-        # kernel must fit max radius atom
-        kernel_radius = 1.5 * max(r).item()
-        self.grid_maker.set_dimension(2 * kernel_radius)
+        # kernel must fit atom with largest radius
+        kernel_radius = 1.5*max(r).item()
+        self.grid_maker.set_dimension(2*kernel_radius)
 
         # kernel must also have odd spatial dimension
         if self.grid_maker.spatial_grid_dimensions()[0]%2 == 0:
@@ -292,7 +315,7 @@ class AtomFitter(object):
                 self.grid_maker.get_dimension() + resolution
             )
 
-        self.c2grid.center = (0.0, 0.0, 0.0)
+        self.c2grid.center = (0.,0.,0.)
         values = self.c2grid(xyz, c, r)
 
         if deconv:
@@ -313,7 +336,9 @@ class AtomFitter(object):
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
                 kernel_norm = np.linalg.norm(values.cpu())
-                print('writing out {} (norm={})'.format(dx_prefix, kernel_norm))
+                print(
+                    'writing out {} (norm={})'.format(dx_prefix, kernel_norm)
+                )
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
@@ -321,6 +346,10 @@ class AtomFitter(object):
         '''
         Compute a convolution between the provided
         density grid and the atomic density kernel.
+
+        The output is normalized by the kernel norm
+        so that values above 0.5 indicate grid points
+        where placing an atom would decrease L2 loss.
         '''
         if self.kernel is None:
             self.init_kernel(channels, resolution)
@@ -357,7 +386,8 @@ class AtomFitter(object):
         if apply_threshold:
             threshold = torch.full((n_channels,), self.threshold, device=self.device)
 
-        if self.apply_conv: # convolve grid with kernel
+        # convolve grid with atomic density kernel
+        if self.apply_conv:
             grid = self.convolve(grid, channels, resolution)
 
         # reflect grid values above peak value

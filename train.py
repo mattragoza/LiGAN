@@ -550,9 +550,11 @@ def main(argv):
     for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
 
         # create nets for producing train and test data
+        print('Creating train data net')
         data_param.set_molgrid_data_source(train_file, args.data_root)
         train_data = Net.from_param(data_param, phase=caffe.TRAIN)
 
+        print('Creating test data net')
         test_data = {}
         data_param.set_molgrid_data_source(train_file, args.data_root)
         test_data['train'] = Net.from_param(data_param, phase=caffe.TEST)
@@ -561,6 +563,7 @@ def main(argv):
             test_data['test'] = Net.from_param(data_param, phase=caffe.TEST)
 
         # create solver for training generator net
+        print('Creating generator solver')
         gen_prefix = '{}_{}_gen'.format(args.out_prefix, fold)
         gen = Solver.from_param(solver_param, net_param=gen_param, snapshot_prefix=gen_prefix)
         if args.gen_weights_file:
@@ -569,6 +572,7 @@ def main(argv):
             gen.net.copy_from('lig_gauss_conv.caffemodel')
 
         # create solver for training discriminator net
+        print('Creating discriminator solver')
         disc_prefix = '{}_{}_disc'.format(args.out_prefix, fold)
         disc = Solver.from_param(solver_param, net_param=disc_param, snapshot_prefix=disc_prefix)
         if args.disc_weights_file:
