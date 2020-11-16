@@ -65,6 +65,6 @@ python3 <LIGAN_DIR>/generate.py \
 	--beta1 <BETA1> \
 	--beta2 <BETA2> \
 	--weight_decay <WEIGHT_DECAY> \
-	-o <JOB_NAME>_${SLURM_ARRAY_TASK_ID}
-	
+	-o <JOB_NAME>_$EXAMPLE_INDEX
+
 exit

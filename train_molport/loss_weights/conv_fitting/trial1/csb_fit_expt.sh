@@ -30,7 +30,7 @@ EXAMPLE_INDEX=$(( (${SLURM_ARRAY_TASK_ID} - 1) % N_EXAMPLES + 1 ))
 
 JOB_SCRIPT=../$(head -n"${JOB_SCRIPT_INDEX}" ${JOB_SCRIPTS_FILE} | tail -n1)
 WORK_DIR=$(dirname $JOB_SCRIPT)
-WORK_DIR=$(realpath $JOB_SCRIPT)
+WORK_DIR=$(realpath $WORK_DIR)
 
 echo slurm_array_task_id $SLURM_ARRAY_TASK_ID
 echo job_script_index $JOB_SCRIPT_INDEX
