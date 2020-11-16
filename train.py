@@ -7,6 +7,7 @@ import itertools
 import datetime as dt
 import numpy as np
 import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 
 import seaborn as sns
@@ -16,9 +17,273 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
+import molgrid
 import generate
-from caffe_util import NetParameter, SolverParameter, Net, Solver
+import caffe_util as cu
 from results import plot_lines
+
+
+class MolGridData(object):
+
+    def __init__(
+        self,
+        data_root,
+        batch_size,
+        rec_map_file,
+        lig_map_file,
+        resolution,
+        dimension,
+        shuffle,
+        random_rotation=True,
+        random_translation=2.0,
+        rec_molcache='',
+        lig_molcache='',
+    ):
+        # create receptor and ligand atom typers
+        rec_map = molgrid.FileMappedGninaTyper(rec_map_file)
+        lig_map = molgrid.FileMappedGninaTyper(lig_map_file)
+        self.rec_lig_split = rec_map.num_types()
+
+        # create example provider
+        self.ex_provider = molgrid.ExampleProvider(
+            rec_map,
+            lig_map,
+            data_root=data_root,
+            recmolcache=rec_molcache,
+            ligmolcache=lig_molcache,
+            shuffle=shuffle,
+        )
+
+        # create molgrid maker and output tensor
+        self.grid_maker = molgrid.GridMaker(resolution, dimension)
+        self.grid = torch.zeros(
+            batch_size,
+            rec_map.num_types() + lig_map.num_types(),
+            *self.grid_maker.spatial_grid_dimensions(),
+            dtype=torch.float32,
+            device='cuda',
+        )
+
+        self.random_rotation = random_rotation
+        self.random_translation = random_translation
+
+    @classmethod
+    def from_param(cls, param):
+
+        return cls(
+            data_root=param.root_folder,
+            batch_size=param.batch_size,
+            rec_map_file=param.recmap,
+            lig_map_file=param.ligmap,
+            resolution=param.resolution,
+            dimension=param.dimension,
+            shuffle=param.shuffle,
+            random_rotation=param.random_rotation,
+            random_translation=param.random_translate,
+            rec_molcache=param.recmolcache,
+            lig_molcache=param.ligmolcache,
+        )
+
+    def size(self):
+        return self.ex_provider.size()
+
+    def populate(self, data_file):
+        self.ex_provider.populate(data_file)
+
+    def forward(self):
+
+        examples = self.ex_provider.next_batch(self.grid.shape[0])
+        self.grid_maker.forward(
+            examples,
+            self.grid,
+            random_rotation=self.random_rotation,
+            random_translation=self.random_translation,
+        )
+        rec = self.grid[:,:self.rec_lig_split,...]
+        lig = self.grid[:,self.rec_lig_split:,...]
+        return rec, lig
+
+
+def CaffeGAN(object):
+
+    def __init__(
+        self,
+        batch_size,
+        gen_net_param,
+        disc_net_param,
+        solver_param,
+        random_seed,
+        out_prefix,
+    ):
+        # create generative net solver
+        self.gen_prefix = out_prefix + '_gen'
+        self.gen = cu.CaffeSolver(
+            param=solver_param,
+            net_param=gen_net_param,
+            random_seed=random_seed,
+            snapshot_prefix=self.gen_prefix,
+            scaffold=False,
+        )
+
+        # create discriminative net solver
+        disc_net_param.force_backward = True
+        self.disc_prefix = out_prefix + '_disc'
+        self.disc = cu.CaffeSolver(
+            param=solver_param,
+            net_param=disc_net_param,
+            random_seed=random_seed,
+            snapshot_prefix=self.disc_prefix,
+            scaffold=False,
+        )
+
+        # write and plot out train and test metrics
+        self.metrics_file = out_prefix + '.train_metrics'
+        self.plot_file = out_prefix + '.png'
+
+    def scaffold(
+        self,
+        cont_iter=None,
+        gen_weights=None,
+        disc_weights=None,
+    ):
+        if cont_iter:
+            state_suffix = '_iter_{}.solverstate'.format(cont_iter)
+            gen_state = self.gen_prefix + state_suffix
+            disc_state = self.disc_prefix + state_suffix
+        else:
+            gen_state = disc_state = None
+
+        self.gen.scaffold(gen_state, gen_weights)
+        self.disc.scaffold(disc_state, disc_weights)
+
+        if cont_iter:
+            self.metrics = pd.read_csv(
+                self.metrics_file, sep=' ', header=0, index_col=[0,1]
+            )[:cont_iter+1]
+            self.curr_iter = cont_iter
+
+        else:
+            cols = ['iteration', 'phase']
+            self.metrics = pd.DataFrame(columns=cols).set_index(cols)
+            self.curr_iter = 0
+
+        self.gen_net = generate.MolGridGenerator(self.gen.net)
+
+    def snapshot(self):
+        self.gen.snapshot()
+        self.disc.snapshot()
+
+    def test(self, data, n_iter):
+        
+        for i in range(n_iter):
+            self.disc_step(data, n_iter, train=False)
+
+        for i in range(n_iter):
+            self.gen_step(data, n_iter, train=False)
+
+    def balance(self):
+        return True, True # TODO get from loss df
+
+    def disc_step(self, data, real, train):
+        '''
+        Perform one forward-backward pass on discriminator
+        and optionally update its weights. Can use real or
+        generated data.
+        '''
+        # get real densities
+        rec, lig = data.forward()
+
+        if not real: # generate densities
+            lig = self.gen_net.forward(rec=rec, lig=lig)
+        
+        self.disc.net.forward(rec=rec, lig=lig, label=real)
+        self.disc.net.clear_param_diffs()
+        self.disc.net.backward()
+
+        # TODO record metrics
+
+        if train:
+            self.disc.apply_update()
+            self.disc.increment_iter()
+
+    def gen_step(self, data, train):
+        '''
+        Perform one forward-backward pass on generator
+        and optionally update its weights.
+        '''
+        # get real densities
+        rec, lig = data.forward()
+
+        # generate densities
+        lig_gen = self.gen_net.forward(rec=rec, lig=lig)
+
+        # compute adversarial loss
+        self.disc.net.forward(rec=rec, lig=lig_gen, label=True)
+        self.disc.net.clear_param_diffs()
+        self.disc.net.backward()
+
+        # copy disc input gradient to gen output
+        self.gen.net.blobs['lig_gen'].diff[...] = \
+            self.disc.net.blobs['lig'].diff
+
+        self.gen.net.clear_param_diffs()
+        self.gen.net.backward()
+
+        # TODO record metrics
+
+        if train:
+            self.gen.apply_update()
+            self.gen.increment_iter()
+
+    def train_disc(self, data, n_iter):
+
+        for i in range(n_iter):
+            real = (i%2 == 0)
+            self.disc_step(data, real, train=True)
+
+    def train_gen(self, data, n_iter):
+
+        for i in range(n_iter):
+            self.gen_step(data, train=True)
+
+    def train(
+        self,
+        train_data,
+        test_data,
+        n_iter,
+        gen_train_iter=2,
+        disc_train_iter=2,
+        test_interval=10,
+        test_iter=10,
+        snapshot=10000,
+        alternate=False,
+        balance=False,
+    ):
+        train_gen = True
+        train_disc = True
+
+        for i in range(self.curr_iter, n_iter+1):
+
+            if i % snapshot == 0:
+                self.snapshot()
+
+            if i % test_interval == 0:
+                self.test(train_data, test_iter)
+                self.test(test_data, test_iter)
+
+            if i == n_iter:
+                return
+
+            if train_disc:
+                self.train_disc(train_data, disc_train_iter)
+
+            if train_gen:
+                self.train_gen(train_data, gen_train_iter)
+
+            if balance: # dynamic G/D loss balancing
+                train_gen, train_disc = self.balance()
+
+            self.curr_iter += 1
 
 
 def get_gradient_norm(net, ord=2):
@@ -442,11 +707,13 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
         t_start = time.time()
 
         # train nets
-        disc_step(train_data, gen, disc, args.disc_train_iter, args,
-                  train=train_disc, compute_metrics=False)
+        if train_disc:
+            disc_step(train_data, gen, disc, args.disc_train_iter, args,
+                      train=True, compute_metrics=False)
 
-        gen_step(train_data, gen, disc, args.gen_train_iter, args,
-                 train=train_gen, compute_metrics=False)
+        if train_gen:
+            gen_step(train_data, gen, disc, args.gen_train_iter, args,
+                     train=train_gen, compute_metrics=False)
 
         if i+1 == args.max_iter:
             train_disc = False
@@ -484,18 +751,20 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
         gen.increment_iter()
 
 
-def get_train_and_test_files(data_prefix, fold_nums):
+def get_crossval_data_files(data_prefix, fold_num, ext='.types'):
     '''
-    Yield tuples of fold name, train file, test file from a
-    data_prefix and comma-delimited fold_nums string.
+    Return train and test data files for a given
+    fold number of a k-fold cross-validation split.
+    If fold_num == 'all', return the full data set
+    as both the train and test data file.
     '''
-    for fold in fold_nums.split(','):
-        if fold == 'all':
-            train_file = test_file = '{}.types'.format(data_prefix)
-        else:
-            train_file = '{}train{}.types'.format(data_prefix, fold)
-            test_file = '{}test{}.types'.format(data_prefix, fold)
-        yield fold, train_file, test_file
+    if fold_num == 'all':
+        train_data_file = test_data_file = data_prefix + ext
+    else:
+        fold_suffix = str(fold_num) + ext
+        train_data_file = data_prefix + 'train' + fold_suffix
+        test_data_file = data_prefix + 'test' + fold_suffix
+    return train_data_file, test_data_file
 
 
 def parse_args(argv):
@@ -509,13 +778,15 @@ def parse_args(argv):
     parser.add_argument('-n', '--fold_nums', default='0,1,2,all', help='comma-separated fold numbers to run (default 0,1,2,all)')
     parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
     parser.add_argument('--random_seed', default=0, type=int, help='random seed for Caffe initialization and training (default 0)')
+    parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
+    parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
+    parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
     parser.add_argument('--max_iter', default=100000, type=int, help='total number of train iterations (default 10000)')
-    parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
-    parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
-    parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
     parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
     parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
-    parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
+    parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
+    parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
+    parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
@@ -523,8 +794,6 @@ def parse_args(argv):
     parser.add_argument('--disc_grad_norm', default=False, action='store_true', help='disc gradient normalization')
     parser.add_argument('--gen_spectral_norm', default=False, action='store_true', help='gen spectral normalization')
     parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
-    parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
-    parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
     parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
     return parser.parse_args(argv)
@@ -533,70 +802,58 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
 
-    # read solver and model param files and set general params
-    data_param = NetParameter.from_prototxt(args.data_model_file)
+    # read data params
+    data_net_param = cu.NetParameter.from_prototxt(args.data_model_file)
+    assert data_net_param.layer[0].type == 'MolGridData'
+    data_param = data_net_param.layer[0].molgrid_data_param
 
-    gen_param = NetParameter.from_prototxt(args.gen_model_file)
-    disc_param = NetParameter.from_prototxt(args.disc_model_file)
+    # read model and solver params
+    gen_param = cu.NetParameter.from_prototxt(args.gen_model_file)
+    disc_param = cu.NetParameter.from_prototxt(args.disc_model_file)
+    solver_param = cu.SolverParameter.from_prototxt(args.solver_file)
 
-    gen_param.force_backward = True
-    disc_param.force_backward = True
+    for fold_num in args.fold_nums.split(','):
 
-    solver_param = SolverParameter.from_prototxt(args.solver_file)
-    solver_param.max_iter = args.max_iter
-    solver_param.test_interval = args.max_iter + 1
-    solver_param.random_seed = args.random_seed
+        train_data_file, test_data_file = get_crossval_data_files(
+            args.data_prefix, fold_num
+        )
 
-    for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
+        train_data = MolGridData.from_param(data_param)
+        train_data.populate(train_data_file)
 
-        # create nets for producing train and test data
-        print('Creating train data net')
-        data_param.set_molgrid_data_source(train_file, args.data_root)
-        train_data = Net.from_param(data_param, phase=caffe.TRAIN)
+        test_data = MolGridData.from_param(data_param)
+        test_data.populate(test_data_file)
 
-        print('Creating test data net')
-        test_data = {}
-        data_param.set_molgrid_data_source(train_file, args.data_root)
-        test_data['train'] = Net.from_param(data_param, phase=caffe.TEST)
-        if test_file != train_file:
-            data_param.set_molgrid_data_source(test_file, args.data_root)
-            test_data['test'] = Net.from_param(data_param, phase=caffe.TEST)
+        gan = CaffeGAN(
+            batch_size=args.batch_size,
+            gen_net_param=gen_param,
+            disc_net_param=disc_param,
+            solver_param=solver_param,
+            random_seed=args.random_seed,
+            out_prefix=args.out_prefix + '_' + str(fold),
+        )
 
-        # create solver for training generator net
-        print('Creating generator solver')
-        gen_prefix = '{}_{}_gen'.format(args.out_prefix, fold)
-        gen = Solver.from_param(solver_param, net_param=gen_param, snapshot_prefix=gen_prefix)
-        if args.gen_weights_file:
-            gen.net.copy_from(args.gen_weights_file)
-        if 'lig_gauss_conv' in gen.net.blobs:
-            gen.net.copy_from('lig_gauss_conv.caffemodel')
+        gan.scaffold(
+            cont_iter=args.cont_iter,
+            gen_weights=args.gen_weights_file,
+            disc_weights=args.disc_weights_file,
+        )
 
-        # create solver for training discriminator net
-        print('Creating discriminator solver')
-        disc_prefix = '{}_{}_disc'.format(args.out_prefix, fold)
-        disc = Solver.from_param(solver_param, net_param=disc_param, snapshot_prefix=disc_prefix)
-        if args.disc_weights_file:
-            disc.net.copy_from(args.disc_weights_file)
-
-        # continue previous training state, or start new training output file
-        loss_file = '{}_{}.training_output'.format(args.out_prefix, fold)
-        if args.cont_iter:
-            gen.restore('{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter))
-            disc.restore('{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter))
-            loss_df = pd.read_csv(loss_file, sep=' ', header=0, index_col=[0, 1])
-            loss_df = loss_df[:args.cont_iter+1]
-        else:
-            columns = ['iteration', 'phase']
-            loss_df = pd.DataFrame(columns=columns).set_index(columns)
-
-        plot_file = '{}_{}.png'.format(args.out_prefix, fold)
-
-        # begin training GAN
         try:
-            train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_file, args)
+            gan.train(
+                train_data=train_data,
+                test_data=test_data,
+                n_iter=args.max_iter,
+                gen_train_iter=args.gen_train_iter,
+                disc_train_iter=args.disc_train_iter,
+                test_interval=args.test_interval,
+                test_iter=args.test_iter,
+                snapshot=args.snapshot,
+                alternate=args.alternate,
+                balance=args.balance,
+            )
         except:
-            gen.snapshot()
-            disc.snapshot()
+            gan.snapshot()
             raise
 
 
