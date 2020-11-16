@@ -84,6 +84,7 @@ def expand_gen_options(args):
         r='--random_rotation',
         M='--multi_atom',
         c='--apply_conv',
+        l='--fit_L1_loss',
         t='--constrain_types',
         f='--constrain_frags',
         e='--estimate_types',

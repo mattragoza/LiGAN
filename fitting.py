@@ -1,17 +1,18 @@
+import time
 import molgrid
 from rdkit.Chem import AllChem as Chem
-from openbabel import pybel, openbabel
+from openbabel import openbabel as ob
+from openbabel import pybel
 import torch
 import numpy as np
 import seaborn as sns
-from rdkit.Geometry.rdGeometry import Point3D
+from rdkit import Geometry
 from skimage.segmentation import flood_fill
-from generate import *
-from atom_types import *
 from collections import namedtuple
 from scipy.spatial.distance import pdist
 from scipy.spatial.distance import squareform
 import pickle
+
 
 def grid_to_xyz(gcoords, mgrid):
     return mgrid.center+(np.array(gcoords)-((mgrid.size-1)/2))*mgrid.resolution
@@ -108,7 +109,16 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
     mgrid.values = mgrid.values.to(device)
 
     if not initcoords: #no atoms
-        return (np.info,0,0,MolStruct(np.zeros((0,3)),np.zeros(0), mgrid.channels))    
+        return (
+            initcoords.reshape(0,3),
+            typeindices,
+            mgrid.channels,            
+            (mgrid.values**2).sum(),
+            time.time()-t_start,
+            0,
+            0,
+            torch.zeros(mgrid.values.shape, device='cpu')
+        )
   
     #having setup input coordinates, optimize with BFGS
     coords = torch.tensor(initcoords,dtype=torch.float32,requires_grad=True,device=device)
@@ -244,21 +254,24 @@ def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
                 #otherwise update coordinates and repeat
                 
             offset += tcnts[t]
-            
-    agrid = gridder.forward(best_coords,best_typeindices,radii)   
-    #create struct from coordinates
-    mol = MolStruct(best_coords.numpy(), best_typeindices, mgrid.channels,            
-            L2_loss=float(best_loss),
-            time=time.time()-t_start,
-            iterations=inum,
-            numfixes=numfixes)
+    
     #print('losses',final_loss,best_loss)
-    return mol,agrid
+    return (
+        best_coords.numpy(),
+        best_typeindices,
+        mgrid.channels,            
+        float(best_loss),
+        time.time()-t_start,
+        inum,
+        numfixes,
+        gridder.forward(best_coords, best_typeindices, radii),
+    )
 
 
 def fixup(atoms, mol, struct):
     '''Set atom properties to match channel.  Keep doing this
     to beat openbabel over the head with what we want to happen.'''
+
     mol.SetAromaticPerceived(True)  #avoid perception
     for atom,t in zip(atoms,struct.c):
         ch = struct.channels[t]
@@ -282,7 +295,7 @@ def fixup(atoms, mol, struct):
             #we don't have aromatic types for nitrogen, but if it
             #is in a ring with aromatic carbon mark it aromatic as well
             acnt = 0
-            for nbr in openbabel.OBAtomAtomIter(atom):
+            for nbr in ob.OBAtomAtomIter(atom):
                 if nbr.IsAromatic():
                     acnt += 1
             if acnt > 1:
@@ -293,7 +306,7 @@ def fixup(atoms, mol, struct):
 def reachable_r(a,b, seenbonds):
     '''Recursive helper.'''
 
-    for nbr in openbabel.OBAtomAtomIter(a):
+    for nbr in ob.OBAtomAtomIter(a):
         bond = a.GetBond(nbr).GetIdx()
         if bond not in seenbonds:
             seenbonds.add(bond)
@@ -315,7 +328,7 @@ def forms_small_angle(a,b,cutoff=45):
     '''Return true if bond between a and b is part of a small angle
     with a neighbor of a only.'''
 
-    for nbr in openbabel.OBAtomAtomIter(a):
+    for nbr in ob.OBAtomAtomIter(a):
         if nbr != b:
             degrees = b.GetAngle(a,nbr)
             if degrees < cutoff:
@@ -352,21 +365,21 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
             if dists[i,j] < maxbond:
                 flag = 0
                 if 'Aromatic' in types[i] and 'Aromatic' in types[j]:
-                    flag = openbabel.OB_AROMATIC_BOND
+                    flag = ob.OB_AROMATIC_BOND
                 mol.AddBond(a.GetIdx(),b.GetIdx(),1,flag)
                 
     atom_maxb = {}
     for (i,a) in enumerate(atoms):
         #set max valance to the smallest max allowed by openbabel or rdkit
         #since we want the molecule to be valid for both (rdkit is usually lower)
-        maxb = openbabel.GetMaxBonds(a.GetAtomicNum())
+        maxb = ob.GetMaxBonds(a.GetAtomicNum())
         maxb = min(maxb,pt.GetDefaultValence(a.GetAtomicNum())) 
         if 'Donor' in types[i]:
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
     
     #remove any impossible bonds between halogens
-    for bond in openbabel.OBMolBondIter(mol):
+    for bond in ob.OBMolBondIter(mol):
         a1 = bond.GetBeginAtom()
         a2 = bond.GetEndAtom()
         if atom_maxb[a1.GetIdx()] == 1 and atom_maxb[a2.GetIdx()] == 1:
@@ -381,7 +394,7 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
             #compute how far away from optimal we are
             a1 = bond.GetBeginAtom()
             a2 = bond.GetEndAtom()
-            ideal = openbabel.GetCovalentRad(a1.GetAtomicNum()) + openbabel.GetCovalentRad(a2.GetAtomicNum()) 
+            ideal = ob.GetCovalentRad(a1.GetAtomicNum()) + ob.GetCovalentRad(a2.GetAtomicNum()) 
             stretch = bdist-ideal
             binfo.append((stretch,bdist,bond))
         binfo.sort(reverse=True, key=lambda t: t[:2]) #most stretched bonds first
@@ -394,7 +407,7 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
     for mb,diff,a in hypers:
         if a.GetExplicitValence() <= atom_maxb[a.GetIdx()]:
             continue
-        binfo = get_bond_info(openbabel.OBAtomBondIter(a))            
+        binfo = get_bond_info(ob.OBAtomBondIter(a))            
         for stretch,bdist,bond in binfo:
             #can we remove this bond without disconnecting the molecule?
             a1 = bond.GetBeginAtom()
@@ -411,7 +424,7 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
                     break #let nbr atoms choose what bonds to throw out
                 
     
-    binfo = get_bond_info(openbabel.OBMolBondIter(mol))
+    binfo = get_bond_info(ob.OBMolBondIter(mol))
     #now eliminate geometrically poor bonds
     for stretch,bdist,bond in binfo:
         #can we remove this bond without disconnecting the molecule?
@@ -435,8 +448,9 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
 def make_obmol(struct,verbose=False):
     '''Create an OBMol from MolStruct that attempts to maintain
     correct atom typing'''
-    mol = openbabel.OBMol()
+    mol = ob.OBMol()
     mol.BeginModify()
+    visited_mols = []
     
     
     atoms = []
@@ -447,24 +461,32 @@ def make_obmol(struct,verbose=False):
         atom.SetAtomicNum(ch.atomic_num)
         atom.SetVector(x,y,z)            
         atoms.append(atom)
-        
-    fixup(atoms, mol, struct)    
+    
+    fixup(atoms, mol, struct)   
+    visited_mols.append(ob.OBMol(mol)) 
+
     connect_the_dots(mol, atoms, struct)
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
+
     mol.EndModify()
 
     mol.AddPolarHydrogens() #make implicits explicit
+    visited_mols.append(ob.OBMol(mol))
     
     mol.PerceiveBondOrders()
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     for (i,a) in enumerate(atoms):
-        openbabel.OBAtomAssignTypicalImplicitHydrogens(a)
+        ob.OBAtomAssignTypicalImplicitHydrogens(a)
 
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     mol.AddHydrogens()
     fixup(atoms, mol, struct)
+    visited_mols.append(ob.OBMol(mol))
     
     #make rings all aromatic if majority of carbons are aromatic
     for ring in ob.OBMolRingIter(mol):
@@ -489,7 +511,9 @@ def make_obmol(struct,verbose=False):
         a2 = bond.GetEndAtom()
         if a1.IsAromatic() and a2.IsAromatic():
             bond.SetAromatic(True)
-            
+
+    visited_mols.append(ob.OBMol(mol))
+
     mismatches = 0
     for (a,t) in zip(atoms,struct.c):
         ch = struct.channels[t]
@@ -507,9 +531,8 @@ def make_obmol(struct,verbose=False):
             mismatches += 1
             if verbose:
                 print("Not Aromatic",ch.name,a.GetX(),a.GetY(),a.GetZ())
-        
 
-    return pybel.Molecule(mol),mismatches
+    return pybel.Molecule(mol),mismatches,visited_mols
     
 def calc_valence(rdatom):
     '''Can call GetExplicitValence before sanitize, but need to
@@ -634,6 +657,8 @@ def convert_ob_mol_to_rd_mol(ob_mol,struct=None):
     
 def make_rdmol(struct,verbose=False):
     '''Create RDKIT mol from MolStruct trying to respect types.'''
-    mol,misses = make_obmol(struct,verbose)
-    return convert_ob_mol_to_rd_mol(mol.OBMol)
+    mol,misses,visited_mols = make_obmol(struct,verbose)
+    return convert_ob_mol_to_rd_mol(mol.OBMol), misses, [
+        convert_ob_mol_to_rd_mol(mol) for mol in visited_mols
+    ]
 

@@ -1,4 +1,4 @@
-encode_type = 'disc'
+encode_type = '_l-'
 batch_size = 8
 rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
 lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
@@ -9,5 +9,5 @@ arch_options = 'l'
 n_filters = 16
 width_factor = 2
 n_latent = 1
-loss_types = 'x'
-loss_weight_log = [0.1, 1, 10]
+loss_types = 'w'
+loss_weight_wass = [1, 10, 100]

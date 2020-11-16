@@ -185,12 +185,6 @@ class TestCaffeBlob(object):
 		assert y.bottoms[0].param.shape.dim == [1,2,3]
 		assert y.bottoms[0].bottoms == [x]
 
-	def test_scaffold(self):
-		x, y = get_caffe_blobs(2)
-		z = x + y
-		net = z.scaffold()
-
-
 
 class TestCaffeLayer(object):
 
@@ -402,7 +396,55 @@ if False:
 		assert not any(self.input_diff_are_zero(gen))
 
 
+def get_net_param():
+	net_param = cu.NetParameter()
+	s = '''\
+layer {
+	name: "input"
+	type: "Input"
+	top: "input"
+	input_param {
+		shape {
+			dim: 1
+			dim: 2
+			dim: 3
+		}
+	}
+}
+	'''
+	cu.text_format.Merge(s, net_param)
+	return net_param
 
-#class TestRec2Lig(TestLig2Lig):
-#	encode_type = '_r-l'
-#	inputs = ['rec']
+
+class TestCaffeSolver(object):
+
+	def test_init(self):
+		s = cu.CaffeSolver()
+
+	def test_init_kwargs(self):
+		net_param = get_net_param()
+		s = cu.CaffeSolver(type='SGD', net_param=net_param)
+		assert s.param_.type == 'SGD'
+		assert s.param_.net_param == net_param
+
+	def test_scaffold_type_known(self):
+		net_param = get_net_param()
+		s = cu.CaffeSolver(type='SGD', net_param=net_param)
+		s.scaffold()
+		assert isinstance(s, cu.CaffeSolver)
+		assert isinstance(s, caffe.SGDSolver)
+
+	def test_scaffold_type_unknown(self):
+		net_param = get_net_param()
+		s = cu.CaffeSolver(type='ASDF', net_param=net_param)
+		with pytest.raises(AttributeError):
+			s.scaffold()
+
+	def test_scaffold_type_multiple(self):
+		net_param = get_net_param()
+		s1 = cu.CaffeSolver(type='SGD', net_param=net_param)
+		s2 = cu.CaffeSolver(type='Adam', net_param=net_param)
+		s1.scaffold()
+		s2.scaffold()
+		assert isinstance(s1, caffe.SGDSolver)
+		assert isinstance(s2, caffe.AdamSolver)

@@ -1,4 +1,4 @@
-import sys, os, copy
+import sys, os
 import contextlib
 import tempfile
 from collections import namedtuple, OrderedDict
@@ -43,6 +43,9 @@ def is_non_string_iterable(value):
 
 
 def assign_index_param(param, index, value):
+
+    if index > len(param):
+        raise IndexError("can't assign to param index greater than length")
 
     if index == len(param): # append value
         try: # composite value
@@ -697,7 +700,7 @@ class CaffeNet(caffe.Net):
 
 # problem: I want to extend Solver and all its subclasses
 # (e.g. SGDSolver, AdamSolver) with the same functionality
-# using a single CaffeSolver 
+# using a single CaffeSolver definition
 
 # solution: dynamically change superclass of dynamically
 # created, instance-specific CaffeSolver subclasses
@@ -721,7 +724,7 @@ class CaffeSolver(caffe._caffe.Solver):
         self.param_ = param or SolverParameter()
 
         for key, value in kwargs.items():
-            caffe.net_spec.assign_proto(self.param_, key, value)
+            assign_field_param(self.param_, key, value)
 
         if scaffold:
             self.scaffold(state)

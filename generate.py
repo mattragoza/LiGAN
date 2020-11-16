@@ -36,29 +36,37 @@ import caffe_util as cu
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
-def remove_tensors(s):
-    '''recursively traverse an object, converting pytorch tensors to numpy arrays *in place*'''
-    if not (type(s) == MolGrid or type(s) == MolStruct or type(s) == list or type(s) == dict):
-        #avoid traversing everything
-        return s
 
-    D = None
-    if type(s) == dict:
-        D = s
-    elif hasattr(s,'__dict__'):
-        D = s.__dict__
+def remove_tensors(obj, visited=None):
+    '''
+    Recursively traverse an object converting pytorch tensors
+    to numpy arrays in-place.
+    '''
+    visited = visited or set()
+
+    if not isinstance(obj, (MolGrid, MolStruct, list, dict)) or id(obj) in visited:
+        #avoid traversing everything
+        return obj
+
+    visited.add(id(obj))
+
+    dct = None
+    if isinstance(obj, dict):
+        dct = obj
+    elif hasattr(obj, '__dict__'):
+        dct = obj.__dict__
         
-    if D:
-        for k,v in D.items():
-            if type(v) == torch.Tensor:
-                D[k] = v.cpu().detach().numpy()
+    if dct:
+        for k, v in dct.items():
+            if isinstance(v, torch.Tensor):
+                dct[k] = v.cpu().detach().numpy()
             else:
-                D[k] = remove_tensors(v)
-    elif type(s) == list:
-        for i,v in enumerate(s):
-            s[i] = remove_tensors(s[i])
+                dct[k] = remove_tensors(v, visited)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            obj[i] = remove_tensors(obj[i], visited)
     
-    return s
+    return obj
             
 
 class MolGrid(object):
@@ -69,8 +77,10 @@ class MolGrid(object):
 
         if len(values.shape) != 4:
             raise ValueError('MolGrid values must have 4 dims')
+
         if values.shape[0] != len(channels):
             raise ValueError('MolGrid values have wrong number of channels')
+
         if not (values.shape[1] == values.shape[2] == values.shape[3]):
             raise ValueError('last 3 dims of MolGrid values must be equal')
 
@@ -99,6 +109,14 @@ class MolGrid(object):
             center=self.center if center is None else center,
             resolution=self.resolution)
 
+    def new_like(self, values, **info):
+        '''
+        Return a MolGrid with the same grid settings but new values.
+        '''
+        return MolGrid(
+            values, self.channels, self.center, self.resolution, **info
+        )
+
 
 class MolStruct(object):
     '''
@@ -117,7 +135,6 @@ class MolStruct(object):
         if any(c < 0) or any(c >= len(channels)):
             raise ValueError('invalid channel index in MolStruct c')
 
-        self.n_atoms = xyz.shape[0]
         self.xyz = xyz
         self.c = c
         self.channels = channels
@@ -164,6 +181,10 @@ class MolStruct(object):
         channels_file = os.path.splitext(sdf_file)[0] + '.channels'
         c = read_channels_from_file(channels_file, channels)
         return cls.from_rd_mol(rd_mol, c, channels)
+
+    @property
+    def n_atoms(self):
+        return self.xyz.shape[0]
 
     def to_ob_mol(self):
         mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
@@ -362,11 +383,30 @@ class Generator(object):
 
 
 class AtomFitter(object):
+    '''
+    An algorithm for fitting atoms to density grids using
+    beam search, atom detection, and gradient descent.
 
+    Runs a beam search over structures of atom types and
+    coordinates where beam_size current best structures
+    are stored and expanded at each step. The objective
+    function is L2 loss of the density of the fit struct-
+    ure to the reference density.
+
+    Structures are expanded by detecting atoms in the rem-
+    aining density after subtracting the density of the
+    structure from the reference density.
+
+    Gradient descent is performed after adding atoms to
+    structures. If the resulting structure has lower loss
+    than any of the current best structures, it is stored,
+    otherwise that branch of the search is terminated.
+    '''
     def __init__(
         self,
-        multi_atom,
         beam_size,
+        multi_atom,
+        n_atoms_detect,
         apply_conv,
         threshold,
         peak_value,
@@ -374,6 +414,7 @@ class AtomFitter(object):
         constrain_types,
         constrain_frags,
         estimate_types,
+        fit_L1_loss,
         interm_gd_iters,
         final_gd_iters,
         gd_kwargs,
@@ -383,12 +424,16 @@ class AtomFitter(object):
         device,
         verbose=0,
     ):
-
-        # can place all detected atoms at once, or do beam search
-        self.multi_atom = multi_atom
+        # number of best structures to store and expand during search
         self.beam_size = beam_size
 
-        # settings for detecting next atoms to place on density grid
+        # maximum number of atoms to detect in remaining density
+        self.n_atoms_detect = n_atoms_detect
+
+        # try placing all detected atoms at once, then try individually
+        self.multi_atom = multi_atom
+
+        # other settings for detecting atoms in remaining density
         self.apply_conv = apply_conv
         self.threshold = threshold
         self.peak_value = peak_value
@@ -400,6 +445,7 @@ class AtomFitter(object):
         self.estimate_types = estimate_types
 
         # can perform gradient descent at each step and/or at final step
+        self.fit_L1_loss = fit_L1_loss
         self.interm_gd_iters = interm_gd_iters
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
@@ -419,8 +465,8 @@ class AtomFitter(object):
 
     def init_kernel(self, channels, resolution, deconv=False):
         '''
-        Initialize the convolution kernel that is used
-        to propose next atom initializations on grids.
+        Initialize an atomic density kernel that can
+        can be used to detect atoms in density grids.
         '''
         n_channels = len(channels)
 
@@ -428,16 +474,24 @@ class AtomFitter(object):
         # struct with one atom of each type at the center
         xyz = torch.zeros((n_channels, 3), device=self.device)
         c = torch.eye(n_channels, device=self.device) # one-hot vector types
-        r = torch.tensor([ch.atomic_radius for ch in channels], device=self.device)
-
-        # kernel must fit max radius atom
-        kernel_radius = 1.5 * max(r).item()
-
+        r = torch.tensor(
+            [ch.atomic_radius for ch in channels], 
+            device=self.device
+        )
         self.grid_maker.set_radii_type_indexed(True)
-        self.grid_maker.set_dimension(2 * kernel_radius) 
         self.grid_maker.set_resolution(resolution)
 
-        self.c2grid.center = (0.0, 0.0, 0.0)
+        # kernel must fit atom with largest radius
+        kernel_radius = 1.5*max(r).item()
+        self.grid_maker.set_dimension(2*kernel_radius)
+
+        # kernel must also have odd spatial dimension
+        if self.grid_maker.spatial_grid_dimensions()[0]%2 == 0:
+            self.grid_maker.set_dimension(
+                self.grid_maker.get_dimension() + resolution
+            )
+
+        self.c2grid.center = (0.,0.,0.)
         values = self.c2grid(xyz, c, r)
 
         if deconv:
@@ -458,13 +512,37 @@ class AtomFitter(object):
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
                 kernel_norm = np.linalg.norm(values.cpu())
-                print('writing out {} (norm={})'.format(dx_prefix, kernel_norm))
+                print(
+                    'writing out {} (norm={})'.format(dx_prefix, kernel_norm)
+                )
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
-    def get_next_atoms(self, grid, channels, center, resolution, types=None):
+    def convolve(self, grid, channels, resolution):
         '''
-        Get a set of atoms from a density grid by convolving
+        Compute a convolution between the provided
+        density grid and the atomic density kernel.
+
+        The output is normalized by the kernel norm
+        so that values above 0.5 indicate grid points
+        where placing an atom would decrease L2 loss.
+        '''
+        if self.kernel is None:
+            self.init_kernel(channels, resolution)
+
+        # normalize convolved grid channels by kernel norm
+        kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3), keepdim=True)
+
+        return F.conv3d(
+            input=grid.unsqueeze(0),
+            weight=self.kernel.values.unsqueeze(1),
+            padding=self.kernel.values.shape[-1]//2,
+            groups=len(channels),
+        )[0] / kernel_norm2
+
+    def detect_atoms(self, grid, channels, center, resolution, types=None):
+        '''
+        Detect a set of atoms in a density grid by convolving
         with a kernel, applying a threshold, and then returning
         atom types and coordinates ordered by grid value.
         '''
@@ -484,25 +562,9 @@ class AtomFitter(object):
         if apply_threshold:
             threshold = torch.full((n_channels,), self.threshold, device=self.device)
 
-        if self.apply_conv: # convolve grid with kernel
-
-            if self.kernel is None:
-                self.init_kernel(channels, resolution)
-
-            grid = F.conv3d(
-                input=grid.unsqueeze(0),
-                weight=self.kernel.values.unsqueeze(1),
-                padding=self.kernel.values.shape[-1]//2,
-                groups=n_channels,
-            )[0]
-
-            kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3))
-
-            if apply_peak_value:
-                peak_value *= kernel_norm2
-
-            if apply_threshold:
-                threshold *= kernel_norm2
+        # convolve grid with atomic density kernel
+        if self.apply_conv:
+            grid = self.convolve(grid, channels, resolution)
 
         # reflect grid values above peak value
         if apply_peak_value:
@@ -544,43 +606,50 @@ class AtomFitter(object):
         origin = center - resolution * (float(grid_dim) - 1) / 2.0
         xyz = origin + resolution * idx_xyz.float()
 
-        # suppress atoms too close to a higher-value point
-        if suppress_non_max:
+        # suppress atoms too close to a higher-value atom of same type
+        if suppress_non_max and self.n_atoms_detect > 1:
 
             r = torch.tensor(
                 [ch.atomic_radius for ch in channels],
                 device=self.device,
             )
-            if len(idx_c) > 1000:
+            if len(idx_c) < 1000: # use NxN matrices
+                same_type = (idx_c.unsqueeze(1) == idx_c.unsqueeze(0))
+                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
+                min_dist2 = (self.min_dist * bond_radius)**2
+                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
+                # the lower triangular part of a matrix under diagonal -1
+                #   gives those indices i,j such that i > j
+                # since atoms are sorted by decreasing density value,
+                #   i > j implies that atom i has lower value than atom j
+                # we use this to check a condition on each atom
+                #   only with respect to atoms of higher value 
+                too_close = torch.tril(
+                    (dist2 < min_dist2) & same_type, diagonal=-1
+                ).any(dim=1)
+                xyz = xyz[~too_close]
+                idx_c = idx_c[~too_close]
 
+            else: # use a for loop
                 xyz_max = xyz[0].unsqueeze(0)
                 idx_c_max = idx_c[0].unsqueeze(0)
 
                 for i in range(1, len(idx_c)):
+                    same_type = (idx_c[i] == idx_c_max)
                     bond_radius = r[idx_c[i]] + r[idx_c_max]
-                    min_dist = self.min_dist * bond_radius
-                    min_dist2 = min_dist**2
+                    min_dist2 = (self.min_dist * bond_radius)**2
                     dist2 = ((xyz[i].unsqueeze(0) - xyz_max)**2).sum(dim=1)
-                    if not (dist2 < min_dist2).any():
+                    if not ((dist2 < min_dist2) & same_type).any():
                         xyz_max = torch.cat([xyz_max, xyz[i].unsqueeze(0)])
                         idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
 
                 xyz = xyz_max
                 idx_c = idx_c_max
 
-            else:
-                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
-                min_dist = self.min_dist * bond_radius
-                min_dist2 = min_dist**2
-                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
-                not_too_close = ~torch.tril(dist2 < min_dist2, diagonal=-1).any(dim=1)
-                xyz = xyz[not_too_close]
-                idx_c = idx_c[not_too_close]
-
-        # limit number of atoms to beam size
-        if not self.multi_atom:
-            xyz = xyz[:self.beam_size]
-            idx_c = idx_c[:self.beam_size]
+        # limit total number of detected atoms
+        if self.n_atoms_detect >= 0:
+            xyz = xyz[:self.n_atoms_detect]
+            idx_c = idx_c[:self.n_atoms_detect]
 
         # convert atom type channel index to one-hot type vector
         c = F.one_hot(idx_c, n_channels).to(dtype=torch.float32, device=self.device)
@@ -634,19 +703,22 @@ class AtomFitter(object):
         xyz = torch.zeros((0, 3), dtype=torch.float32, device=self.device)
         c = torch.zeros((0, n_channels), dtype=torch.float32, device=self.device)
 
-        L2_loss = (grid_true.values**2).sum() / 2.0
+        if self.fit_L1_loss:
+            fit_loss = grid_true.values.abs().sum()
+        else:
+            fit_loss = (grid_true.values**2).sum() / 2.0
         type_loss = types.abs().sum()
 
         # to constrain types, order structs first by type diff, then by L2 loss
         if self.constrain_types:
-            objective = (type_loss.item(), L2_loss.item())
+            objective = (type_loss.item(), fit_loss.item())
 
         else: # otherwise, order structs only by L2 loss
-            objective = L2_loss.item()
+            objective = fit_loss.item()
 
         # get next atom init locations and channels
         print('Getting next atoms for struct 0')
-        xyz_next, c_next = self.get_next_atoms(
+        xyz_next, c_next = self.detect_atoms(
             grid_true.values,
             grid_true.channels,
             grid_true.center,
@@ -654,14 +726,14 @@ class AtomFitter(object):
             types,
         )
 
-        # keept track of best structures so far
+        # keep track of best structures so far
         struct_id = 0
         best_structs = [(objective, struct_id, xyz, c, xyz_next, c_next)]
         found_new_best_struct = True
 
-        # keep track of visited structures
-        visited = set()
-        visited_structs = []
+        # keep track of visited and expanded structures
+        expanded_ids = set()
+        visited_structs = [(objective, struct_id, time.time()-t_start, xyz, c)]
         struct_count = 1
 
         # search until we can't find a better structure
@@ -673,9 +745,10 @@ class AtomFitter(object):
             # try to expand each current best structure
             for objective, struct_id, xyz, c, xyz_next, c_next in best_structs:
 
-                if struct_id in visited:
+                if struct_id in expanded_ids:
                     continue
 
+                do_single_atom = True
                 #print('expanding struct {} to {} next atoms'.format(struct_id, len(c_next)))
 
                 if self.multi_atom: # evaluate all next atoms simultaneously
@@ -684,7 +757,7 @@ class AtomFitter(object):
                     c_new = torch.cat([c, c_next])
 
                     # compute diff and loss after gradient descent
-                    xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
+                    xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
                         grid_true, xyz_new, c_new, self.interm_gd_iters
                     )
 
@@ -692,16 +765,16 @@ class AtomFitter(object):
                     type_loss = type_diff.abs().sum()
 
                     if self.constrain_types:
-                        objective_new = (type_loss.item(), L2_loss.item())
+                        objective_new = (type_loss.item(), fit_loss.item())
                     else:
-                        objective_new = L2_loss.item()
+                        objective_new = fit_loss.item()
 
                     # check if new structure is one of the best yet
                     if any(objective_new < s[0] for s in best_structs):
 
                         print('Found new best struct {}'.format(struct_count))
 
-                        xyz_new_next, c_new_next = self.get_next_atoms(
+                        xyz_new_next, c_new_next = self.detect_atoms(
                             grid_diff,
                             grid_true.channels,
                             grid_true.center,
@@ -720,9 +793,15 @@ class AtomFitter(object):
                         )
                         found_new_best_struct = True
                         struct_count += 1
+                        do_single_atom = False
 
-                else: # evaluate each possible next atom individually
+                    visited_structs.append(
+                        (objective_new, struct_id, time.time()-t_start, xyz_new, c_new)
+                    )
 
+                if do_single_atom:
+
+                    # evaluate each possible next atom individually
                     for xyz_next_, c_next_ in zip(xyz_next, c_next):
 
                         # add next atom to structure
@@ -730,7 +809,7 @@ class AtomFitter(object):
                         c_new = torch.cat([c, c_next_.unsqueeze(0)])
 
                         # compute diff and loss after gradient descent
-                        xyz_new, grid_pred, grid_diff, L2_loss = self.fit_gd(
+                        xyz_new, grid_pred, grid_diff, fit_loss = self.fit_gd(
                             grid_true, xyz_new, c_new, self.interm_gd_iters
                         )
 
@@ -738,16 +817,16 @@ class AtomFitter(object):
                         type_loss = type_diff.abs().sum()
 
                         if self.constrain_types:
-                            objective_new = (type_loss.item(), L2_loss.item())
+                            objective_new = (type_loss.item(), fit_loss.item())
                         else:
-                            objective_new = L2_loss.item()
+                            objective_new = fit_loss.item()
 
                         # check if new structure is one of the best yet
                         if any(objective_new < s[0] for s in best_structs):
 
                             print('Found new best struct {}'.format(struct_count))
 
-                            xyz_new_next, c_new_next = self.get_next_atoms(
+                            xyz_new_next, c_new_next = self.detect_atoms(
                                 grid_diff,
                                 grid_true.channels,
                                 grid_true.center,
@@ -767,18 +846,15 @@ class AtomFitter(object):
                             found_new_best_struct = True
                             struct_count += 1
 
-                visited.add(struct_id)
-                visited_structs.append(
-                    (objective, struct_id, time.time()-t_start, xyz, c)
-                )
+                        visited_structs.append(
+                            (objective_new, struct_id, time.time()-t_start, xyz_new, c_new)
+                        )
+
+                expanded_ids.add(struct_id)
 
             if found_new_best_struct: # determine new set of best structures
 
-                if self.multi_atom:
-                    best_structs = sorted(best_structs + new_best_structs)[:1]
-                else:
-                    best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
-
+                best_structs = sorted(best_structs + new_best_structs)[:self.beam_size]
                 best_objective = best_structs[0][0]
                 best_id = best_structs[0][1]
                 best_n_atoms = best_structs[0][2].shape[0]
@@ -798,20 +874,24 @@ class AtomFitter(object):
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
         type_loss = (types - c_best.sum(dim=0)).abs().sum().item()
 
-        if self.final_gd_iters > 0: # perform final gradient descent
+        # perform final gradient descent
+        xyz_best, grid_pred, grid_diff, fit_loss = self.fit_gd(
+            grid_true, xyz_best, c_best, self.final_gd_iters
+        )
 
-            xyz_best, grid_pred, grid_diff, L2_loss = self.fit_gd(
-                grid_true, xyz_best, c_best, self.final_gd_iters
-            )
+        # compute the final L2 and L1 loss
+        L2_loss = (grid_diff**2).sum() / 2
+        L1_loss = grid_diff.abs().sum()
 
-            if self.constrain_types:
-                best_objective = (type_loss.item(), L2_loss.item())
-            else:
-                best_objective = L2_loss.item()
+        if self.constrain_types:
+            best_objective = (type_loss.item(), fit_loss.item())
+        else:
+            best_objective = fit_loss.item()
 
-            visited_structs.append(
-                (best_objective, best_id+1, time.time()-t_start, xyz_best, c_best)
-            )
+        # make sure best struct is the last visited struct
+        visited_structs.append(
+            (best_objective, best_id+1, time.time()-t_start, xyz_best, c_best)
+        )
 
         # finalize the visited atomic structures
         visited_structs_ = iter(visited_structs)
@@ -823,7 +903,8 @@ class AtomFitter(object):
                 c=one_hot_to_index(c).cpu().detach().numpy(),
                 channels=grid.channels,
                 L2_loss=L2_loss,
-                type_diff=type_diff,
+                L1_loss=L1_loss,
+                type_diff=type_loss,
                 est_type_diff=est_type_loss,
                 time=fit_time,
             )
@@ -835,6 +916,7 @@ class AtomFitter(object):
             c=one_hot_to_index(c_best).cpu().detach().numpy(),
             channels=grid.channels,
             L2_loss=L2_loss,
+            L1_loss=L1_loss,
             type_diff=type_loss,
             est_type_diff=est_type_loss,
             time=time.time()-t_start,
@@ -848,7 +930,6 @@ class AtomFitter(object):
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
-            visited_structs=visited_structs,
             src_struct=struct_best,
         )
 
@@ -860,7 +941,6 @@ class AtomFitter(object):
             [ch.atomic_radius for ch in grid.channels],
             device=self.device,
         )
-
         xyz = xyz.clone().detach().to(self.device)
         c = c.clone().detach().to(self.device)
         xyz.requires_grad = True
@@ -877,7 +957,10 @@ class AtomFitter(object):
 
             grid_pred = self.c2grid(xyz, c, r)
             grid_diff = grid.values - grid_pred
-            loss = (grid_diff**2).sum() / 2.0
+            if self.fit_L1_loss:
+                loss = grid_diff.abs().sum()
+            else:
+                loss = (grid_diff**2).sum() / 2.0
 
             if i == n_iters: # or converged
                 break
@@ -903,19 +986,17 @@ class AtomFitter(object):
         visited_mols = [rd_mol]
 
         if self.dkoes_make_mol:
-            pb_mol, misses = dkoes_fitting.make_obmol(struct, self.verbose)
-            ob_mol = pb_mol.OBMol
-            visited_mols.append(ob_mol_to_rd_mol(ob_mol))
-            rd_mol = dkoes_fitting.convert_ob_mol_to_rd_mol(ob_mol,struct)
-            visited_mols.append(rd_mol)
+
+            rd_mol, misses, dkoes_visited_mols = dkoes_fitting.make_rdmol(
+                struct, self.verbose
+            )
+            visited_mols += dkoes_visited_mols
 
         elif self.mtr22_make_mol:
 
-            # trying to derive the bonds by principled "inverse atom typing"
+            # TODO try to derive the bonds by principled "inverse atom typing"
             # where we use the atom types to constrain the molecule in OB
-
             ob_mol = struct.to_ob_mol()
-            # TODO
 
         else:
             # connect the dots using openbabel
@@ -974,24 +1055,43 @@ class DkoesAtomFitter(AtomFitter):
         self.use_openbabel = use_openbabel
 
     def fit(self, grid, types):
-        struct, grid_pred = dkoes_fitting.simple_atom_fit(
-            mgrid=grid,
-            types=types,
-            iters=self.iters,
-            tol=self.tol,
-            grm=1.0
+
+        grid = MolGrid(
+            values=grid.values,
+            channels=grid.channels,
+            center=grid.center,
+            resolution=grid.resolution,
         )
+
+        xyz, c, channels, L2_loss, time_, n_iters, n_fixes, grid_pred = \
+            dkoes_fitting.simple_atom_fit(
+                mgrid=grid,
+                types=types,
+                iters=self.iters,
+                tol=self.tol,
+                grm=1.0
+            )
+
+        struct = MolStruct(
+            xyz=xyz,
+            c=c,
+            channels=channels,
+            L2_loss=L2_loss,
+            time=time_,
+            n_iters=n_iters,
+            n_fixes=n_fixes,
+        )
+        struct.info['visited_structs'] = [struct]
         self.validify(struct)
-        
+
         grid_pred = MolGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
-            visited_structs=[struct],
-            src_struct=struct_best,
-        )        
-        return remove_tensors(struct)
+            src_struct=struct,
+        )
+        return remove_tensors(grid_pred)
 
 
 class OutputWriter(object):
@@ -1008,6 +1108,7 @@ class OutputWriter(object):
         output_channels,
         output_latent,
         output_visited,
+        output_conv,
         n_samples,
         blob_names,
         fit_atoms,
@@ -1021,6 +1122,7 @@ class OutputWriter(object):
         self.output_channels = output_channels
         self.output_latent = output_latent
         self.output_visited = output_visited
+        self.output_conv = output_conv
         self.n_samples = n_samples
         self.blob_names = blob_names
         self.fit_atoms = fit_atoms
@@ -1052,6 +1154,7 @@ class OutputWriter(object):
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
         uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
+        conv_sample_prefix = grid_prefix + '_conv_' + str(sample_idx)
 
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
@@ -1066,6 +1169,14 @@ class OutputWriter(object):
 
             grid.to_dx(sample_prefix, center=np.zeros(3))
             self.dx_prefixes.append(sample_prefix)
+
+            if self.output_conv and not is_fit_grid:
+
+                if self.verbose:
+                    print('Writing' + conv_sample_prefix + ' .dx files')
+
+                grid.info['conv_grid'].to_dx(conv_sample_prefix, center=np.zeros(3))
+                self.dx_prefixes.append(conv_sample_prefix)
 
         if has_struct and self.output_sdf: # write structure files
 
@@ -1301,6 +1412,11 @@ class OutputWriter(object):
                 (ref_grid.values - grid.values)**2
             ).sum().item() / 2
 
+            # density L1 loss
+            m.loc[idx, grid_type+'_L1_loss'] = (
+                np.abs(ref_grid.values - grid.values)
+            ).sum().item()
+
     def compute_latent_metrics(self, idx, latent_type, latent, mean_latent=None):
         m = self.metrics
 
@@ -1361,7 +1477,7 @@ class OutputWriter(object):
             # accuracy of estimated type counts, whether or not
             # they were actually used to constrain atom fitting
             est_type = struct_type[:-4] + '_est'
-            m.loc[idx, est_type+'_type_diff'] = struct.info['est_type_diff']
+            m.loc[idx, est_type+'_type_diff'] = struct.info.get('est_type_diff', np.nan)
             m.loc[idx, est_type+'_exact_types'] = (
                 m.loc[idx, est_type+'_type_diff'] == 0
             )
@@ -1492,6 +1608,8 @@ def get_ob_smi_similarity(smi1, smi2):
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+    if rd_mol.GetNumAtoms() == 0:
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
     try:
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
         ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
@@ -2246,6 +2364,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             output_channels=args.output_channels,
             output_latent=args.output_latent,
             output_visited=args.output_visited,
+            output_conv=args.output_conv,
             n_samples=args.n_samples,
             batch_metrics=args.batch_metrics,
             blob_names=args.blob_name,
@@ -2253,13 +2372,14 @@ def generate_from_model(gen_net, data_param, n_examples, args):
             verbose=args.verbose,
         )
 
-        if args.fit_atoms:
+        if args.fit_atoms or args.output_conv:
 
             if args.dkoes_simple_fit:
-                atom_fitter = DkoesAtomFitter(args.dkoes_make_mol,args.use_openbabel)
+                atom_fitter = DkoesAtomFitter(args.dkoes_make_mol, args.use_openbabel)
             else:
                 atom_fitter = AtomFitter(
-                    multi_atom=args.multi_atom, 
+                    multi_atom=args.multi_atom,
+                    n_atoms_detect=args.n_atoms_detect,
                     beam_size=args.beam_size,
                     apply_conv=args.apply_conv,
                     threshold=args.threshold,
@@ -2268,6 +2388,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                     constrain_types=args.constrain_types,
                     constrain_frags=False,
                     estimate_types=args.estimate_types,
+                    fit_L1_loss=args.fit_L1_loss,
                     interm_gd_iters=args.interm_gd_iters,
                     final_gd_iters=args.final_gd_iters,
                     gd_kwargs=dict(
@@ -2421,14 +2542,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_name = os.path.basename(lig_src_no_ext)
                 lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                print('Minimizing real molecule')
-                atom_fitter.uff_minimize(lig_mol)
-                lig_struct.info['src_mol'] = lig_mol
+                if args.fit_atoms:
+                    print('Minimizing real molecule')
+                    atom_fitter.uff_minimize(lig_mol)
+                    lig_struct.info['src_mol'] = lig_mol
 
-                print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+                    print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
-                print('Validifying real atom types and coords')
-                atom_fitter.validify(lig_struct)
+                    print('Validifying real atom types and coords')
+                    atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
                 latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
@@ -2477,6 +2599,15 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             lig_name, grid_type.ljust(7), sample_idx, grid_norm, gpu_usage
                         ), flush=True)
 
+                    if args.output_conv:
+                        grid.info['conv_grid'] = grid.new_like(
+                            values=atom_fitter.convolve(
+                                torch.tensor(grid.values, device=atom_fitter.device),
+                                grid.channels,
+                                grid.resolution,
+                            ).cpu().detach().numpy()
+                        )
+
                     if args.parallel:
                         out_queue.put((lig_name, grid_type, sample_idx, grid))
                         if grid_needs_fit:
@@ -2511,6 +2642,7 @@ def fit_worker_main(fit_queue, out_queue, args):
     else:
         atom_fitter = AtomFitter(
             multi_atom=args.multi_atom,
+            n_atoms_detect=args.n_atoms_detect,
             beam_size=args.beam_size,
             apply_conv=args.apply_conv,
             threshold=args.threshold,
@@ -2519,6 +2651,7 @@ def fit_worker_main(fit_queue, out_queue, args):
             constrain_types=args.constrain_types,
             constrain_frags=False,
             estimate_types=args.estimate_types,
+            fit_L1_loss=args.fit_L1_loss,
             interm_gd_iters=args.interm_gd_iters,
             final_gd_iters=args.final_gd_iters,
             gd_kwargs=dict(
@@ -2571,6 +2704,7 @@ def out_worker_main(out_queue, args):
         output_channels=args.output_channels,
         output_latent=args.output_latent,
         output_visited=args.output_visited,
+        output_conv=args.output_conv,
         n_samples=args.n_samples,
         batch_metrics=args.batch_metrics,
         blob_names=args.blob_name,
@@ -2609,6 +2743,7 @@ def parse_args(argv=None):
     parser.add_argument('-o', '--out_prefix', required=True, help='common prefix for output files')
     parser.add_argument('--output_dx', action='store_true', help='output .dx files of atom density grids for each channel')
     parser.add_argument('--output_sdf', action='store_true', help='output .sdf file of best fit atom positions')
+    parser.add_argument('--output_conv', action='store_true', help='output .dx files of atom density grids convolved with kernel')
     parser.add_argument('--output_visited', action='store_true', help='output every visited structure in .sdf files')
     parser.add_argument('--output_kernel', action='store_true', help='output .dx files for kernel used to intialize atoms during atom fitting')
     parser.add_argument('--output_channels', action='store_true', help='output channels of each fit structure in separate files')
@@ -2620,11 +2755,13 @@ def parse_args(argv=None):
     parser.add_argument('--constrain_types', action='store_true', help='constrain atom fitting to find atom types of true ligand (or estimate)')
     parser.add_argument('--estimate_types', action='store_true', help='estimate atom type counts using the total grid density per channel')
     parser.add_argument('--multi_atom', default=False, action='store_true', help='add all next atoms to grid simultaneously at each atom fitting step')
+    parser.add_argument('--n_atoms_detect', default=1, type=int, help='max number of atoms to detect in each atom fitting step')
     parser.add_argument('--beam_size', type=int, default=1, help='number of best structures to track during atom fitting beam search')
     parser.add_argument('--apply_conv', default=False, action='store_true', help='apply convolution to grid before detecting next atoms')
     parser.add_argument('--threshold', type=float, default=0.1, help='threshold value for detecting next atoms on grid')
     parser.add_argument('--peak_value', type=float, default=1.5, help='reflect grid values higher than this value before detecting next atoms')
     parser.add_argument('--min_dist', type=float, default=0.0, help='minimum distance between detected atoms, in terms of covalent bond length')
+    parser.add_argument('--fit_L1_loss', default=False, action='store_true')
     parser.add_argument('--interm_gd_iters', type=int, default=10, help='number of gradient descent iterations after each step of atom fitting')
     parser.add_argument('--final_gd_iters', type=int, default=100, help='number of gradient descent iterations after final step of atom fitting')
     parser.add_argument('--learning_rate', type=float, default=0.1, help='learning rate for Adam optimizer')

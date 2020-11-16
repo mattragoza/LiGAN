@@ -7,6 +7,7 @@ import itertools
 import datetime as dt
 import numpy as np
 import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 
 import seaborn as sns
@@ -16,12 +17,13 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
+import molgrid
 import generate
 import caffe_util as cu
 from results import plot_lines
 
 
-def MolGridData(object):
+class MolGridData(object):
 
     def __init__(
         self,
@@ -32,26 +34,15 @@ def MolGridData(object):
         resolution,
         dimension,
         shuffle,
-        random_rotation,
-        random_translate,
-        rec_molcache,
-        lig_molcache,
-
+        random_rotation=True,
+        random_translation=2.0,
+        rec_molcache='',
+        lig_molcache='',
     ):
         # create receptor and ligand atom typers
-        self.rec_map = molgrid.FileMappedGninaTyper(rec_map_file)
-        self.lig_map = molgrid.FileMappedGninaTyper(lig_map_file)
-
-        # create molgrid maker and output tensor
-        self.grid_maker = molgrid.GridMaker(resolution, dimension)
-        self.grid = torch.zeros(
-            batch_size,
-            *grid_maker.grid_dimensions(
-                rec_map.num_types() + lig_map.num_types()
-            ),
-            dtype=torch.float32,
-            device='cuda',
-        )
+        rec_map = molgrid.FileMappedGninaTyper(rec_map_file)
+        lig_map = molgrid.FileMappedGninaTyper(lig_map_file)
+        self.rec_lig_split = rec_map.num_types()
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
@@ -62,6 +53,19 @@ def MolGridData(object):
             ligmolcache=lig_molcache,
             shuffle=shuffle,
         )
+
+        # create molgrid maker and output tensor
+        self.grid_maker = molgrid.GridMaker(resolution, dimension)
+        self.grid = torch.zeros(
+            batch_size,
+            rec_map.num_types() + lig_map.num_types(),
+            *self.grid_maker.spatial_grid_dimensions(),
+            dtype=torch.float32,
+            device='cuda',
+        )
+
+        self.random_rotation = random_rotation
+        self.random_translation = random_translation
 
     @classmethod
     def from_param(cls, param):
@@ -75,28 +79,28 @@ def MolGridData(object):
             dimension=param.dimension,
             shuffle=param.shuffle,
             random_rotation=param.random_rotation,
-            random_translate=param.random_translate,
+            random_translation=param.random_translate,
             rec_molcache=param.recmolcache,
             lig_molcache=param.ligmolcache,
         )
+
+    def size(self):
+        return self.ex_provider.size()
 
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
     def forward(self):
 
-        examples = self.ex_provider.next_batch(
-            self.batch_size
-        )
+        examples = self.ex_provider.next_batch(self.grid.shape[0])
         self.grid_maker.forward(
             examples,
             self.grid,
             random_rotation=self.random_rotation,
-            random_translate=self.random_translate,
+            random_translation=self.random_translation,
         )
-        rec_lig_split = self.rec_map.num_types()
-        rec = self.grid[:,:rec_lig_split,...]
-        lig = self.grid[:,rec_lig_split:,...]
+        rec = self.grid[:,:self.rec_lig_split,...]
+        lig = self.grid[:,self.rec_lig_split:,...]
         return rec, lig
 
 

@@ -19,5 +19,8 @@
 #python3 ../../../submit_job.py --array=11-100%20 gen_e_0.1_1_disc_x_10_0_100000_pr/crc_fit.sh
 
 # CSB finish train set fit evaluations
-python3 ../../../submit_job.py --array=1-30000%20 array_refactor/csb_fit_expt.sh
+#python3 ../../../submit_job.py --array=1-30000%20 array_refactor/csb_fit_expt.sh
+
+# CSB dkoes fitting
+python3 ../../../submit_job.py --array=1-3000%50 dkoes_simple_fit/csb_fit_expt.sh
 
