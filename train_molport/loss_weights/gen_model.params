@@ -1,4 +1,5 @@
 encode_type = '_vl-l'
+batch_size = 8
 rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
 lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
 data_dim = 48
