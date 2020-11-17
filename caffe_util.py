@@ -268,21 +268,26 @@ class CaffeNode(object):
     def to_param(self):
         raise NotImplementedError
 
-    def apply(self, func, visited=None):
+    def apply(self, func, down=False, up=False, visited=None):
+        '''
+        Recursively apply func to bottom nodes, self,
+        and top nodes, in that order, depending on
+        whether down and/or up flags are set.
+        '''
         if visited is None:
             visited = set()
-
         visited.add(self)
 
-        for bottom in self.bottoms:
-            if bottom not in visited:
-                bottom.apply(func, visited)
-
+        if down: # apply recursively to bottoms
+            for bottom in self.bottoms:
+                if bottom not in visited:
+                    bottom.apply(func, down, up, visited)
         func(self)
 
-        for top in self.tops:
-            if top not in visited:
-                top.apply(func, visited)
+        if up: # apply recursively to tops
+            for top in self.tops:
+                if top not in visited:
+                    top.apply(func, down, up, visited)
 
     def scaffold(self, *args, **kwargs):
         '''
@@ -291,9 +296,9 @@ class CaffeNode(object):
         then find the graph nodes in the CaffeNet.
         '''
         net = CaffeNet(force_backward=True)
-        self.apply(net.add_node)
+        self.apply(net.add_node, down=True, up=True)
         net.scaffold(*args, **kwargs)
-        self.apply(net.find_node)
+        self.apply(net.find_node, down=True, up=True)
         return net
 
 

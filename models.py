@@ -99,7 +99,7 @@ class DeconvReLU(Sequential):
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
         deconv = cu.Deconvolution(
-            num_output=n_filters,
+            num_output=n_output,
             kernel_size=kernel_size,
             pad=kernel_size//2,
             weight_filler=dict(type='xavier'),
@@ -349,7 +349,7 @@ class Decoder(Sequential):
         self.n_channels = n_filters
 
 
-class EncoderDecoder(Module):
+class EncoderDecoder(Sequential):
 
     def __init__(
         self,
@@ -361,6 +361,7 @@ class EncoderDecoder(Module):
         conv_per_level=3,
         kernel_size=3,
         relu_leak=0.1,
+        pool_factor=2,
         pool_type='a',
         unpool_type='n',
         n_latent=1024,
@@ -395,15 +396,7 @@ class EncoderDecoder(Module):
             n_output=n_channels,
             final_unpool=init_conv_pool,
         )
-
-    def __call__(self, bottom):
-        return self.decoder(self.encoder(bottom))
-
-    def forward(self):
-        self.encoder.forward()
-        self.decoder.forward()
-
-
+        super().__init__(self.encoder, self.decoder)
 
 
 
