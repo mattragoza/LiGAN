@@ -47,7 +47,7 @@ class ConvReLU(Sequential):
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
         conv = cu.Convolution(
-            n_filters=n_output,
+            num_output=n_output,
             kernel_size=kernel_size,
             pad=kernel_size//2,
             weight_filler=dict(type='xavier'),
@@ -56,8 +56,7 @@ class ConvReLU(Sequential):
             negative_slope=relu_leak,
             in_place=True,
         )
-        self.add_module(conv)
-        self.add_module(relu)
+        super().__init__(conv, relu)
 
 
 class ConvBlock(Sequential):

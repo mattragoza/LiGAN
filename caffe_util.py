@@ -243,7 +243,6 @@ class CaffeNode(object):
         self.name = name or hex(id(self))
         self.bottoms = []
         self.tops = []
-        self.net = None
 
     def add_bottom(self, bottom):
         self.bottoms.append(bottom)
@@ -257,21 +256,29 @@ class CaffeNode(object):
     def replace_top(self, old, new):
         self.tops[self.tops.index(old)] = new
 
-    def to_param(self):
-        pass
+    def add_to_net(self, net):
+        raise NotImplementedError
+
+    def find_in_net(self, net):
+        raise NotImplementedError
 
     def has_scaffold(self):
-        return self.net and self.net.has_scaffold()
+        raise NotImplementedError
+
+    def to_param(self):
+        raise NotImplementedError
 
     def apply(self, func, visited=None):
-        visited = visited or set()
+        if visited is None:
+            visited = set()
+
+        visited.add(self)
 
         for bottom in self.bottoms:
             if bottom not in visited:
                 bottom.apply(func, visited)
 
         func(self)
-        visited.add(self)
 
         for top in self.tops:
             if top not in visited:
@@ -279,14 +286,14 @@ class CaffeNode(object):
 
     def scaffold(self, *args, **kwargs):
         '''
-        Traverse the entire graph creating a NetParameter,
-        then create a CaffeNet from the NetParameter, then
+        Traverse the graph creating a NetParameter,
+        then create a CaffeNet from the NetParameter,
         then find the graph nodes in the CaffeNet.
         '''
         net = CaffeNet()
         self.apply(net.add_node)
         net.scaffold(*args, **kwargs)
-        self.apply(net.link_node)
+        self.apply(net.find_node)
         return net
 
 
@@ -306,8 +313,14 @@ class CaffeBlob(CaffeNode):
         assert isinstance(top, CaffeLayer)
         super().add_top(top)
 
-    def find_in_net(self):
-        self.blob = self.net.blobs[self.name]
+    def add_to_net(self, net):
+        pass
+
+    def find_in_net(self, net):
+        self.blob = net.blobs[self.name]
+
+    def has_scaffold(self):
+        return hasattr(self, 'blob')
 
     def shape(self):
         return tuple(self.blob.shape)
@@ -378,7 +391,11 @@ class CaffeLayer(CaffeNode):
 
     @classmethod
     def from_param(cls, param, blobs=None):
-
+        '''
+        Construct a CaffeLayer from a LayerParameter,
+        optionally checking/updating the provided
+        blobs dict before/after creating CaffeBlobs.
+        '''
         assert isinstance(param, LayerParameter)
         if blobs is None:
             blobs = {}
@@ -497,11 +514,17 @@ class CaffeLayer(CaffeNode):
     def is_in_place(self):
         return len(set(self.bottoms + self.tops)) == 1
 
-    def find_in_net(self):
-        self.blobs = self.net.layer_dict[self.name].blobs
+    def add_to_net(self, net):
+        net.add_layer(self)
+
+    def find_in_net(self, net):
+        self.layer = net.layer_dict[self.name]
+
+    def has_scaffold(self):
+        return hasattr(self, 'layer')
 
     def blobs(self):
-        return list(self.blobs)
+        return list(self.layer.blobs)
 
     def __ror__(self, other):
         '''
@@ -555,9 +578,6 @@ class CaffeNet(caffe.Net):
         for layer_param in param.layer:
             layer = CaffeLayer.from_param(layer_param, self.blobs_)
             self.add_layer(layer)
-            layer.set_net(self)
-            for top in layer.tops:
-                top.set_net(self)
 
         if scaffold:
             self.scaffold(weights, phase)
@@ -568,12 +588,15 @@ class CaffeNet(caffe.Net):
 
     def add_node(self, node):
         assert isinstance(node, CaffeNode)
-        if isinstance(node, CaffeLayer):
-            self.add_layer(node)
+        node.add_to_net(self)
 
     def add_layer(self, layer):
         assert isinstance(layer, CaffeLayer)
         self.layers_[layer.name] = layer
+
+    def find_node(self, node):
+        assert isinstance(node, CaffeNode)
+        node.find_in_net(self)
 
     def to_param(self):
         '''
@@ -610,10 +633,10 @@ class CaffeNet(caffe.Net):
 
         # link graph to Net scaffold
         for layer in self.layers_.values():
-            layer.find_in_net()
+            layer.find_in_net(self)
 
         for blob in self.blobs_.values():
-            blob.find_in_net()
+            blob.find_in_net(self)
 
     def insert_splits(self):
         '''

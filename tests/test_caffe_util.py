@@ -53,7 +53,6 @@ class TestCaffeNode(object):
 		assert x.name == hex(id(x))
 		assert x.bottoms == []
 		assert x.tops == []
-		assert x.net is None
 
 	def test_init_name(self):
 		x = cu.CaffeNode(name='asdf')
@@ -119,7 +118,6 @@ class TestCaffeBlob(object):
 		assert x.name == hex(id(x))
 		assert x.bottoms == []
 		assert x.tops == []
-		assert x.net is None
 
 	def test_init_name(self):
 		x = cu.CaffeBlob(name='asdf')
