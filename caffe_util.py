@@ -290,7 +290,7 @@ class CaffeNode(object):
         then create a CaffeNet from the NetParameter,
         then find the graph nodes in the CaffeNet.
         '''
-        net = CaffeNet()
+        net = CaffeNet(force_backward=True)
         self.apply(net.add_node)
         net.scaffold(*args, **kwargs)
         self.apply(net.find_node)
@@ -317,17 +317,21 @@ class CaffeBlob(CaffeNode):
         pass
 
     def find_in_net(self, net):
+        self.net = net
         self.blob = net.blobs[self.name]
 
     def has_scaffold(self):
         return hasattr(self, 'blob')
 
+    @property
     def shape(self):
         return tuple(self.blob.shape)
 
+    @property
     def data(self):
         return self.blob.data
 
+    @property
     def diff(self):
         return self.blob.diff
 
@@ -518,13 +522,21 @@ class CaffeLayer(CaffeNode):
         net.add_layer(self)
 
     def find_in_net(self, net):
+        self.net = net
         self.layer = net.layer_dict[self.name]
 
     def has_scaffold(self):
         return hasattr(self, 'layer')
 
+    @property
     def blobs(self):
         return list(self.layer.blobs)
+
+    def forward(self):
+        self.net.forward(start=self.name, end=self.name)
+
+    def backward(self):
+        self.net.backward(start=self.name, end=self.name)
 
     def __ror__(self, other):
         '''
@@ -579,6 +591,8 @@ class CaffeNet(caffe.Net):
             layer = CaffeLayer.from_param(layer_param, self.blobs_)
             self.add_layer(layer)
 
+        self.force_backward = param.force_backward
+
         if scaffold:
             self.scaffold(weights, phase)
 
@@ -603,6 +617,7 @@ class CaffeNet(caffe.Net):
         Convert the CaffeNet to a NetParameter.
         '''
         param = NetParameter()
+        param.force_backward = self.force_backward
 
         for layer in self.layers_.values():
             layer_param = layer.to_param()

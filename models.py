@@ -20,9 +20,15 @@ pool_type_map = dict(
 
 
 class Module(object):
-    # TODO decide what functionality belongs in here
-    # e.g. scaffolding, finding layers/blobs in net?
-    pass
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def forward(self):
+        raise NotImplementedError
+
+    def backward(self):
+        raise NotImplementedError
 
 
 class Sequential(Module):
@@ -40,6 +46,14 @@ class Sequential(Module):
             top = module(bottom)
             bottom = top
         return top
+
+    def forward(self):
+        for module in self.modules:
+            module.forward()
+
+    def backward(self):
+        for module in reversed(self.modules):
+            module.backward()
 
 
 class ConvReLU(Sequential):
@@ -73,6 +87,7 @@ class ConvBlock(Sequential):
         if dense_net:
             raise NotImplementedError('TODO densely-connected')
 
+        super().__init__()
         for i in range(n_convs):
             conv_relu = ConvReLU(n_input, n_output, kernel_size, relu_leak)
             n_input = n_output
@@ -84,7 +99,7 @@ class DeconvReLU(Sequential):
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
         deconv = cu.Deconvolution(
-            n_filters=n_filters,
+            num_output=n_filters,
             kernel_size=kernel_size,
             pad=kernel_size//2,
             weight_filler=dict(type='xavier'),
@@ -93,8 +108,7 @@ class DeconvReLU(Sequential):
             negative_slope=relu_leak,
             in_place=True,
         )
-        self.add_module(deconv)
-        self.add_module(relu)
+        super().__init__(deconv, relu)
 
 
 class DeconvBlock(Sequential):
@@ -111,6 +125,7 @@ class DeconvBlock(Sequential):
         if dense_net:
             raise NotImplementedError('TODO densely-connected')
 
+        super().__init__()
         for i in range(n_deconvs):
             deconv_relu = DeconvReLU(
                 n_input, n_output, kernel_size, relu_leak
@@ -145,7 +160,7 @@ class Pooling(Sequential):
         else:
             raise ValueError('unknown pool_type ' + repr(pool_type))
 
-        self.add_module(pool)
+        super().__init__(pool)
 
 
 class Unpooling(Sequential):
@@ -180,21 +195,19 @@ class Unpooling(Sequential):
         else:
             raise ValueError('unknown unpool_type ' + repr(unpool_type))
 
-        self.add_module(unpool)
+        super().__init__(unpool)
 
 
-class FcReshape(Module):
+class FcReshape(Sequential):
 
     def __init__(self, n_input, out_shape, relu_leak):
-        self.fc = cu.InnerProduct(
+        fc = cu.InnerProduct(
             num_output=np.prod(out_shape),
             weight_filler=dict(type='xavier'),
         )
-        self.relu = cu.ReLU(negative_slope=relu_leak, in_place=True)
-        self.out_shape = dict(dim=[-1] + list(out_shape))
-
-    def __call__(self, bottom):
-        return self.relu(self.fc(bottom)).reshape(self.out_shape)
+        relu = cu.ReLU(negative_slope=relu_leak, in_place=True)
+        reshape = cu.Reshape(dict(dim=[-1] + list(out_shape)))
+        super().__init__(fc, relu, reshape)
 
 
 class Encoder(Sequential):
@@ -220,6 +233,8 @@ class Encoder(Sequential):
         n_output,
         init_conv_pool=False,
     ):
+        super().__init__()
+
         # track changing dimensions
         self.n_channels = n_channels
         self.grid_dim = grid_dim
@@ -285,6 +300,8 @@ class Decoder(Sequential):
         n_output,
         final_unpool=False,
     ):
+        super().__init__()
+
         # first fc layer maps to initial grid shape
         self.add_fc_reshape(n_input, n_channels, grid_dim, relu_leak)
         n_filters = n_channels
@@ -382,17 +399,9 @@ class EncoderDecoder(Module):
     def __call__(self, bottom):
         return self.decoder(self.encoder(bottom))
 
-
-
-
-
-
-
-
-
-
-
-
+    def forward(self):
+        self.encoder.forward()
+        self.decoder.forward()
 
 
 
