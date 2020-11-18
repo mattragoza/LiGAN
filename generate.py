@@ -2387,15 +2387,19 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         else:
                             gen_net.blobs['cond_rec'].data[...] = rec
 
-                    if args.interpolate: # copy true grids that will be interpolated
+                    if args.interpolate: # interpolate between real grids
+
                         start_rec = np.array(rec[:1])
                         start_lig = np.array(lig[:1])
                         end_rec = np.array(rec[-1:])
                         end_lig = np.array(lig[-1:])
-                        gen_net.blobs['rec'].data[:batch_size//2] = start_rec
-                        gen_net.blobs['lig'].data[:batch_size//2] = start_lig
-                        gen_net.blobs['rec'].data[batch_size//2:] = end_rec
-                        gen_net.blobs['lig'].data[batch_size//2:] = end_lig
+
+                        gen_net.blobs['rec'].data[...] = np.linspace(
+                            start_rec, end_rec, batch_size, endpoint=True
+                        )
+                        gen_net.blobs['lig'].data[...] = np.linspace(
+                            start_lig, end_lig, batch_size, endpoint=True
+                        )
 
                     if has_rec_enc: # forward receptor encoder
                         if rec_enc_is_var:
@@ -2492,10 +2496,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             grid_blob.shape[1]
                         )
 
-                    if args.interpolate and blob_name in {'rec', 'lig'}:
-                        grid_data = grid_blob.data[endpoint_idx]
-                    else:
-                        grid_data = grid_blob.data[batch_idx]
+                    grid_data = grid_blob.data[batch_idx]
 
                     grid = MolGrid(
                         values=np.array(grid_data),
