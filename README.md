@@ -7,11 +7,11 @@ liGAN is a research codebase for training and evaluating deep generative models 
 - numpy
 - pandas
 - scikit-image
-- protobuf
-- torch
-- rdkit
 - openbabel
+- rdkit
 - molgrid
+- torch
+- protobuf
 - [gnina](https://github.com/gnina/gnina) version of caffe
 
 ## Tutorial
