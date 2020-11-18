@@ -977,16 +977,18 @@ class OutputWriter(object):
         sample_prefix = grid_prefix + '_' + str(sample_idx)
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
-        uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
+        src_uff_sample_prefix = grid_prefix + '_src_uff_' + str(sample_idx)
+        add_uff_sample_prefix = grid_prefix + '_add_uff_' + str(sample_idx)
         conv_sample_prefix = grid_prefix + '_conv_' + str(sample_idx)
 
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
         has_struct = is_real_grid or is_fit_grid
+        has_conv_grid = not is_fit_grid
 
         # write output files
-        if self.output_dx: # write density grid files
+        if self.output_dx: # write out density grids
 
             if self.verbose:
                 print('Writing ' + sample_prefix + ' .dx files')
@@ -994,7 +996,7 @@ class OutputWriter(object):
             grid.to_dx(sample_prefix, center=np.zeros(3))
             self.dx_prefixes.append(sample_prefix)
 
-            if self.output_conv and not is_fit_grid:
+            if has_conv_grid and self.output_conv:
 
                 if self.verbose:
                     print('Writing' + conv_sample_prefix + ' .dx files')
@@ -1002,10 +1004,10 @@ class OutputWriter(object):
                 grid.info['conv_grid'].to_dx(conv_sample_prefix, center=np.zeros(3))
                 self.dx_prefixes.append(conv_sample_prefix)
 
-        if has_struct and self.output_sdf: # write structure files
+        if has_struct and self.output_sdf: # write out structures
 
             # write typed atom structure
-            struct_file = sample_prefix + '.sdf'
+            struct_file = sample_prefix + '.sdf.gz'
             if self.verbose:
                 print('Writing ' + struct_file)
 
@@ -1021,7 +1023,7 @@ class OutputWriter(object):
 
             if is_real_grid: # write real input molecule
 
-                src_mol_file = src_sample_prefix + '.sdf'
+                src_mol_file = src_sample_prefix + '.sdf.gz'
                 if self.verbose:
                     print('Writing ' + src_mol_file)
 
@@ -1034,8 +1036,15 @@ class OutputWriter(object):
                 self.sdf_files.append(src_mol_file)
                 self.centers.append(struct.center)
 
+                if 'min_mol' in src_mol.info:
+                    src_uff_mol_file = src_uff_sample_prefix + '.sdf.gz'
+                    if self.verbose:
+                        print('Writing ' + src_uff_mol_file)
+                    write_rd_mols_to_sdf_file(src_uff_mol_file, [src_mol.info['min_mol']])
+                    self.sdf_files.append(src_uff_mol_file)
+
             # write molecule with added bonds
-            add_mol_file = add_sample_prefix + '.sdf'
+            add_mol_file = add_sample_prefix + '.sdf.gz'
             if self.verbose:
                 print('Writing ' + add_mol_file)
 
@@ -1048,10 +1057,12 @@ class OutputWriter(object):
             self.sdf_files.append(add_mol_file)
             self.centers.append(struct.center)
 
-            if add_mol.info['min_mol']:
-                uff_file = uff_sample_prefix+'.sdf'
-                write_rd_mols_to_sdf_file(uff_file,[add_mol.info['min_mol']])
-                self.sdf_files.append(uff_file)
+            if 'min_mol' in add_mol.info:
+                add_uff_mol_file = add_uff_sample_prefix + '.sdf.gz'
+                if self.verbose:
+                    print('Writing ' + add_uff_mol_file)
+                write_rd_mols_to_sdf_file(add_uff_mol_file, [add_mol.info['min_mol']])
+                self.sdf_files.append(add_uff_mol_file)
                 
             # write atom type channels
             if self.output_channels:
@@ -1691,23 +1702,29 @@ def make_ob_mol(xyz, c, bonds, channels):
 
 def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv = ob.OBConversion()
-    conv.SetOutFormat('sdf.gz')
+    if sdf_file.endswith('.gz'):
+        conv.SetOutFormat('sdf.gz')
+    else:
+        conv.SetOutFormat('sdf')
     for i, mol in enumerate(mols):
         if i == 0:
-            conv.WriteFile(mol, sdf_file+'.gz')
+            conv.WriteFile(mol, sdf_file)
         else:
             conv.Write(mol)
     conv.CloseOutFile()
 
 
 def write_rd_mols_to_sdf_file(sdf_file, mols):
-    outfile = gzip.open(sdf_file+'.gz','wt')
-    writer = Chem.SDWriter(outfile)
+    if sdf_file.endswith('.gz'):
+        out = gzip.open(sdf_file, 'wt')
+    else:
+        out = open(sdf_file, 'w')
+    writer = Chem.SDWriter(out)
     writer.SetKekulize(False)
     for mol in mols:
         writer.write(mol)
     writer.close()
-    outfile.close()
+    out.close()
 
 
 def read_rd_mols_from_sdf_file(sdf_file):
@@ -1868,17 +1885,17 @@ def write_pymol_script(pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[
 
         for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            m = re.match('^{}_(.*)$'.format(out_prefix), dx_prefix)
+            m = re.match('^({}_.*)$'.format(out_prefix), dx_prefix)
             group_name = m.group(1) + '_grids'
             f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
         for sdf_file in sdf_files: # load structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^({}_.*)\.sdf(\.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
         for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^({}_.*)\.sdf(\.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
 
@@ -2445,11 +2462,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
                 if args.fit_atoms:
+                    print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+
                     print('Minimizing real molecule')
                     atom_fitter.uff_minimize(lig_mol)
                     lig_struct.info['src_mol'] = lig_mol
-
-                    print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
                     print('Validifying real atom types and coords')
                     atom_fitter.validify(lig_struct)
@@ -2464,7 +2481,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid_type = blob_name
                     grid_blob = gen_net.blobs[blob_name]
-                    grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
+                    grid_needs_fit = args.fit_atoms and blob_name in {'lig', 'lig_gen'}
 
                     if blob_name == 'rec':
                         grid_channels = rec_channels
