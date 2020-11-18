@@ -2384,14 +2384,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         if rec_enc_is_var:
                             if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.blobs[latent_std].data[...] = 1.0
-                            else:
+                                gen_net.blobs[latent_std].data[...] = args.var_factor
+                            else: # posterior
                                 gen_net.forward(start=rec_enc_start, end=rec_enc_end)
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                if args.var_factor != 1.0:
+                                    gen_net.blobs[latent_std].data[...] *= args.var_factor
                         else:
                             gen_net.forward(start=rec_enc_start, end=rec_enc_end)
 
@@ -2399,16 +2396,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         if lig_enc_is_var:
                             if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.blobs[latent_std].data[...] = 1.0
+                                gen_net.blobs[latent_std].data[...] = args.var_factor
                             else: # posterior
-                                if args.mean:
-                                    gen_net.forward(start=lig_enc_start, end=latent_mean)
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                                gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                                if args.var_factor != 1.0:
+                                    gen_net.blobs[latent_std].data[...] *= args.var_factor
                         else:
                             gen_net.forward(start=lig_enc_start, end=lig_enc_end)
 
@@ -2645,7 +2637,7 @@ def parse_args(argv=None):
     parser.add_argument('--all_blobs', default=False, action='store_true', help='generate from all blobs in generative model')
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
-    parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
+    parser.add_argument('--var_factor', default=1.0, type=float, help='factor by which to multiply standard deviation of latent samples')
     parser.add_argument('--encode_first', default=False, action='store_true', help='generate all output from encoding first example')
     parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('--interpolate', default=False, action='store_true', help='interpolate between examples in latent space')
