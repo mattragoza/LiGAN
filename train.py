@@ -224,9 +224,14 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     # find loss blob names for recording loss output
     gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
+    
+    if args.weight_l2_only:
+        weighted_loss_names  = [b for b in gen.net.blobs if b.endswith('loss') and b.startswith('L2')]
+    else:
+        weighted_loss_names = gen_loss_names
 
     # keep track of generator loss weights
-    loss_weights = dict((l,float(gen.net.blobs[l].diff[...])) for l in gen_loss_names)
+    loss_weights = dict((l,float(gen.net.blobs[l].diff[...])) for l in weighted_loss_names)
 
     if args.alternate: # find latent variable blob names for prior sampling
         latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
@@ -334,7 +339,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             # set non-GAN loss weights
             for l, w in loss_weights.items():
-                gen.net.blobs[l].set_diff(0) if prior else w * args.loss_weight
+                gen.net.blobs[l].set_diff(0 if prior else w * args.loss_weight)
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
@@ -562,6 +567,7 @@ def parse_args(argv):
     parser.add_argument('--lr_policy',type=str, help='lr policy')
     parser.add_argument('--base_lr',type=float, help='base learning rate')
     parser.add_argument('--weight_decay',type=float, help='weight decay (L2 regularization)')
+    parser.add_argument('--weight_l2_only',default=0, type=int,help='apply loss weight to L2 loss only')
     return parser.parse_args(argv)
 
 
