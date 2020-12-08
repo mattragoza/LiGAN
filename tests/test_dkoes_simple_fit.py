@@ -24,7 +24,7 @@ def test_dkoes_atom_fitter():
         os.path.join(ligan_root, 'my_lig_map'),
     )
     grid_shape = (len(channels), 48, 48, 48)
-    grid = generate.MolGrid(
+    grid = generate.AtomGrid(
         values=np.zeros(grid_shape),
         channels=channels,
         center=np.zeros(3),
@@ -32,5 +32,3 @@ def test_dkoes_atom_fitter():
     )
     grid = fitter.fit(grid, [])
     assert grid.info['src_struct'].n_atoms == 0
-    print('here')
-

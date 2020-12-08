@@ -75,9 +75,9 @@ def select_atom_starts(mgrid, G, radius):
 
 
 def simple_atom_fit(mgrid, types,iters=10,tol=0.01,device='cuda',grm=-1.5):
-    '''Fit atoms to MolGrid.  types are ignored as the number of 
+    '''Fit atoms to AtomGrid.  types are ignored as the number of 
     atoms of each type is always inferred from the density.
-    Returns the MolGrid of the placed atoms and the AtomStruct'''
+    Returns the AtomGrid of the placed atoms and the AtomStruct'''
 
     t_start = time.time()
     #for every channel, select some coordinates and setup the type/radius vectors

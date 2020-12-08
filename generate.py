@@ -32,7 +32,9 @@ nps_model = npscorer.readNPModel()
 
 import molgrid
 import atom_types
+import molecules
 from atom_structs import AtomStruct
+from atom_grids import AtomGrid
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
@@ -44,7 +46,7 @@ def remove_tensors(obj, visited=None):
     '''
     visited = visited or set()
 
-    if not isinstance(obj, (MolGrid, AtomStruct, list, dict)) or id(obj) in visited:
+    if not isinstance(obj, (AtomGrid, AtomStruct, list, dict)) or id(obj) in visited:
         #avoid traversing everything
         return obj
 
@@ -67,55 +69,6 @@ def remove_tensors(obj, visited=None):
             obj[i] = remove_tensors(obj[i], visited)
 
     return obj
-
-
-class MolGrid(object):
-    '''
-    An atomic density grid.
-    '''
-    def __init__(self, values, channels, center, resolution, **info):
-
-        if len(values.shape) != 4:
-            raise ValueError('MolGrid values must have 4 dims')
-
-        if values.shape[0] != len(channels):
-            raise ValueError('MolGrid values have wrong number of channels')
-
-        if not (values.shape[1] == values.shape[2] == values.shape[3]):
-            raise ValueError('last 3 dims of MolGrid values must be equal')
-
-        self.values = values
-        self.channels = channels
-        self.center = center
-        self.resolution = resolution
-        self.size = self.values.shape[1]
-        self.dimension = self.compute_dimension(self.size, resolution)
-
-        self.info = info
-
-    @classmethod
-    def compute_dimension(cls, size, resolution):
-        return (size - 1) * resolution
-
-    @classmethod
-    def compute_size(cls, dimension, resolution):
-        return int(np.ceil(dimension / resolution + 1))
-
-    def to_dx(self, dx_prefix, center=None):
-        write_grids_to_dx_files(
-            out_prefix=dx_prefix,
-            grids=self.values,
-            channels=self.channels,
-            center=self.center if center is None else center,
-            resolution=self.resolution)
-
-    def new_like(self, values, **info):
-        '''
-        Return a MolGrid with the same grid settings but new values.
-        '''
-        return MolGrid(
-            values, self.channels, self.center, self.resolution, **info
-        )
 
 
 class AtomFitter(object):
@@ -237,7 +190,7 @@ class AtomFitter(object):
                 device=self.device,
             )
 
-        self.kernel = MolGrid(
+        self.kernel = AtomGrid(
             values=values,
             channels=channels,
             center=torch.zeros(3, device=self.device),
@@ -412,7 +365,7 @@ class AtomFitter(object):
         t_start = time.time()
 
         # get true grid on appropriate device
-        grid_true = MolGrid(
+        grid_true = AtomGrid(
             values=torch.as_tensor(grid.values, device=self.device),
             channels=grid.channels,
             center=torch.as_tensor(grid.center, device=self.device),
@@ -666,7 +619,7 @@ class AtomFitter(object):
 
         self.validify(struct_best)
 
-        grid_pred = MolGrid(
+        grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
@@ -797,7 +750,7 @@ class DkoesAtomFitter(AtomFitter):
 
     def fit(self, grid, types):
 
-        grid = MolGrid(
+        grid = AtomGrid(
             values=grid.values,
             channels=grid.channels,
             center=grid.center,
@@ -816,7 +769,7 @@ class DkoesAtomFitter(AtomFitter):
         struct.info['visited_structs'] = [struct]
         self.validify(struct)
 
-        grid_pred = MolGrid(
+        grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
@@ -830,7 +783,7 @@ class DkoesAtomFitter(AtomFitter):
 
 class OutputWriter(object):
     '''
-    A data structure for receiving and organizing MolGrids and
+    A data structure for receiving and organizing AtomGrids and
     AtomStructs from a generative model or atom fitting algorithm,
     computing metrics, and writing files to disk as necessary.
     '''
@@ -1682,48 +1635,6 @@ def read_channels_from_file(channels_file, channels):
     return np.array(c)
 
 
-def write_grid_to_dx_file(dx_file, grid, center, resolution):
-    '''
-    Write a grid with a center and resolution to a .dx file.
-    '''
-    if len(grid.shape) != 3 or len(set(grid.shape)) != 1:
-        raise ValueError('grid must have three equal dimensions')
-    if len(center) != 3:
-        raise ValueError('center must be a vector of length 3')
-    dim = grid.shape[0]
-    origin = np.array(center) - resolution*(dim-1)/2.
-    with open(dx_file, 'w') as f:
-        f.write('object 1 class gridpositions counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
-        f.write('origin {:.5f} {:.5f} {:.5f}\n'.format(*origin))
-        f.write('delta {:.5f} 0 0\n'.format(resolution))
-        f.write('delta 0 {:.5f} 0\n'.format(resolution))
-        f.write('delta 0 0 {:.5f}\n'.format(resolution))
-        f.write('object 2 class gridconnections counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
-        f.write('object 3 class array type double rank 0 items [ {:d} ] data follows\n'.format(dim**3))
-        total = 0
-        for i in range(dim):
-            for j in range(dim):
-                for k in range(dim):
-                    f.write('{:.10f}'.format(grid[i][j][k]))
-                    total += 1
-                    if total % 3 == 0:
-                        f.write('\n')
-                    else:
-                        f.write(' ')
-
-
-def write_grids_to_dx_files(out_prefix, grids, channels, center, resolution):
-    '''
-    Write each of a list of grids a separate .dx file, using the channel names.
-    '''
-    dx_files = []
-    for grid, channel in zip(grids, channels):
-        dx_file = '{}_{}.dx'.format(out_prefix, channel.name)
-        write_grid_to_dx_file(dx_file, grid, center, resolution)
-        dx_files.append(dx_file)
-    return dx_files
-
-
 def get_sdf_file_and_idx(gninatypes_file):
     '''
     Get the name of the .sdf file and conformer idx that a
@@ -2211,7 +2122,7 @@ def generate_from_model(gen_net, data_param, n_examples, args):
 
                     grid_data = grid_blob.data[batch_idx]
 
-                    grid = MolGrid(
+                    grid = AtomGrid(
                         values=np.array(grid_data),
                         channels=grid_channels,
                         center=lig_struct.center,
