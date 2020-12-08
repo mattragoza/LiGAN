@@ -156,9 +156,17 @@ This fills in placeholder values in the template job script with each set of par
 
 The result is that a working directory is created for each job, named according to the `--job_name` format string. The created directories each contain a job script based on the template script where the placeholder values have been replaced with a parameter assignment from the job params file.
 
-This command creates a job script to train each of the two generative models we've created so far:
+This command creates a job script to train each of the two generative models we've created so far and writes their files name in `trial0_job_scripts`:
 
-`python3 ../job_scripts.py job.params -t csb_train.sh -n train_{gen_model_name}`
+`python3 ../job_scripts.py job.params -t csb_train_cmd.sh -n train_{gen_model_name} | tee trial0_job_scripts`
+
+The created scripts can be run directly as training commands, but it's often more useful to submit many training jobs together as an experiment.
+
+To handle this, simply run the following command:
+
+`python3 ../job_scripts.py expt.params -t csb_train_expt.sh -n trial{trial_num}`
+
+This will create a single script `trial0/csb_train_expt.sh` that can be submitted to run the entire training experiment in a single array job, in this case with 5 different seeds each.
 
 NOTE: For convenience, all of the above commands that use parameter files to setup a training experiment are contained in a single bash script, `setup.sh`.
 
@@ -166,18 +174,20 @@ NOTE: For convenience, all of the above commands that use parameter files to set
 
 Once you've created the required models, solvers and job scripts, you can easily submit them to the CSB department cluster:
 
-`python3 ../submit_job.py */csb_train.sh`
+`python3 ../submit_job.py trial0/csb_train_expt.sh --array 1-10`
+
+This will submit an experiment that trains each of the two models with 5 seeds each, as laid out in the expt.params.
 
 This command is also contained in `submit.sh`.
 
 ### Checking job errors
 
-`python3 ../job_errors.py */csb_train.sh --print_errors`
+`python3 ../job_errors.py trial0/csb_train_expt.sh --print_errors`
 
 This command is also contained in `errors.sh`.
 
 ### Collecting job output
 
-`python3 ../job_errors.py */csb_train.sh --output_file tutorial.training_output`
+`python3 ../job_errors.py */csb_train_cmd.sh --output_file tutorial.training_output`
 
 This command is also contained in `output.sh`.
