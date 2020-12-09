@@ -122,11 +122,6 @@ except Exception as e:
             [0.7, 0.12, 0.83]
         ][atomic_num]
 
-try:
-    import molgrid
-except Exception as e:
-    print(e, file=sys.stderr)
-
 
 atom_type = namedtuple('atom_type', ['name', 'atomic_num', 'symbol', 'covalent_radius', 'xs_radius'])
 
@@ -170,9 +165,9 @@ channel = namedtuple('channel', ['name', 'atomic_num', 'symbol', 'atomic_radius'
 
 def get_channel_color(channel):
     if 'LigandAliphatic' in channel.name:
-        return [1.00, 0.50, 1.00]
+        return [1.00, 1.00, 1.00] #[1.00, 0.50, 1.00]
     elif 'LigandAromatic' in channel.name:
-        return [1.00, 0.00, 1.00]
+        return [0.83, 0.83, 0.83] #[1.00, 0.00, 1.00]
     elif 'ReceptorAliphatic' in channel.name:
         return [1.00, 1.00, 1.00]
     elif 'ReceptorAromatic' in channel.name:
@@ -210,6 +205,7 @@ def get_channels_from_map(map_, use_covalent_radius=False, name_prefix=''):
 
 
 def get_channels_from_file(map_file, use_covalent_radius=False, name_prefix=''):
+    import molgrid
     map_ = molgrid.FileMappedGninaTyper(map_file)
     return get_channels_from_map(map_, use_covalent_radius, name_prefix)
 

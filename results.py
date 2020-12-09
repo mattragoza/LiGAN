@@ -1,6 +1,6 @@
 from __future__ import print_function, division
+import matplotlib
 if __name__ == '__main__':
-    import matplotlib
     matplotlib.use('Agg')
 import sys, os, re, glob, argparse, parse, ast, shutil
 from collections import defaultdict
@@ -27,7 +27,6 @@ def get_terminal_size():
 
 
 def annotate_pearson_r(x, y, **kwargs):
-    print(kwargs)
     nan = np.isnan(x) | np.isnan(y)
     r, _ = stats.pearsonr(x[~nan], y[~nan])
     plt.gca().annotate("$\\rho = {:.2f}$".format(r), xy=(.5, .8),
@@ -40,125 +39,51 @@ def my_dist_plot(a, **kwargs):
     return sns.distplot(a[~np.isnan(a)], **kwargs)
 
 
-def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, dist_kws={}, scatter_kws={}, **kwargs):
+def plot_corr(plot_file, df, x, y, hue=None, height=4, width=4, show_corr=False,
+              upper='scatter', lower='scatter', diag='dist',
+              upper_kws={}, lower_kws={}, diag_kws={}, **kwargs):
 
     df = df.reset_index()
-    g = sns.PairGrid(df, x_vars=x, y_vars=y, hue=hue, height=height, aspect=width/float(height), **kwargs)
-    g.map_diag(my_dist_plot, **dist_kws)
-    g.map_offdiag(plt.scatter, **scatter_kws)
-    #g.map_upper(sns.kdeplot, shade=True)
-    #g.map_offdiag(annotate_pearson_r)
+
+    g = sns.PairGrid(
+        df,
+        x_vars=x,
+        y_vars=y,
+        hue=hue,
+        height=height,
+        aspect=width/float(height),
+        diag_sharey=False,
+        **kwargs
+    )
+
+    if diag == 'dist':
+        g.map_diag(my_dist_plot, **diag_kws)
+
+    if upper == 'scatter':
+        g.map_upper(sns.scatterplot, **upper_kws)
+
+    elif upper == 'kde':
+        g.map_upper(sns.kdeplot, **upper_kws)
+
+    if lower == 'scatter':
+        g.map_lower(sns.scatterplot, **lower_kws)
+    
+    elif lower == 'kde':
+        g.map_lower(sns.kdeplot, **lower_kws)
+
+    if show_corr:
+        g.map_offdiag(annotate_pearson_r)
+
     fig = g.fig
+
+    if hue:
+        handles, labels = fig.axes[-1].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='center left', bbox_to_anchor=(1.0, 0.5), title=hue)
+
     fig.tight_layout()
     plt.subplots_adjust(wspace=0.2, hspace=0.2)
     fig.savefig(plot_file, bbox_inches='tight')
-    #plt.close(fig)
-    return fig
 
-
-def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
-               outlier_z=None, lgd_title=True, title=None):
-
-    df = df.reset_index()
-    xlim = (df[x].min(), df[x].max() + 1)
-
-    if hue:
-        df = df.set_index([hue, x])
-    elif df.index.name != x:
-        df = df.set_index(x)
-
-    if n_cols is None:
-        n_cols = len(y)
-    n_axes = len(y)
-    assert n_axes > 0
-    n_rows = (n_axes + n_cols-1)//n_cols
-    n_cols = min(n_axes, n_cols)
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
-    iter_axes = iter(axes.flatten())
-
-    share_axes = defaultdict(list)
-    share_ylim = dict()
-
-    for i, y_ in enumerate(y):
-
-        ax = next(iter_axes)
-        ax.set_xlabel(x)
-        ax.set_ylabel(y_)
-
-        if hue:
-            alpha = 0.5 #/df.index.get_level_values(hue).nunique()
-            for j, _ in df.groupby(level=0):
-                mean = df.loc[j][y_].groupby(level=0).mean()
-                sem = df.loc[j][y_].groupby(level=0).sem()
-                ax.fill_between(mean.index, mean-2*sem, mean+2*sem, alpha=alpha)
-            for j, _ in df.groupby(level=0):
-                mean = df.loc[j][y_].groupby(level=0).mean()
-                ax.plot(mean.index, mean, label=j)
-        else:
-            mean = df[y_].groupby(level=0).mean()
-            sem = df[y_].groupby(level=0).sem()
-            ax.fill_between(mean.index, mean-sem, mean+sem, alpha=0.5)
-            ax.plot(mean.index, mean)
-
-        handles, labels = ax.get_legend_handles_labels()
-
-        if ylim:
-            if isinstance(ylim, dict):
-                if y_ in ylim:
-                    ylim_ = ylim[y_]
-                else:
-                    ylim_ = ax.get_ylim()
-            elif len(ylim) > 1:
-                ylim_ = ylim[i]
-            else:
-                ylim_ = ylim[0]
-        else:
-            ylim_ = ax.get_ylim()
-
-        m = re.match(r'(disc|gen_adv)_(.*)', y_)
-        if m and False:
-            name = m.group(2)
-            share_axes[name].append(ax)
-            if name not in share_ylim:
-                share_ylim[name] = ylim_
-            else:
-                ylim_ = share_ylim[name]
-
-        ax.hlines(0, *xlim, linestyle='-', linewidth=1.0)
-        if y_.endswith('log_loss') or 'GAN' in y_:
-            r = -np.log(0.5)
-            ax.hlines(r, *xlim, linestyle=':', linewidth=1.0)
-
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim_)
-
-    for n in share_axes:
-        share_ylim = (np.inf, -np.inf)
-        for ax in share_axes[n]:
-            ylim_ = ax.get_ylim()
-            share_ylim = (min(ylim_[0], share_ylim[0]),
-                          max(ylim_[1], share_ylim[1]))
-        for ax in share_axes[n]:
-            ax.set_ylim(share_ylim)
-
-    extra = []
-    if hue: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(0.975, 0.9), ncol=1, frameon=False, borderpad=0.5)
-        if lgd_title:
-            lgd.set_title(hue, prop=dict(size='small'))
-        extra.append(lgd)
-
-    for ax in iter_axes:
-        ax.axis('off')
-
-    if title is not None:
-        fig.suptitle(title)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-    else:
-        fig.tight_layout()
-
-    fig.savefig(plot_file, format='png', bbox_extra_artists=extra, bbox_inches='tight')
     return fig
 
 
@@ -192,10 +117,176 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6, **kwargs):
     return fig
 
 
+def plot_lines(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
+               outlier_z=None, lgd_title=True, title=None, alpha=0.5, despine=False, colors=None,
+               lead_x=1, range_=False, gridspec_kw=None, center_lgd=False, hue_order=None,
+               lgd_h=0.9, lgd_n_cols=1, add_lgd=None, h_pad=None, w_pad=None):
 
-def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
-                point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={},
-                box=False, box_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None, title=None):
+    df = df.reset_index()
+    xlim = (df[x].min(), df[x].max() + lead_x)
+
+    if hue:
+        df = df.set_index([hue, x])
+    elif df.index.name != x:
+        df = df.set_index(x)
+
+    if add_lgd is None:
+        add_lgd = bool(hue)
+
+    if n_cols is None:
+        n_cols = len(y)
+    n_axes = len(y)
+    assert n_axes > 0
+    n_rows = (n_axes + n_cols-1)//n_cols
+    n_cols = min(n_axes, n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(width*n_cols, height*n_rows),
+                             squeeze=False, gridspec_kw=gridspec_kw)
+    iter_axes = iter(axes.flatten())
+
+    share_axes = defaultdict(list)
+    share_ylim = dict()
+
+    for i, y_ in enumerate(y):
+
+        ax = next(iter_axes)
+        if y_ is None:
+            continue
+
+        ax.set_xlabel(x)
+        ax.set_ylabel(y_)
+
+        if hue:
+            if hue_order is None:
+                hue_vals = df.groupby(level=0).groups.keys()
+            else:
+                hue_vals = hue_order
+
+            for hue_i, hue_ in enumerate(hue_vals):
+
+                if hue_ == 'VAE prior' and y_ in {'Gen. L2 loss', 'Atom type diff.', 'Mol. sim. to input'}: # hack for neurips2020 paper
+                    continue
+                
+                if range_: # expects 3 values per group: min, mean, max
+                    mean = df.loc[hue_][y_].groupby(level=0).median()
+                    min_ = df.loc[hue_][y_].groupby(level=0).min()
+                    max_ = df.loc[hue_][y_].groupby(level=0).max()
+                    ax.fill_between(mean.index, min_, max_, alpha=alpha, color=colors[hue_i])
+                else:
+                    mean = df.loc[hue_][y_].groupby(level=0).mean()
+                    sem = df.loc[hue_][y_].groupby(level=0).sem()
+                    ax.fill_between(mean.index, mean-2*sem, mean+2*sem, alpha=alpha, color=colors[hue_i])
+
+            for hue_i, hue_ in enumerate(hue_vals):
+                #if hue_ == 'VAE prior' and y_ in {'Gen. L2 loss', 'Atom type diff.', 'Mol. sim. to input'}: # hack for neurips2020 paper
+                #    continue
+                if range_:
+                    mean = df.loc[hue_][y_].groupby(level=0).median()
+                else:
+                    mean = df.loc[hue_][y_].groupby(level=0).mean()
+                ax.plot(mean.index, mean, label=hue_, color=colors[hue_i])
+        else:
+            
+            if range_:
+                mean = df[y_].groupby(level=0).median()
+                min_ = df[y_].groupby(level=0).min()
+                max_ = df[y_].groupby(level=0).max()
+                ax.fill_between(mean.index, min_, max_, alpha=alpha)
+            else:
+                mean = df[y_].groupby(level=0).mean()
+                sem = df[y_].groupby(level=0).sem()
+                ax.fill_between(mean.index, mean-sem, mean+sem, alpha=alpha)
+            ax.plot(mean.index, mean)
+
+        handles, labels = ax.get_legend_handles_labels()
+
+        if ylim:
+            if isinstance(ylim, dict):
+                if y_ in ylim:
+                    ylim_ = ylim[y_]
+                else:
+                    ylim_ = ax.get_ylim()
+            elif len(ylim) > 1:
+                ylim_ = ylim[i]
+            else:
+                ylim_ = ylim[0]
+        else:
+            ylim_ = ax.get_ylim()
+
+        m = re.match(r'(disc|gen_adv)_(.*)', y_)
+        if m and False:
+            name = m.group(2)
+            share_axes[name].append(ax)
+            if name not in share_ylim:
+                share_ylim[name] = ylim_
+            else:
+                ylim_ = share_ylim[name]
+
+        ax.hlines(0, *xlim, linestyle='-', linewidth=1.0, zorder=100)
+        if y_.endswith('log_loss') or 'GAN' in y_:
+            r = -np.log(0.5)
+            ax.hlines(r, *xlim, linestyle=':', linewidth=1.0, zorder=100)
+
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim_)
+
+    for n in share_axes:
+        share_ylim = (np.inf, -np.inf)
+        for ax in share_axes[n]:
+            ylim_ = ax.get_ylim()
+            share_ylim = (min(ylim_[0], share_ylim[0]),
+                          max(ylim_[1], share_ylim[1]))
+        for ax in share_axes[n]:
+            ax.set_ylim(share_ylim)
+
+    for ax in iter_axes: # turn off unused axes
+        ax.axis('off')
+
+    extra = []
+    if title: # add title
+        suptitle = fig.suptitle(title, y=0.97)
+        if center_lgd:
+            fig.tight_layout(rect=[0, 0, 1, 0.90])
+        else:
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        extra.append(suptitle)
+    else:
+        fig.tight_layout(h_pad=h_pad, w_pad=w_pad)
+
+    if add_lgd: # add legend
+        if center_lgd:
+            lgd_loc = 'lower center'
+            lgd_anchor = (0.5, lgd_h)
+        else:
+            lgd_loc = 'upper left'
+            lgd_anchor = (1.0, lgd_h)
+
+        lgd = ax.legend(
+            handles, labels,
+            loc=lgd_loc, # part of lgd to place at bbox anchor
+            bbox_to_anchor=lgd_anchor, # location of bbox anchor,
+            bbox_transform=fig.transFigure, # use figure coordinates
+            ncol=lgd_n_cols,
+            frameon=False,
+            title=None,
+            borderpad=0.5)
+
+        if lgd_title:
+            lgd.set_title(hue, prop=dict(size='small'))
+
+        extra.append(lgd)
+
+    if despine:
+        sns.despine(fig)
+
+    fig.savefig(plot_file, format='png', bbox_extra_artists=extra, bbox_inches='tight')
+    return fig
+
+
+def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None, lgd_title=True,
+                point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={}, gridspec_kw={},
+                box=False, box_kws={}, bar=False, bar_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None, title=None, lgd_h=0.9):
     df = df.reset_index()
     assert len(df) > 0, 'empty data frame'
 
@@ -209,7 +300,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
     n_rows = (n_axes + n_cols-1)//n_cols
     n_cols = min(n_axes, n_cols)
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False, **gridspec_kw)
     iter_axes = iter(axes.flatten())
 
     share_ylim = defaultdict(list)
@@ -217,7 +308,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
     extra = []
     for i, y_ in enumerate(y):
 
-        for x_ in x:
+        for xi, x_ in enumerate(x):
             ax = next(iter_axes)
 
             if grouped:
@@ -244,6 +335,9 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
             if box: # box plots
                 sns.boxplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **box_kws)
 
+            if bar:
+                sns.barplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **bar_kws)
+
             if strip: # plot the individual observations
                 sns.stripplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **strip_kws)
 
@@ -255,7 +349,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
             # if more than one plot type, need to remove excess legend handles and labels
             if hue:
-                n_plot_types = point + strip + violin + box
+                n_plot_types = point + strip + violin + box + bar
                 handles, labels = ax.get_legend_handles_labels()
                 handles = handles[:len(handles)//n_plot_types]
                 labels  = labels[:len(labels)//n_plot_types]
@@ -270,12 +364,17 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
                 ax.hlines(r, *xlim, linestyle=':', linewidth=1.0)
 
             if ylim:
-                if len(ylim) > 1:
+                if isinstance(ylim, dict):
+                    if y_ in ylim:
+                        ylim_ = ylim[y_]
+                    else:
+                        ylim_ = ax.get_ylim()
+                elif len(ylim) > 1:
                     ylim_ = ylim[i]
                 else:
                     ylim_ = ylim[0]
             else:
-            	ylim_ = ax.get_ylim()
+                ylim_ = ax.get_ylim()
 
             ax.set_ylim(ylim_)
 
@@ -296,8 +395,10 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
             ax.set_ylim(y_min, y_max)
 
     if hue and not grouped: # add legend
-        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(1, 1), ncol=1, frameon=False, borderpad=0.5)
-        lgd.set_title(hue, prop=dict(size='small'))
+        lgd = fig.legend(handles, labels, loc='upper left', bbox_to_anchor=(0.985, lgd_h),
+                             ncol=1, frameon=False, title=None, borderpad=0.5)
+        if lgd_title:
+            lgd.set_title(hue, prop=dict(size='small'))
         extra.append(lgd)
 
     for ax in iter_axes:
@@ -305,7 +406,7 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
     if title is not None:
         fig.suptitle(title)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.tight_layout(rect=[0, 0, 1, 0.925])
     else:
         fig.tight_layout()
 
