@@ -686,12 +686,6 @@ class AtomFitter(object):
             )
             visited_mols += dkoes_visited_mols
 
-        elif self.mtr22_make_mol:
-
-            # TODO try to derive the bonds by principled "inverse atom typing"
-            # where we use the atom types to constrain the molecule in OB
-            ob_mol = struct.to_ob_mol()
-
         else:
             # connect the dots using openbabel
             ob_mol = struct.to_ob_mol()
@@ -852,7 +846,7 @@ class OutputWriter(object):
         is_real_grid = not (is_gen_grid or is_fit_grid)
         has_struct = is_real_grid or is_fit_grid
         has_conv_grid = not is_fit_grid
-        is_generated = is_gen_grid or grid_name.endswith('gen_fit')
+        is_generated = is_gen_grid or grid_type.endswith('gen_fit')
 
         # write output files
         if self.output_dx: # write out density grids
@@ -1041,7 +1035,7 @@ class OutputWriter(object):
                 lig_grids[i]['lig_gen'].values for i in sample_idxs
             ) / self.n_samples
 
-            latent_mean = sum(
+            lig_latent_mean = sum(
                 lig_grids[i]['lig_gen'].info['latent_vec'] for i in sample_idxs
             ) / self.n_samples
 
@@ -1102,7 +1096,7 @@ class OutputWriter(object):
             # density variance
             # (divide by n_samples (+1) for sample (population) variance)
             variance = (
-                (grid.values - grid_mean)**2
+                (grid.values - mean_grid)**2
             ).sum().item()
         else:
             variance = np.nan

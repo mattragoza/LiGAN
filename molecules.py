@@ -1,6 +1,8 @@
 import gzip
 import numpy as np
-from rdkit import Chem
+from rdkit import Chem, Geometry
+from openbabel import openbabel as ob
+from openbabel import pybel
 
 
 def make_rd_mol(xyz, c, bonds, channels):
