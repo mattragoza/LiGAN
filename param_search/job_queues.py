@@ -19,11 +19,11 @@ class JobQueue(object):
     scheduling system such as Slurm or PBS Torque.
     '''
     @classmethod
-    def get_submit_cmd(cls, job_file, array_idx):
+    def get_submit_cmd(cls, *args, **kwargs):
         raise NotImplementedError
 
     @classmethod
-    def get_status_cmd(cls, job_names):
+    def get_status_cmd(cls, *args, **kwargs):
         raise NotImplementedError
 
     @classmethod
@@ -35,15 +35,24 @@ class JobQueue(object):
         raise NotImplementedError
 
     @classmethod
-    def submit_job(cls, job_file, array_idx=None, work_dir=None):
+    def submit_job_script(cls, job_file, *args, **kwargs):
         job_file = os.path.abspath(job_file)
-        submit_cmd = cls.get_submit_cmd(job_file, array_idx)
+        work_dir = os.path.dirname(job_file)
+        submit_cmd = cls.get_submit_cmd(job_file, *args, **kwargs)
         submit_out = call_subprocess(submit_cmd, work_dir=work_dir)
-        return parse_submit_out(submit_out)
+        return cls.parse_submit_out(submit_out)
 
     @classmethod
-    def get_status(cls, job_names):
-        status_cmd = cls.get_status_cmd(job_names)
+    def submit_job_scripts(cls, job_files, *args, **kwargs):
+        job_ids = []
+        for job_file in job_files:
+            job_id = cls.submit_job_script(job_file, *args, **kwargs)
+            job_ids.append(job_id)
+        return job_ids
+
+    @classmethod
+    def get_job_status(cls, *args, **kwargs):
+        status_cmd = cls.get_status_cmd(**kwargs)
         status_out = call_subprocess(status_cmd)
         return cls.parse_status_out(status_out)
 
@@ -58,11 +67,14 @@ class SlurmQueue(JobQueue):
         return cmd + job_file
 
     @classmethod
-    def get_status_cmd(cls, job_names):
+    def get_status_cmd(cls, *args, **kwargs):
         out_format = r'%i %P %j %u %t %M %l %R %Z'
-        return 'squeue --name={} --format="{}"'.format(
-            ','.join(job_names), out_format
-        )
+        status_cmd = 'squeue --format="{}"'.format(out_format)
+        for a in args:
+            status_cmd += ' ' + a
+        for k, v in kwargs.items():
+            status_cmd += ' --' + k + ' ' + v
+        return status_cmd
 
     @classmethod
     def parse_submit_out(cls, stdout):
@@ -74,10 +86,11 @@ class SlurmQueue(JobQueue):
     @classmethod
     def parse_status_out(cls, stdout):
 
+        stdout = stdout[stdout.index('JOBID'):]
         lines = stdout.split('\n')
-        columns = lines[1].split(' ')
+        columns = lines[0].split(' ')
         col_data = {c: [] for c in columns}
-        for line in filter(len, lines[2:]):
+        for line in filter(len, lines[1:]):
             fields = paren_split(line, sep=' ')
             for i, field in enumerate(fields):
                 col_data[columns[i]].append(field)
@@ -167,40 +180,6 @@ def call_subprocess(cmd, stdin=None, work_dir=None):
         raise SubprocessError(stderr)
     return stdout
 
-
-def get_job_queue(job_file):
-    '''
-    Get the appropriate job queue for a
-    job script by looking for macros.
-    '''
-    buf = read_file(job_file)
-    if re.search(r'^#SBATCH ', buf, re.MULTILINE):
-        return SlurmQueue
-    elif re.search(r'^#PBS ', buf, re.MULTILINE):
-        return TorqueQueue
-    else:
-        raise ValueError('unknown job queue type')
-
-
-def submit_job_scripts(job_files, array_idx=None, queue=None):
-    '''
-    Submit a list of job scripts to a job queue.
-    '''
-    job_ids = []
-    for job_file in job_files:
-        queue = queue or get_job_queue(job_file)
-        work_dir = os.path.dirname(job_file)
-        job_id = queue.submit_job(job_file, array_idx, work_dir)
-        job_ids.append(job_id)
-
-    return job_ids
-
-
-def get_job_status(job_ids, queue=None):
-    '''
-    Get the status of a set of job ids in a job queue.
-    '''
-    return queue.get_job_status(job_ids)
 
 
 def paren_split(string, sep):

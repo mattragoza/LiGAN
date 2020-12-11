@@ -2,7 +2,15 @@ import sys, os, re, shutil, argparse
 from collections import defaultdict
 import pandas as pd
 
-from job_queue import SlurmQueue
+from .job_queues import SlurmQueue
+
+
+def get_job_errors(job_files):
+    pass
+
+
+def get_job_output(job_files):
+    pass
 
 
 def read_stderr_file(stderr_file):

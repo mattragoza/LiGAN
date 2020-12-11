@@ -43,7 +43,7 @@ def write_job_script(job_file, template, job_params):
     template with job_params.
     '''
     params_str = params.format_params(job_params, line_start='# ')
-    write_file(job_file, template.format(job_param=param_str, **job_params))
+    write_file(job_file, template.format(job_params=params_str, **job_params))
 
 
 def fill_job_template(job_template, job_params):
