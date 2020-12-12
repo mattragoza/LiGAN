@@ -2,6 +2,7 @@ import sys, os, re, shutil, argparse
 from collections import defaultdict
 import pandas as pd
 
+from .params import read_params
 from .job_queues import SlurmQueue
 
 
@@ -64,7 +65,12 @@ def get_job_output(job_file, output_pat):
     output_file = os.path.join(job_dir, output_file)
     df = pd.read_csv(output_file, sep=' ')
     df['job_name'] = job_name
-    return df
+
+    params = read_params(job_file, line_start='# ')
+    for param, value in params.items():
+        df[param] = value
+
+    return df.set_index(list(params.keys()))
 
 
 def get_job_outputs(job_files, output_pat=re.compile(r'(\d+).output')):

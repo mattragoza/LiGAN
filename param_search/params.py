@@ -12,6 +12,10 @@ class Params(collections.OrderedDict):
     '''
     space = None
 
+    @classmethod
+    def from_file(cls, params_file):
+        return cls(*read_params(params_file).item())
+
 
 class ParamSpace(collections.OrderedDict):
     '''
