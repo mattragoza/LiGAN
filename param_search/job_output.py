@@ -5,23 +5,78 @@ import pandas as pd
 from .job_queues import SlurmQueue
 
 
-def get_job_errors(job_files):
-    pass
-
-
-def get_job_output(job_files):
-    pass
-
-
 def read_stderr_file(stderr_file):
     warning_pat = re.compile(r'Warning.*')
-    error_pat = re.compile(r'.*(Error|Exception|error|fault|failed|Errno).*')
+    error_pat = re.compile(
+        r'.*(Error|Exception|error|fault|failed|Errno).*'
+    )
     error = None
     with open(stderr_file) as f:
         for line in f:
             if not warning_pat.match(line) and error_pat.match(line):
                 error = line.rstrip()
     return error
+
+
+def get_job_error(job_file, stderr_pat):
+    '''
+    Parse the latest error for job_file.
+    '''
+    job_dir = os.path.dirname(job_file)
+    stderr_files = []
+    for m in match_files_in_dir(job_dir, stderr_pat):
+        stderr_file = m.group(0)
+        job_id = int(m.group(1))
+        stderr_files.append((job_id, stderr_file))
+
+    job_id, stderr_file = sorted(stderr_files)[-1]
+    stderr_file = os.path.join(job_dir, stderr_file)
+    error = read_stderr_file(stderr_file)
+    return error
+
+
+def get_job_errors(job_files, stderr_pat=re.compile(r'(\d+).stderr')):
+    '''
+    Parse the latest errors for a set of job_files.
+    '''
+    errors = []
+    for job_file in job_files:
+        error = get_job_error(job_file, stderr_pat)
+        errors.append(error)
+
+    return errors
+
+
+def get_job_output(job_file, output_pat):
+    '''
+    Read the latest output for job_file.
+    '''
+    job_dir = os.path.dirname(job_file)
+    job_name = os.path.basename(job_dir)
+
+    output_files = []
+    for m in match_files_in_dir(job_dir, output_pat):
+        output_file = m.group(0)
+        job_id = int(m.group(1))
+        output_files.append((job_id, output_file))
+
+    job_id, output_file = sorted(output_files)[-1]
+    output_file = os.path.join(job_dir, output_file)
+    df = pd.read_csv(output_file, sep=' ')
+    df['job_name'] = job_name
+    return df
+
+
+def get_job_outputs(job_files, output_pat=re.compile(r'(\d+).output')):
+    '''
+    Read the latest output for a set of job_files.
+    '''
+    dfs = []
+    for job_file in job_files:
+        df = get_job_output(job_file, output_pat)
+        dfs.append(df)
+
+    return pd.concat(dfs)
 
 
 def print_array_indices(idx_set):
@@ -201,6 +256,7 @@ def print_errors_for_array_indices(job_dir, stderr_pat, indices):
         stderr_file = os.path.join(job_dir, stderr_file)
         error = read_stderr_file(stderr_file)
         print(stderr_file + '\t' + str(error))
+
 
 
 def parse_args(argv):
