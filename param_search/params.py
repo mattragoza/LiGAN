@@ -1,11 +1,11 @@
 import re, ast
 import itertools
-import collections
+from collections import OrderedDict
 
-from .common import read_file, write_file
+from .common import read_file, write_file, as_non_string_iterable
 
 
-class Params(collections.OrderedDict):
+class Params(OrderedDict):
     '''
     Params represents a single point in a ParamSpace,
     a particular assignment of values to parameters.
@@ -17,7 +17,7 @@ class Params(collections.OrderedDict):
         return cls(*read_params(params_file).item())
 
 
-class ParamSpace(collections.OrderedDict):
+class ParamSpace(OrderedDict):
     '''
     ParamSpace defines ranges of possible values for a set
     of parameters. Iterating over the space produces elements
@@ -50,29 +50,13 @@ class ParamSpace(collections.OrderedDict):
             return 0
 
 
-def non_string_iterable(obj):
-    '''
-    Check whether obj is a non-string iterable.
-    '''
-    iterable = isinstance(obj, collections.Iterable)
-    string = isinstance(obj, str)
-    return not string and iterable
-
-
-def as_non_string_iterable(obj):
-    '''
-    Put obj in a list if it's a string or not iterable.
-    '''
-    return obj if non_string_iterable(obj) else [obj]
-
-
 def parse_params(buf, line_start='', converter=ast.literal_eval):
     '''
     Parse lines in buf as param = value pairs, filtering by an
     optional line_start pattern. After parsing, a converter
     function is applied to param values.
     '''
-    params = collections.OrderedDict()
+    params = OrderedDict()
     line_pat = r'^{}(\S+)\s*=\s*(.+)$'.format(line_start)
     for p, v in re.findall(line_pat, buf, re.MULTILINE):
         params[p] = converter(v)

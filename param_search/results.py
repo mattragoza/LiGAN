@@ -13,17 +13,62 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import params
-try:
-    import models
-    import generate
-except ImportError as e:
-    print('Warning: ignoring the following {}: {}'.format(type(e), e), file=sys.stderr)
+from .common import get_terminal_size, as_non_string_iterable
 
 
-def get_terminal_size():
-    with os.popen('stty size') as p:
-        return [int(i) for i in p.read().split()]
+def get_n_rows_and_cols(x, y, n_cols=None):
+    if n_cols is None:
+        n_cols = len(x)
+    n_axes = len(x) * len(y)
+    assert n_axes > 0
+    n_rows = (n_axes + n_cols - 1)//n_cols
+    n_cols = min(n_axes, n_cols)
+    return n_rows, n_cols
+
+
+def add_group_column(df, group_cols, do_print=False):
+    '''
+    Add a new column to df that combines the values
+    in group_cols columns into tuple strings.
+    '''
+    if len(group_cols) == 1:
+        return group_cols[0]
+    group = '({})'.format(', '.join(group_cols))
+    if do_print:
+        print('adding group column {}'.format(repr(group)))
+    df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
+    return group
+
+
+def plot(df, x, y, hue=True, height=3, width=3, n_cols=None,
+         plot_func=sns.pointplot, plot_kws={}):
+
+    df = df.reset_index()
+    assert len(df) > 0, 'empty data frame'
+
+    x = as_non_string_iterable(x)
+    y = as_non_string_iterable(y)
+    grouped = (hue is True)
+    n_rows, n_cols = get_n_rows_and_cols(x, y, n_cols)
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False
+    )
+    iter_axes = iter(axes.flatten())
+
+    for i, x_i in enumerate(x):
+        if grouped:
+            hue = add_group_column(df, [x_j for x_j in x if x_j != x_i])
+        for j, y_j in enumerate(y):
+            ax = next(iter_axes)
+            plot_func(data=df, x=x_i, y=y_j, hue=hue, ax=ax, **plot_kws)
+
+    for ax in iter_axes:
+        ax.axis('off')
+
+    fig.tight_layout()
+    return fig
+
 
 
 def annotate_pearson_r(x, y, **kwargs):
@@ -193,23 +238,19 @@ def plot_dist(plot_file, df, x, hue, n_cols=None, height=6, width=6, **kwargs):
 
 
 
-def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
+def plot_strips(df, x, y, hue=None, n_cols=None, height=6, width=6, ylim=None,
                 point=False, point_kws={}, strip=False, strip_kws={}, violin=False, violin_kws={},
                 box=False, box_kws={}, grouped=False, outlier_z=None, share_ylim_pat=None, title=None):
     df = df.reset_index()
     assert len(df) > 0, 'empty data frame'
 
-    if not isinstance(x, list):
-        x = [x]
+    x = as_non_string_iterable(x)
+    y = as_non_string_iterable(y)
+    n_rows, n_cols = get_n_rows_and_cols(x, y, n_cols)
 
-    if n_cols is None:
-        n_cols = len(x)
-    n_axes = len(x)*len(y)
-    assert n_axes > 0
-    n_rows = (n_axes + n_cols-1)//n_cols
-    n_cols = min(n_axes, n_cols)
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False)
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False
+    )
     iter_axes = iter(axes.flatten())
 
     share_ylim = defaultdict(list)
@@ -227,12 +268,6 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
                 else:
                     hue = hue_cols[0]
 
-            #print('CALLING POINT PLOT')
-            #print('  x = {}'.format(x_))
-            #print('  y = {}'.format(y_))
-            #print('  hue = {}'.format(hue))
-            #print(df.columns)
-
             if violin: # plot the distributions
                 sns.violinplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **violin_kws)
                 for c in ax.collections:
@@ -249,9 +284,6 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
 
             if point: # plot the means and 95% confidence intervals
                 sns.pointplot(data=df, x=x_, y=y_, hue=hue, ax=ax, **point_kws, )
-
-            #plt.setp(ax.lines, zorder=100)
-            #plt.setp(ax.collections, zorder=100)
 
             # if more than one plot type, need to remove excess legend handles and labels
             if hue:
@@ -309,7 +341,6 @@ def plot_strips(plot_file, df, x, y, hue=None, n_cols=None, height=6, width=6, y
     else:
         fig.tight_layout()
 
-    fig.savefig(plot_file, bbox_extra_artists=extra, bbox_inches='tight')
     return fig
 
 
@@ -473,18 +504,6 @@ def add_param_columns(df, scaffold=False):
         for param, value in job_params.items():
             df.loc[job_file, param] = value
     return job_params
-
-
-def add_group_column(df, group_cols, do_print=False):
-    '''
-    Add a new column to df that combines the values
-    in group_cols columns into tuple strings.
-    '''
-    group = '({})'.format(', '.join(group_cols))
-    if do_print:
-        print('adding group column {}'.format(repr(group)))
-    df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
-    return group
 
 
 def main(argv):
