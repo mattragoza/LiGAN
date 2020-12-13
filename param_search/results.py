@@ -40,8 +40,14 @@ def add_group_column(df, group_cols, do_print=False):
     return group
 
 
-def plot(df, x, y, hue=True, height=3, width=3, n_cols=None,
+def plot(df, x=None, y=None, hue=True, height=3, width=3, n_cols=None,
          plot_func=sns.pointplot, plot_kws={}):
+
+    if x is None:
+        x = [p for p in df.index.names if p != 'job_name']
+
+    if y is None:
+        y = df.columns
 
     df = df.reset_index()
     assert len(df) > 0, 'empty data frame'
@@ -54,7 +60,7 @@ def plot(df, x, y, hue=True, height=3, width=3, n_cols=None,
     fig, axes = plt.subplots(
         n_rows, n_cols, figsize=(width*n_cols, height*n_rows), squeeze=False
     )
-    iter_axes = iter(axes.flatten())
+    iter_axes = iter(axes.transpose().flatten())
 
     for i, x_i in enumerate(x):
         if grouped:
@@ -67,6 +73,7 @@ def plot(df, x, y, hue=True, height=3, width=3, n_cols=None,
         ax.axis('off')
 
     fig.tight_layout()
+    sns.despine(top=True, right=True)
     return fig
 
 

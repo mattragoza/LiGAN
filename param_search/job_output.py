@@ -48,22 +48,22 @@ def get_job_errors(job_files, stderr_pat=re.compile(r'(\d+).stderr')):
     return errors
 
 
-def get_job_output(job_file, output_pat):
+def get_job_metric(job_file, metric_pat):
     '''
     Read the latest output for job_file.
     '''
     job_dir = os.path.dirname(job_file)
     job_name = os.path.basename(job_dir)
 
-    output_files = []
-    for m in match_files_in_dir(job_dir, output_pat):
-        output_file = m.group(0)
+    metric_files = []
+    for m in match_files_in_dir(job_dir, metric_pat):
+        metric_file = m.group(0)
         job_id = int(m.group(1))
-        output_files.append((job_id, output_file))
+        metric_files.append((job_id, metric_file))
 
-    job_id, output_file = sorted(output_files)[-1]
-    output_file = os.path.join(job_dir, output_file)
-    df = pd.read_csv(output_file, sep=' ')
+    job_id, metric_file = sorted(metric_files)[-1]
+    metric_file = os.path.join(job_dir, metric_file)
+    df = pd.read_csv(metric_file, sep=' ')
     df['job_name'] = job_name
 
     params = read_params(job_file, line_start='# ')
@@ -73,13 +73,13 @@ def get_job_output(job_file, output_pat):
     return df.set_index(list(params.keys()))
 
 
-def get_job_outputs(job_files, output_pat=re.compile(r'(\d+).output')):
+def get_job_metrics(job_files, metric_pat=re.compile(r'(\d+).metrics')):
     '''
     Read the latest output for a set of job_files.
     '''
     dfs = []
     for job_file in job_files:
-        df = get_job_output(job_file, output_pat)
+        df = get_job_metric(job_file, metric_pat)
         dfs.append(df)
 
     return pd.concat(dfs)
