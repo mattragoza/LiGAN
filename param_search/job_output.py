@@ -6,6 +6,24 @@ from .params import read_params
 from .job_queues import SlurmQueue
 
 
+def as_compiled_re(obj):
+    '''
+    Compile obj as regex pattern if needed.
+    '''
+    return obj if hasattr(obj, 'match') else re.compile(obj)
+
+
+def match_files_in_dir(dir, pat):
+    '''
+    Iterate through files in dir that match pat.
+    '''
+    pat = as_compiled_re(pat)
+    for file in os.listdir(dir):
+        m = pat.match(file)
+        if m is not None:
+            yield m  
+
+
 def read_stderr_file(stderr_file):
     warning_pat = re.compile(r'Warning.*')
     error_pat = re.compile(
@@ -36,7 +54,7 @@ def get_job_error(job_file, stderr_pat):
     return error
 
 
-def get_job_errors(job_files, stderr_pat=re.compile(r'(\d+).stderr')):
+def get_job_errors(job_files, stderr_pat=r'(\d+).stderr'):
     '''
     Parse the latest errors for a set of job_files.
     '''
@@ -55,25 +73,23 @@ def get_job_metric(job_file, metric_pat):
     job_dir = os.path.dirname(job_file)
     job_name = os.path.basename(job_dir)
 
-    metric_files = []
+    dfs = []
     for m in match_files_in_dir(job_dir, metric_pat):
-        metric_file = m.group(0)
-        job_id = int(m.group(1))
-        metric_files.append((job_id, metric_file))
+        metric_file = os.path.join(job_dir, m.group(0))
+        df = pd.read_csv(metric_file, sep=' ')
+        df['job_name'] = job_name
+        dfs.append(df)
 
-    job_id, metric_file = sorted(metric_files)[-1]
-    metric_file = os.path.join(job_dir, metric_file)
-    df = pd.read_csv(metric_file, sep=' ')
-    df['job_name'] = job_name
+    df = pd.concat(dfs)
 
     params = read_params(job_file, line_start='# ')
     for param, value in params.items():
         df[param] = value
 
-    return df.set_index(list(params.keys()))
+    return df
 
 
-def get_job_metrics(job_files, metric_pat=re.compile(r'(\d+).metrics')):
+def get_job_metrics(job_files, metric_pat=r'(\d+).metrics'):
     '''
     Read the latest output for a set of job_files.
     '''
@@ -122,16 +138,6 @@ def parse_array_indices_str(s):
         else:
             indices.append(idx_start)
     return set(indices)
-
-
-def match_files_in_dir(dir, pattern):
-    '''
-    Iterate through files in dir that match pattern.
-    '''
-    for file in os.listdir(dir):
-        m = pattern.match(file)
-        if m is not None:
-            yield m
 
 
 def find_job_ids(job_dir, stderr_pat):

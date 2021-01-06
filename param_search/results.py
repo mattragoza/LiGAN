@@ -4,6 +4,7 @@ if __name__ == '__main__':
     matplotlib.use('Agg')
 import sys, os, re, glob, argparse, parse, ast, shutil
 from collections import defaultdict
+from functools import lru_cache
 import numpy as np
 import scipy.stats as stats
 np.random.seed(0)
@@ -26,6 +27,15 @@ def get_n_rows_and_cols(x, y, n_cols=None):
     return n_rows, n_cols
 
 
+@lru_cache(100)
+def make_group_value_from_tuple(tup):
+    return str(tup).replace('False', 'F').replace('True', 'T')
+
+
+def make_group_value(values):
+    return make_group_value_from_tuple(tuple(values))
+
+
 def add_group_column(df, group_cols, do_print=False):
     '''
     Add a new column to df that combines the values
@@ -36,12 +46,12 @@ def add_group_column(df, group_cols, do_print=False):
     group = '({})'.format(', '.join(group_cols))
     if do_print:
         print('adding group column {}'.format(repr(group)))
-    df[group] = df[group_cols].apply(lambda x: str(tuple(x)), axis=1)
+    df[group] = df[group_cols].apply(make_group_value, axis=1)
     return group
 
 
 def plot(df, x=None, y=None, hue=True, height=3, width=3, n_cols=None,
-         plot_func=sns.pointplot, plot_kws={}):
+         legend=True, plot_func=sns.pointplot, plot_kws={}):
 
     if x is None:
         x = [p for p in df.index.names if p != 'job_name']
@@ -63,16 +73,34 @@ def plot(df, x=None, y=None, hue=True, height=3, width=3, n_cols=None,
     iter_axes = iter(axes.transpose().flatten())
 
     for i, x_i in enumerate(x):
+
         if grouped:
             hue = add_group_column(df, [x_j for x_j in x if x_j != x_i])
+
         for j, y_j in enumerate(y):
             ax = next(iter_axes)
             plot_func(data=df, x=x_i, y=y_j, hue=hue, ax=ax, **plot_kws)
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend_.remove()
+
+            if i > 0 and False:
+                ax.set_ylabel(None)
+                ax.set_yticklabels([])
+
+            if j+1 < len(y) and False:
+                ax.set_xlabel(None)
+                ax.set_xticklabels([])
+            elif legend:
+                ax.legend(
+                    handles, labels,
+                    loc='upper left',
+                    bbox_to_anchor=(0, -0.25),
+                    frameon=False,
+                )
 
     for ax in iter_axes:
         ax.axis('off')
 
-    fig.tight_layout()
     sns.despine(top=True, right=True)
     return fig
 
