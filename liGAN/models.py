@@ -1,158 +1,176 @@
+import numpy as np
 from torch import nn
 
 
 # mapping of unpool_types to Upsample modes
 unpool_type_map = dict(
-	n='nearest',
-	t='trilinear',
+    n='nearest',
+    t='trilinear',
 )
 
 
 class ConvReLU(nn.Sequential):
 
-	def __init__(self, n_input, n_output, kernel_size, relu_leak):
+    def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
-		conv = nn.Conv3d(
-			in_channels=n_input,
-			out_channels=n_output,
-			kernel_size=kernel_size,
-			padding=kernel_size//2,
-		)
-		relu = nn.LeakyReLU(
-			negative_slope=relu_leak,
-			in_place=True,
-		)
-		self.add_module(conv)
-		self.add_module(relu)
+        conv = nn.Conv3d(
+            in_channels=n_input,
+            out_channels=n_output,
+            kernel_size=kernel_size,
+            padding=kernel_size//2,
+        )
+        relu = nn.LeakyReLU(
+            negative_slope=relu_leak,
+            inplace=True,
+        )
+        super().__init__(conv, relu)
 
 
 class ConvBlock(nn.Sequential):
 
     def __init__(
-    	self,
-    	n_convs,
-    	n_input,
-    	n_output,
-    	kernel_size,
-    	relu_leak,
-    	dense_net=False,
+        self,
+        n_convs,
+        n_input,
+        n_output,
+        kernel_size,
+        relu_leak,
+        dense_net=False,
     ):
-    	if dense_net:
-    		raise NotImplementedError('TODO densely-connected')
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
 
+        modules = []
         for i in range(n_convs):
             conv_relu = ConvReLU(n_input, n_output, kernel_size, relu_leak)
             n_input = n_output
-            self.add_module(conv_relu)
+            modules.append(conv_relu)
+
+        super().__init__(*modules)
 
 
 class DeconvReLU(nn.Sequential):
 
-	def __init__(self, n_input, n_output, kernel_size, relu_leak):
+    def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
-		deconv = nn.ConvTranspose3d(
-			in_channels=n_input,
-			out_channels=n_output,
-			kernel_size=kernel_size,
-			padding=kernel_size//2,
-		)
-		relu = nn.LeakyReLU(
-			negative_slope=relu_leak,
-			in_place=True,
-		)
-		self.add_module(deconv)
-		self.add_module(relu)
+        self.deconv = nn.ConvTranspose3d(
+            in_channels=n_input,
+            out_channels=n_output,
+            kernel_size=kernel_size,
+            padding=kernel_size//2,
+        )
+        self.relu = nn.LeakyReLU(
+            negative_slope=relu_leak,
+            inplace=True,
+        )
+        super().__init__(deconv, relu)
 
 
 class DeconvBlock(nn.Sequential):
 
     def __init__(
-    	self,
-    	n_deconvs,
-    	n_input,
-    	n_output,
-    	kernel_size,
-    	relu_leak,
-    	dense_net=False,
+        self,
+        n_deconvs,
+        n_input,
+        n_output,
+        kernel_size,
+        relu_leak,
+        dense_net=False,
     ):
-    	if dense_net:
-    		raise NotImplementedError('TODO densely-connected')
+        if dense_net:
+            raise NotImplementedError('TODO densely-connected')
 
+        modules = []
         for i in range(n_deconvs):
             deconv_relu = DeconvReLU(
-            	n_input, n_output, kernel_size, relu_leak
+                n_input, n_output, kernel_size, relu_leak
             )
             n_input = n_output
-            self.add_module(deconv_relu)
+            modules.append(deconv_relu)
+
+        super().__init__(*modules)
 
 
 class Pooling(nn.Sequential):
 
-	def __init__(self, n_input, pool_type, pool_factor):
+    def __init__(self, n_input, pool_type, pool_factor):
 
-		if pool_type == 'm':
-			pool = nn.MaxPool3d(
-				kernel_size=pool_factor,
-				stride=pool_factor,
-			)
+        if pool_type == 'm':
+            pool = nn.MaxPool3d(
+                kernel_size=pool_factor,
+                stride=pool_factor,
+            )
 
-		elif pool_type == 'a':
-			pool = nn.AvePool3d(
-				kernel_size=pool_factor,
-				stride=pool_factor,
-			)
+        elif pool_type == 'a':
+            pool = nn.AvgPool3d(
+                kernel_size=pool_factor,
+                stride=pool_factor,
+            )
 
-		elif pool_type == 'c':
-			pool = nn.Conv3d(
-				in_channels=n_input,
-				out_channels=n_input,
-				groups=n_input,
-				kernel_size=pool_factor,
-				stride=pool_factor,
-			)
+        elif pool_type == 'c':
+            pool = nn.Conv3d(
+                in_channels=n_input,
+                out_channels=n_input,
+                groups=n_input,
+                kernel_size=pool_factor,
+                stride=pool_factor,
+            )
 
-		else:
-			raise ValueError('unknown pool_type ' + repr(pool_type))
+        else:
+            raise ValueError('unknown pool_type ' + repr(pool_type))
 
-		self.add_module(pool)
+        super().__init__(pool)
 
 
 class Unpooling(nn.Sequential):
 
-	def __init__(self, n_input, unpool_type, unpool_factor):
+    def __init__(self, n_input, unpool_type, unpool_factor):
 
-		if unpool_type in unpool_type_map:
-			
-			unpool = nn.Upsample(
-				scale_factor=unpool_factor,
-				mode=unpool_type_map[unpool_type],
-			)
+        if unpool_type in unpool_type_map:
+            
+            unpool = nn.Upsample(
+                scale_factor=unpool_factor,
+                mode=unpool_type_map[unpool_type],
+            )
 
-		elif unpool_type == 'c':
-			
-			unpool = nn.Deconv3d(
-				in_channels=n_input,
-				out_channels=n_input,
-				groups=n_input,
-				kernel_size=unpool_factor,
-				stride=unpool_factor,
-			)
+        elif unpool_type == 'c':
+            
+            unpool = nn.Deconv3d(
+                in_channels=n_input,
+                out_channels=n_input,
+                groups=n_input,
+                kernel_size=unpool_factor,
+                stride=unpool_factor,
+            )
 
-		else:
-			raise ValueError('unknown unpool_type ' + repr(unpool_type))
+        else:
+            raise ValueError('unknown unpool_type ' + repr(unpool_type))
 
-		self.add_module(unpool)
+        super().__init__(unpool)
+
+
+class ReshapeFc(nn.Module):
+
+    def __init__(self, in_shape, n_output, relu_leak):
+        super().__init__()
+        self.n_input = np.prod(in_shape)
+        self.fc = nn.Linear(self.n_input, n_output)
+        self.relu = nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
+
+    def forward(self, x):
+        return self.relu(self.fc(x.reshape(-1, self.n_input)))
 
 
 class FcReshape(nn.Module):
 
     def __init__(self, n_input, out_shape, relu_leak):
+        super().__init__()
         self.fc = nn.Linear(n_input, np.prod(out_shape))
-        self.relu = nn.LeakyReLU(negative_slope=relu_leak, in_place=True)
+        self.relu = nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
         self.out_shape = dict(dim=[-1] + list(out_shape))
 
     def forward(self, x):
-    	return self.relu(self.fc(x)).reshape(self.out_shape)
+        return self.relu(self.fc(x)).reshape(self.out_shape)
 
 
 class Encoder(nn.Sequential):
@@ -178,6 +196,8 @@ class Encoder(nn.Sequential):
         n_output,
         init_conv_pool=False,
     ):
+        self.modules = []
+
         # track changing dimensions
         self.n_channels = n_channels
         self.grid_dim = grid_dim
@@ -196,29 +216,31 @@ class Encoder(nn.Sequential):
                 conv_per_level, n_filters, kernel_size, relu_leak
             )
 
-        self.add_fc(n_output)
+        self.add_reshape_fc(n_output)
+
+        super().__init__(*self.modules)
 
     def add_conv(self, n_filters, kernel_size, relu_leak):
         conv = ConvReLU(self.n_channels, n_filters, kernel_size, relu_leak)
-        self.add_module(conv)
+        self.modules.append(conv)
         self.n_channels = n_filters
 
     def add_pool(self, pool_type, pool_factor):
-        pool = Pooling(self.n_channels, pool_type, pool_factor):
-        self.add_module(pool)
+        pool = Pooling(self.n_channels, pool_type, pool_factor)
+        self.modules.append(pool)
         self.grid_dim //= pool_factor
 
     def add_conv_block(self, n_convs, n_filters, kernel_size, relu_leak):
         conv_block = ConvBlock(
             n_convs, self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.add_module(conv_block)
+        self.modules.append(conv_block)
         self.n_channels = n_filters
 
-    def add_fc(self, n_output):
-    	n_input = self.n_channels * self.grid_dim**3
-        fc = nn.Linear(n_input, n_output)
-        self.add_module(fc)
+    def add_reshape_fc(self, n_output):
+        in_shape = (self.n_channels,) + (self.grid_dim,)*3
+        fc = ReshapeFc(in_shape, n_output, relu_leak=0)
+        self.modules.append(fc)
 
 
 class Decoder(nn.Sequential):
