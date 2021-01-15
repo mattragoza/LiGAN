@@ -53,13 +53,13 @@ class DeconvReLU(nn.Sequential):
 
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
 
-        self.deconv = nn.ConvTranspose3d(
+        deconv = nn.ConvTranspose3d(
             in_channels=n_input,
             out_channels=n_output,
             kernel_size=kernel_size,
             padding=kernel_size//2,
         )
-        self.relu = nn.LeakyReLU(
+        relu = nn.LeakyReLU(
             negative_slope=relu_leak,
             inplace=True,
         )
@@ -167,7 +167,7 @@ class FcReshape(nn.Module):
         super().__init__()
         self.fc = nn.Linear(n_input, np.prod(out_shape))
         self.relu = nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
-        self.out_shape = dict(dim=[-1] + list(out_shape))
+        self.out_shape = (-1,) + tuple(out_shape)
 
     def forward(self, x):
         return self.relu(self.fc(x)).reshape(self.out_shape)
@@ -266,6 +266,8 @@ class Decoder(nn.Sequential):
         n_output,
         final_unpool=False,
     ):
+        self.modules = []
+
         # first fc layer maps to initial grid shape
         self.add_fc_reshape(n_input, n_channels, grid_dim, relu_leak)
         n_filters = n_channels
@@ -286,30 +288,32 @@ class Decoder(nn.Sequential):
         # final deconv maps to correct n_output channels
         self.add_deconv(n_output, kernel_size, relu_leak)
 
+        super().__init__(*self.modules)
+
     def add_fc_reshape(self, n_input, n_channels, grid_dim, relu_leak):
         out_shape = (n_channels,) + (grid_dim,)*3
         fc_reshape = FcReshape(n_input, out_shape, relu_leak)
-        self.add_module(fc_reshape)
+        self.modules.append(fc_reshape)
         self.n_channels = n_channels
         self.grid_dim = grid_dim
 
     def add_unpool(self, unpool_type, unpool_factor):
         unpool = Unpooling(self.n_channels, unpool_type, unpool_factor)
-        self.add_module(unpool)
+        self.modules.append(unpool)
         self.grid_dim *= unpool_factor
 
     def add_deconv(self, n_filters, kernel_size, relu_leak):
         deconv = DeconvReLU(
             self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.add_module(deconv)
+        self.modules.append(deconv)
         self.n_channels = n_filters
 
     def add_deconv_block(self, n_deconvs, n_filters, kernel_size, relu_leak):
         deconv_block = DeconvBlock(
             n_deconvs, self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.add_module(deconv_block)
+        self.modules.append(deconv_block)
         self.n_channels = n_filters
 
 
