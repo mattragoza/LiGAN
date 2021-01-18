@@ -331,9 +331,12 @@ class EncoderDecoder(nn.Module):
         relu_leak=0.1,
         pool_type='a',
         unpool_type='n',
+        pool_factor=2,
         n_latent=1024,
         init_conv_pool=False,
     ):
+        super().__init__()
+        
         self.encoder = Encoder(
             n_channels=n_channels,
             grid_dim=grid_dim,

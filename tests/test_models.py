@@ -77,3 +77,25 @@ class TestDecoder(object):
         x = torch.zeros(10, 128)
         y = dec(x)
         y.backward(torch.zeros(10, 19, 8, 8, 8))
+
+
+class TestEncoderDecoder(object):
+
+    @pytest.fixture
+    def enc_dec(self):
+        return models.EncoderDecoder(
+            n_channels=19,
+            grid_dim=8,
+            n_filters=5,
+            width_factor=2,
+            n_levels=3,
+            conv_per_level=1,
+            kernel_size=3,
+            relu_leak=0.1,
+            pool_type='a',
+            unpool_type='n',
+            n_latent=128,
+        )
+
+    def test_init(self, enc_dec):
+        pass
