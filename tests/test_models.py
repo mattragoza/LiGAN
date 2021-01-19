@@ -79,12 +79,12 @@ class TestDecoder(object):
         y.backward(torch.zeros(10, 19, 8, 8, 8))
 
 
-class TestEncoderDecoder(object):
+class TestGenerator(object):
 
-    @pytest.fixture
-    def enc_dec(self):
-        return models.EncoderDecoder(
-            n_channels=19,
+    def get_gen(self, n_channels_in):
+        return models.Generator(
+            n_channels_in=n_channels_in,
+            n_channels_out=19,
             grid_dim=8,
             n_filters=5,
             width_factor=2,
@@ -97,5 +97,39 @@ class TestEncoderDecoder(object):
             n_latent=128,
         )
 
-    def test_init(self, enc_dec):
-        pass
+    @pytest.fixture
+    def gen0(self):
+        return self.get_gen([])
+
+    @pytest.fixture
+    def gen1(self):
+        return self.get_gen(19)
+
+    @pytest.fixture
+    def gen2(self):
+        return self.get_gen([19, 16])
+
+    def test_0_input_init(self, gen0):
+        assert gen0.n_inputs == 0
+
+    def test_1_input_init(self, gen1):
+        assert gen1.n_inputs == 1
+
+    def test_2_input_init(self, gen2):
+        assert gen2.n_inputs == 2
+
+    def test_0_input_forward(self, gen0):
+        x = torch.zeros(10, 128)
+        y = gen0(x)
+        assert y.shape == (10, 19, 8, 8, 8)
+
+    def test_1_input_forward(self, gen1):
+        x = torch.zeros(10, 19, 8, 8, 8)
+        y = gen1(x)
+        assert y.shape == (10, 19, 8, 8, 8)
+
+    def test_2_input_forward(self, gen2):
+        x0 = torch.zeros(10, 19, 8, 8, 8)
+        x1 = torch.zeros(10, 16, 8, 8, 8)
+        y = gen2(x0, x1)
+        assert y.shape == (10, 19, 8, 8, 8)

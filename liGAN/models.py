@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from torch import nn
 
 
@@ -317,11 +318,12 @@ class Decoder(nn.Sequential):
         self.n_channels = n_filters
 
 
-class EncoderDecoder(nn.Module):
+class Generator(nn.Module):
 
     def __init__(
         self,
-        n_channels=19,
+        n_channels_in=[],
+        n_channels_out=19,
         grid_dim=48,
         n_filters=32,
         width_factor=2,
@@ -336,26 +338,37 @@ class EncoderDecoder(nn.Module):
         init_conv_pool=False,
     ):
         super().__init__()
-        
-        self.encoder = Encoder(
-            n_channels=n_channels,
-            grid_dim=grid_dim,
-            n_filters=n_filters,
-            width_factor=width_factor,
-            n_levels=n_levels,
-            conv_per_level=conv_per_level,
-            kernel_size=kernel_size,
-            relu_leak=relu_leak,
-            pool_type=pool_type,
-            pool_factor=pool_factor,
-            n_output=n_latent,
-            init_conv_pool=init_conv_pool,
-        )
+
+        if not isinstance(n_channels_in, list):
+            n_channels_in = [n_channels_in]
+        self.n_inputs = len(n_channels_in)
+
+        self.encoders = []
+        for i, n_channels in enumerate(n_channels_in):
+
+            encoder = Encoder(
+                n_channels=n_channels,
+                grid_dim=grid_dim,
+                n_filters=n_filters,
+                width_factor=width_factor,
+                n_levels=n_levels,
+                conv_per_level=conv_per_level,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                pool_type=pool_type,
+                pool_factor=pool_factor,
+                n_output=n_latent,
+                init_conv_pool=init_conv_pool,
+            )
+            self.add_module('encoder'+str(i), encoder)
+            self.encoders.append(encoder)
+
+        # TODO variational
 
         self.decoder = Decoder(
-            n_input=n_latent,
-            grid_dim=self.encoder.grid_dim,
-            n_channels=self.encoder.n_channels,
+            n_input=n_latent * max(1, self.n_inputs),
+            grid_dim=grid_dim // pool_factor**(n_levels-1),
+            n_channels=n_filters * width_factor**(n_levels-1),
             width_factor=width_factor,
             n_levels=n_levels,
             deconv_per_level=conv_per_level,
@@ -363,9 +376,24 @@ class EncoderDecoder(nn.Module):
             relu_leak=relu_leak,
             unpool_type=unpool_type,
             unpool_factor=pool_factor,
-            n_output=n_channels,
+            n_output=n_channels_out,
             final_unpool=init_conv_pool,
         )
 
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
+    def forward(self, *inputs):
+        assert len(inputs) == max(1, self.n_inputs)
+
+        if self.n_inputs == 0:
+            latent = inputs[0]
+
+        elif self.n_inputs == 1:
+            latent = self.encoders[0](inputs[0])
+
+        else:
+            latents = []
+            for encoder, input_ in zip(self.encoders, inputs):
+                latents.append(encoder(input_))
+            latent = torch.cat(latents, dim=1)
+
+        return self.decoder(latent)
+        
