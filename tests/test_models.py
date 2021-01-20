@@ -109,7 +109,7 @@ class TestDecoder(object):
 
 class TestGenerator(object):
 
-    def get_gen(self, n_channels_in):
+    def get_gen(self, n_channels_in, var_input):
         return models.Generator(
             n_channels_in=n_channels_in,
             n_channels_out=19,
@@ -123,41 +123,78 @@ class TestGenerator(object):
             pool_type='a',
             unpool_type='n',
             n_latent=128,
+            var_input=var_input,
         )
 
     @pytest.fixture
     def gen0(self):
-        return self.get_gen([])
+        return self.get_gen(
+            n_channels_in=[],
+            var_input=None,
+        )
 
     @pytest.fixture
     def gen1(self):
-        return self.get_gen(19)
+        return self.get_gen(
+            n_channels_in=19,
+            var_input=None,
+        )
 
     @pytest.fixture
     def gen2(self):
-        return self.get_gen([19, 16])
+        return self.get_gen(
+            n_channels_in=[19, 16],
+            var_input=None,
+        )
 
-    def test_0_input_init(self, gen0):
-        assert gen0.n_inputs == 0
+    @pytest.fixture
+    def vae(self):
+        return self.get_gen(
+            n_channels_in=[19],
+            var_input=0,
+        )
 
-    def test_1_input_init(self, gen1):
+    @pytest.fixture
+    def cvae(self):
+        return self.get_gen(
+            n_channels_in=[19, 16],
+            var_input=0,
+        )
+
+    def test_gen1_init(self, gen1):
         assert gen1.n_inputs == 1
+        assert not gen1.variational
 
-    def test_2_input_init(self, gen2):
+    def test_gen2_init(self, gen2):
         assert gen2.n_inputs == 2
+        assert not gen2.variational
 
-    def test_0_input_forward(self, gen0):
-        x = torch.zeros(10, 128)
-        y = gen0(x)
-        assert y.shape == (10, 19, 8, 8, 8)
+    def test_vae_init(self, vae):
+        assert vae.n_inputs == 1
+        assert vae.variational
 
-    def test_1_input_forward(self, gen1):
+    def test_cvae_init(self, cvae):
+        assert cvae.n_inputs == 2
+        assert cvae.variational
+
+    def test_gen1_forward(self, gen1):
         x = torch.zeros(10, 19, 8, 8, 8)
         y = gen1(x)
         assert y.shape == (10, 19, 8, 8, 8)
 
-    def test_2_input_forward(self, gen2):
+    def test_gen2_forward(self, gen2):
         x0 = torch.zeros(10, 19, 8, 8, 8)
         x1 = torch.zeros(10, 16, 8, 8, 8)
         y = gen2(x0, x1)
+        assert y.shape == (10, 19, 8, 8, 8)
+
+    def test_vae_forward(self, vae):
+        x = torch.zeros(10, 19, 8, 8, 8)
+        y = vae(x)
+        assert y.shape == (10, 19, 8, 8, 8)
+
+    def test_cvae_forward(self, cvae):
+        x0 = torch.zeros(10, 19, 8, 8, 8)
+        x1 = torch.zeros(10, 16, 8, 8, 8)
+        y = cvae(x0, x1)
         assert y.shape == (10, 19, 8, 8, 8)

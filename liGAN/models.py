@@ -369,12 +369,16 @@ class Generator(nn.Module):
     ):
         super().__init__()
 
+        # num input encoders is given by n_channels_in
         n_channels_in = as_list(n_channels_in)
+        assert len(n_channels_in) > 0
         self.n_inputs = len(n_channels_in)
 
+        # can specify one variational input
         self.variational = (var_input is not None)
         if self.variational:
             assert 0 <= var_input < self.n_inputs
+        self.var_input = var_input
 
         self.encoders = []
         for i, n_channels in enumerate(n_channels_in):
@@ -401,9 +405,6 @@ class Generator(nn.Module):
             self.add_module('encoder'+str(i), encoder)
             self.encoders.append(encoder)
 
-        if self.variational:
-            pass # TODO
-
         self.decoder = Decoder(
             n_input=n_latent * max(1, self.n_inputs),
             grid_dim=grid_dim // pool_factor**(n_levels-1),
@@ -420,19 +421,20 @@ class Generator(nn.Module):
         )
 
     def forward(self, *inputs):
-        assert len(inputs) == max(1, self.n_inputs)
+        assert len(inputs) == self.n_inputs
 
-        if self.n_inputs == 0:
-            latent = inputs[0]
+        latents = []
+        for i in range(self.n_inputs):
+            latent = self.encoders[i](inputs[i])
 
-        elif self.n_inputs == 1:
-            latent = self.encoders[0](inputs[0])
+            if self.var_input == i: # reparam trick
+                mean, log_std = latent
+                std = torch.exp(log_std)
+                eps = torch.randn_like(std)
+                latent = eps * std + mean
 
-        else:
-            latents = []
-            for encoder, input_ in zip(self.encoders, inputs):
-                latents.append(encoder(input_))
-            latent = torch.cat(latents, dim=1)
+            latents.append(latent)
+
+        latent = torch.cat(latents, dim=1)
 
         return self.decoder(latent)
-        
