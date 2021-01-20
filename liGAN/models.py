@@ -10,6 +10,14 @@ unpool_type_map = dict(
 )
 
 
+def as_list(obj):
+    return obj if isinstance(obj, list) else [obj]
+
+
+def reduce_list(obj):
+    return obj[0] if isinstance(obj, list) and len(obj) == 1 else obj
+
+
 class ConvReLU(nn.Sequential):
 
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
@@ -174,7 +182,7 @@ class FcReshape(nn.Module):
         return self.relu(self.fc(x)).reshape(self.out_shape)
 
 
-class Encoder(nn.Sequential):
+class Encoder(nn.Module):
 
     # TODO reimplement the following:
     # - self-attention
@@ -197,9 +205,12 @@ class Encoder(nn.Sequential):
         n_output,
         init_conv_pool=False,
     ):
-        self.modules = []
+        super().__init__()
 
-        # track changing dimensions
+        # sequence of convs and/or pools
+        self.grid_modules = []
+
+        # track changing grid dimensions
         self.n_channels = n_channels
         self.grid_dim = grid_dim
 
@@ -217,31 +228,49 @@ class Encoder(nn.Sequential):
                 conv_per_level, n_filters, kernel_size, relu_leak
             )
 
-        self.add_reshape_fc(n_output)
+        # fully-connected outputs
+        n_output = as_list(n_output)
+        assert n_output and all(n_o > 0 for n_o in n_output)
 
-        super().__init__(*self.modules)
+        self.n_tasks = len(n_output)
+        self.task_modules = []
+
+        for n_o in n_output:
+            self.add_reshape_fc(n_o)
 
     def add_conv(self, n_filters, kernel_size, relu_leak):
         conv = ConvReLU(self.n_channels, n_filters, kernel_size, relu_leak)
-        self.modules.append(conv)
+        self.grid_modules.append(conv)
         self.n_channels = n_filters
 
     def add_pool(self, pool_type, pool_factor):
         pool = Pooling(self.n_channels, pool_type, pool_factor)
-        self.modules.append(pool)
+        self.grid_modules.append(pool)
         self.grid_dim //= pool_factor
 
     def add_conv_block(self, n_convs, n_filters, kernel_size, relu_leak):
         conv_block = ConvBlock(
             n_convs, self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.modules.append(conv_block)
+        self.grid_modules.append(conv_block)
         self.n_channels = n_filters
 
     def add_reshape_fc(self, n_output):
         in_shape = (self.n_channels,) + (self.grid_dim,)*3
         fc = ReshapeFc(in_shape, n_output, relu_leak=0)
-        self.modules.append(fc)
+        self.task_modules.append(fc)
+
+    def forward(self, input):
+
+        # conv pool sequence
+        for f in self.grid_modules:
+            output = f(input)
+            input = output
+
+        # fully-connected outputs
+        outputs = [f(input) for f in self.task_modules]
+
+        return reduce_list(outputs)
 
 
 class Decoder(nn.Sequential):
@@ -336,15 +365,24 @@ class Generator(nn.Module):
         pool_factor=2,
         n_latent=1024,
         init_conv_pool=False,
+        var_input=None,
     ):
         super().__init__()
 
-        if not isinstance(n_channels_in, list):
-            n_channels_in = [n_channels_in]
+        n_channels_in = as_list(n_channels_in)
         self.n_inputs = len(n_channels_in)
+
+        self.variational = (var_input is not None)
+        if self.variational:
+            assert 0 <= var_input < self.n_inputs
 
         self.encoders = []
         for i, n_channels in enumerate(n_channels_in):
+
+            if var_input == i:
+                n_output = [n_latent, n_latent]
+            else:
+                n_output = n_latent
 
             encoder = Encoder(
                 n_channels=n_channels,
@@ -357,13 +395,14 @@ class Generator(nn.Module):
                 relu_leak=relu_leak,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
-                n_output=n_latent,
+                n_output=n_output,
                 init_conv_pool=init_conv_pool,
             )
             self.add_module('encoder'+str(i), encoder)
             self.encoders.append(encoder)
 
-        # TODO variational
+        if self.variational:
+            pass # TODO
 
         self.decoder = Decoder(
             n_input=n_latent * max(1, self.n_inputs),
