@@ -18,29 +18,42 @@ class AtomGridData(object):
         rec_molcache='',
         lig_molcache='',
     ):
-        # create receptor and ligand atom typers
-        rec_map = molgrid.FileMappedGninaTyper(rec_map_file)
-        lig_map = molgrid.FileMappedGninaTyper(lig_map_file)
-        self.rec_lig_split = rec_map.num_types()
+        # create receptor and/or ligand atom typers
+        atom_typers = []
+
+        if rec_map_file:
+            self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
+            atom_typers.append(self.rec_typer)
+        else:
+            self.rec_typer = None
+
+        if lig_map_file:
+            self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
+            atom_typers.append(self.lig_typer)
+        else:
+            self.lig_typer = None
 
         # create example provider
+        print(atom_typers)
         self.ex_provider = molgrid.ExampleProvider(
-            rec_map,
-            lig_map,
+            *atom_typers,
             data_root=data_root,
             recmolcache=rec_molcache,
             ligmolcache=lig_molcache,
             shuffle=shuffle,
         )
 
-        # create molgrid maker and output tensor
+        # create molgrid maker and output tensors
         self.grid_maker = molgrid.GridMaker(resolution, dimension)
-        self.grid = torch.zeros(
+        self.grids = torch.zeros(
             batch_size,
-            rec_map.num_types() + lig_map.num_types(),
+            self.n_channels,
             *self.grid_maker.spatial_grid_dimensions(),
             dtype=torch.float32,
             device='cuda',
+        )
+        self.labels = torch.zeros(
+            batch_size, dtype=torch.float32, device='cuda'
         )
 
         self.random_rotation = random_rotation
@@ -63,6 +76,19 @@ class AtomGridData(object):
             lig_molcache=param.ligmolcache,
         )
 
+    @property
+    def n_rec_channels(self):
+        return self.rec_typer.num_types() if self.rec_typer else 0
+
+    @property
+    def n_lig_channels(self):
+        return self.lig_typer.num_types() if self.lig_typer else 0
+
+    @property
+    def n_channels(self):
+        return self.n_rec_channels + self.n_lig_channels
+
+    @property
     def size(self):
         return self.ex_provider.size()
 
@@ -70,14 +96,20 @@ class AtomGridData(object):
         self.ex_provider.populate(data_file)
 
     def forward(self):
+        assert self.size > 0
 
-        examples = self.ex_provider.next_batch(self.grid.shape[0])
+        examples = self.ex_provider.next_batch(self.grids.shape[0])
         self.grid_maker.forward(
             examples,
-            self.grid,
+            self.grids,
             random_rotation=self.random_rotation,
             random_translation=self.random_translation,
         )
-        rec = self.grid[:,:self.rec_lig_split,...]
-        lig = self.grid[:,self.rec_lig_split:,...]
-        return rec, lig
+        examples.extract_label(0, self.labels)
+
+        if self.n_rec_channels > 0 and self.n_lig_channels > 0:
+            return torch.split(
+                self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
+            ), self.labels
+        else:
+            return self.grids, self.labels

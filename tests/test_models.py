@@ -4,9 +4,6 @@ from numpy import isclose
 from numpy.linalg import norm
 import torch
 
-os.environ['GLOG_minloglevel'] = '1'
-import caffe
-
 sys.path.insert(0, '.')
 import liGAN.models as models
 
