@@ -84,7 +84,7 @@ class AtomGridData(object):
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
-    def forward(self):
+    def forward(self, split=False):
         assert self.size > 0
 
         examples = self.ex_provider.next_batch(self.grids.shape[0])
@@ -96,6 +96,9 @@ class AtomGridData(object):
         )
         examples.extract_label(0, self.labels)
 
-        return torch.split(
-            self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
-        ), self.labels
+        if split:
+            return torch.split(
+                self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
+            ), self.labels
+        else:
+            return self.grids, self.labels

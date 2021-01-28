@@ -215,17 +215,25 @@ class Encoder(nn.Module):
         self.grid_dim = grid_dim
 
         if init_conv_pool:
-            self.add_conv(n_filters, kernel_size, relu_leak)
-            self.add_pool(pool_type, pool_factor)
+            self.add_conv('init_conv', n_filters, kernel_size, relu_leak)
+            self.add_pool('init_pool', pool_type, pool_factor)
 
         for i in range(n_levels):
 
             if i > 0: # downsample between conv blocks
-                self.add_pool(pool_type, pool_factor)
+                pool_name = 'level' + str(i) + '_pool'
+                self.add_pool(
+                    pool_name, pool_type, pool_factor
+                )
                 n_filters *= width_factor
 
+            conv_block_name = 'level' + str(i)
             self.add_conv_block(
-                conv_per_level, n_filters, kernel_size, relu_leak
+                conv_block_name,
+                conv_per_level,
+                n_filters,
+                kernel_size,
+                relu_leak
             )
 
         # fully-connected outputs
@@ -235,29 +243,36 @@ class Encoder(nn.Module):
         self.n_tasks = len(n_output)
         self.task_modules = []
 
-        for n_o in n_output:
-            self.add_reshape_fc(n_o)
+        for i, n_o in enumerate(n_output):
+            fc_name = 'fc' + str(i)
+            self.add_reshape_fc(fc_name, n_o)
 
-    def add_conv(self, n_filters, kernel_size, relu_leak):
+    def add_conv(self, name, n_filters, kernel_size, relu_leak):
         conv = ConvReLU(self.n_channels, n_filters, kernel_size, relu_leak)
+        self.add_module(name, conv)
         self.grid_modules.append(conv)
         self.n_channels = n_filters
 
-    def add_pool(self, pool_type, pool_factor):
+    def add_pool(self, name, pool_type, pool_factor):
         pool = Pooling(self.n_channels, pool_type, pool_factor)
+        self.add_module(name, pool)
         self.grid_modules.append(pool)
         self.grid_dim //= pool_factor
 
-    def add_conv_block(self, n_convs, n_filters, kernel_size, relu_leak):
+    def add_conv_block(
+        self, name, n_convs, n_filters, kernel_size, relu_leak
+    ):
         conv_block = ConvBlock(
             n_convs, self.n_channels, n_filters, kernel_size, relu_leak
         )
+        self.add_module(name, conv_block)
         self.grid_modules.append(conv_block)
         self.n_channels = n_filters
 
-    def add_reshape_fc(self, n_output):
+    def add_reshape_fc(self, name, n_output):
         in_shape = (self.n_channels,) + (self.grid_dim,)*3
         fc = ReshapeFc(in_shape, n_output, relu_leak=0)
+        self.add_module(name, fc)
         self.task_modules.append(fc)
 
     def forward(self, input):
