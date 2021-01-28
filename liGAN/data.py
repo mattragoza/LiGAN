@@ -18,25 +18,14 @@ class AtomGridData(object):
         rec_molcache='',
         lig_molcache='',
     ):
-        # create receptor and/or ligand atom typers
-        atom_typers = []
-
-        if rec_map_file:
-            self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
-            atom_typers.append(self.rec_typer)
-        else:
-            self.rec_typer = None
-
-        if lig_map_file:
-            self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
-            atom_typers.append(self.lig_typer)
-        else:
-            self.lig_typer = None
+        # create receptor and ligand atom typers
+        self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
+        self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
 
         # create example provider
-        print(atom_typers)
         self.ex_provider = molgrid.ExampleProvider(
-            *atom_typers,
+            self.rec_typer,
+            self.lig_typer,
             data_root=data_root,
             recmolcache=rec_molcache,
             ligmolcache=lig_molcache,
@@ -107,9 +96,6 @@ class AtomGridData(object):
         )
         examples.extract_label(0, self.labels)
 
-        if self.n_rec_channels > 0 and self.n_lig_channels > 0:
-            return torch.split(
-                self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
-            ), self.labels
-        else:
-            return self.grids, self.labels
+        return torch.split(
+            self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
+        ), self.labels
