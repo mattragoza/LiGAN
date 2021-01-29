@@ -15,6 +15,8 @@ class AtomGridData(object):
         shuffle,
         random_rotation=True,
         random_translation=2.0,
+        split_rec_lig=False,
+        ligand_only=False,
         rec_molcache='',
         lig_molcache='',
     ):
@@ -47,6 +49,9 @@ class AtomGridData(object):
 
         self.random_rotation = random_rotation
         self.random_translation = random_translation
+
+        self.split_rec_lig = split_rec_lig
+        self.ligand_only = ligand_only
 
     @classmethod
     def from_param(cls, param):
@@ -84,9 +89,10 @@ class AtomGridData(object):
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
-    def forward(self, split=False):
+    def forward(self):
         assert self.size > 0
 
+        # get next batch of structures and labels
         examples = self.ex_provider.next_batch(self.grids.shape[0])
         self.grid_maker.forward(
             examples,
@@ -96,9 +102,16 @@ class AtomGridData(object):
         )
         examples.extract_label(0, self.labels)
 
-        if split:
-            return torch.split(
-                self.grids, [self.n_rec_channels, self.n_lig_channels], dim=1
-            ), self.labels
+        if self.split_rec_lig or self.ligand_only:
+
+            rec_grids, lig_grids = torch.split(
+                self.grids,
+                [self.n_rec_channels, self.n_lig_channels],
+                dim=1,
+            )
+            if self.ligand_only:
+                return lig_grids, self.labels
+            else:
+                return (rec_grids, lig_grids), self.labels
         else:
             return self.grids, self.labels
