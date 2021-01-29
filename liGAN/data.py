@@ -1,8 +1,9 @@
 import torch
+from torch import nn
 import molgrid
 
 
-class AtomGridData(object):
+class AtomGridData(nn.Module):
 
     def __init__(
         self,
