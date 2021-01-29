@@ -6,7 +6,7 @@ class Solver(object):
 
     def __init__(self, data, model, loss_fn, optim_type, **kwargs):
 
-        self.data = data
+        self.train_data = data
         self.model = model
         self.loss_fn = loss_fn
 
@@ -15,29 +15,29 @@ class Solver(object):
         self.curr_iter = 0
         self.metrics = pd.DataFrame()
 
-    def forward(self):
-        inputs, labels = self.data.forward()
+    def save_state(self):
+        pass
+
+    def forward(self, data):
+        inputs, labels = data.forward()
         predictions = self.model(inputs)
-        return self.loss_fn(predictions, labels)
+        return predictions, self.loss_fn(predictions, labels)
 
     def step(self):
-        loss = self.forward()
+        predictions, loss = self.forward(self.train_data)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         self.curr_iter += 1
+        return predictions, loss
 
-    def test(self, data, n_iters):
+    def test(self, n_iters):
         
         for i in range(n_iters):
-            X_true, Y_true = data.forward()
-            Y_pred = self.model(X_true)
-            loss = loss_fn(Y_pred, Y_true)
+            predictions, loss = self.forward(self.test_data)
 
     def train(
         self,
-        train_data,
-        test_data,
         n_iters,
         test_interval,
         test_iters,
@@ -45,14 +45,13 @@ class Solver(object):
     ):
         for i in range(self.curr_iter, n_iters+1):
 
-            if i % snapshot == 0:
-                self.snapshot()
+            if i % save_interval == 0:
+                self.save_state()
 
             if i % test_interval == 0:
-                self.test(train_data, test_iter)
-                self.test(test_data, test_iter)
+                self.test(test_iters)
 
             if i == n_iters:
                 break
 
-            self.step(train_data)
+            self.step()

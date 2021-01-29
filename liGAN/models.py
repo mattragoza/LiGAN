@@ -248,7 +248,9 @@ class Encoder(nn.Module):
             self.add_reshape_fc(fc_name, n_o)
 
     def add_conv(self, name, n_filters, kernel_size, relu_leak):
-        conv = ConvReLU(self.n_channels, n_filters, kernel_size, relu_leak)
+        conv = ConvReLU(
+            self.n_channels, n_filters, kernel_size, relu_leak
+        )
         self.add_module(name, conv)
         self.grid_modules.append(conv)
         self.n_channels = n_filters
@@ -271,7 +273,7 @@ class Encoder(nn.Module):
 
     def add_reshape_fc(self, name, n_output):
         in_shape = (self.n_channels,) + (self.grid_dim,)*3
-        fc = ReshapeFc(in_shape, n_output, relu_leak=0)
+        fc = ReshapeFc(in_shape, n_output, relu_leak=1.0)
         self.add_module(name, fc)
         self.task_modules.append(fc)
 
@@ -440,6 +442,7 @@ class Generator(nn.Module):
 
         latents = []
         for i in range(self.n_inputs):
+
             latent = self.encoders[i](inputs[i])
 
             if self.var_input == i: # reparam trick

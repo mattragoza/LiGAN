@@ -1,7 +1,8 @@
 import sys, os, pytest
-import numpy as numpy
+
+import numpy as np
 from numpy import isclose
-from numpy.linalg import norm
+
 import torch
 from torch import optim
 
@@ -37,23 +38,27 @@ class TestSolver(object):
             pool_type='a',
             pool_factor=2,
             n_output=1,
-        )
-        model = model.to(device='cuda')
+        ).cuda()
 
         def loss_fn(y_pred, y_true):
-            return ((y_true - y_pred)**2).sum()
+            return ((y_true - y_pred)**2).sum() / 2
 
         return liGAN.training.Solver(
-            data, model, loss_fn, optim.SGD, lr=0.01, momentum=0.9
+            data, model, loss_fn, optim.SGD, lr=0.001, momentum=0.9
         )
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
+        for params in solver.model.parameters():
+            assert params.detach().norm().cpu() > 0
 
     def test_solver_forward(self, solver):
-        loss = solver.forward()
+        predictions, loss = solver.forward(solver.train_data)
+        assert not isclose(0, predictions.detach().norm().cpu())
         assert not isclose(0, loss.item())
 
     def test_solver_step(self, solver):
-        solver.step()
+        _, loss0 = solver.step()
+        _, loss1 = solver.forward(solver.train_data)
         assert solver.curr_iter == 1
+        assert (loss1.detach().cpu() - loss0.detach().cpu()) < 0
