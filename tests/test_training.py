@@ -10,7 +10,7 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-def get_data(ligand_only):
+def get_data(split_rec_lig, ligand_only):
     data = liGAN.data.AtomGridData(
         data_root='data/molport',
         batch_size=1000,
@@ -21,6 +21,7 @@ def get_data(ligand_only):
         shuffle=False,
         random_rotation=False,
         random_translation=0,
+        split_rec_lig=split_rec_lig,
         ligand_only=ligand_only,
     )
     data.populate('data/molportFULL_rand_test0_1000.types')
@@ -70,8 +71,8 @@ class TestSolver(object):
     @pytest.fixture
     def solver(self):
         return liGAN.training.Solver(
-            train_data=get_data(False),
-            test_data=get_data(False),
+            train_data=get_data(split_rec_lig=False, ligand_only=False),
+            test_data=get_data(split_rec_lig=False, ligand_only=False),
             model=get_encoder(),
             loss_fn=L2_loss,
             optim_type=optim.SGD,
@@ -119,12 +120,66 @@ class TestAESolver(object):
     @pytest.fixture
     def solver(self):
         return liGAN.training.AESolver(
-            train_data=get_data(True),
-            test_data=get_data(True),
-            model=get_generator(19, None),
+            train_data=get_data(split_rec_lig=False, ligand_only=True),
+            test_data=get_data(split_rec_lig=False, ligand_only=True),
+            model=get_generator(n_channels_in=19, var_input=None),
             loss_fn=L2_loss,
             optim_type=optim.Adam,
-            lr=0,
+            lr=1e-4,
+            betas=(0.9, 0.999),
+        )
+
+    def test_solver_init(self, solver):
+        assert solver.curr_iter == 0
+        assert solver.curr_test == 0
+        for params in solver.model.parameters():
+            assert params.detach().norm().cpu() > 0
+
+    def test_solver_forward(self, solver):
+        predictions, loss = solver.forward(solver.train_data)
+        assert not isclose(0, predictions.detach().norm().cpu())
+        assert not isclose(0, loss.item())
+
+    def test_solver_step(self, solver):
+        _, loss0 = solver.step()
+        _, loss1 = solver.forward(solver.train_data)
+        print(loss0, loss1)
+        assert solver.curr_iter == 1
+        assert (loss1.detach() - loss0.detach()).cpu() < 0
+
+    def test_solver_test(self, solver):
+        solver.test(n_iters=1)
+        assert solver.curr_iter == 0
+        assert solver.curr_test == 1
+        assert len(solver.metrics) == 1
+
+    def test_solver_train(self, solver):
+        solver.train(
+            n_iters=10,
+            test_interval=10,
+            test_iters=10,
+            save_interval=10,
+        )
+        assert solver.curr_iter == 10
+        assert solver.curr_test == 2
+        assert len(solver.metrics) == 12
+        print(solver.metrics)
+        loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
+        loss_f = solver.metrics.loc[(10, 'test'), 'loss']
+        assert (loss_f - loss_i) < 0
+
+
+class TestCESolver(object):
+
+    @pytest.fixture
+    def solver(self):
+        return liGAN.training.CESolver(
+            train_data=get_data(split_rec_lig=True, ligand_only=False),
+            test_data=get_data(split_rec_lig=True, ligand_only=False),
+            model=get_generator(n_channels_in=16, var_input=None),
+            loss_fn=L2_loss,
+            optim_type=optim.Adam,
+            lr=1e-4,
             betas=(0.9, 0.999),
         )
 
