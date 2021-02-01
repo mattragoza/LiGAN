@@ -62,7 +62,7 @@ def get_generator(n_channels_in, var_input):
     ).cuda()
 
 
-def L2_loss(y_true, y_pred):
+def L2_loss(y_pred, y_true):
     return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
 
 
@@ -82,7 +82,6 @@ class TestSolver(object):
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        assert solver.curr_test == 0
         for params in solver.model.parameters():
             assert params.detach().norm().cpu() > 0
 
@@ -94,13 +93,12 @@ class TestSolver(object):
     def test_solver_step(self, solver):
         _, loss0 = solver.step()
         _, loss1 = solver.forward(solver.train_data)
-        assert solver.curr_iter == 1
+        assert solver.curr_iter == 0
         assert (loss1.detach() - loss0.detach()).cpu() < 0
 
     def test_solver_test(self, solver):
         solver.test(n_iters=1)
         assert solver.curr_iter == 0
-        assert solver.curr_test == 1
         assert len(solver.metrics) == 1
 
     def test_solver_train(self, solver):
@@ -109,10 +107,10 @@ class TestSolver(object):
             test_interval=10,
             test_iters=10,
             save_interval=10,
+            print_interval=1,
         )
         assert solver.curr_iter == 10
-        assert solver.curr_test == 2
-        assert len(solver.metrics) == 12
+        assert len(solver.metrics) == 13
 
 
 class TestAESolver(object):
@@ -131,7 +129,6 @@ class TestAESolver(object):
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        assert solver.curr_test == 0
         for params in solver.model.parameters():
             assert params.detach().norm().cpu() > 0
 
@@ -144,13 +141,12 @@ class TestAESolver(object):
         _, loss0 = solver.step()
         _, loss1 = solver.forward(solver.train_data)
         print(loss0, loss1)
-        assert solver.curr_iter == 1
+        assert solver.curr_iter == 0
         assert (loss1.detach() - loss0.detach()).cpu() < 0
 
     def test_solver_test(self, solver):
         solver.test(n_iters=1)
         assert solver.curr_iter == 0
-        assert solver.curr_test == 1
         assert len(solver.metrics) == 1
 
     def test_solver_train(self, solver):
@@ -159,11 +155,10 @@ class TestAESolver(object):
             test_interval=10,
             test_iters=10,
             save_interval=10,
+            print_interval=1,
         )
         assert solver.curr_iter == 10
-        assert solver.curr_test == 2
-        assert len(solver.metrics) == 12
-        print(solver.metrics)
+        assert len(solver.metrics) == 13
         loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
         loss_f = solver.metrics.loc[(10, 'test'), 'loss']
         assert (loss_f - loss_i) < 0
@@ -185,7 +180,6 @@ class TestCESolver(object):
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        assert solver.curr_test == 0
         for params in solver.model.parameters():
             assert params.detach().norm().cpu() > 0
 
@@ -198,13 +192,12 @@ class TestCESolver(object):
         _, loss0 = solver.step()
         _, loss1 = solver.forward(solver.train_data)
         print(loss0, loss1)
-        assert solver.curr_iter == 1
+        assert solver.curr_iter == 0
         assert (loss1.detach() - loss0.detach()).cpu() < 0
 
     def test_solver_test(self, solver):
         solver.test(n_iters=1)
         assert solver.curr_iter == 0
-        assert solver.curr_test == 1
         assert len(solver.metrics) == 1
 
     def test_solver_train(self, solver):
@@ -213,11 +206,10 @@ class TestCESolver(object):
             test_interval=10,
             test_iters=10,
             save_interval=10,
+            print_interval=1,
         )
         assert solver.curr_iter == 10
-        assert solver.curr_test == 2
-        assert len(solver.metrics) == 12
-        print(solver.metrics)
+        assert len(solver.metrics) == 13
         loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
         loss_f = solver.metrics.loc[(10, 'test'), 'loss']
         assert (loss_f - loss_i) < 0

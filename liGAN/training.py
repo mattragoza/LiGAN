@@ -16,9 +16,14 @@ class Solver(nn.Module):
         self.loss_fn = loss_fn
         self.optimizer = optim_type(model.parameters(), **kwargs)
         
-        # keep track of current training iteration and # test evaluations
+        # keep track of current training iteration
         self.curr_iter = 0
-        self.curr_test = 0
+
+        # track running avg loss for printing
+        self.total_train_loss = 0
+        self.total_train_iters = 0
+        self.total_test_loss = 0
+        self.total_test_iters = 0
 
         # set up a data frame of metrics wrt training iteration
         index_cols = ['iteration', 'phase']
@@ -30,7 +35,6 @@ class Solver(nn.Module):
             model_state=self.model.state_dict(),
             optimizer_state=self.optimizer.state_dict(),
             curr_iter=self.curr_iter,
-            curr_test=self.curr_test,
             metrics=self.metrics,
         )
         torch.save(checkpoint, save_file)
@@ -40,8 +44,22 @@ class Solver(nn.Module):
         self.model.load_state_dict(checkpoint['model_state'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state'])
         self.curr_iter = checkpoint['curr_iter']
-        self.curr_test = checkpoint['curr_test']
         self.metrics = checkpoint['metrics']
+
+    def print_metrics(self):
+
+        train_loss = self.total_train_loss / self.total_train_iters
+        self.total_train_loss = self.total_train_iters = 0
+        s = '[Iteration {}] train_loss = {}'.format(
+            self.curr_iter, train_loss
+        )
+
+        if self.total_test_iters > 0: # append test loss
+            test_loss = self.total_test_loss / self.total_test_iters
+            self.total_test_loss = self.total_test_iters = 0
+            s += '\ttest_loss = {}'.format(test_loss)
+
+        print(s)
 
     def forward(self, data):
         inputs, labels = data.forward()
@@ -49,13 +67,18 @@ class Solver(nn.Module):
         loss = self.loss_fn(predictions, labels)
         return predictions, loss
 
-    def step(self):
+    def step(self, update=True):
         predictions, loss = self.forward(self.train_data)
+
         self.metrics.loc[(self.curr_iter, 'train'), 'loss'] = loss.item()
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        self.curr_iter += 1
+        self.total_train_loss += loss.item()
+        self.total_train_iters += 1
+
+        if update:
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
         return predictions, loss
 
     def test(self, n_iters):
@@ -64,13 +87,23 @@ class Solver(nn.Module):
         for i in range(n_iters):
             predictions, loss = self.forward(self.test_data)
             losses.append(loss.item())
-        
-        loss = sum(losses) / n_iters
-        self.metrics.loc[(self.curr_iter, 'test'), 'loss'] = loss
-        self.curr_test += 1
+
+        total_loss = sum(losses)
+        mean_loss = total_loss / n_iters
+
+        self.metrics.loc[(self.curr_iter, 'test'), 'loss'] = mean_loss
+        self.total_test_loss += total_loss
+        self.total_test_iters += n_iters
+
+        return mean_loss
 
     def train(
-        self, n_iters, test_interval, test_iters, save_interval
+        self,
+        n_iters,
+        test_interval,
+        test_iters, 
+        save_interval,
+        print_interval,
     ):
         while self.curr_iter <= n_iters:
 
@@ -80,10 +113,14 @@ class Solver(nn.Module):
             if self.curr_iter % save_interval == 0:
                 self.save_state()
 
-            if self.curr_iter == n_iters:
-                break
+            self.step(self.curr_iter < n_iters)
 
-            self.step()
+            if self.curr_iter % print_interval == 0:
+                self.print_metrics()
+
+            self.curr_iter += 1
+
+        self.curr_iter = n_iters
 
 
 class AESolver(Solver):
@@ -96,6 +133,24 @@ class AESolver(Solver):
 
 
 class CESolver(Solver):
+
+    def forward(self, data):
+        (context, missing), _ = data.forward()
+        generated = self.model(context)
+        loss = self.loss_fn(generated, missing)
+        return generated, loss
+
+
+class VAESolver(Solver):
+
+    def forward(self, data):
+        inputs, _ = data.forward()
+        generated = self.model(inputs)
+        loss = self.loss_fn(generated, inputs)
+        return generated, loss
+
+
+class CVAESolver(Solver):
 
     def forward(self, data):
         (context, missing), _ = data.forward()
