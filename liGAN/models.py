@@ -455,4 +455,4 @@ class Generator(nn.Module):
 
         latent = torch.cat(latents, dim=1)
 
-        return self.decoder(latent)
+        return self.decoder(latent), latent

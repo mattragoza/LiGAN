@@ -21,6 +21,8 @@ class AtomGridData(nn.Module):
         rec_molcache='',
         lig_molcache='',
     ):
+        super().__init__()
+        
         # create receptor and ligand atom typers
         self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
         self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)

@@ -127,7 +127,7 @@ class AESolver(Solver):
 
     def forward(self, data):
         inputs, _ = data.forward()
-        generated = self.model(inputs)
+        generated, latents = self.model(inputs)
         loss = self.loss_fn(generated, inputs)
         return generated, loss
 
@@ -136,24 +136,40 @@ class CESolver(Solver):
 
     def forward(self, data):
         (context, missing), _ = data.forward()
-        generated = self.model(context)
+        generated, latents = self.model(context)
         loss = self.loss_fn(generated, missing)
         return generated, loss
 
 
 class VAESolver(Solver):
 
+    def kl_div(self, latents):
+        return 0
+
     def forward(self, data):
         inputs, _ = data.forward()
-        generated = self.model(inputs)
-        loss = self.loss_fn(generated, inputs)
+        generated, latents = self.model(inputs)
+        loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
         return generated, loss
 
 
-class CVAESolver(Solver):
+class CVAESolver(VAESolver):
 
     def forward(self, data):
-        (context, missing), _ = data.forward()
-        generated = self.model(context)
-        loss = self.loss_fn(generated, missing)
+        (conditions, inputs), _ = data.forward()
+        generated, latents = self.model(conditions, inputs)
+        loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
         return generated, loss
+
+
+class GANSolver(Solver):
+    pass
+
+
+class VAEGANSolver(GANSolver):
+    pass
+
+
+class CVAEGANSolver(GANSolver):
+    pass
+
