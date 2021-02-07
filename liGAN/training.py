@@ -162,7 +162,7 @@ class CVAESolver(VAESolver):
         return generated, loss
 
 
-class GANSolver(Solver):
+class GANSolver(nn.Module):
 
     def __init__(
         self,
@@ -182,7 +182,7 @@ class GANSolver(Solver):
         self.disc_model = disc_model
         self.loss_fn = loss_fn
         self.gen_optimizer = optim_type(gen_model.parameters(), **kwargs)
-        self.disc_optimizer = optim_type(disc_model.parameter(), **kwargs)
+        self.disc_optimizer = optim_type(disc_model.parameters(), **kwargs)
         
         # keep track of current training iteration
         self.curr_iter = 0
@@ -197,20 +197,26 @@ class GANSolver(Solver):
         index_cols = ['iteration', 'phase']
         self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
 
-    def disc_step(self, data, real, update):
-        
-        if real: # get real examples
-            inputs, _ = data.forward()
-            labels = torch.ones()
+    def disc_forward(self, data, real):
 
-        else: # get generated examples
-            latents = torch.randn()
-            inputs = self.gen_model(latents)
-            labels = torch.zeros()
+        with torch.no_grad():
+
+            if real: # get real examples
+                inputs, _ = data.forward()
+                labels = torch.ones()
+
+            else: # get generated examples
+                latents = torch.randn()
+                inputs = self.gen_model(latents)
+                labels = torch.zeros()
 
         predictions = self.disc_model(inputs)
         loss = self.loss_fn(predictions, labels)
+        return predictions, loss
 
+    def disc_step(self, data, real, update):
+
+        predictions, loss = self.disc_forward(data, real)
         # TODO insert metrics
 
         if update:
@@ -220,16 +226,20 @@ class GANSolver(Solver):
 
         return predictions, loss
 
-    def gen_step(self, data, update):
+    def gen_forward(self):
 
         # get generated examples
         latents = torch.randn()
-        inputs - self.gen_model(latents)
+        inputs = self.gen_model(latents)
         labels = torch.ones()
 
         predictions = self.disc_model(inputs)
         loss = self.loss_fn(predictions, labels)
+        return predictions, loss
 
+    def gen_step(self, update):
+
+        predictions, loss = self.gen_forward()
         # TODO insert metrics
 
         if update:
@@ -240,7 +250,8 @@ class GANSolver(Solver):
     def train_disc(self, n_iters):
 
         for i in range(n_iters):
-            self.disc_step(real=(i%2 == 0), update=True)
+            real = (i%2 == 0)
+            self.disc_step(real=real, update=True)
 
     def train_gen(self, n_iters):
         for i in range(n_iters):
