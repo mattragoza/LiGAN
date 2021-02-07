@@ -163,7 +163,115 @@ class CVAESolver(VAESolver):
 
 
 class GANSolver(Solver):
-    pass
+
+    def __init__(
+        self,
+        train_data,
+        test_data,
+        gen_model,
+        disc_model,
+        loss_fn,
+        optim_type,
+        **kwargs
+    ):
+        super().__init__()
+
+        self.train_data = train_data
+        self.test_data = test_data
+        self.gen_model = gen_model
+        self.disc_model = disc_model
+        self.loss_fn = loss_fn
+        self.gen_optimizer = optim_type(gen_model.parameters(), **kwargs)
+        self.disc_optimizer = optim_type(disc_model.parameter(), **kwargs)
+        
+        # keep track of current training iteration
+        self.curr_iter = 0
+
+        # track running avg loss for printing
+        self.total_train_loss = 0
+        self.total_train_iters = 0
+        self.total_test_loss = 0
+        self.total_test_iters = 0
+
+        # set up a data frame of metrics wrt training iteration
+        index_cols = ['iteration', 'phase']
+        self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
+
+    def disc_step(self, data, real, update):
+        
+        if real: # get real examples
+            inputs, _ = data.forward()
+            labels = torch.ones()
+
+        else: # get generated examples
+            latents = torch.randn()
+            inputs = self.gen_model(latents)
+            labels = torch.zeros()
+
+        predictions = self.disc_model(inputs)
+        loss = self.loss_fn(predictions, labels)
+
+        # TODO insert metrics
+
+        if update:
+            self.disc_optimizer.zero_grad()
+            loss.backward()
+            self.disc_optimizer.step()
+
+        return predictions, loss
+
+    def gen_step(self, data, update):
+
+        # get generated examples
+        latents = torch.randn()
+        inputs - self.gen_model(latents)
+        labels = torch.ones()
+
+        predictions = self.disc_model(inputs)
+        loss = self.loss_fn(predictions, labels)
+
+        # TODO insert metrics
+
+        if update:
+            self.gen_optimizer.zero_grad()
+            loss.backward()
+            self.gen_optimizer.step()
+
+    def train_disc(self, n_iters):
+
+        for i in range(n_iters):
+            self.disc_step(real=(i%2 == 0), update=True)
+
+    def train_gen(self, n_iters):
+        for i in range(n_iters):
+            self.gen_step(update=True)
+ 
+    def train(
+        self,
+        n_iters,
+        n_gen_train_iters,
+        n_disc_train_iters,
+        test_interval,
+        test_iters, 
+        save_interval,
+        print_interval,
+    ):
+        while self.curr_iter <= n_iters:
+
+            if self.curr_iter % test_interval == 0:
+                self.test(test_iters)
+
+            if self.curr_iter % save_interval == 0:
+                self.save_state()
+
+            self.step(self.curr_iter < n_iters)
+
+            if self.curr_iter % print_interval == 0:
+                self.print_metrics()
+
+            self.curr_iter += 1
+
+        self.curr_iter = n_iters
 
 
 class VAEGANSolver(GANSolver):
