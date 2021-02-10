@@ -316,6 +316,7 @@ class Decoder(nn.Sequential):
         self.modules = []
 
         # first fc layer maps to initial grid shape
+        self.n_input = n_input
         self.add_fc_reshape(n_input, n_channels, grid_dim, relu_leak)
         n_filters = n_channels
 

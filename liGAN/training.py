@@ -6,9 +6,17 @@ from torch import nn
 class Solver(nn.Module):
 
     def __init__(
-        self, train_data, test_data, model, loss_fn, optim_type, **kwargs
+        self,
+        train_data,
+        test_data,
+        model,
+        loss_fn,
+        optim_type,
+        device='cuda',
+        **kwargs
     ):
         super().__init__()
+        self.device = device
 
         self.train_data = train_data
         self.test_data = test_data
@@ -172,9 +180,11 @@ class GANSolver(nn.Module):
         disc_model,
         loss_fn,
         optim_type,
+        device='cuda',
         **kwargs
     ):
         super().__init__()
+        self.device = device
 
         self.train_data = train_data
         self.test_data = test_data
@@ -199,24 +209,47 @@ class GANSolver(nn.Module):
 
     def disc_forward(self, data, real):
 
-        with torch.no_grad():
+        with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
                 inputs, _ = data.forward()
-                labels = torch.ones()
+                labels = torch.ones(
+                    data.batch_size, 1, device=self.device, dtype=torch.float
+                )
 
             else: # get generated examples
-                latents = torch.randn()
+                latents = torch.randn(
+                    data.batch_size,
+                    self.gen_model.n_input,
+                    device=self.device
+                )
                 inputs = self.gen_model(latents)
-                labels = torch.zeros()
+                labels = torch.zeros(
+                    data.batch_size, 1, device=self.device, dtype=torch.float
+                )
 
         predictions = self.disc_model(inputs)
         loss = self.loss_fn(predictions, labels)
         return predictions, loss
 
-    def disc_step(self, data, real, update):
+    def gen_forward(self, data):
 
-        predictions, loss = self.disc_forward(data, real)
+        # get generated examples
+        latents = torch.randn(
+            data.batch_size, self.gen_model.n_input, device=self.device
+        )
+        inputs = self.gen_model(latents)
+        labels = torch.ones(
+            data.batch_size, 1, device=self.device, dtype=torch.float
+        )
+
+        predictions = self.disc_model(inputs)
+        loss = self.loss_fn(predictions, labels)
+        return predictions, loss
+
+    def disc_step(self, real, update=True):
+
+        predictions, loss = self.disc_forward(self.train_data, real)
         # TODO insert metrics
 
         if update:
@@ -226,26 +259,17 @@ class GANSolver(nn.Module):
 
         return predictions, loss
 
-    def gen_forward(self):
+    def gen_step(self, update=True):
 
-        # get generated examples
-        latents = torch.randn()
-        inputs = self.gen_model(latents)
-        labels = torch.ones()
-
-        predictions = self.disc_model(inputs)
-        loss = self.loss_fn(predictions, labels)
-        return predictions, loss
-
-    def gen_step(self, update):
-
-        predictions, loss = self.gen_forward()
+        predictions, loss = self.gen_forward(self.train_data)
         # TODO insert metrics
 
         if update:
             self.gen_optimizer.zero_grad()
             loss.backward()
             self.gen_optimizer.step()
+
+        return predictions, loss
 
     def train_disc(self, n_iters):
 

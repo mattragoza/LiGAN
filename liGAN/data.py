@@ -20,6 +20,7 @@ class AtomGridData(nn.Module):
         ligand_only=False,
         rec_molcache='',
         lig_molcache='',
+        device='cuda',
     ):
         super().__init__()
         
@@ -44,11 +45,12 @@ class AtomGridData(nn.Module):
             self.n_channels,
             *self.grid_maker.spatial_grid_dimensions(),
             dtype=torch.float32,
-            device='cuda',
+            device=device,
         )
         self.labels = torch.zeros(
-            batch_size, dtype=torch.float32, device='cuda'
+            batch_size, dtype=torch.float32, device=device
         )
+        self.batch_size = batch_size
 
         self.random_rotation = random_rotation
         self.random_translation = random_translation
