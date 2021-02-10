@@ -160,14 +160,18 @@ class Unpooling(nn.Sequential):
 
 class ReshapeFc(nn.Module):
 
-    def __init__(self, in_shape, n_output, relu_leak):
+    def __init__(self, in_shape, n_output, activ_fn=None):
         super().__init__()
         self.n_input = np.prod(in_shape)
         self.fc = nn.Linear(self.n_input, n_output)
-        self.relu = nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
+        self.activ_fn = activ_fn
 
     def forward(self, x):
-        return self.relu(self.fc(x.reshape(-1, self.n_input)))
+        x = x.reshape(-1, self.n_input)
+        x = self.fc(x)
+        if self.activ_fn:
+            x = self.activ_fn(x)
+        return x
 
 
 class FcReshape(nn.Module):
@@ -203,6 +207,7 @@ class Encoder(nn.Module):
         pool_type,
         pool_factor,
         n_output,
+        output_activ_fn,
         init_conv_pool=False,
     ):
         super().__init__()
@@ -240,12 +245,15 @@ class Encoder(nn.Module):
         n_output = as_list(n_output)
         assert n_output and all(n_o > 0 for n_o in n_output)
 
+        output_activ_fn = as_list(output_activ_fn)
+        assert len(output_activ_fn) == len(n_output)
+
         self.n_tasks = len(n_output)
         self.task_modules = []
 
-        for i, n_o in enumerate(n_output):
+        for i, (n_o, activ_fn) in enumerate(zip(n_output, output_activ_fn)):
             fc_name = 'fc' + str(i)
-            self.add_reshape_fc(fc_name, n_o)
+            self.add_reshape_fc(fc_name, n_o, activ_fn)
 
     def add_conv(self, name, n_filters, kernel_size, relu_leak):
         conv = ConvReLU(
@@ -271,9 +279,9 @@ class Encoder(nn.Module):
         self.grid_modules.append(conv_block)
         self.n_channels = n_filters
 
-    def add_reshape_fc(self, name, n_output):
+    def add_reshape_fc(self, name, n_output, activ_fn):
         in_shape = (self.n_channels,) + (self.grid_dim,)*3
-        fc = ReshapeFc(in_shape, n_output, relu_leak=1.0)
+        fc = ReshapeFc(in_shape, n_output, activ_fn)
         self.add_module(name, fc)
         self.task_modules.append(fc)
 

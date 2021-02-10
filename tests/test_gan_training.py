@@ -1,10 +1,10 @@
 import sys, os, pytest
 
 import numpy as np
-from numpy import isclose
+from numpy import isclose, isnan
 
 import torch
-from torch import optim
+from torch import nn, optim
 
 sys.path.insert(0, '.')
 import liGAN
@@ -41,6 +41,7 @@ def get_encoder():
         pool_type='a',
         pool_factor=2,
         n_output=1,
+        output_activ_fn=nn.Sigmoid(),
     ).cuda()
 
 
@@ -64,12 +65,6 @@ def L2_loss(y_pred, y_true):
     return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
 
 
-def cross_entropy_loss(y_pred, y_true):
-    return (
-        y_true * torch.log(y_pred) + (1 - y_true) * torch.log(1- y_pred)
-    ).sum() / y_true.shape[0]
-
-
 class TestGANSolver(object):
 
     @pytest.fixture
@@ -79,7 +74,7 @@ class TestGANSolver(object):
             test_data=get_data(split_rec_lig=False, ligand_only=True),
             gen_model=get_decoder(),
             disc_model=get_encoder(),
-            loss_fn=cross_entropy_loss,
+            loss_fn=nn.BCELoss(),
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
@@ -89,19 +84,47 @@ class TestGANSolver(object):
         assert solver.curr_iter == 0
         for model in (solver.gen_model, solver.disc_model):
             for params in model.parameters():
-                assert params.detach().norm().cpu() > 0
+                assert params.detach().norm().cpu() > 0, 'params are zero'
 
-    def test_solver_forward(self, solver):
-        predictions, loss = solver.forward(solver.train_data)
-        assert not isclose(0, predictions.detach().norm().cpu())
-        assert not isclose(0, loss.item())
+    def test_solver_disc_forward_real(self, solver):
+        predictions, loss = solver.disc_forward(solver.train_data, real=True)
+        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
 
-    def test_solver_step(self, solver):
-        _, loss0 = solver.step()
-        _, loss1 = solver.forward(solver.train_data)
+    def test_solver_disc_forward_gen(self, solver):
+        predictions, loss = solver.disc_forward(solver.train_data, real=False)
+        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
+
+    def test_solver_gen_forward(self, solver):
+        predictions, loss = solver.gen_forward(solver.train_data)
+        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
+
+    def test_solver_disc_step_real(self, solver):
+        _, loss0 = solver.disc_step(real=True)
+        _, loss1 = solver.disc_forward(solver.train_data, real=True)
         print(loss0, loss1)
         assert solver.curr_iter == 0
-        assert (loss1.detach() - loss0.detach()).cpu() < 0
+        assert loss1.detach() < loss0.detach()
+
+    def test_solver_disc_step_gen(self, solver):
+        _, loss0 = solver.disc_step(real=False)
+        _, loss1 = solver.disc_forward(solver.train_data, real=False)
+        assert solver.curr_iter == 0
+        assert loss1.detach() < loss0.detach()
+
+    def test_solver_gen_step(self, solver):
+        _, loss0 = solver.gen_step()
+        _, loss1 = solver.gen_forward(solver.train_data)
+        print(loss0, loss1)
+        assert solver.curr_iter == 0
+        assert loss1.detach() < loss0.detach()
+
+if False:
 
     def test_solver_test(self, solver):
         solver.test(n_iters=1)
