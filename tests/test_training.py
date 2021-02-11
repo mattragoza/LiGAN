@@ -75,9 +75,10 @@ class TestSolver(object):
             test_data=get_data(split_rec_lig=False, ligand_only=False),
             model=get_encoder(),
             loss_fn=L2_loss,
-            optim_type=optim.SGD,
-            lr=0.001,
-            momentum=0.9
+            optim_type=optim.Adam,
+            lr=1e-4,
+            betas=(0.9, 0.999),
+            save_prefix='TEST'
         )
 
     def test_solver_init(self, solver):
@@ -125,6 +126,7 @@ class TestAESolver(object):
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
+            save_prefix='TEST_AE'
         )
 
     def test_solver_init(self, solver):
@@ -176,6 +178,7 @@ class TestCESolver(object):
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
+            save_prefix='TEST_CE'
         )
 
     def test_solver_init(self, solver):

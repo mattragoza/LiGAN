@@ -78,6 +78,7 @@ class TestVAESolver(object):
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
+            save_prefix='TEST_VAE'
         )
 
     def test_solver_init(self, solver):
@@ -129,6 +130,7 @@ class TestCVAESolver(object):
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
+            save_prefix='TEST_CVAE'
         )
 
     def test_solver_init(self, solver):

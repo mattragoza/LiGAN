@@ -78,6 +78,7 @@ class TestGANSolver(object):
             optim_type=optim.Adam,
             lr=1e-4,
             betas=(0.9, 0.999),
+            save_prefix='TEST_GAN'
         )
 
     def test_solver_init(self, solver):

@@ -12,6 +12,7 @@ class Solver(nn.Module):
         model,
         loss_fn,
         optim_type,
+        save_prefix,
         device='cuda',
         **kwargs
     ):
@@ -23,7 +24,8 @@ class Solver(nn.Module):
         self.model = model
         self.loss_fn = loss_fn
         self.optimizer = optim_type(model.parameters(), **kwargs)
-        
+        self.save_prefix = save_prefix
+
         # keep track of current training iteration
         self.curr_iter = 0
 
@@ -38,7 +40,7 @@ class Solver(nn.Module):
         self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
 
     def save_state(self):
-        save_file = 'TEST_iter' + str(self.curr_iter) + '.checkpoint'
+        save_file = self.save_prefix + '_iter_' + str(self.curr_iter) + '.checkpoint'
         checkpoint = dict(
             model_state=self.model.state_dict(),
             optimizer_state=self.optimizer.state_dict(),
@@ -46,6 +48,8 @@ class Solver(nn.Module):
             metrics=self.metrics,
         )
         torch.save(checkpoint, save_file)
+        csv_file = self.save_prefix + '.train_metrics'
+        self.metrics.to_csv(csv_file, sep=' ')
 
     def load_state(self, save_file):
         checkpoint = torch.load(save_file)
@@ -78,7 +82,8 @@ class Solver(nn.Module):
     def step(self, update=True):
         predictions, loss = self.forward(self.train_data)
 
-        self.metrics.loc[(self.curr_iter, 'train'), 'loss'] = loss.item()
+        idx = (self.curr_iter, 'train')
+        self.metrics.loc[idx, 'loss'] = loss.item()
         self.total_train_loss += loss.item()
         self.total_train_iters += 1
 
@@ -180,6 +185,7 @@ class GANSolver(nn.Module):
         disc_model,
         loss_fn,
         optim_type,
+        save_prefix,
         device='cuda',
         **kwargs
     ):
@@ -193,18 +199,13 @@ class GANSolver(nn.Module):
         self.loss_fn = loss_fn
         self.gen_optimizer = optim_type(gen_model.parameters(), **kwargs)
         self.disc_optimizer = optim_type(disc_model.parameters(), **kwargs)
+        self.save_prefix = save_prefix
         
         # keep track of current training iteration
         self.curr_iter = 0
 
-        # track running avg loss for printing
-        self.total_train_loss = 0
-        self.total_train_iters = 0
-        self.total_test_loss = 0
-        self.total_test_iters = 0
-
-        # set up a data frame of metrics wrt training iteration
-        index_cols = ['iteration', 'phase']
+        # set up data frame of metrics wrt train iteration, phase, and agent
+        index_cols = ['iteration', 'phase', 'agent']
         self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
 
     def disc_forward(self, data, real):
@@ -250,7 +251,9 @@ class GANSolver(nn.Module):
     def disc_step(self, real, update=True):
 
         predictions, loss = self.disc_forward(self.train_data, real)
-        # TODO insert metrics
+        
+        idx = (self.curr_iter, 'train', 'disc')
+        self.metrics.loc[idx, 'loss'] = loss.item()
 
         if update:
             self.disc_optimizer.zero_grad()
@@ -262,7 +265,9 @@ class GANSolver(nn.Module):
     def gen_step(self, update=True):
 
         predictions, loss = self.gen_forward(self.train_data)
-        # TODO insert metrics
+
+        idx = (self.curr_iter, 'train', 'gen')
+        self.metrics.loc[idx, 'loss'] = loss.item()
 
         if update:
             self.gen_optimizer.zero_grad()
