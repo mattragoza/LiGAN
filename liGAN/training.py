@@ -209,14 +209,15 @@ class GANSolver(nn.Module):
         self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
 
     def disc_forward(self, data, real):
-
+        '''
+        Compute predictions and loss for the discriminator's
+        ability to correctly classify real or generated data.
+        '''
         with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
                 inputs, _ = data.forward()
-                labels = torch.ones(
-                    data.batch_size, 1, device=self.device, dtype=torch.float
-                )
+                labels = torch.ones(data.batch_size, 1, device=self.device)
 
             else: # get generated examples
                 latents = torch.randn(
@@ -225,24 +226,23 @@ class GANSolver(nn.Module):
                     device=self.device
                 )
                 inputs = self.gen_model(latents)
-                labels = torch.zeros(
-                    data.batch_size, 1, device=self.device, dtype=torch.float
-                )
+                labels = torch.zeros(data.batch_size, 1, device=self.device)
 
         predictions = self.disc_model(inputs)
         loss = self.loss_fn(predictions, labels)
         return predictions, loss
 
     def gen_forward(self, data):
-
+        '''
+        Compute predictions and loss for the generator's ability
+        to produce data that is misclassified by the discriminator.
+        '''
         # get generated examples
         latents = torch.randn(
             data.batch_size, self.gen_model.n_input, device=self.device
         )
         inputs = self.gen_model(latents)
-        labels = torch.ones(
-            data.batch_size, 1, device=self.device, dtype=torch.float
-        )
+        labels = torch.ones(data.batch_size, 1, device=self.device)
 
         predictions = self.disc_model(inputs)
         loss = self.loss_fn(predictions, labels)

@@ -1,7 +1,7 @@
 import sys, os, pytest
 
 import numpy as np
-from numpy import isclose
+from numpy import isclose, isnan
 
 import torch
 from torch import optim
@@ -84,18 +84,18 @@ class TestSolver(object):
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
         for params in solver.model.parameters():
-            assert params.detach().norm().cpu() > 0
+            assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_forward(self, solver):
         predictions, loss = solver.forward(solver.train_data)
-        assert not isclose(0, predictions.detach().norm().cpu())
-        assert not isclose(0, loss.item())
+        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_step(self, solver):
         _, loss0 = solver.step()
         _, loss1 = solver.forward(solver.train_data)
-        assert solver.curr_iter == 0
-        assert (loss1.detach() - loss0.detach()).cpu() < 0
+        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
 
     def test_solver_test(self, solver):
         solver.test(n_iters=1)
@@ -112,6 +112,9 @@ class TestSolver(object):
         )
         assert solver.curr_iter == 10
         assert len(solver.metrics) == 13
+        loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
+        loss_f = solver.metrics.loc[(10, 'test'), 'loss']
+        assert loss_f < loss_i, 'loss did not decrease'
 
 
 class TestAESolver(object):
@@ -163,7 +166,7 @@ class TestAESolver(object):
         assert len(solver.metrics) == 13
         loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
         loss_f = solver.metrics.loc[(10, 'test'), 'loss']
-        assert (loss_f - loss_i) < 0
+        assert loss_f < loss_i, 'loss did not decrease'
 
 
 class TestCESolver(object):

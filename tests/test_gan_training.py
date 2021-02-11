@@ -108,22 +108,17 @@ class TestGANSolver(object):
     def test_solver_disc_step_real(self, solver):
         _, loss0 = solver.disc_step(real=True)
         _, loss1 = solver.disc_forward(solver.train_data, real=True)
-        print(loss0, loss1)
-        assert solver.curr_iter == 0
-        assert loss1.detach() < loss0.detach()
+        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
 
     def test_solver_disc_step_gen(self, solver):
         _, loss0 = solver.disc_step(real=False)
         _, loss1 = solver.disc_forward(solver.train_data, real=False)
-        assert solver.curr_iter == 0
-        assert loss1.detach() < loss0.detach()
+        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
 
     def test_solver_gen_step(self, solver):
         _, loss0 = solver.gen_step()
         _, loss1 = solver.gen_forward(solver.train_data)
-        print(loss0, loss1)
-        assert solver.curr_iter == 0
-        assert loss1.detach() < loss0.detach()
+        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
 
 if False:
 
