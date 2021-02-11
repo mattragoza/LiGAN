@@ -2,18 +2,103 @@ import sys, os, re, shutil, argparse
 from collections import defaultdict
 import pandas as pd
 
-from job_queue import SlurmQueue
+from .params import read_params
+from .job_queues import SlurmQueue
+
+
+def as_compiled_re(obj):
+    '''
+    Compile obj as regex pattern if needed.
+    '''
+    return obj if hasattr(obj, 'match') else re.compile(obj)
+
+
+def match_files_in_dir(dir, pat):
+    '''
+    Iterate through files in dir that match pat.
+    '''
+    pat = as_compiled_re(pat)
+    for file in os.listdir(dir):
+        m = pat.match(file)
+        if m is not None:
+            yield m  
 
 
 def read_stderr_file(stderr_file):
     warning_pat = re.compile(r'Warning.*')
-    error_pat = re.compile(r'.*(Error|Exception|error|fault|failed|Errno).*')
+    error_pat = re.compile(
+        r'.*(Error|Exception|error|fault|failed|Errno).*'
+    )
     error = None
     with open(stderr_file) as f:
         for line in f:
             if not warning_pat.match(line) and error_pat.match(line):
                 error = line.rstrip()
     return error
+
+
+def get_job_error(job_file, stderr_pat):
+    '''
+    Parse the latest error for job_file.
+    '''
+    job_dir = os.path.dirname(job_file)
+    stderr_files = []
+    for m in match_files_in_dir(job_dir, stderr_pat):
+        stderr_file = m.group(0)
+        job_id = int(m.group(1))
+        stderr_files.append((job_id, stderr_file))
+
+    job_id, stderr_file = sorted(stderr_files)[-1]
+    stderr_file = os.path.join(job_dir, stderr_file)
+    error = read_stderr_file(stderr_file)
+    return error
+
+
+def get_job_errors(job_files, stderr_pat=r'(\d+).stderr'):
+    '''
+    Parse the latest errors for a set of job_files.
+    '''
+    errors = []
+    for job_file in job_files:
+        error = get_job_error(job_file, stderr_pat)
+        errors.append(error)
+
+    return errors
+
+
+def get_job_metric(job_file, metric_pat):
+    '''
+    Read the latest output for job_file.
+    '''
+    job_dir = os.path.dirname(job_file)
+    job_name = os.path.basename(job_dir)
+
+    dfs = []
+    for m in match_files_in_dir(job_dir, metric_pat):
+        metric_file = os.path.join(job_dir, m.group(0))
+        df = pd.read_csv(metric_file, sep=' ')
+        df['job_name'] = job_name
+        dfs.append(df)
+
+    df = pd.concat(dfs)
+
+    params = read_params(job_file, line_start='# ')
+    for param, value in params.items():
+        df[param] = value
+
+    return df
+
+
+def get_job_metrics(job_files, metric_pat=r'(\d+).metrics'):
+    '''
+    Read the latest output for a set of job_files.
+    '''
+    dfs = []
+    for job_file in job_files:
+        df = get_job_metric(job_file, metric_pat)
+        dfs.append(df)
+
+    return pd.concat(dfs)
 
 
 def print_array_indices(idx_set):
@@ -53,16 +138,6 @@ def parse_array_indices_str(s):
         else:
             indices.append(idx_start)
     return set(indices)
-
-
-def match_files_in_dir(dir, pattern):
-    '''
-    Iterate through files in dir that match pattern.
-    '''
-    for file in os.listdir(dir):
-        m = pattern.match(file)
-        if m is not None:
-            yield m
 
 
 def find_job_ids(job_dir, stderr_pat):
@@ -193,6 +268,7 @@ def print_errors_for_array_indices(job_dir, stderr_pat, indices):
         stderr_file = os.path.join(job_dir, stderr_file)
         error = read_stderr_file(stderr_file)
         print(stderr_file + '\t' + str(error))
+
 
 
 def parse_args(argv):

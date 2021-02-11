@@ -14,6 +14,11 @@ def read_prototxt(param, prototxt_file):
         text_format.Merge(f.read(), param)
 
 
+def from_prototxt_str(param_type, prototxt_str):
+    param = param_type()
+    text_format.Merge(prototxt_str, param)
+    return param
+
 def from_prototxt(param_type, prototxt_file):
     param = param_type()
     read_prototxt(param, prototxt_file)
@@ -812,3 +817,4 @@ class CaffeSubNet(object):
 # dynamically subclass CaffeLayer for each caffe layer type
 for layer_name in caffe.layer_type_list():
     globals()[layer_name] = CaffeLayer.make_subclass(layer_name)
+

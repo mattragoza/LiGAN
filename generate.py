@@ -33,6 +33,10 @@ nps_model = npscorer.readNPModel()
 import molgrid
 import atom_types
 import caffe_util as cu
+
+import molecules
+from atom_structs import AtomStruct
+from atom_grids import AtomGrid
 import fitting as dkoes_fitting
 from results import get_terminal_size
 
@@ -44,7 +48,7 @@ def remove_tensors(obj, visited=None):
     '''
     visited = visited or set()
 
-    if not isinstance(obj, (MolGrid, MolStruct, list, dict)) or id(obj) in visited:
+    if not isinstance(obj, (AtomGrid, AtomStruct, list, dict)) or id(obj) in visited:
         #avoid traversing everything
         return obj
 
@@ -55,7 +59,7 @@ def remove_tensors(obj, visited=None):
         dct = obj
     elif hasattr(obj, '__dict__'):
         dct = obj.__dict__
-        
+
     if dct:
         for k, v in dct.items():
             if isinstance(v, torch.Tensor):
@@ -65,146 +69,8 @@ def remove_tensors(obj, visited=None):
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
             obj[i] = remove_tensors(obj[i], visited)
-    
+
     return obj
-            
-
-class MolGrid(object):
-    '''
-    An atomic density grid.
-    '''
-    def __init__(self, values, channels, center, resolution, **info):
-
-        if len(values.shape) != 4:
-            raise ValueError('MolGrid values must have 4 dims')
-
-        if values.shape[0] != len(channels):
-            raise ValueError('MolGrid values have wrong number of channels')
-
-        if not (values.shape[1] == values.shape[2] == values.shape[3]):
-            raise ValueError('last 3 dims of MolGrid values must be equal')
-
-        self.values = values
-        self.channels = channels
-        self.center = center
-        self.resolution = resolution
-        self.size = self.values.shape[1]
-        self.dimension = self.compute_dimension(self.size, resolution)
-
-        self.info = info
-
-    @classmethod
-    def compute_dimension(cls, size, resolution):
-        return (size - 1) * resolution
-
-    @classmethod
-    def compute_size(cls, dimension, resolution):
-        return int(np.ceil(dimension / resolution + 1))
-
-    def to_dx(self, dx_prefix, center=None):
-        write_grids_to_dx_files(
-            out_prefix=dx_prefix,
-            grids=self.values,
-            channels=self.channels,
-            center=self.center if center is None else center,
-            resolution=self.resolution)
-
-    def new_like(self, values, **info):
-        '''
-        Return a MolGrid with the same grid settings but new values.
-        '''
-        return MolGrid(
-            values, self.channels, self.center, self.resolution, **info
-        )
-
-
-class MolStruct(object):
-    '''
-    A typed atomic structure.
-    '''
-    def __init__(self, xyz, c, channels, bonds=None, **info):
-
-        if len(xyz.shape) != 2:
-            raise ValueError('MolStruct xyz must have 2 dims')
-        if len(c.shape) != 1:
-            raise ValueError('MolStruct c must have 1 dimension')
-        if xyz.shape[0] != c.shape[0]:
-            raise ValueError('first dim of MolStruct xyz and c must be equal')
-        if xyz.shape[1] != 3:
-            raise ValueError('second dim of MolStruct xyz must be 3')
-        if any(c < 0) or any(c >= len(channels)):
-            raise ValueError('invalid channel index in MolStruct c')
-
-        self.xyz = xyz
-        self.c = c
-        self.channels = channels
-
-        if bonds is not None:
-            if bonds.shape != (self.n_atoms, self.n_atoms):
-                raise ValueError('MolStruct bonds must have shape (n_atoms, n_atoms)')
-            self.bonds = bonds
-        else:
-            self.bonds = np.zeros((self.n_atoms, self.n_atoms))
-
-        if self.n_atoms > 0:
-            self.center = self.xyz.mean(0)
-            self.radius = max(np.linalg.norm(self.xyz - self.center, axis=1))
-        else:
-            self.center = np.full(3, np.nan)
-            self.radius = np.nan
-
-        self.info = info
-
-    @classmethod
-    def from_gninatypes(cls, gtypes_file, channels, **info):
-        xyz, c = read_gninatypes_file(gtypes_file, channels)
-        return MolStruct(xyz, c, channels, **info)
-
-    @classmethod
-    def from_coord_set(cls, coord_set, channels, **info):
-        if not coord_set.has_indexed_types():
-            raise ValueError(
-                'can only make MolStruct from CoordinateSet with indexed types'
-            )
-        xyz = coord_set.coords.tonumpy()
-        c = coord_set.type_index.tonumpy().astype(int)
-        return MolStruct(xyz, c, channels, **info)
-
-    @classmethod
-    def from_rd_mol(cls, rd_mol, c, channels, **info):
-        xyz = rd_mol.GetConformer(0).GetPositions()
-        return cls(xyz, c, channels, **info)
-
-    @classmethod
-    def from_sdf(cls, sdf_file, channels, **info):
-        rd_mol = read_rd_mols_from_sdf_file(sdf_file)[0]
-        channels_file = os.path.splitext(sdf_file)[0] + '.channels'
-        c = read_channels_from_file(channels_file, channels)
-        return cls.from_rd_mol(rd_mol, c, channels)
-
-    @property
-    def n_atoms(self):
-        return self.xyz.shape[0]
-
-    def to_ob_mol(self):
-        mol = make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
-        return mol
-
-    def to_rd_mol(self):
-        mol = make_rd_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
-        return mol
-
-    def to_sdf(self, sdf_file):
-        write_rd_mols_to_sdf_file(sdf_file, [self.to_rd_mol()])
-
-    def add_bonds(self, tol=0.0):
-
-        nax = np.newaxis
-        channel_radii = np.array([c.atomic_radius for c in self.channels])
-
-        atom_dist2 = ((self.xyz[nax,:,:] - self.xyz[:,nax,:])**2).sum(axis=2)
-        max_bond_dist2 = channel_radii[self.c][nax,:] + channel_radii[self.c][:,nax]
-        self.bonds = (atom_dist2 < max_bond_dist2 + tol)
 
 
 class Encoder(cu.CaffeSubNet):
@@ -501,7 +367,7 @@ class AtomFitter(object):
                 device=self.device,
             )
 
-        self.kernel = MolGrid(
+        self.kernel = AtomGrid(
             values=values,
             channels=channels,
             center=torch.zeros(3, device=self.device),
@@ -676,7 +542,7 @@ class AtomFitter(object):
         t_start = time.time()
 
         # get true grid on appropriate device
-        grid_true = MolGrid(
+        grid_true = AtomGrid(
             values=torch.as_tensor(grid.values, device=self.device),
             channels=grid.channels,
             center=torch.as_tensor(grid.center, device=self.device),
@@ -685,7 +551,8 @@ class AtomFitter(object):
 
         # get true atom type counts on appropriate device
         types = torch.tensor(types, dtype=torch.float32, device=self.device)
-
+        print("grid max",grid.values.max())
+        print("grid min",grid.values.min())
         if self.estimate_types: # estimate atom type counts from grid density
             types_est = self.get_types_estimate(
                 grid_true.values,
@@ -870,6 +737,9 @@ class AtomFitter(object):
                         )
                     )
 
+                if len(xyz_new) >= 50:
+                    found_new_best_struct = False #dkoes: limit molecular size
+
         # done searching for atomic structures
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
         type_loss = (types - c_best.sum(dim=0)).abs().sum().item()
@@ -897,8 +767,8 @@ class AtomFitter(object):
         visited_structs_ = iter(visited_structs)
         visited_structs = []
         for objective, struct_id, fit_time, xyz, c in visited_structs_:
-
-            struct = MolStruct(
+            print("struct_id",struct_id)
+            struct = AtomStruct(
                 xyz=xyz.cpu().detach().numpy(),
                 c=one_hot_to_index(c).cpu().detach().numpy(),
                 channels=grid.channels,
@@ -910,8 +780,9 @@ class AtomFitter(object):
             )
             visited_structs.append(struct)
 
+        print("select best")
         # finalize the best fit atomic structure and density grid
-        struct_best = MolStruct(
+        struct_best = AtomStruct(
             xyz=xyz_best.cpu().detach().numpy(),
             c=one_hot_to_index(c_best).cpu().detach().numpy(),
             channels=grid.channels,
@@ -925,7 +796,7 @@ class AtomFitter(object):
 
         self.validify(struct_best)
 
-        grid_pred = MolGrid(
+        grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
@@ -992,21 +863,15 @@ class AtomFitter(object):
             )
             visited_mols += dkoes_visited_mols
 
-        elif self.mtr22_make_mol:
-
-            # TODO try to derive the bonds by principled "inverse atom typing"
-            # where we use the atom types to constrain the molecule in OB
-            ob_mol = struct.to_ob_mol()
-
         else:
             # connect the dots using openbabel
             ob_mol = struct.to_ob_mol()
             ob_mol.ConnectTheDots()
-            visited_mols.append(ob_mol_to_rd_mol(ob_mol))
+            visited_mols.append(molecules.ob_mol_to_rd_mol(ob_mol))
 
             # perceive bonds in openbabel
             ob_mol.PerceiveBondOrders()
-            rd_mol = ob_mol_to_rd_mol(ob_mol)
+            rd_mol = molecules.ob_mol_to_rd_mol(ob_mol)
             visited_mols.append(rd_mol)
 
             if not self.use_openbabel:
@@ -1056,14 +921,14 @@ class DkoesAtomFitter(AtomFitter):
 
     def fit(self, grid, types):
 
-        grid = MolGrid(
+        grid = AtomGrid(
             values=grid.values,
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
         )
 
-        xyz, c, channels, L2_loss, time_, n_iters, n_fixes, grid_pred = \
+        struct, grid_pred = \
             dkoes_fitting.simple_atom_fit(
                 mgrid=grid,
                 types=types,
@@ -1072,32 +937,25 @@ class DkoesAtomFitter(AtomFitter):
                 grm=1.0
             )
 
-        struct = MolStruct(
-            xyz=xyz,
-            c=c,
-            channels=channels,
-            L2_loss=L2_loss,
-            time=time_,
-            n_iters=n_iters,
-            n_fixes=n_fixes,
-        )
         struct.info['visited_structs'] = [struct]
         self.validify(struct)
 
-        grid_pred = MolGrid(
+        grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
+            visited_structs=[struct],
             src_struct=struct,
-        )
+        )        
+
         return remove_tensors(grid_pred)
 
 
 class OutputWriter(object):
     '''
-    A data structure for receiving and organizing MolGrids and
-    MolStructs from a generative model or atom fitting algorithm,
+    A data structure for receiving and organizing AtomGrids and
+    AtomStructs from a generative model or atom fitting algorithm,
     computing metrics, and writing files to disk as necessary.
     '''
     def __init__(
@@ -1143,6 +1001,8 @@ class OutputWriter(object):
         self.centers = []
 
         self.verbose = verbose
+        
+        self.out_files = dict() # one file for all samples of given mol/grid
 
     def write(self, lig_name, grid_type, sample_idx, grid):
         '''
@@ -1150,19 +1010,23 @@ class OutputWriter(object):
         data frame, if all necessary data is present.
         '''
         grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_type)
+
         sample_prefix = grid_prefix + '_' + str(sample_idx)
         src_sample_prefix = grid_prefix + '_src_' + str(sample_idx)
         add_sample_prefix = grid_prefix + '_add_' + str(sample_idx)
-        uff_sample_prefix = grid_prefix + '_uff_' + str(sample_idx)
+        src_uff_sample_prefix = grid_prefix + '_src_uff_' + str(sample_idx)
+        add_uff_sample_prefix = grid_prefix + '_add_uff_' + str(sample_idx)
         conv_sample_prefix = grid_prefix + '_conv_' + str(sample_idx)
 
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
         has_struct = is_real_grid or is_fit_grid
+        has_conv_grid = not is_fit_grid
+        is_generated = is_gen_grid or grid_type.endswith('gen_fit')
 
         # write output files
-        if self.output_dx: # write density grid files
+        if self.output_dx: # write out density grids
 
             if self.verbose:
                 print('Writing ' + sample_prefix + ' .dx files')
@@ -1170,7 +1034,7 @@ class OutputWriter(object):
             grid.to_dx(sample_prefix, center=np.zeros(3))
             self.dx_prefixes.append(sample_prefix)
 
-            if self.output_conv and not is_fit_grid:
+            if has_conv_grid and self.output_conv:
 
                 if self.verbose:
                     print('Writing' + conv_sample_prefix + ' .dx files')
@@ -1178,57 +1042,10 @@ class OutputWriter(object):
                 grid.info['conv_grid'].to_dx(conv_sample_prefix, center=np.zeros(3))
                 self.dx_prefixes.append(conv_sample_prefix)
 
-        if has_struct and self.output_sdf: # write structure files
-
-            # write typed atom structure
-            struct_file = sample_prefix + '.sdf'
-            if self.verbose:
-                print('Writing ' + struct_file)
+        if has_struct and self.output_sdf: # write out structures
 
             struct = grid.info['src_struct']
-            if is_fit_grid and self.output_visited:
-                visited_structs = struct.info['visited_structs']
-                rd_mols = [s.to_rd_mol() for s in visited_structs]
-            else:
-                rd_mols = [struct.to_rd_mol()]
-            write_rd_mols_to_sdf_file(struct_file, rd_mols)
-            self.sdf_files.append(struct_file)
-            self.centers.append(struct.center)
 
-            if is_real_grid: # write real input molecule
-
-                src_mol_file = src_sample_prefix + '.sdf'
-                if self.verbose:
-                    print('Writing ' + src_mol_file)
-
-                src_mol = struct.info['src_mol']
-                if self.output_visited:
-                    rd_mols = src_mol.info['visited_mols']
-                else:
-                    rd_mols = [src_mol]
-                write_rd_mols_to_sdf_file(src_mol_file, rd_mols)
-                self.sdf_files.append(src_mol_file)
-                self.centers.append(struct.center)
-
-            # write molecule with added bonds
-            add_mol_file = add_sample_prefix + '.sdf'
-            if self.verbose:
-                print('Writing ' + add_mol_file)
-
-            add_mol = struct.info['add_mol']
-            if self.output_visited:
-                rd_mols = add_mol.info['visited_mols']
-            else:
-                rd_mols = [add_mol]
-            write_rd_mols_to_sdf_file(add_mol_file, rd_mols)
-            self.sdf_files.append(add_mol_file)
-            self.centers.append(struct.center)
-
-            if add_mol.info['min_mol']:
-                uff_file = uff_sample_prefix+'.sdf'
-                write_rd_mols_to_sdf_file(uff_file,[add_mol.info['min_mol']])
-                self.sdf_files.append(uff_file)
-                
             # write atom type channels
             if self.output_channels:
 
@@ -1239,6 +1056,64 @@ class OutputWriter(object):
                 write_channels_to_file(
                     channels_file, struct.c, struct.channels
                 )
+               
+            src_fname = grid_prefix + '_src.sdf.gz'         
+            start_fname = grid_prefix + '.sdf.gz'
+            add_fname = grid_prefix + '_add.sdf.gz'
+            min_fname = grid_prefix + '_uff.sdf.gz'
+
+            def write_sdfs(fname, out, mol):
+                '''
+                Write out sdf files as necessary.
+                '''
+                if sample_idx == 0:
+                    self.sdf_files.append(fname)
+                    self.centers.append(struct.center)
+
+                if sample_idx == 0 or not is_real_grid:
+
+                    if self.verbose:
+                        print('Writing %s %d'%(fname, sample_idx))
+                        
+                    if mol == struct:
+                        if self.output_visited and 'visited_structs' in struct.info:
+                            rd_mols = [s.to_rd_mol() for s in struct.info['visited_structs']]
+                        else:
+                            rd_mols = [struct.to_rd_mol()]
+                    else:
+                        if self.output_visited and 'visited_mols' in mol.info:
+                            rd_mols = mol.info['visited_mols']
+                        else:
+                            rd_mols = [mol]
+                    molecules.write_rd_mols_to_sdf_file(out, rd_mols, str(sample_idx))
+                
+                if sample_idx+1 == self.n_samples or is_real_grid:
+                    out.close()
+
+            if grid_prefix not in self.out_files:
+
+                self.out_files[grid_prefix] = {}
+
+                # open output files for generated samples                
+                self.out_files[grid_prefix][start_fname] = gzip.open(start_fname, 'wt')
+                self.out_files[grid_prefix][add_fname] = gzip.open(add_fname, 'wt')                                
+                self.out_files[grid_prefix][min_fname] = gzip.open(min_fname, 'wt')
+
+                # only output src file once
+                if is_real_grid: # write real input molecule                  
+                    src_file = gzip.open(src_fname, 'wt')
+                    src_mol = struct.info['src_mol']
+                    write_sdfs(src_fname, src_file, src_mol)
+
+            # write typed atom structure
+            write_sdfs(start_fname, self.out_files[grid_prefix][start_fname], struct)
+
+            # write molecule with added bonds
+            add_mol = struct.info['add_mol']
+            write_sdfs(add_fname, self.out_files[grid_prefix][add_fname], add_mol)                            
+
+            if add_mol.info['min_mol']: # write minimized molecule
+                write_sdfs(min_fname, self.out_files[grid_prefix][min_fname], add_mol.info['min_mol'])                   
 
         # write latent vector
         if is_gen_grid and self.output_latent:
@@ -1337,7 +1212,7 @@ class OutputWriter(object):
                 lig_grids[i]['lig_gen'].values for i in sample_idxs
             ) / self.n_samples
 
-            latent_mean = sum(
+            lig_latent_mean = sum(
                 lig_grids[i]['lig_gen'].info['latent_vec'] for i in sample_idxs
             ) / self.n_samples
 
@@ -1398,7 +1273,7 @@ class OutputWriter(object):
             # density variance
             # (divide by n_samples (+1) for sample (population) variance)
             variance = (
-                (grid.values - grid_mean)**2
+                (grid.values - mean_grid)**2
             ).sum().item()
         else:
             variance = np.nan
@@ -1629,7 +1504,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
             w.write(rd_mol)
             w.close()
             print("NumAtoms",rd_mol.GetNumAtoms())
-            traceback.print_exception(e,file=sys.stdout)
+            traceback.print_exc(file=sys.stdout)
             return Chem.RWMol(rd_mol), E_init, np.nan, e
     except Exception as e:
         print("UFF Exception")
@@ -1732,168 +1607,7 @@ def connect_rd_mol_frags(rd_mol):
 
             frags = Chem.GetMolFrags(rd_mol)
             n_frags = len(frags)
-
-
-def ob_mol_to_rd_mol(ob_mol):
-
-    n_atoms = ob_mol.NumAtoms()
-    rd_mol = Chem.RWMol()
-    rd_conf = Chem.Conformer(n_atoms)
-
-    for ob_atom in ob.OBMolAtomIter(ob_mol):
-        rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
-        rd_atom.SetIsAromatic(ob_atom.IsAromatic())
-        #TODO copy format charge
-        i = rd_mol.AddAtom(rd_atom)
-        ob_coords = ob_atom.GetVector()
-        x = ob_coords.GetX()
-        y = ob_coords.GetY()
-        z = ob_coords.GetZ()
-        rd_coords = Geometry.Point3D(x, y, z)
-        rd_conf.SetAtomPosition(i, rd_coords)
-
-    rd_mol.AddConformer(rd_conf)
-
-    for ob_bond in ob.OBMolBondIter(ob_mol):
-        i = ob_bond.GetBeginAtomIdx()-1
-        j = ob_bond.GetEndAtomIdx()-1
-        bond_order = ob_bond.GetBondOrder()
-        if ob_bond.IsAromatic():
-            bond_type = Chem.BondType.AROMATIC
-        elif bond_order == 1:
-            bond_type = Chem.BondType.SINGLE
-        elif bond_order == 2:
-            bond_type = Chem.BondType.DOUBLE
-        elif bond_order == 3:
-            bond_type = Chem.BondType.TRIPLE
-        else:
-            raise Exception('unknown bond order {}'.format(bond_order))
-        rd_mol.AddBond(i, j, bond_type)
-
-    return rd_mol
-
-
-def rd_mol_to_ob_mol(rd_mol):
-
-    ob_mol = ob.OBMol()
-    rd_conf = rd_mol.GetConformer(0)
-
-    for i, rd_atom in enumerate(rd_mol.GetAtoms()):
-        atomic_num = rd_atom.GetAtomicNum()
-        rd_coords = rd_conf.GetAtomPosition(i)
-        x = rd_coords.x
-        y = rd_coords.y
-        z = rd_coords.z
-        ob_atom = ob_mol.NewAtom()
-        ob_atom.SetAtomicNum(atomic_num)
-        ob_atom.SetAromatic(rd_atom.GetIsAromatic())
-        ob_atom.SetVector(x, y, z)
-
-    for k, rd_bond in enumerate(rd_mol.GetBonds()):
-        i = rd_bond.GetBeginAtomIdx()+1
-        j = rd_bond.GetEndAtomIdx()+1
-        bond_type = rd_bond.GetBondType()
-        bond_flags = 0
-        if bond_type == Chem.BondType.AROMATIC:
-            bond_order = 1
-            bond_flags |= ob.OB_AROMATIC_BOND
-        elif bond_type == Chem.BondType.SINGLE:
-            bond_order = 1
-        elif bond_type == Chem.BondType.DOUBLE:
-            bond_order = 2
-        elif bond_type == Chem.BondType.TRIPLE:
-            bond_order = 3
-        ob_mol.AddBond(i, j, bond_order, bond_flags)
-
-    return ob_mol
-                   
-
-def make_rd_mol(xyz, c, bonds, channels):
-
-    rd_mol = Chem.RWMol()
-
-    for c_ in c:
-        atomic_num = channels[c_].atomic_num
-        rd_atom = Chem.Atom(atomic_num)
-        rd_mol.AddAtom(rd_atom)
-
-    n_atoms = rd_mol.GetNumAtoms()
-    rd_conf = Chem.Conformer(n_atoms)
-
-    for i, (x, y, z) in enumerate(xyz):
-        rd_conf.SetAtomPosition(i, (x, y, z))
-
-    rd_mol.AddConformer(rd_conf)
-
-    if np.any(bonds):
-        n_bonds = 0
-        for i in range(n_atoms):
-            for j in range(i+1, n_atoms):
-                if bonds[i,j]:
-                    rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
-                    n_bonds += 1
-
-    return rd_mol
-
-
-def make_ob_mol(xyz, c, bonds, channels):
-    '''
-    Return an OpenBabel molecule from an array of
-    xyz atom positions, channel indices, a bond matrix,
-    and a list of atom type channels.
-    '''
-    ob_mol = ob.OBMol()
-
-    n_atoms = 0
-    for (x, y, z), c_ in zip(xyz, c):
-        atomic_num = channels[c_].atomic_num
-        atom = ob_mol.NewAtom()
-        atom.SetAtomicNum(atomic_num)
-        atom.SetVector(x, y, z)
-        n_atoms += 1
-
-    if np.any(bonds):
-        n_bonds = 0
-        for i in range(n_atoms):
-            atom_i = ob_mol.GetAtom(i)
-            for j in range(i+1, n_atoms):
-                atom_j = ob_mol.GetAtom(j)
-                if bonds[i,j]:
-                    bond = ob_mol.NewBond()
-                    bond.Set(n_bonds, atom_i, atom_j, 1, 0)
-                    n_bonds += 1
-    return ob_mol
-
-
-def write_ob_mols_to_sdf_file(sdf_file, mols):
-    conv = ob.OBConversion()
-    conv.SetOutFormat('sdf.gz')
-    for i, mol in enumerate(mols):
-        if i == 0:
-            conv.WriteFile(mol, sdf_file+'.gz')
-        else:
-            conv.Write(mol)
-    conv.CloseOutFile()
-
-
-def write_rd_mols_to_sdf_file(sdf_file, mols):
-    outfile = gzip.open(sdf_file+'.gz','wt')
-    writer = Chem.SDWriter(outfile)
-    writer.SetKekulize(False)
-    for mol in mols:
-        writer.write(mol)
-    writer.close()
-    outfile.close()
-
-
-def read_rd_mols_from_sdf_file(sdf_file):
-    if sdf_file.endswith('.gz'):
-        f = gzip.open(sdf_file)
-        suppl = Chem.ForwardSDMolSupplier(f)
-    else:
-        suppl = Chem.SDMolSupplier(sdf_file)
-    return [mol for mol in suppl]
-
+                  
 
 def find_real_mol_in_data_root(data_root, lig_src_no_ext):
     '''
@@ -1905,19 +1619,19 @@ def find_real_mol_in_data_root(data_root, lig_src_no_ext):
         lig_mol_base = m.group(1) + '_docked.sdf.gz'
         idx = int(m.group(2))
         lig_mol_file = os.path.join(data_root, lig_mol_base)
-        lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[idx]
+        lig_mol = molecules.read_rd_mols_from_sdf_file(lig_mol_file)[idx]
 
     except AttributeError:
 
         try: # cross-docked set has extra underscore
             lig_mol_base = lig_src_no_ext + '_.sdf'
             lig_mol_file = os.path.join(data_root, lig_mol_base)
-            lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[0]
+            lig_mol = molecules.read_rd_mols_from_sdf_file(lig_mol_file)[0]
 
         except OSError:
             lig_mol_base = lig_src_no_ext + '.sdf'
             lig_mol_file = os.path.join(data_root, lig_mol_base)
-            lig_mol = read_rd_mols_from_sdf_file(lig_mol_file)[0]
+            lig_mol = molecules.read_rd_mols_from_sdf_file(lig_mol_file)[0]
 
     return lig_mol
 
@@ -2044,54 +1758,19 @@ def write_pymol_script(pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[
 
         for dx_prefix in dx_prefixes: # load densities
             dx_pattern = '{}_*.dx'.format(dx_prefix)
-            m = re.match('^{}_(.*)$'.format(out_prefix), dx_prefix)
+            m = re.match('^({}_.*)$'.format(out_prefix), dx_prefix)
             group_name = m.group(1) + '_grids'
             f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
         for sdf_file in sdf_files: # load structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^({}_.*)\.sdf(\.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
         for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
-            m = re.match(r'^{}_(.*)\.sdf$'.format(out_prefix), sdf_file)
+            m = re.match(r'^({}_.*)\.sdf(\.gz)?$'.format(out_prefix), sdf_file)
             obj_name = m.group(1)
             f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(-x, -y, -z, obj_name))
-
-
-def read_gninatypes_file(lig_file, channels):
-    channel_names = [c.name for c in channels]
-    channel_name_idx = {n: i for i, n in enumerate(channel_names)}
-    xyz, c = [], []
-    with open(lig_file, 'rb') as f:
-        atom_bytes = f.read(16)
-        while atom_bytes:
-            x, y, z, t = struct.unpack('fffi', atom_bytes)
-            smina_type = atom_types.smina_types[t]
-            channel_name = 'Ligand' + smina_type.name
-            if channel_name in channel_name_idx:
-                c_ = channel_names.index(channel_name)
-                xyz.append([x, y, z])
-                c.append(c_)
-            atom_bytes = f.read(16)
-    assert xyz and c, lig_file
-    return np.array(xyz), np.array(c)
-
-
-def get_mol_center(mol):
-    '''
-    Compute the center of a molecule, ignoring hydrogen.
-    '''
-    return np.mean([a.coords for a in mol.atoms if a.atomicnum != 1], axis=0)
-
-
-def get_n_atoms_from_sdf_file(sdf_file, idx=0):
-    '''
-    Count the number of atoms of each element in a molecule 
-    from an .sdf file.
-    '''
-    mol = get_mols_from_sdf_file(sdf_file)[idx]
-    return Counter(atom.GetSymbol() for atom in mol.GetAtoms())
 
 
 def make_one_hot(x, n, dtype=None, device=None):
@@ -2106,11 +1785,6 @@ def one_hot_to_index(x):
         return torch.argmax(x, dim=1)
     else:
         return torch.zeros((0,))
-
-
-def write_structs_to_sdf_file(sdf_file, structs):
-    mols = (s.to_ob_mol() for s in structs)
-    write_ob_mols_to_sdf_file(sdf_file, mols)
 
 
 def write_channels_to_file(channels_file, c, channels):
@@ -2130,48 +1804,6 @@ def read_channels_from_file(channels_file, channels):
             channel_name = line.rstrip()
             c.append(channel_map[channel_name])
     return np.array(c)
-
-
-def write_grid_to_dx_file(dx_file, grid, center, resolution):
-    '''
-    Write a grid with a center and resolution to a .dx file.
-    '''
-    if len(grid.shape) != 3 or len(set(grid.shape)) != 1:
-        raise ValueError('grid must have three equal dimensions')
-    if len(center) != 3:
-        raise ValueError('center must be a vector of length 3')
-    dim = grid.shape[0]
-    origin = np.array(center) - resolution*(dim-1)/2.
-    with open(dx_file, 'w') as f:
-        f.write('object 1 class gridpositions counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
-        f.write('origin {:.5f} {:.5f} {:.5f}\n'.format(*origin))
-        f.write('delta {:.5f} 0 0\n'.format(resolution))
-        f.write('delta 0 {:.5f} 0\n'.format(resolution))
-        f.write('delta 0 0 {:.5f}\n'.format(resolution))
-        f.write('object 2 class gridconnections counts {:d} {:d} {:d}\n'.format(dim, dim, dim))
-        f.write('object 3 class array type double rank 0 items [ {:d} ] data follows\n'.format(dim**3))
-        total = 0
-        for i in range(dim):
-            for j in range(dim):
-                for k in range(dim):
-                    f.write('{:.10f}'.format(grid[i][j][k]))
-                    total += 1
-                    if total % 3 == 0:
-                        f.write('\n')
-                    else:
-                        f.write(' ')
-
-
-def write_grids_to_dx_files(out_prefix, grids, channels, center, resolution):
-    '''
-    Write each of a list of grids a separate .dx file, using the channel names.
-    '''
-    dx_files = []
-    for grid, channel in zip(grids, channels):
-        dx_file = '{}_{}.dx'.format(out_prefix, channel.name)
-        write_grid_to_dx_file(dx_file, grid, center, resolution)
-        dx_files.append(dx_file)
-    return dx_files
 
 
 def get_sdf_file_and_idx(gninatypes_file):
@@ -2460,28 +2092,29 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         else:
                             gen_net.blobs['cond_rec'].data[...] = rec
 
-                    if args.interpolate: # copy true grids that will be interpolated
+                    if args.interpolate: # interpolate between real grids
+
                         start_rec = np.array(rec[:1])
                         start_lig = np.array(lig[:1])
                         end_rec = np.array(rec[-1:])
                         end_lig = np.array(lig[-1:])
-                        gen_net.blobs['rec'].data[:batch_size//2] = start_rec
-                        gen_net.blobs['lig'].data[:batch_size//2] = start_lig
-                        gen_net.blobs['rec'].data[batch_size//2:] = end_rec
-                        gen_net.blobs['lig'].data[batch_size//2:] = end_lig
+
+                        gen_net.blobs['rec'].data[...] = np.linspace(
+                            start_rec, end_rec, batch_size, endpoint=True
+                        )
+                        gen_net.blobs['lig'].data[...] = np.linspace(
+                            start_lig, end_lig, batch_size, endpoint=True
+                        )
 
                     if has_rec_enc: # forward receptor encoder
                         if rec_enc_is_var:
                             if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.blobs[latent_std].data[...] = 1.0
-                            else:
+                                gen_net.blobs[latent_std].data[...] = args.var_factor
+                            else: # posterior
                                 gen_net.forward(start=rec_enc_start, end=rec_enc_end)
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
+                                if args.var_factor != 1.0:
+                                    gen_net.blobs[latent_std].data[...] *= args.var_factor
                         else:
                             gen_net.forward(start=rec_enc_start, end=rec_enc_end)
 
@@ -2489,16 +2122,11 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                         if lig_enc_is_var:
                             if args.prior:
                                 gen_net.blobs[latent_mean].data[...] = 0.0
-                                if args.mean:
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.blobs[latent_std].data[...] = 1.0
+                                gen_net.blobs[latent_std].data[...] = args.var_factor
                             else: # posterior
-                                if args.mean:
-                                    gen_net.forward(start=lig_enc_start, end=latent_mean)
-                                    gen_net.blobs[latent_std].data[...] = 0.0
-                                else:
-                                    gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                                gen_net.forward(start=lig_enc_start, end=lig_enc_end)
+                                if args.var_factor != 1.0:
+                                    gen_net.blobs[latent_std].data[...] *= args.var_factor
                         else:
                             gen_net.forward(start=lig_enc_start, end=lig_enc_end)
 
@@ -2534,23 +2162,25 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 print('Getting real atom types and coords')
                 lig_coord_set = ex.coord_sets[1]
                 lig_src = lig_coord_set.src
-                lig_struct = MolStruct.from_coord_set(lig_coord_set, lig_channels)
+                lig_struct = AtomStruct.from_coord_set(lig_coord_set, lig_channels)
                 types = count_types(lig_struct.c, lig_map.num_types(), dtype=np.int16)
 
-                print('Getting real molecule from data root')
                 lig_src_no_ext = os.path.splitext(lig_src)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
-                lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                if args.fit_atoms:
-                    print('Minimizing real molecule')
-                    atom_fitter.uff_minimize(lig_mol)
-                    lig_struct.info['src_mol'] = lig_mol
+                if not args.gen_only:
+                    print('Getting real molecule from data root')
+                    lig_mol = find_real_mol_in_data_root(args.data_root, lig_src_no_ext)
 
-                    print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
+                    if args.fit_atoms:
+                        print('Real molecule for {} has {} atoms'.format(lig_name, lig_struct.n_atoms))
 
-                    print('Validifying real atom types and coords')
-                    atom_fitter.validify(lig_struct)
+                        print('Minimizing real molecule')
+                        atom_fitter.uff_minimize(lig_mol)
+                        lig_struct.info['src_mol'] = lig_mol
+
+                        print('Validifying real atom types and coords')
+                        atom_fitter.validify(lig_struct)
 
                 # get latent vector for current example
                 latent_vec = np.array(gen_net.blobs[latent_sample].data[batch_idx])
@@ -2559,10 +2189,12 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                 for blob_name in args.blob_name:
 
                     print('Getting grid from {} blob'.format(blob_name))
+                    if args.gen_only and blob_name != 'lig_gen':
+                        continue
 
                     grid_type = blob_name
                     grid_blob = gen_net.blobs[blob_name]
-                    grid_needs_fit = args.fit_atoms and blob_name.startswith('lig')
+                    grid_needs_fit = args.fit_atoms and blob_name in {'lig', 'lig_gen'}
 
                     if blob_name == 'rec':
                         grid_channels = rec_channels
@@ -2573,12 +2205,9 @@ def generate_from_model(gen_net, data_param, n_examples, args):
                             grid_blob.shape[1]
                         )
 
-                    if args.interpolate and blob_name in {'rec', 'lig'}:
-                        grid_data = grid_blob.data[endpoint_idx]
-                    else:
-                        grid_data = grid_blob.data[batch_idx]
+                    grid_data = grid_blob.data[batch_idx]
 
-                    grid = MolGrid(
+                    grid = AtomGrid(
                         values=np.array(grid_data),
                         channels=grid_channels,
                         center=lig_struct.center,
@@ -2735,7 +2364,7 @@ def parse_args(argv=None):
     parser.add_argument('--all_blobs', default=False, action='store_true', help='generate from all blobs in generative model')
     parser.add_argument('--n_samples', default=1, type=int, help='number of samples to generate for each input example')
     parser.add_argument('--prior', default=False, action='store_true', help='generate from prior instead of posterior distribution')
-    parser.add_argument('--mean', default=False, action='store_true', help='generate mean of distribution instead of sampling')
+    parser.add_argument('--var_factor', default=1.0, type=float, help='factor by which to multiply standard deviation of latent samples')
     parser.add_argument('--encode_first', default=False, action='store_true', help='generate all output from encoding first example')
     parser.add_argument('--condition_first', default=False, action='store_true', help='condition all generated output on first example')
     parser.add_argument('--interpolate', default=False, action='store_true', help='interpolate between examples in latent space')
@@ -2782,6 +2411,7 @@ def parse_args(argv=None):
     parser.add_argument('--use_covalent_radius', default=False, action='store_true', help='force input grid to use covalent radius')
     parser.add_argument('--parallel', default=False, action='store_true', help='run atom fitting in separate worker processes')
     parser.add_argument('--n_fit_workers', default=8, type=int, help='number of worker processes for parallel atom fitting')
+    parser.add_argument('--gen_only',action='store_true',help='Only produce generated molecules; do not perform fitting on true ligand')
     return parser.parse_args(argv)
 
 

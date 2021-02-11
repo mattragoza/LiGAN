@@ -1,52 +1,49 @@
 import sys, os, re, argparse
 import itertools
-import params
-import job_queue
+
+from . import params
+from .common import read_file, write_file
 
 
-def keyword_product(**kwargs):
-    for values in itertools.product(*kwargs.values()):
-        yield dict(zip(kwargs.keys(), values))
-
-
-def read_file(file_):
-    with open(file_, 'r') as f:
-        return f.read()
-
-
-def write_file(file_, buf):
-    with open(file_, 'w') as f:
-        f.write(buf)
-
-
-def write_job_scripts(expt_dir, job_template_file, param_space, print_=False):
+def setup_job_scripts(
+    expt_dir,
+    name_format,
+    template_file,
+    param_space,
+):
     '''
-    Write a job script in a separate sub dir of expt_dir for every
-    set of params in param_space, by filling in job_template_file.
+    Write a job script in a separate sub dir of expt_dir
+    for every set of params in param_space, by formatting
+    template_file with the params. Name the created dirs
+    by formatting name_format with the params.
     '''
-    job_template = read_file(job_template_file)
-    job_base = os.path.basename(job_template_file)
+    template = read_file(template_file)
+    job_base = os.path.basename(template_file)
 
+    job_files = []
     for job_params in param_space:
 
-        job_dir = os.path.join(expt_dir, job_params.name)
+        job_name = name_format.format(**job_params)
+        job_params['job_name'] = job_name
+        job_dir = os.path.join(expt_dir, job_name)
+
         if not os.path.isdir(job_dir):
             os.makedirs(job_dir)
 
         job_file = os.path.join(job_dir, job_base)
-        write_job_script(job_file, job_template, job_params)
-        if print_:
-            print(job_file)
+        write_job_script(job_file, template, job_params)
+        job_files.append(job_file)
+
+    return job_files
 
 
-def write_job_script(job_file, job_template, job_params):
+def write_job_script(job_file, template, job_params):
     '''
-    Write a job script to job_file by filling in job_template with job_params.
+    Write a job script to job_file by filling in
+    template with job_params.
     '''
-    buf = params.format_params(job_params, line_start='# ')
-    buf = fill_job_template(job_template, dict(job_name=job_params.name, job_params=buf))
-    buf = fill_job_template(buf, job_params)
-    write_file(job_file, buf)
+    params_str = params.format_params(job_params, line_start='# ')
+    write_file(job_file, template.format(job_params=params_str, **job_params))
 
 
 def fill_job_template(job_template, job_params):
@@ -104,16 +101,21 @@ def expand_val_options(args):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='Create job scripts from a template and job params')
     parser.add_argument('params_file', help='file defining job params or dimensions of param space')
-    parser.add_argument('-t', '--template', required=True, help='job script template file')
-    parser.add_argument('-o', '--out_dir', default='.', help='common directory for job working directories')
-    parser.add_argument('-n', '--job_name', required=True, help='job name format')
+    parser.add_argument('-o', '--expt_dir', default='.', help='common directory for job working directories')
+    parser.add_argument('-n', '--name_format', required=True, help='job name format')
+    parser.add_argument('-t', '--template_file', required=True, help='job script template file')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
-    param_space = params.ParamSpace(args.params_file, format=args.job_name.format)
-    write_job_scripts(args.out_dir, args.template, param_space, print_=True)
+    param_space = params.ParamSpace.from_file(args.params_file)
+    setup_job_scripts(
+        expt_dir=args.expt_dir,
+        name_format=args.name_format,
+        template_file=args.template_file,
+        param_space=param_space
+    )
 
 
 if __name__ == '__main__':

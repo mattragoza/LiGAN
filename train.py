@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 from __future__ import print_function, division
+
 import matplotlib
 matplotlib.use('Agg')
 import sys, os, argparse, time
@@ -8,6 +10,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 import torch
+import interrupt
 import matplotlib.pyplot as plt
 
 import seaborn as sns
@@ -22,6 +25,10 @@ import generate
 import caffe_util as cu
 from results import plot_lines
 
+try:
+    import wandb
+except:
+    print("wandb not available")
 
 def CaffeGAN(object):
 
@@ -318,18 +325,18 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
         if real: # get real receptors and ligands
 
             data.forward()
-            rec = data.blobs['rec'].data
-            lig = data.blobs['lig'].data
+            rec = data.blobs['rec']
+            lig = data.blobs['lig']
 
-            disc.net.blobs['rec'].data[...] = rec
-            disc.net.blobs['lig'].data[...] = lig
-            disc.net.blobs['label'].data[...] = 1.0
+            disc.net.blobs['rec'].copyfrom(rec)
+            disc.net.blobs['lig'].copyfrom(lig)
+            disc.net.blobs['label'].set_data(1.0)
 
         else: # generate fake ligands
 
             # reuse rec and lig from last real forward pass
-            gen.net.blobs['rec'].data[...] = rec
-            gen.net.blobs['lig'].data[...] = lig
+            gen.net.blobs['rec'].copyfrom(rec)
+            gen.net.blobs['lig'].copyfrom(lig)
 
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
@@ -340,15 +347,15 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             else: # prior
 
-                gen.net.blobs[latent_mean].data[...] = 0.0
-                gen.net.blobs[latent_std].data[...] = 1.0
+                gen.net.blobs[latent_mean].set_data(0.0)
+                gen.net.blobs[latent_std].set_data(1.0)
                 gen.net.forward(start=latent_noise) # assumes cond branch is after latent space
 
-            lig_gen = gen.net.blobs['lig_gen'].data
+            lig_gen = gen.net.blobs['lig_gen']
 
-            disc.net.blobs['rec'].data[...] = rec
-            disc.net.blobs['lig'].data[...] = lig_gen
-            disc.net.blobs['label'].data[...] = 0.0
+            disc.net.blobs['rec'].copyfrom(rec)
+            disc.net.blobs['lig'].copyfrom(lig_gen)
+            disc.net.blobs['label'].set_data(0.0)
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
@@ -384,7 +391,7 @@ def disc_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.disc_grad_norm:
                 gradient_normalize(disc.net)
 
-            if compute_metrics:
+            if compute_metrics and False:
                 metrics['disc_grad_norm'][i] = get_gradient_norm(disc.net)
 
             if train:
@@ -401,9 +408,14 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
     # find loss blob names for recording loss output
     gen_loss_names  = [b for b in gen.net.blobs if b.endswith('loss')]
     disc_loss_names = [b for b in disc.net.blobs if b.endswith('loss')]
+    
+    if args.weight_l2_only:
+        weighted_loss_names  = [b for b in gen.net.blobs if b.endswith('loss') and b.startswith('L2')]
+    else:
+        weighted_loss_names = gen_loss_names
 
     # keep track of generator loss weights
-    loss_weights = dict((l,float(gen.net.blobs[l].diff[...])) for l in gen_loss_names)
+    loss_weights = dict((l,float(gen.net.blobs[l].diff[...])) for l in weighted_loss_names)
 
     if args.alternate: # find latent variable blob names for prior sampling
         latent_mean = generate.find_blobs_in_net(gen.net, r'.+_latent_mean')[0]
@@ -424,14 +436,14 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             # get real receptors and ligands
             data.forward()
-            rec = data.blobs['rec'].data
-            lig = data.blobs['lig'].data
+            rec = data.blobs['rec']
+            lig = data.blobs['lig']
 
-            gen.net.blobs['rec'].data[...] = rec
-            gen.net.blobs['lig'].data[...] = lig
+            gen.net.blobs['rec'].copyfrom(rec)
+            gen.net.blobs['lig'].copyfrom(lig)
 
             if 'cond_rec' in gen.net.blobs:
-                gen.net.blobs['cond_rec'].data[...] = rec
+                gen.net.blobs['cond_rec'].copyfrom(rec)
 
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
@@ -453,19 +465,19 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.gen_spectral_norm:
                 spectral_norm_forward(gen.net, args.gen_spectral_norm)
 
-            gen.net.blobs[latent_mean].data[...] = 0.0
-            gen.net.blobs[latent_std].data[...] = 1.0
+            gen.net.blobs[latent_mean].set_data(0.0)
+            gen.net.blobs[latent_std].set_data(1.0)
             gen.net.forward(start=latent_noise)
 
-        lig_gen = gen.net.blobs['lig_gen'].data
+        lig_gen = gen.net.blobs['lig_gen']
 
         # cross_entropy_loss(y_t, y_p) = -[y_t*log(y_p) + (1 - y_t)*log(1 - y_p)]
         # for original minmax GAN loss, set lig_gen label = 0.0 and ascend gradient
         # for non-saturating GAN loss, set lig_gen label = 1.0 and descend gradient
 
-        disc.net.blobs['rec'].data[...] = rec
-        disc.net.blobs['lig'].data[...] = lig_gen
-        disc.net.blobs['label'].data[...] = 1.0
+        disc.net.blobs['rec'].copyfrom(rec)
+        disc.net.blobs['lig'].copyfrom(lig_gen)
+        disc.net.blobs['label'].set_data(1.0)
 
         if args.instance_noise:
             noise = np.random.normal(0, args.instance_noise, lig.shape)
@@ -497,7 +509,6 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
         metrics['gen_iter'][i] = gen.iter
 
         if train or compute_metrics: # compute gradient
-
             disc.net.clear_param_diffs()
             disc.net.backward()
 
@@ -507,21 +518,22 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
             if args.disc_grad_norm:
                 gradient_normalize(disc.net)
 
-            gen.net.blobs['lig_gen'].diff[...] = disc.net.blobs['lig'].diff
+            gen.net.blobs['lig_gen'].copyfrom(disc.net.blobs['lig'],True)
             gen.net.clear_param_diffs()
 
             # set non-GAN loss weights
             for l, w in loss_weights.items():
-                gen.net.blobs[l].diff[...] = 0 if prior else w * args.loss_weight
+                gen.net.blobs[l].set_diff(0 if prior else w * args.loss_weight)
 
             if prior: # only backprop gradient to noise source (what about cond branch??)
                 gen.net.backward(end=latent_noise)
-                gen.net.blobs[latent_mean].diff[...] = 0.0
-                gen.net.blobs[latent_std].diff[...] = 0.0
+                gen.net.blobs[latent_mean].set_diff(0.0)
+                gen.net.blobs[latent_std].set_diff(0.0)
                 gen.net.backward(start=latent_std)
 
-                lig_grad_norm = np.linalg.norm(gen.net.blobs['lig'].diff)
-                assert np.isclose(lig_grad_norm, 0), lig_grad_norm
+                #why check this? won't it have leftover values?
+                #lig_grad_norm = np.linalg.norm(gen.net.blobs['lig'].diff)
+                #assert np.isclose(lig_grad_norm, 0), lig_grad_norm
     
             else:
                 gen.net.backward()
@@ -531,8 +543,7 @@ def gen_step(data, gen, disc, n_iter, args, train, compute_metrics):
 
             if args.gen_grad_norm:
                 gradient_normalize(gen.net)
-
-            if compute_metrics:
+            if compute_metrics and False: # dkoes - these are done on the CPU and are SUPER expensive
                 metrics['gen_grad_norm'][i] = get_gradient_norm(gen.net)
                 metrics['gen_adv_grad_norm'][i] = get_gradient_norm(disc.net)
                 metrics['gen_loss_weight'][i] = args.loss_weight
@@ -575,10 +586,13 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
 
     test_times = []
     train_times = []
-
+    dtime = 0
+    gtime = 0
+    dcnt = 0
+    gcnt = 0
     for i in range(args.cont_iter, args.max_iter+1):
 
-        if i % args.snapshot == 0:
+        if i % args.snapshot == 0 and i != 0:
             disc.snapshot()
             gen.snapshot()
 
@@ -603,7 +617,7 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             t_total = t_train + t_test
             pct_train = 100*t_train/t_total
             pct_test = 100*t_test/t_total
-            t_per_iter = t_total/(i - args.cont_iter)
+            t_per_iter = t_total/(i+1 - args.cont_iter)
             t_left = t_per_iter * (args.max_iter - i)
             t_total = dt.timedelta(seconds=t_total)
             if i > args.cont_iter:
@@ -613,26 +627,55 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
             print('Iteration {} / {}'.format(i, args.max_iter))
             print('  {} elapsed ({:.1f}% training, {:.1f}% testing)'
                   .format(t_total, pct_train, pct_test))
-            print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))
+            print("Disc cnt/time: %d %f, Gen cnt/time: %d %f"%(dcnt,dtime,gcnt,gtime))
+            tolog = {'discnt':dcnt,'disctime':dtime,'gencnt':gcnt,'gentime':gtime,'iteration':i}
+            dcnt = gcnt = dtime = gtime = 0
+            print('  {} left (~{} / iteration)'.format(t_left, t_per_iter))            
             for d in test_data:
                 for m in sorted(loss_df.columns):
                     print('  {} {} = {}'.format(d, m, loss_df.loc[(i, d), m]))
+                    tolog['{} {}'.format(d,m)] = loss_df.loc[(i,d),m]
+            if args.wandb:
+                wandb.log(tolog)
 
             write_and_plot_metrics(loss_df, loss_file, plot_file)
-
+            sys.stdout.flush()
+            
         if i == args.max_iter: # return after final test evaluation
             return
 
         t_start = time.time()
 
-        # train nets
-        if train_disc:
-            disc_step(train_data, gen, disc, args.disc_train_iter, args,
-                      train=True, compute_metrics=False)
+        # disc then gen; don't have to do backward if doing balanced training,
+        # but still need forward for loss computation
 
+        dstart = time.time()
+        disc_metrics = disc_step(
+            train_data, gen, disc, args.disc_train_iter, args, train=train_disc, compute_metrics=False
+        )
+        dtime += time.time()-dstart
+        if train_disc:
+            dcnt += 1
+
+        gstart = time.time()
+        gen_metrics = gen_step(
+            train_data, gen, disc, args.gen_train_iter, args, train=train_gen, compute_metrics=False
+        )
+        gtime += time.time()-gstart
         if train_gen:
-            gen_step(train_data, gen, disc, args.gen_train_iter, args,
-                     train=train_gen, compute_metrics=False)
+            gcnt += 1
+
+        if 'disc_wass_loss' in disc_metrics:
+            train_gen_loss = gen_metrics['gen_adv_wass_loss']
+            train_disc_loss = disc_metrics['disc_wass_loss']
+            train_loss_balance = train_gen_loss - train_disc_loss
+        else:
+            train_gen_loss = gen_metrics['gen_adv_log_loss']
+            train_disc_loss = disc_metrics['disc_log_loss']
+            train_loss_balance = train_gen_loss / train_disc_loss
+
+        assert np.isfinite(train_gen_loss), 'generator loss is infinite'
+        assert np.isfinite(train_disc_loss), 'discriminator loss is infinite'
 
         if i+1 == args.max_iter:
             train_disc = False
@@ -641,15 +684,6 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
         elif args.balance: # dynamically balance G/D training
 
             # how much better is D than G?
-            if 'disc_wass_loss' in disc_metrics:
-                train_gen_loss = gen_metrics['gen_adv_wass_loss']
-                train_disc_loss = disc_metrics['disc_wass_loss']
-                train_loss_balance = train_gen_loss - train_disc_loss
-            else:
-                train_gen_loss = gen_metrics['gen_adv_log_loss']
-                train_disc_loss = disc_metrics['disc_log_loss']
-                train_loss_balance = train_gen_loss / train_disc_loss
-
             if train_disc and train_loss_balance > 10:
                 train_disc = False
             if not train_disc and train_loss_balance < 2:
@@ -692,7 +726,7 @@ def parse_args(argv):
     parser.add_argument('-d', '--data_model_file', required=True, help='prototxt file for reading data')
     parser.add_argument('-g', '--gen_model_file', required=True, help='prototxt file for generative model')
     parser.add_argument('-a', '--disc_model_file', required=True, help='prototxt file for discriminative model')
-    parser.add_argument('-s', '--solver_file', required=True, help='prototxt file for solver hyperparameters')
+    parser.add_argument('-s', '--solver_file', required=False, help='prototxt file for solver hyperparameters, can be overriden by command line options')
     parser.add_argument('-p', '--data_prefix', required=True, help='prefix for data train/test fold files')
     parser.add_argument('-n', '--fold_nums', default='0,1,2,all', help='comma-separated fold numbers to run (default 0,1,2,all)')
     parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
@@ -715,21 +749,121 @@ def parse_args(argv):
     parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
     parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
+    parser.add_argument('--batch_size',default=5, type=int, help='value to substitute for BATCH_SIZE in models')
+    parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
+    #solver arguments
+    parser.add_argument('--clip_gradients', type=float, help='amount to clip gradients by in solver')
+    parser.add_argument('--solver' ,type=str, help='solver type to use')
+    parser.add_argument('--momentum', type=float, help='momentum')
+    parser.add_argument('--momentum2', type=float, help='momentum2 for Adam solver')
+    parser.add_argument('--lr_policy', type=str, help='learning rate policy')
+    parser.add_argument('--base_lr', type=float, help='initial learning rate')
+    parser.add_argument('--weight_decay', type=float, help='weight decay (L2 regularization)')
+    parser.add_argument('--weight_l2_only', default=0, type=int, help='apply loss weight to L2 loss only')
     return parser.parse_args(argv)
 
 
 def main(argv):
     args = parse_args(argv)
 
-    # read data params
-    data_net_param = cu.NetParameter.from_prototxt(args.data_model_file)
-    assert data_net_param.layer[0].type == 'MolGridData'
-    data_param = data_net_param.layer[0].molgrid_data_param
+    if args.wandb:
+        wandb.init(project='gentrain', config=args)
+        if args.out_prefix == '':
+            try:
+                os.mkdir('wandb_output')
+            except FileExistsError:
+                pass
+            args.out_prefix = 'wandb_output/' + wandb.run.id
+            sys.stderr.write("Setting output prefix to %s\n" % args.out_prefix)
 
-    # read model and solver params
-    gen_param = cu.NetParameter.from_prototxt(args.gen_model_file)
-    disc_param = cu.NetParameter.from_prototxt(args.disc_model_file)
-    solver_param = cu.SolverParameter.from_prototxt(args.solver_file)
+    config = open('%s.config' % args.out_prefix, 'wt')
+    config.write('\n'.join(map(lambda kv: '%s : %s' % kv, vars(args).items())))
+    config.close()
+
+    # read solver and model param files and set general params
+    # batch size is set through string replacement because
+    data_str = open(args.data_model_file).read()
+    data_str = data_str.replace('BATCH_SIZE', str(args.batch_size))
+    data_param = NetParameter.from_prototxt_str(data_str)
+
+    gen_str = open(args.gen_model_file).read()
+    gen_str = gen_str.replace('BATCH_SIZE', str(args.batch_size))
+    gen_param = NetParameter.from_prototxt_str(gen_str)
+
+    disc_str = open(args.disc_model_file).read()
+    disc_str = disc_str.replace('BATCH_SIZE', str(args.batch_size))
+    disc_param = NetParameter.from_prototxt_str(disc_str)
+
+    gen_param.force_backward = True
+    disc_param.force_backward = True
+
+    if args.solver_file:
+        solver_param = SolverParameter.from_prototxt(args.solver_file)
+    else:
+        solver_param = SolverParameter()
+    solver_param.max_iter = args.max_iter
+    solver_param.test_interval = args.max_iter + 1
+    solver_param.random_seed = args.random_seed
+    caffe.set_random_seed(args.random_seed) #this should be redundant
+
+    #check for cmdline overrides
+    if args.solver is not None:
+        solver_param.type = args.solver
+    if args.clip_gradients is not None:
+        solver_param.clip_gradients = args.clip_gradients
+    if args.momentum is not None:
+        solver_param.momentum = args.momentum
+    if args.momentum2 is not None:
+        solver_param.momentum2 = args.momentum2
+    if args.lr_policy is not None:
+        solver_param.lr_policy = args.lr_policy
+    if args.base_lr is not None:
+        solver_param.base_lr = args.base_lr
+    if args.weight_decay is not None:
+        solver_param.weight_decay = args.weight_decay
+
+    for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
+
+        # create nets for producing train and test data
+        print('Creating train data net')
+        data_param.set_molgrid_data_source(train_file, args.data_root)
+        train_data = Net.from_param(data_param, phase=caffe.TRAIN)
+
+        print('Creating test data net')
+        test_data = {}
+        data_param.set_molgrid_data_source(train_file, args.data_root)
+        test_data['train'] = Net.from_param(data_param, phase=caffe.TEST)
+        if test_file != train_file:
+            data_param.set_molgrid_data_source(test_file, args.data_root)
+            test_data['test'] = Net.from_param(data_param, phase=caffe.TEST)
+
+        # create solver for training generator net
+        print('Creating generator solver')
+        gen_prefix = '{}_{}_gen'.format(args.out_prefix, fold)
+        gen = Solver.from_param(solver_param, net_param=gen_param, snapshot_prefix=gen_prefix)
+        if args.gen_weights_file:
+            gen.net.copy_from(args.gen_weights_file)
+        if 'lig_gauss_conv' in gen.net.blobs:
+            gen.net.copy_from('lig_gauss_conv.caffemodel')
+
+        # create solver for training discriminator net
+        print('Creating discriminator solver')
+        disc_prefix = '{}_{}_disc'.format(args.out_prefix, fold)
+        disc = Solver.from_param(solver_param, net_param=disc_param, snapshot_prefix=disc_prefix)
+        if args.disc_weights_file:
+            disc.net.copy_from(args.disc_weights_file)
+
+        # continue previous training state, or start new training output file
+        loss_file = '{}_{}.training_output'.format(args.out_prefix, fold)
+        print('loss file',loss_file)
+        if args.cont_iter:
+            gen.restore('{}_iter_{}.solverstate'.format(gen_prefix, args.cont_iter))
+            disc.restore('{}_iter_{}.solverstate'.format(disc_prefix, args.cont_iter))
+            loss_df = pd.read_csv(loss_file, sep=' ', header=0, index_col=[0, 1])
+            loss_df = loss_df[:args.cont_iter+1]
+        else:
+            columns = ['iteration', 'phase']
+            loss_df = pd.DataFrame(columns=columns).set_index(columns)
 
     for fold_num in args.fold_nums.split(','):
 
@@ -777,5 +911,6 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    interrupt.listen()
     main(sys.argv[1:])
 
