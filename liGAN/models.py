@@ -207,7 +207,7 @@ class Encoder(nn.Module):
         pool_type,
         pool_factor,
         n_output,
-        output_activ_fn,
+        output_activ_fn=None,
         init_conv_pool=False,
     ):
         super().__init__()
@@ -246,6 +246,8 @@ class Encoder(nn.Module):
         assert n_output and all(n_o > 0 for n_o in n_output)
 
         output_activ_fn = as_list(output_activ_fn)
+        if len(output_activ_fn) == 1:
+            output_activ_fn *= len(n_output)
         assert len(output_activ_fn) == len(n_output)
 
         self.n_tasks = len(n_output)
