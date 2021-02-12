@@ -3,27 +3,32 @@ from __future__ import print_function, division
 
 import matplotlib
 matplotlib.use('Agg')
-import sys, os, argparse, time, collections, itertools
+import sys, os, argparse, time
+import collections
+import itertools
 import datetime as dt
 import numpy as np
 import pandas as pd
+import torch
+import interrupt
 import matplotlib.pyplot as plt
 
 import seaborn as sns
 sns.set_style('whitegrid')
 
-import torch
 import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
-import liGAN
+import molgrid
+import generate
+import caffe_util as cu
+from results import plot_lines
 
 try:
     import wandb
 except:
     print("wandb not available")
-
 
 def CaffeGAN(object):
 
@@ -699,64 +704,42 @@ def train_GAN_model(train_data, test_data, gen, disc, loss_df, loss_file, plot_f
         gen.increment_iter()
 
 
-def str_to_bool(s):
-    s = s.lower()
-    if s in {'true', 'yes', 't', 'y', '1'}:
-        return True
-    elif s in {'false', 'no', 'f', 'n', '0'}:
-        return False
+def get_crossval_data_files(data_prefix, fold_num, ext='.types'):
+    '''
+    Return train and test data files for a given
+    fold number of a k-fold cross-validation split.
+    If fold_num == 'all', return the full data set
+    as both the train and test data file.
+    '''
+    if fold_num == 'all':
+        train_data_file = test_data_file = data_prefix + ext
     else:
-        raise ValueError(
-            'expected one of (true|false|yes|no|t|f|y|n|1|0)'
-        )
+        fold_suffix = str(fold_num) + ext
+        train_data_file = data_prefix + 'train' + fold_suffix
+        test_data_file = data_prefix + 'test' + fold_suffix
+    return train_data_file, test_data_file
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description='train a deep neural network to generate atomic density grids')
-    parser.add_argument('--random_seed', default=0, type=int, help='random seed for initialization/sampling')
-    parser.add_argument('--data_root', required=True, help='root directory of data files (prepended to paths in train/test files)')
-    parser.add_argument('--train_file', required=True, help='file of paths to training data, relative to data_root')
-    parser.add_argument('--test_file', required=True, help='file of paths to test data, relative to data_root')
-    parser.add_argument('--batch_size', default=16, type=int)
-    parser.add_argument('--rec_map_file', required=True)
-    parser.add_argument('--lig_map_file', required=True)
-    parser.add_argument('--resolution', default=0.5, type=float)
-    parser.add_argument('--grid_dim', default=48, type=int)
-    parser.add_argument('--shuffle', default=True, type=str_to_bool)
-    parser.add_argument('--random_rotation', default=True, type=str_to_bool)
-    parser.add_argument('--random_translation', default=2.0, type=float)
-    parser.add_argument('--rec_molcache', default='')
-    parser.add_argument('--lig_molcache', default='')
-    parser.add_argument('--model_type', required=True, help='AE|CE|VAE|CVAE')
-    parser.add_argument('--n_filters', default=32, type=int)
-    parser.add_argument('--width_factor', default=2, type=int)
-    parser.add_argument('--n_levels', default=4, type=int)
-    parser.add_argument('--conv_per_level', default=3, type=int)
-    parser.add_argument('--kernel_size', default=3, type=int)
-    parser.add_argument('--relu_leak', default=0.1, type=float)
-    parser.add_argument('--pool_type', default='a', help='m|a|c')
-    parser.add_argument('--unpool_type', default='n', help='n|c')
-    parser.add_argument('--pool_factor', default=2, type=int)
-    parser.add_argument('--n_latent', default=1024, type=int)
-    parser.add_argument('--init_conv_pool', default=False, type=str_to_bool)
-    parser.add_argument('--optim_type', default='Adam', help='SGD|Adam')
-    parser.add_argument('--learning_rate', default=1e-5, type=float)
-    parser.add_argument('--momentum', default=0.9, type=float)
-    parser.add_argument('--momentum2', default=0.999, type=float)
-    parser.add_argument('--clip_gradient', default=0, type=float)
-    parser.add_argument('--max_iter', default=100000, type=int, help='maximum number of training iterations (default 100,000)')
-    parser.add_argument('--test_interval', default=100, type=int, help='evaluate test data every # train iters (default 100)')
-    parser.add_argument('--test_iters', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
-    parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
-    parser.add_argument('--print_interval', default=100, type=int)
-    parser.add_argument('--out_prefix', required=True)
-
-    # TODO reimplement the following arguments
+    parser = argparse.ArgumentParser(description='train ligand GAN models with Caffe')
+    parser.add_argument('-o', '--out_prefix', default='', help='common prefix for all output files')
+    parser.add_argument('-d', '--data_model_file', required=True, help='prototxt file for reading data')
+    parser.add_argument('-g', '--gen_model_file', required=True, help='prototxt file for generative model')
+    parser.add_argument('-a', '--disc_model_file', required=True, help='prototxt file for discriminative model')
+    parser.add_argument('-s', '--solver_file', required=False, help='prototxt file for solver hyperparameters, can be overriden by command line options')
+    parser.add_argument('-p', '--data_prefix', required=True, help='prefix for data train/test fold files')
+    parser.add_argument('-n', '--fold_nums', default='0,1,2,all', help='comma-separated fold numbers to run (default 0,1,2,all)')
+    parser.add_argument('-r', '--data_root', required=True, help='root directory of data files (prepended to paths in train/test fold files)')
+    parser.add_argument('--random_seed', default=0, type=int, help='random seed for Caffe initialization and training (default 0)')
     parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
     parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
+    parser.add_argument('--max_iter', default=100000, type=int, help='total number of train iterations (default 10000)')
     parser.add_argument('--gen_train_iter', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
     parser.add_argument('--disc_train_iter', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
+    parser.add_argument('--test_interval', default=10, type=int, help='evaluate test data every # train iters (default 10)')
+    parser.add_argument('--test_iter', default=10, type=int, help='number of iterations of each test data evaluation (default 10)')
+    parser.add_argument('--snapshot', default=10000, type=int, help='save .caffemodel weights and solver state every # train iters (default 1000)')
     parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
@@ -766,8 +749,15 @@ def parse_args(argv):
     parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
     parser.add_argument('--loss_weight', default=1.0, type=float, help='initial value for non-GAN generator loss weight')
     parser.add_argument('--loss_weight_decay', default=0.0, type=float, help='decay rate for non-GAN generator loss weight')
+    parser.add_argument('--batch_size',default=5, type=int, help='value to substitute for BATCH_SIZE in models')
     parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
+    #solver arguments
+    parser.add_argument('--clip_gradients', type=float, help='amount to clip gradients by in solver')
+    parser.add_argument('--solver' ,type=str, help='solver type to use')
+    parser.add_argument('--momentum', type=float, help='momentum')
+    parser.add_argument('--momentum2', type=float, help='momentum2 for Adam solver')
     parser.add_argument('--lr_policy', type=str, help='learning rate policy')
+    parser.add_argument('--base_lr', type=float, help='initial learning rate')
     parser.add_argument('--weight_decay', type=float, help='weight decay (L2 regularization)')
     parser.add_argument('--weight_l2_only', default=0, type=int, help='apply loss weight to L2 loss only')
     return parser.parse_args(argv)
@@ -790,71 +780,47 @@ def main(argv):
     config.write('\n'.join(map(lambda kv: '%s : %s' % kv, vars(args).items())))
     config.close()
 
-    train_data, test_data = (
-        liGAN.data.AtomGridData(
-            data_root=args.data_root,
-            batch_size=args.batch_size,
-            rec_map_file=args.rec_map_file,
-            lig_map_file=args.lig_map_file,
-            resolution=args.resolution,
-            dimension=liGAN.atom_grids.AtomGrid.compute_dimension(
-                args.grid_dim, args.resolution
-            ),
-            shuffle=args.shuffle,
-            random_rotation=args.random_rotation,
-            random_translation=args.random_translation,
-            split_rec_lig=True,
-            ligand_only=args.model_type in {'AE', 'VAE'},
-            rec_molcache=args.rec_molcache,
-            lig_molcache=args.lig_molcache,
-        ) for i in range(2))
+    # read solver and model param files and set general params
+    # batch size is set through string replacement because
+    data_str = open(args.data_model_file).read()
+    data_str = data_str.replace('BATCH_SIZE', str(args.batch_size))
+    data_param = NetParameter.from_prototxt_str(data_str)
 
-    train_data.populate(args.train_file)
-    test_data.populate(args.test_file)
+    gen_str = open(args.gen_model_file).read()
+    gen_str = gen_str.replace('BATCH_SIZE', str(args.batch_size))
+    gen_param = NetParameter.from_prototxt_str(gen_str)
 
-    model = liGAN.models.Generator(
-        n_channels_in=train_data.n_channels,
-        n_channels_out=train_data.n_lig_channels,
-        grid_dim=args.grid_dim,
-        n_filters=args.n_filters,
-        width_factor=args.width_factor,
-        n_levels=args.n_levels,
-        conv_per_level=args.conv_per_level,
-        kernel_size=args.kernel_size,
-        relu_leak=args.relu_leak,
-        pool_type=args.pool_type,
-        unpool_type=args.unpool_type,
-        pool_factor=args.pool_factor,
-        n_latent=args.n_latent,
-        init_conv_pool=args.init_conv_pool,
-        var_input=int(args.model_type == 'CVAE') if args.model_type in {'VAE', 'CVAE'} else None,
-    ).cuda()
+    disc_str = open(args.disc_model_file).read()
+    disc_str = disc_str.replace('BATCH_SIZE', str(args.batch_size))
+    disc_param = NetParameter.from_prototxt_str(disc_str)
 
-    solver = dict(
-        AE=liGAN.training.AESolver,
-        VAE=liGAN.training.VAESolver,
-    )[args.model_type](
-        train_data=train_data,
-        test_data=test_data,
-        model=model,
-        loss_fn=lambda yp, yt: ((yt - yp)**2).sum() / 2 / yt.shape[0],
-        optim_type=dict(
-            SGD=torch.optim.SGD,
-            Adam=torch.optim.Adam
-        )[args.optim_type],
-        save_prefix=args.out_prefix,
-        lr=args.learning_rate,
-        #momentum=args.momentum,
-        betas=(args.momentum, args.momentum2),
-    )
+    gen_param.force_backward = True
+    disc_param.force_backward = True
 
-    solver.train(
-        max_iter=args.max_iter,
-        test_interval=args.test_interval,
-        test_iters=args.test_iters,
-        save_interval=args.save_interval,
-        print_interval=args.print_interval
-    )
+    if args.solver_file:
+        solver_param = SolverParameter.from_prototxt(args.solver_file)
+    else:
+        solver_param = SolverParameter()
+    solver_param.max_iter = args.max_iter
+    solver_param.test_interval = args.max_iter + 1
+    solver_param.random_seed = args.random_seed
+    caffe.set_random_seed(args.random_seed) #this should be redundant
+
+    #check for cmdline overrides
+    if args.solver is not None:
+        solver_param.type = args.solver
+    if args.clip_gradients is not None:
+        solver_param.clip_gradients = args.clip_gradients
+    if args.momentum is not None:
+        solver_param.momentum = args.momentum
+    if args.momentum2 is not None:
+        solver_param.momentum2 = args.momentum2
+    if args.lr_policy is not None:
+        solver_param.lr_policy = args.lr_policy
+    if args.base_lr is not None:
+        solver_param.base_lr = args.base_lr
+    if args.weight_decay is not None:
+        solver_param.weight_decay = args.weight_decay
 
     for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):
 
@@ -945,4 +911,6 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    interrupt.listen()
     main(sys.argv[1:])
+
