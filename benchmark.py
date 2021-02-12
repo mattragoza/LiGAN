@@ -4,19 +4,23 @@ import caffe
 caffe.set_mode_gpu()
 caffe.set_device(0)
 
-import caffe_util
-
 
 def check_gpu_ids(pid):
 
     with os.popen('nvidia-smi') as p:
         stdout = p.read()
 
-    proc_buf = re.split(r'\n\s+\n', stdout)[1]
-    proc_lines = proc_buf.split('\n')[4:-2]
+    m = re.match(r'.*Processes:( )+\|\n(.*)\n\|=+\|', stdout, re.DOTALL|re.MULTILINE)
+    col_names = re.split(r" {2,}", m.group(2).split('\n')[0])[1:-1]
+    pid_idx = col_names.index('PID')
+    gpu_idx = col_names.index('GPU')
+
+    print(stdout)
+    m = re.match(r'.*Processes.*\|=+\|\n(.*)\n\+-+\+', stdout, re.DOTALL)
+    proc_lines = m.group(1).split('\n')
     proc_data = [x.strip('| ').split() for x in proc_lines]
-    proc_gpus = [int(row[0]) for row in proc_data]
-    proc_pids = [int(row[1]) for row in proc_data]
+    proc_gpus = [int(row[gpu_idx]) for row in proc_data]
+    proc_pids = [int(row[pid_idx]) for row in proc_data]
     return [g for g, p in zip(proc_gpus, proc_pids) if p == pid]
 
 
@@ -39,9 +43,9 @@ def benchmark_net(net, n):
 
     df = pd.DataFrame(index=range(max(n, 1)))
 
-    df['n_params'] = net.get_n_params()
-    df['n_activs'] = net.get_n_activs()
-    df['approx_size'] = net.get_approx_size()
+    #df['n_params'] = net.get_n_params()
+    #df['n_activs'] = net.get_n_activs()
+    #df['approx_size'] = net.get_approx_size()
 
     gpu_id = check_gpu_ids(os.getpid())[0]
     for i in range(n):
@@ -60,7 +64,7 @@ if __name__ == '__main__':
 
     _, model_file, n = sys.argv
 
-    net = caffe_util.Net(model_file, caffe.TEST)
+    net = caffe.Net(model_file, phase=caffe.TEST)
     df = benchmark_net(net, n=int(n))
 
     print(df)

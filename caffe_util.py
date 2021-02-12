@@ -692,10 +692,10 @@ class CaffeNet(caffe.Net):
 
                 split = split_blob.bottoms[0]
                 self.add_layer(split)
-                split.set_net(self)
+                split.net = self
                 for top in split.tops:
                     self.blobs_[top.name] = top
-                    top.set_net(self)
+                    top.net = self
 
     def has_scaffold(self):
         try:

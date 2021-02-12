@@ -41,7 +41,7 @@ def loss_fn(y_pred, y_true):
     return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
 
 print('creating solver')
-solver = liGAN.training.AESolver(
+solver = liGAN.training.VAESolver(
     train_data=data,
     test_data=data,
     model=model,
@@ -53,9 +53,9 @@ solver = liGAN.training.AESolver(
 
 print('training model')
 solver.train(
-	max_iter=100,
-	test_interval=10,
-	n_test_batches=1,
+	max_iter=100000,
+	test_interval=100,
+	n_test_batches=10,
 	save_interval=1000,
 )
 

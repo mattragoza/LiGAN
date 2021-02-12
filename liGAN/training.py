@@ -3,6 +3,7 @@ from collections import OrderedDict
 import pandas as pd
 import torch
 from torch import nn
+torch.backends.cudnn.benchmark = True
 
 
 class Solver(nn.Module):
@@ -58,7 +59,7 @@ class Solver(nn.Module):
         print('[{}] {}'.format(' '.join(
                 '{}={}'.format(*kv) for kv in zip(self.metrics.index.names, idx)
             ), ' '.join(
-                '{}={:.2f}'.format(*kv) for kv in metrics.items()
+                '{}={:.4f}'.format(*kv) for kv in metrics.items()
             ))
         )
 
@@ -99,6 +100,7 @@ class Solver(nn.Module):
 
         if update:
             self.optimizer.zero_grad()
+            torch.cuda.synchronize()
             t_start = time.time()
             loss.backward()
             metrics['backward_time'] = time.time() - t_start
