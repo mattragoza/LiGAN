@@ -18,6 +18,15 @@ def reduce_list(obj):
     return obj[0] if isinstance(obj, list) and len(obj) == 1 else obj
 
 
+def compute_grad_norm(model):
+    grad_norm2 = 0
+    for p in model.parameters():
+        if p.grad is None:
+            return np.nan
+        grad_norm2 += (p.grad.data**2).sum().item()
+    return grad_norm2**(1/2)
+
+
 class ConvReLU(nn.Sequential):
 
     def __init__(self, n_input, n_output, kernel_size, relu_leak):
@@ -299,6 +308,9 @@ class Encoder(nn.Module):
 
         return reduce_list(outputs)
 
+    def compute_grad_norm(self):
+        return compute_grad_norm(self)
+
 
 class Decoder(nn.Sequential):
 
@@ -373,6 +385,9 @@ class Decoder(nn.Sequential):
         )
         self.modules.append(deconv_block)
         self.n_channels = n_filters
+
+    def compute_grad_norm(self):
+        return compute_grad_norm(self)
 
 
 class Generator(nn.Module):
@@ -467,3 +482,6 @@ class Generator(nn.Module):
         latent = torch.cat(latents, dim=1)
 
         return self.decoder(latent), latent
+
+    def compute_grad_norm(self):
+        return compute_grad_norm(self)

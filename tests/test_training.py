@@ -1,16 +1,12 @@
 import sys, os, pytest
-
-import numpy as np
 from numpy import isclose, isnan
-
-import torch
 from torch import optim
 
 sys.path.insert(0, '.')
 import liGAN
 
 
-def get_data(split_rec_lig, ligand_only):
+def get_data(model_type):
     data = liGAN.data.AtomGridData(
         data_root='data/molport',
         batch_size=1000,
@@ -21,65 +17,74 @@ def get_data(split_rec_lig, ligand_only):
         shuffle=False,
         random_rotation=False,
         random_translation=0,
-        split_rec_lig=split_rec_lig,
-        ligand_only=ligand_only,
+        split_rec_lig=(model_type in {'CE', 'CVAE'}),
+        ligand_only=(model_type in {'AE', 'VAE'}),
+        device='cuda'
     )
     data.populate('data/molportFULL_rand_test0_1000.types')
     return data
 
 
-def get_encoder():
-    return liGAN.models.Encoder(
-        n_channels=19+16,
-        grid_dim=8,
-        n_filters=5,
-        width_factor=2,
-        n_levels=3,
-        conv_per_level=1,
-        kernel_size=3,
-        relu_leak=0.1,
-        pool_type='a',
-        pool_factor=2,
-        n_output=1,
-    ).cuda()
+def get_model(model_type):
+    if model_type == 'base':
+        model = liGAN.models.Encoder(
+            n_channels=19+16,
+            grid_dim=8,
+            n_filters=5,
+            width_factor=2,
+            n_levels=3,
+            conv_per_level=1,
+            kernel_size=3,
+            relu_leak=0.1,
+            pool_type='a',
+            pool_factor=2,
+            n_output=1,
+        )
+    else:
+        model = liGAN.models.Generator(
+            n_channels_in=dict(
+                AE=19, CE=16, VAE=19, CVAE=[16, 19]
+            )[model_type],
+            n_channels_out=19,
+            grid_dim=8,
+            n_filters=5,
+            width_factor=2,
+            n_levels=3,
+            conv_per_level=1,
+            kernel_size=3,
+            relu_leak=0.1,
+            pool_type='a',
+            unpool_type='n',
+            n_latent=128,
+            var_input=dict(
+                VAE=0, CVAE=1
+            ).get(model_type, None)
+        )
+    return model.cuda()
 
 
-def get_generator(n_channels_in, var_input):
-    return liGAN.models.Generator(
-        n_channels_in=n_channels_in,
-        n_channels_out=19,
-        grid_dim=8,
-        n_filters=5,
-        width_factor=2,
-        n_levels=3,
-        conv_per_level=1,
-        kernel_size=3,
-        relu_leak=0.1,
-        pool_type='a',
-        unpool_type='n',
-        n_latent=128,
-        var_input=var_input,
-    ).cuda()
-
-
-def L2_loss(y_pred, y_true):
-    return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
+@pytest.fixture(params=['base', 'AE', 'CE', 'VAE', 'CVAE'])
+def solver(request):
+    model_type = request.param
+    return dict(
+        base=liGAN.training.Solver,
+        AE=liGAN.training.AESolver,
+        CE=liGAN.training.CESolver,
+        VAE=liGAN.training.VAESolver,
+        CVAE=liGAN.training.CVAESolver,
+    )[model_type](
+        train_data=get_data(model_type),
+        test_data=get_data(model_type),
+        model=get_model(model_type),
+        loss_fn=lambda yp, yt: ((yt - yp)**2).sum() / 2 / yt.shape[0],
+        optim_type=optim.Adam,
+        lr=1e-5,
+        betas=(0.9, 0.999),
+        save_prefix='TEST'
+    )
 
 
 class TestSolver(object):
-
-    @pytest.fixture
-    def solver(self):
-        return liGAN.training.Solver(
-            train_data=get_data(split_rec_lig=False, ligand_only=False),
-            test_data=get_data(split_rec_lig=False, ligand_only=False),
-            model=get_encoder(),
-            loss_fn=L2_loss,
-            optim_type=optim.Adam,
-            lr=1e-4,
-            betas=(0.9, 0.999),
-            save_prefix='TEST'
-        )
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
@@ -87,18 +92,18 @@ class TestSolver(object):
             assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_forward(self, solver):
-        predictions, loss = solver.forward(solver.train_data)
+        predictions, loss, metrics = solver.forward(solver.train_data)
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_step(self, solver):
-        _, loss0 = solver.step()
-        _, loss1 = solver.forward(solver.train_data)
-        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
+        metrics0 = solver.step()
+        _, _, metrics1 = solver.forward(solver.train_data)
+        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_test(self, solver):
-        solver.test(n_iters=1)
+        solver.test(1)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
 
@@ -106,116 +111,11 @@ class TestSolver(object):
         solver.train(
             max_iter=10,
             test_interval=10,
-            test_iters=10,
-            save_interval=10,
-            print_interval=1,
+            n_test_batches=1,
+            save_interval=11,
         )
         assert solver.curr_iter == 10
         assert len(solver.metrics) == 13
-        loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
-        loss_f = solver.metrics.loc[(10, 'test'), 'loss']
+        loss_i = solver.metrics.loc[( 0, 'test'), 'loss'].mean()
+        loss_f = solver.metrics.loc[(10, 'test'), 'loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
-
-
-class TestAESolver(object):
-
-    @pytest.fixture
-    def solver(self):
-        return liGAN.training.AESolver(
-            train_data=get_data(split_rec_lig=False, ligand_only=True),
-            test_data=get_data(split_rec_lig=False, ligand_only=True),
-            model=get_generator(n_channels_in=19, var_input=None),
-            loss_fn=L2_loss,
-            optim_type=optim.Adam,
-            lr=1e-4,
-            betas=(0.9, 0.999),
-            save_prefix='TEST_AE'
-        )
-
-    def test_solver_init(self, solver):
-        assert solver.curr_iter == 0
-        for params in solver.model.parameters():
-            assert params.detach().norm().cpu() > 0
-
-    def test_solver_forward(self, solver):
-        predictions, loss = solver.forward(solver.train_data)
-        assert not isclose(0, predictions.detach().norm().cpu())
-        assert not isclose(0, loss.item())
-
-    def test_solver_step(self, solver):
-        _, loss0 = solver.step()
-        _, loss1 = solver.forward(solver.train_data)
-        print(loss0, loss1)
-        assert solver.curr_iter == 0
-        assert (loss1.detach() - loss0.detach()).cpu() < 0
-
-    def test_solver_test(self, solver):
-        solver.test(n_iters=1)
-        assert solver.curr_iter == 0
-        assert len(solver.metrics) == 1
-
-    def test_solver_train(self, solver):
-        solver.train(
-            max_iter=10,
-            test_interval=10,
-            test_iters=10,
-            save_interval=10,
-            print_interval=1,
-        )
-        assert solver.curr_iter == 10
-        assert len(solver.metrics) == 13
-        loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
-        loss_f = solver.metrics.loc[(10, 'test'), 'loss']
-        assert loss_f < loss_i, 'loss did not decrease'
-
-
-class TestCESolver(object):
-
-    @pytest.fixture
-    def solver(self):
-        return liGAN.training.CESolver(
-            train_data=get_data(split_rec_lig=True, ligand_only=False),
-            test_data=get_data(split_rec_lig=True, ligand_only=False),
-            model=get_generator(n_channels_in=16, var_input=None),
-            loss_fn=L2_loss,
-            optim_type=optim.Adam,
-            lr=1e-4,
-            betas=(0.9, 0.999),
-            save_prefix='TEST_CE'
-        )
-
-    def test_solver_init(self, solver):
-        assert solver.curr_iter == 0
-        for params in solver.model.parameters():
-            assert params.detach().norm().cpu() > 0
-
-    def test_solver_forward(self, solver):
-        predictions, loss = solver.forward(solver.train_data)
-        assert not isclose(0, predictions.detach().norm().cpu())
-        assert not isclose(0, loss.item())
-
-    def test_solver_step(self, solver):
-        _, loss0 = solver.step()
-        _, loss1 = solver.forward(solver.train_data)
-        print(loss0, loss1)
-        assert solver.curr_iter == 0
-        assert (loss1.detach() - loss0.detach()).cpu() < 0
-
-    def test_solver_test(self, solver):
-        solver.test(n_iters=1)
-        assert solver.curr_iter == 0
-        assert len(solver.metrics) == 1
-
-    def test_solver_train(self, solver):
-        solver.train(
-            max_iter=10,
-            test_interval=10,
-            test_iters=10,
-            save_interval=10,
-            print_interval=1,
-        )
-        assert solver.curr_iter == 10
-        assert len(solver.metrics) == 13
-        loss_i = solver.metrics.loc[( 0, 'test'), 'loss']
-        loss_f = solver.metrics.loc[(10, 'test'), 'loss']
-        assert (loss_f - loss_i) < 0

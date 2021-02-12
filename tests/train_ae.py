@@ -38,20 +38,25 @@ model = liGAN.models.Generator(
 
 print('defining loss function')
 def loss_fn(y_pred, y_true):
-    return ((y_true - y_pred)**2).sum() / 2
+    return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
 
 print('creating solver')
 solver = liGAN.training.AESolver(
-    data, data, model, loss_fn, optim.Adam, lr=1e-5
+    train_data=data,
+    test_data=data,
+    model=model,
+    loss_fn=lambda yp, yt: ((yt - yp)**2).sum() / 2 / yt.shape[0],
+    optim_type=optim.Adam,
+    lr=1e-5,
+    save_prefix='TEST'
 )
 
 print('training model')
 solver.train(
-	n_iters=1000000,
+	max_iter=100,
 	test_interval=10,
-	test_iters=10,
+	n_test_batches=1,
 	save_interval=1000,
-	print_interval=10,
 )
 
 print('done')

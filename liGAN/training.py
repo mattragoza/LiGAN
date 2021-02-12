@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import pandas as pd
 import torch
 from torch import nn
@@ -29,14 +30,8 @@ class Solver(nn.Module):
         # keep track of current training iteration
         self.curr_iter = 0
 
-        # track running avg loss for printing
-        self.total_train_loss = 0
-        self.total_train_iters = 0
-        self.total_test_loss = 0
-        self.total_test_iters = 0
-
         # set up a data frame of metrics wrt training iteration
-        index_cols = ['iteration', 'phase']
+        index_cols = ['iteration', 'phase', 'batch']
         self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
 
     def save_state(self):
@@ -58,82 +53,76 @@ class Solver(nn.Module):
         self.curr_iter = checkpoint['curr_iter']
         self.metrics = checkpoint['metrics']
 
-    def print_metrics(self):
-
-        train_loss = self.total_train_loss / self.total_train_iters
-        self.total_train_loss = self.total_train_iters = 0
-        s = '[Iteration {}] train_loss = {}'.format(
-            self.curr_iter, train_loss
+    def print_metrics(self, idx, metrics):
+        print('[{}] {}'.format(' '.join(
+                '{}={}'.format(*kv) for kv in zip(self.metrics.index.names, idx)
+            ), ' '.join(
+                '{}={}'.format(*kv) for kv in metrics.items()
+            ))
         )
 
-        if self.total_test_iters > 0: # append test loss
-            test_loss = self.total_test_loss / self.total_test_iters
-            self.total_test_loss = self.total_test_iters = 0
-            s += '\ttest_loss = {}'.format(test_loss)
-
-        print(s)
+    def insert_metrics(self, idx, metrics):
+        for k, v in metrics.items():
+            self.metrics.loc[idx, k] = v
 
     def forward(self, data):
         inputs, labels = data.forward()
         predictions = self.model(inputs)
         loss = self.loss_fn(predictions, labels)
-        return predictions, loss
+        metrics = OrderedDict(
+            loss=loss.item(),
+            pred_norm=predictions.detach().norm().item(),
+            grad_norm=self.model.compute_grad_norm(),
+        )
+        return predictions, loss, metrics
+
+    def test(self, n_batches):
+
+        for i in range(n_batches):
+            predictions, loss, metrics = self.forward(self.test_data)
+            self.insert_metrics((self.curr_iter, 'test', i), metrics)
+
+        idx = (self.curr_iter, 'test')
+        m = self.metrics.loc[idx].mean()
+        self.print_metrics(idx, m)
+        return m
 
     def step(self, update=True):
-        predictions, loss = self.forward(self.train_data)
 
-        idx = (self.curr_iter, 'train')
-        self.metrics.loc[idx, 'loss'] = loss.item()
-        self.total_train_loss += loss.item()
-        self.total_train_iters += 1
+        idx = (self.curr_iter, 'train', 0)
+        predictions, loss, metrics = self.forward(self.train_data)
+        self.insert_metrics(idx, metrics)
 
         if update:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+            self.curr_iter += 1
 
-        return predictions, loss
-
-    def test(self, n_iters):
-
-        losses = []
-        for i in range(n_iters):
-            predictions, loss = self.forward(self.test_data)
-            losses.append(loss.item())
-
-        total_loss = sum(losses)
-        mean_loss = total_loss / n_iters
-
-        self.metrics.loc[(self.curr_iter, 'test'), 'loss'] = mean_loss
-        self.total_test_loss += total_loss
-        self.total_test_iters += n_iters
-
-        return mean_loss
+        m = self.metrics.loc[idx]
+        self.print_metrics(idx[:-1], m)
+        return m
 
     def train(
         self,
         max_iter,
         test_interval,
-        test_iters, 
+        n_test_batches, 
         save_interval,
-        print_interval,
     ):
         while self.curr_iter <= max_iter:
-
-            if self.curr_iter % test_interval == 0:
-                self.test(test_iters)
 
             if self.curr_iter % save_interval == 0:
                 self.save_state()
 
-            self.step(self.curr_iter < max_iter)
+            if self.curr_iter % test_interval == 0:
+                self.test(n_test_batches)
 
-            if self.curr_iter % print_interval == 0:
-                self.print_metrics()
-
-            self.curr_iter += 1
-
-        self.curr_iter = max_iter
+            if self.curr_iter < max_iter:
+                self.step(update=True)
+            else:
+                self.step(update=False)
+                break
 
 
 class AESolver(Solver):
@@ -142,7 +131,12 @@ class AESolver(Solver):
         inputs, _ = data.forward()
         generated, latents = self.model(inputs)
         loss = self.loss_fn(generated, inputs)
-        return generated, loss
+        metrics = OrderedDict(
+            loss=loss.item(),
+            lig_gen_norm=generated.detach().norm().item(),
+            gen_grad_norm=self.model.compute_grad_norm(),
+        )
+        return generated, loss, metrics
 
 
 class CESolver(Solver):
@@ -151,7 +145,12 @@ class CESolver(Solver):
         (context, missing), _ = data.forward()
         generated, latents = self.model(context)
         loss = self.loss_fn(generated, missing)
-        return generated, loss
+        metrics = OrderedDict(
+            loss=loss.item(),
+            lig_gen_norm=generated.detach().norm().item(),
+            gen_grad_norm=self.model.compute_grad_norm(),
+        )
+        return generated, loss, metrics
 
 
 class VAESolver(Solver):
@@ -163,7 +162,12 @@ class VAESolver(Solver):
         inputs, _ = data.forward()
         generated, latents = self.model(inputs)
         loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
-        return generated, loss
+        metrics = OrderedDict(
+            loss=loss.item(),
+            lig_gen_norm=generated.detach().norm().item(),
+            gen_grad_norm=self.model.compute_grad_norm(),
+        )
+        return generated, loss, metrics
 
 
 class CVAESolver(VAESolver):
@@ -172,7 +176,12 @@ class CVAESolver(VAESolver):
         (conditions, inputs), _ = data.forward()
         generated, latents = self.model(conditions, inputs)
         loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
-        return generated, loss
+        metrics = OrderedDict(
+            loss=loss.item(),
+            lig_gen_norm=generated.detach().norm().item(),
+            gen_grad_norm=self.model.compute_grad_norm(),
+        )
+        return generated, loss, metrics
 
 
 class GANSolver(nn.Module):
