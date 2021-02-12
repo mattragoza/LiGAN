@@ -1,7 +1,7 @@
 import os, struct
 import numpy as np
 
-import molecules
+from . import molecules
 
 
 class AtomStruct(object):

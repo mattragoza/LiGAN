@@ -112,13 +112,13 @@ class Solver(nn.Module):
 
     def train(
         self,
-        n_iters,
+        max_iter,
         test_interval,
         test_iters, 
         save_interval,
         print_interval,
     ):
-        while self.curr_iter <= n_iters:
+        while self.curr_iter <= max_iter:
 
             if self.curr_iter % test_interval == 0:
                 self.test(test_iters)
@@ -126,14 +126,14 @@ class Solver(nn.Module):
             if self.curr_iter % save_interval == 0:
                 self.save_state()
 
-            self.step(self.curr_iter < n_iters)
+            self.step(self.curr_iter < max_iter)
 
             if self.curr_iter % print_interval == 0:
                 self.print_metrics()
 
             self.curr_iter += 1
 
-        self.curr_iter = n_iters
+        self.curr_iter = max_iter
 
 
 class AESolver(Solver):
@@ -288,7 +288,7 @@ class GANSolver(nn.Module):
  
     def train(
         self,
-        n_iters,
+        max_iter,
         n_gen_train_iters,
         n_disc_train_iters,
         test_interval,
@@ -296,7 +296,7 @@ class GANSolver(nn.Module):
         save_interval,
         print_interval,
     ):
-        while self.curr_iter <= n_iters:
+        while self.curr_iter <= max_iter:
 
             if self.curr_iter % test_interval == 0:
                 self.test(test_iters)
@@ -304,14 +304,14 @@ class GANSolver(nn.Module):
             if self.curr_iter % save_interval == 0:
                 self.save_state()
 
-            self.step(self.curr_iter < n_iters)
+            self.step(self.curr_iter < max_iter)
 
             if self.curr_iter % print_interval == 0:
                 self.print_metrics()
 
             self.curr_iter += 1
 
-        self.curr_iter = n_iters
+        self.curr_iter = max_iter
 
 
 class VAEGANSolver(GANSolver):

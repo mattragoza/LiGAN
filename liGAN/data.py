@@ -38,11 +38,12 @@ class AtomGridData(nn.Module):
             shuffle=shuffle,
         )
 
+
         # create molgrid maker and output tensors
         self.grid_maker = molgrid.GridMaker(resolution, dimension)
         self.grids = torch.zeros(
             batch_size,
-            self.n_channels,
+            self.n_rec_channels + self.n_lig_channels,
             *self.grid_maker.spatial_grid_dimensions(),
             dtype=torch.float32,
             device=device,
@@ -57,6 +58,7 @@ class AtomGridData(nn.Module):
 
         self.split_rec_lig = split_rec_lig
         self.ligand_only = ligand_only
+
 
     @classmethod
     def from_param(cls, param):
@@ -85,7 +87,12 @@ class AtomGridData(nn.Module):
 
     @property
     def n_channels(self):
-        return self.n_rec_channels + self.n_lig_channels
+        if self.ligand_only:
+            return self.n_lig_channels
+        elif self.split_rec_lig:
+            return (self.n_rec_channels, self.n_lig_channels)
+        else:
+            return self.n_rec_channels + self.n_lig_channels
 
     @property
     def size(self):

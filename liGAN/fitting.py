@@ -14,7 +14,7 @@ from scipy.spatial.distance import pdist
 from scipy.spatial.distance import squareform
 import pickle
 
-from atom_structs import AtomStruct
+from .atom_structs import AtomStruct
 
 
 def grid_to_xyz(gcoords, mgrid):

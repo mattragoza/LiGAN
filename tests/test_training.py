@@ -104,7 +104,7 @@ class TestSolver(object):
 
     def test_solver_train(self, solver):
         solver.train(
-            n_iters=10,
+            max_iter=10,
             test_interval=10,
             test_iters=10,
             save_interval=10,
@@ -156,7 +156,7 @@ class TestAESolver(object):
 
     def test_solver_train(self, solver):
         solver.train(
-            n_iters=10,
+            max_iter=10,
             test_interval=10,
             test_iters=10,
             save_interval=10,
@@ -208,7 +208,7 @@ class TestCESolver(object):
 
     def test_solver_train(self, solver):
         solver.train(
-            n_iters=10,
+            max_iter=10,
             test_interval=10,
             test_iters=10,
             save_interval=10,

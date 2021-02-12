@@ -216,23 +216,27 @@ class TestGenerator(object):
 
     def test_gen1_forward(self, gen1):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y = gen1(x)
+        y, latents = gen1(x)
         assert y.shape == (10, 19, 8, 8, 8)
+        assert latents.shape == (10, 128)
 
     def test_gen2_forward(self, gen2):
         x0 = torch.zeros(10, 19, 8, 8, 8).cuda()
         x1 = torch.zeros(10, 16, 8, 8, 8).cuda()
-        y = gen2(x0, x1)
+        y, latents = gen2(x0, x1)
         assert y.shape == (10, 19, 8, 8, 8)
+        assert latents.shape == (10, 128)
 
     def test_vae_forward(self, vae):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y = vae(x)
+        y, latents = vae(x)
         assert y.shape == (10, 19, 8, 8, 8)
+        assert latents.shape == (10, 128)
 
     def test_cvae_forward(self, cvae):
         x0 = torch.zeros(10, 19, 8, 8, 8).cuda()
         x1 = torch.zeros(10, 16, 8, 8, 8).cuda()
-        y = cvae(x0, x1)
+        y, latents = cvae(x0, x1)
         assert y.shape == (10, 19, 8, 8, 8)
+        assert latents.shape == (10, 128)
 
