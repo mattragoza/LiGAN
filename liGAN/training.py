@@ -1,3 +1,4 @@
+import time
 from collections import OrderedDict
 import pandas as pd
 import torch
@@ -57,7 +58,7 @@ class Solver(nn.Module):
         print('[{}] {}'.format(' '.join(
                 '{}={}'.format(*kv) for kv in zip(self.metrics.index.names, idx)
             ), ' '.join(
-                '{}={}'.format(*kv) for kv in metrics.items()
+                '{}={:.2f}'.format(*kv) for kv in metrics.items()
             ))
         )
 
@@ -79,7 +80,9 @@ class Solver(nn.Module):
     def test(self, n_batches):
 
         for i in range(n_batches):
+            t_start = time.time()
             predictions, loss, metrics = self.forward(self.test_data)
+            metrics['forward_time'] = time.time() - t_start
             self.insert_metrics((self.curr_iter, 'test', i), metrics)
 
         idx = (self.curr_iter, 'test')
@@ -90,14 +93,19 @@ class Solver(nn.Module):
     def step(self, update=True):
 
         idx = (self.curr_iter, 'train', 0)
+        t_start = time.time()
         predictions, loss, metrics = self.forward(self.train_data)
-        self.insert_metrics(idx, metrics)
+        metrics['forward_time'] = time.time() - t_start
 
         if update:
             self.optimizer.zero_grad()
+            t_start = time.time()
             loss.backward()
+            metrics['backward_time'] = time.time() - t_start
             self.optimizer.step()
             self.curr_iter += 1
+
+        self.insert_metrics(idx, metrics)
 
         m = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], m)
@@ -123,6 +131,8 @@ class Solver(nn.Module):
             else:
                 self.step(update=False)
                 break
+
+        self.save_state()
 
 
 class AESolver(Solver):

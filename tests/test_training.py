@@ -112,7 +112,7 @@ class TestSolver(object):
             max_iter=10,
             test_interval=10,
             n_test_batches=1,
-            save_interval=11,
+            save_interval=10,
         )
         assert solver.curr_iter == 10
         assert len(solver.metrics) == 13
