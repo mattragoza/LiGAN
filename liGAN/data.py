@@ -1,6 +1,8 @@
 import torch
 from torch import nn
+
 import molgrid
+from . import atom_grids
 
 
 class AtomGridData(nn.Module):
@@ -11,18 +13,23 @@ class AtomGridData(nn.Module):
         batch_size,
         rec_map_file,
         lig_map_file,
-        resolution,
-        dimension,
-        shuffle,
-        random_rotation=True,
-        random_translation=2.0,
+        resolution=0.5,
+        dimension=None,
+        grid_size=None,
+        shuffle=False,
+        random_rotation=False,
+        random_translation=0.0,
         split_rec_lig=False,
         ligand_only=False,
-        rec_molcache='',
-        lig_molcache='',
+        rec_molcache=None,
+        lig_molcache=None,
         device='cuda',
     ):
         super().__init__()
+
+        assert (dimension or grid_size) and not (dimension and grid_size)
+        if grid_size:
+            dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
         self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
@@ -33,13 +40,15 @@ class AtomGridData(nn.Module):
             self.rec_typer,
             self.lig_typer,
             data_root=data_root,
-            recmolcache=rec_molcache,
-            ligmolcache=lig_molcache,
+            recmolcache=rec_molcache or '',
+            ligmolcache=lig_molcache or '',
             shuffle=shuffle,
         )
 
         # create molgrid maker and output tensors
-        self.grid_maker = molgrid.GridMaker(resolution, dimension)
+        self.grid_maker = molgrid.GridMaker(
+            resolution, dimension
+        )
         self.grids = torch.zeros(
             batch_size,
             self.n_rec_channels + self.n_lig_channels,
@@ -68,7 +77,9 @@ class AtomGridData(nn.Module):
             rec_map_file=param.recmap,
             lig_map_file=param.ligmap,
             resolution=param.resolution,
-            dimension=param.dimension,
+            grid_size=atom_grids.dimension_to_size(
+                param.dimension, param.resolution
+            ),
             shuffle=param.shuffle,
             random_rotation=param.random_rotation,
             random_translation=param.random_translate,
@@ -93,15 +104,14 @@ class AtomGridData(nn.Module):
         else:
             return self.n_rec_channels + self.n_lig_channels
 
-    @property
-    def size(self):
+    def __len__(self):
         return self.ex_provider.size()
 
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
     def forward(self):
-        assert self.size > 0
+        assert len(self) > 0
 
         # get next batch of structures and labels
         examples = self.ex_provider.next_batch(self.grids.shape[0])

@@ -20,18 +20,15 @@ class AtomGrid(object):
         self.channels = channels
         self.center = center
         self.resolution = resolution
-        self.size = self.values.shape[1]
-        self.dimension = self.compute_dimension(self.size, resolution)
-
         self.info = info
 
-    @classmethod
-    def compute_dimension(cls, size, resolution):
-        return (size - 1) * resolution
+    @property
+    def size(self):
+        return self.values.shape[1]
 
-    @classmethod
-    def compute_size(cls, dimension, resolution):
-        return int(np.ceil(dimension / resolution + 1))
+    @property
+    def dimension(self):
+        return size_to_dimension(self.size, self.resolution)
 
     def to_dx(self, dx_prefix, center=None):
         write_grids_to_dx_files(
@@ -49,6 +46,23 @@ class AtomGrid(object):
             values, self.channels, self.center, self.resolution, **info
         )
 
+
+def size_to_dimension(size, resolution):
+    '''
+    Compute the side length of a cubic grid with
+    the given size (num. points along each axis)
+    and resolution.
+    '''
+    return (size - 1) * resolution
+
+
+def dimension_to_size(dimension, resolution):
+    '''
+    Compute the number of points along each axis
+    of a cubic grid spanning the given dimension
+    (side length) at the given resolution.
+    '''
+    return int(np.ceil(dimension / resolution + 1))
 
 
 def write_grid_to_dx_file(dx_file, grid, center, resolution):

@@ -65,7 +65,7 @@ class TestAtomGridData(object):
         assert data.grid_maker
         assert data.grids.shape == (10, 16+19, 48, 48, 48)
         assert isclose(0, data.grids.norm().cpu())
-        assert data.size == 0
+        assert len(data) == 0
 
     def test_data_from_param(self, param):
         data = AtomGridData.from_param(param)
@@ -75,16 +75,16 @@ class TestAtomGridData(object):
         assert data.grid_maker
         assert data.grids.shape == (10, 16+19, 48, 48, 48)
         assert isclose(0, data.grids.norm().cpu())
-        assert data.size == 0
+        assert len(data) == 0
 
     def test_data_populate(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        assert data.size == 1000
+        assert len(data) == 1000
 
     def test_data_populate2(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
         data.populate('data/molportFULL_rand_test0_1000.types')
-        assert data.size == 2000
+        assert len(data) == 2000
 
     def test_data_forward_empty(self, data):
         with pytest.raises(AssertionError):
