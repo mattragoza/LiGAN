@@ -38,7 +38,6 @@ class AtomGridData(nn.Module):
             shuffle=shuffle,
         )
 
-
         # create molgrid maker and output tensors
         self.grid_maker = molgrid.GridMaker(resolution, dimension)
         self.grids = torch.zeros(

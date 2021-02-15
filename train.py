@@ -55,9 +55,8 @@ def parse_args(argv):
     parser.add_argument('--clip_gradient', default=0, type=float)
     parser.add_argument('--max_iter', default=100000, type=int, help='maximum number of training iterations (default 100,000)')
     parser.add_argument('--test_interval', default=100, type=int, help='evaluate test data every # train iters (default 100)')
-    parser.add_argument('--test_iters', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
+    parser.add_argument('--n_test_batches', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
     parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
-    parser.add_argument('--print_interval', default=100, type=int)
     parser.add_argument('--out_prefix', required=True)
 
     # TODO reimplement the following arguments
@@ -112,8 +111,8 @@ def main(argv):
             shuffle=args.shuffle,
             random_rotation=args.random_rotation,
             random_translation=args.random_translation,
-            split_rec_lig=True,
-            ligand_only=args.model_type in {'AE', 'VAE'},
+            split_rec_lig=args.model_type in {'CE', 'CVAE', 'CGAN', 'CVAEGAN'},
+            ligand_only=args.model_type in {'AE', 'VAE', 'GAN', 'VAEGAN'},
             rec_molcache=args.rec_molcache,
             lig_molcache=args.lig_molcache,
             device='cuda'
@@ -140,10 +139,9 @@ def main(argv):
         var_input=dict(VAE=0, CVAE=1).get(args.model_type, None)
     ).cuda()
 
-    solver = dict(
-        AE=liGAN.training.AESolver,
-        VAE=liGAN.training.VAESolver,
-    )[args.model_type](
+    solver = getattr(
+        liGAN.training, args.model_type + 'Solver'
+    )(
         train_data=train_data,
         test_data=test_data,
         model=model,
@@ -161,9 +159,8 @@ def main(argv):
     solver.train(
         max_iter=args.max_iter,
         test_interval=args.test_interval,
-        test_iters=args.test_iters,
-        save_interval=args.save_interval,
-        print_interval=args.print_interval
+        n_test_batches=args.n_test_batches,
+        save_interval=args.save_interval
     )
 
     for fold, train_file, test_file in get_train_and_test_files(args.data_prefix, args.fold_nums):

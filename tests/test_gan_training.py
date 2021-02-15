@@ -76,7 +76,7 @@ class TestGANSolver(object):
             disc_model=get_encoder(),
             loss_fn=nn.BCELoss(),
             optim_type=optim.Adam,
-            lr=1e-4,
+            lr=1e-5,
             betas=(0.9, 0.999),
             save_prefix='TEST_GAN'
         )
@@ -123,7 +123,7 @@ class TestGANSolver(object):
 if False:
 
     def test_solver_test(self, solver):
-        solver.test(n_iters=1)
+        solver.test(1)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
 
@@ -131,7 +131,7 @@ if False:
         solver.train(
             max_iter=10,
             test_interval=10,
-            test_iters=10,
+            n_test_batches=10,
             save_interval=10,
             print_interval=1,
         )
