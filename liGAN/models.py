@@ -206,7 +206,7 @@ class Encoder(nn.Module):
     def __init__(
         self,
         n_channels,
-        grid_dim,
+        grid_size,
         n_filters,
         width_factor,
         n_levels,
@@ -226,7 +226,7 @@ class Encoder(nn.Module):
 
         # track changing grid dimensions
         self.n_channels = n_channels
-        self.grid_dim = grid_dim
+        self.grid_size = grid_size
 
         if init_conv_pool:
             self.add_conv('init_conv', n_filters, kernel_size, relu_leak)
@@ -278,7 +278,7 @@ class Encoder(nn.Module):
         pool = Pooling(self.n_channels, pool_type, pool_factor)
         self.add_module(name, pool)
         self.grid_modules.append(pool)
-        self.grid_dim //= pool_factor
+        self.grid_size //= pool_factor
 
     def add_conv_block(
         self, name, n_convs, n_filters, kernel_size, relu_leak
@@ -291,7 +291,7 @@ class Encoder(nn.Module):
         self.n_channels = n_filters
 
     def add_reshape_fc(self, name, n_output, activ_fn):
-        in_shape = (self.n_channels,) + (self.grid_dim,)*3
+        in_shape = (self.n_channels,) + (self.grid_size,)*3
         fc = ReshapeFc(in_shape, n_output, activ_fn)
         self.add_module(name, fc)
         self.task_modules.append(fc)
@@ -323,7 +323,7 @@ class Decoder(nn.Sequential):
     def __init__(
         self,
         n_input,
-        grid_dim,
+        grid_size,
         n_channels,
         width_factor,
         n_levels,
@@ -339,7 +339,7 @@ class Decoder(nn.Sequential):
 
         # first fc layer maps to initial grid shape
         self.n_input = n_input
-        self.add_fc_reshape(n_input, n_channels, grid_dim, relu_leak)
+        self.add_fc_reshape(n_input, n_channels, grid_size, relu_leak)
         n_filters = n_channels
 
         for i in reversed(range(n_levels)):
@@ -360,17 +360,17 @@ class Decoder(nn.Sequential):
 
         super().__init__(*self.modules)
 
-    def add_fc_reshape(self, n_input, n_channels, grid_dim, relu_leak):
-        out_shape = (n_channels,) + (grid_dim,)*3
+    def add_fc_reshape(self, n_input, n_channels, grid_size, relu_leak):
+        out_shape = (n_channels,) + (grid_size,)*3
         fc_reshape = FcReshape(n_input, out_shape, relu_leak)
         self.modules.append(fc_reshape)
         self.n_channels = n_channels
-        self.grid_dim = grid_dim
+        self.grid_size = grid_size
 
     def add_unpool(self, unpool_type, unpool_factor):
         unpool = Unpooling(self.n_channels, unpool_type, unpool_factor)
         self.modules.append(unpool)
-        self.grid_dim *= unpool_factor
+        self.grid_size *= unpool_factor
 
     def add_deconv(self, n_filters, kernel_size, relu_leak):
         deconv = DeconvReLU(
@@ -396,7 +396,7 @@ class Generator(nn.Module):
         self,
         n_channels_in=[],
         n_channels_out=19,
-        grid_dim=48,
+        grid_size=48,
         n_filters=32,
         width_factor=2,
         n_levels=4,
@@ -433,7 +433,7 @@ class Generator(nn.Module):
 
             encoder = Encoder(
                 n_channels=n_channels,
-                grid_dim=grid_dim,
+                grid_size=grid_size,
                 n_filters=n_filters,
                 width_factor=width_factor,
                 n_levels=n_levels,
@@ -450,7 +450,7 @@ class Generator(nn.Module):
 
         self.decoder = Decoder(
             n_input=n_latent * max(1, self.n_inputs),
-            grid_dim=grid_dim // pool_factor**(n_levels-1),
+            grid_size=grid_size // pool_factor**(n_levels-1),
             n_channels=n_filters * width_factor**(n_levels-1),
             width_factor=width_factor,
             n_levels=n_levels,

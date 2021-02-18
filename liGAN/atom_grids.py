@@ -3,7 +3,11 @@ import numpy as np
 
 class AtomGrid(object):
     '''
-    An atomic density grid.
+    A 3D grid representation of a molecular structure.
+    
+    Each atom is represented as a Gaussian-like density,
+    and the grid values are computed by summing across
+    these densities in separate channels per atom type.
     '''
     def __init__(self, values, channels, center, resolution, **info):
 
