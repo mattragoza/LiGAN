@@ -390,11 +390,19 @@ class Decoder(nn.Sequential):
         return compute_grad_norm(self)
 
 
+def is_positive_int(x):
+    return isinstance(x, int) and x > 0
+
+
 class Generator(nn.Module):
+    has_input_encoder = False
+    has_conditional_encoder = False
+    variational = False
 
     def __init__(
         self,
-        n_channels_in=[],
+        n_channels_in=None,
+        n_channels_cond=None,
         n_channels_out=19,
         grid_size=48,
         n_filters=32,
@@ -408,31 +416,30 @@ class Generator(nn.Module):
         pool_factor=2,
         n_latent=1024,
         init_conv_pool=False,
-        var_input=None,
+        variational=False,
+        device='cuda',
     ):
+        assert type(self) != Generator, 'Generator is abstract'
+
         super().__init__()
+        self.check_encoder_channels(n_channels_in, n_channels_cond)
+        assert is_positive_int(n_channels_out)
+        assert is_positive_int(n_latent)
 
-        # num input encoders is given by n_channels_in
-        n_channels_in = as_list(n_channels_in)
-        assert len(n_channels_in) > 0
-        self.n_inputs = len(n_channels_in)
+        self.n_channels_in = n_channels_in
+        self.n_channels_cond = n_channels_cond
+        self.n_channels_out = n_channels_out
+        self.n_latent = n_latent
 
-        # can specify one variational input
-        self.variational = (var_input is not None)
-        if self.variational:
-            assert 0 <= var_input < self.n_inputs
-        self.var_input = var_input
+        if self.has_input_encoder:
 
-        self.encoders = []
-        for i, n_channels in enumerate(n_channels_in):
-
-            if var_input == i:
-                n_output = [n_latent, n_latent]
+            if self.variational:
+                n_output = [n_latent, n_latent] # means and log_stds
             else:
                 n_output = n_latent
 
-            encoder = Encoder(
-                n_channels=n_channels,
+            self.input_encoder = Encoder(
+                n_channels=n_channels_in,
                 grid_size=grid_size,
                 n_filters=n_filters,
                 width_factor=width_factor,
@@ -445,11 +452,26 @@ class Generator(nn.Module):
                 n_output=n_output,
                 init_conv_pool=init_conv_pool,
             )
-            self.add_module('encoder'+str(i), encoder)
-            self.encoders.append(encoder)
+
+        if self.has_conditional_encoder:
+
+            self.conditional_encoder = Encoder(
+                n_channels=n_channels_cond,
+                grid_size=grid_size,
+                n_filters=n_filters,
+                width_factor=width_factor,
+                n_levels=n_levels,
+                conv_per_level=conv_per_level,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                pool_type=pool_type,
+                pool_factor=pool_factor,
+                n_output=n_latent,
+                init_conv_pool=init_conv_pool,
+            )
 
         self.decoder = Decoder(
-            n_input=n_latent * max(1, self.n_inputs),
+            n_input=self.n_decoder_input,
             grid_size=grid_size // pool_factor**(n_levels-1),
             n_channels=n_filters * width_factor**(n_levels-1),
             width_factor=width_factor,
@@ -463,25 +485,97 @@ class Generator(nn.Module):
             final_unpool=init_conv_pool,
         )
 
-    def forward(self, *inputs):
-        assert len(inputs) == self.n_inputs
+        super().to(device)
+        self.device = device
 
-        latents = []
-        for i in range(self.n_inputs):
+    def check_encoder_channels(self, n_channels_in, n_channels_cond):
+        if self.has_input_encoder:
+            assert is_positive_int(n_channels_in)
+        if self.has_conditional_encoder:
+            assert is_positive_int(n_channels_cond)
 
-            latent = self.encoders[i](inputs[i])
+    @property
+    def n_decoder_input(self):
+        n = 0
+        if self.has_input_encoder or self.variational:
+            n += self.n_latent
+        if self.has_conditional_encoder:
+            n += self.n_latent
+        return n
 
-            if self.var_input == i: # reparam trick
-                mean, log_std = latent
-                std = torch.exp(log_std)
-                eps = torch.randn_like(std)
-                latent = eps * std + mean
-
-            latents.append(latent)
-
-        latent = torch.cat(latents, dim=1)
-
-        return self.decoder(latent), latent
+    def sample_latents(self, batch_size, means=None, log_stds=None):
+        latents = torch.randn((batch_size, self.n_latent), device=self.device)
+        if log_stds is not None:
+            latents *= torch.exp(log_stds)
+        if means is not None:
+            latents += means
+        return latents
 
     def compute_grad_norm(self):
         return compute_grad_norm(self)
+
+
+class AE(Generator):
+    has_input_encoder = True
+
+    def forward(self, inputs):
+        latents = self.input_encoder(inputs)
+        return self.decoder(latents), latents
+
+
+class VAE(AE):
+    variational = True
+
+    def forward(self, inputs, batch_size):
+
+        if inputs is not None: # posterior
+            means, log_stds = self.input_encoder(inputs)
+        else: # prior
+            means, log_stds = None, None
+
+        latents = self.sample_latents(batch_size, means, log_stds)
+
+        return self.decoder(latents), latents, means, log_stds
+
+
+class CE(Generator):
+    has_conditional_encoder = True
+
+    def forward(self, conditions):
+        latents = self.conditional_encoder(conditions)
+        return self.decoder(latents), latents
+
+
+class CVAE(VAE):
+    has_conditional_encoder = True
+
+    def forward(self, inputs, conditions, batch_size):
+
+        if inputs is not None: # posterior
+            means, log_stds = self.input_encoder(inputs)
+        else: # prior
+            means, log_stds = None, None
+
+        input_latents = self.sample_latents(batch_size, means, log_stds)
+        conditional_latents = self.conditional_encoder(conditions)
+        latents = torch.cat([input_latents, conditional_latents], dim=1)
+
+        return self.decoder(latents), latents, means, log_stds
+
+
+class GAN(Generator):
+    variational = True
+
+    def forward(self, batch_size):
+        latents = self.sample_latents(batch_size)
+        return self.decoder(latents), latents
+
+
+class CGAN(GAN):
+    has_conditional_encoder = True
+
+    def forward(self, conditions, batch_size):
+        sampled_latents = self.sample_latents(batch_size)
+        conditional_latents = self.conditional_encoder(conditions)
+        latents = torch.cat([sampled_latents, conditional_latents], dim=1)
+        return self.decoder(latents), latents

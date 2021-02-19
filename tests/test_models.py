@@ -53,7 +53,7 @@ class TestEncoder(object):
     def get_enc(self, n_output):
         return models.Encoder(
             n_channels=19,
-            grid_dim=8,
+            grid_size=8,
             n_filters=5,
             width_factor=2,
             n_levels=3,
@@ -81,7 +81,7 @@ class TestEncoder(object):
         assert len(enc1.grid_modules) == 5
         assert len(enc1.task_modules) == 1
         assert enc1.n_channels == 20
-        assert enc1.grid_dim == 2
+        assert enc1.grid_size == 2
 
     def test_enc1_forward(self, enc1):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
@@ -97,7 +97,7 @@ class TestEncoder(object):
         assert len(enc2.grid_modules) == 5
         assert len(enc2.task_modules) == 2
         assert enc2.n_channels == 20
-        assert enc2.grid_dim == 2
+        assert enc2.grid_size == 2
 
     def test_enc2_forward(self, enc2):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
@@ -116,7 +116,7 @@ class TestDecoder(object):
     def dec(self):
         return models.Decoder(
             n_input=128,
-            grid_dim=2,
+            grid_size=2,
             n_channels=64,
             width_factor=2,
             n_levels=3,
@@ -131,7 +131,7 @@ class TestDecoder(object):
     def test_init(self, dec):
         assert len(dec.modules) == 7
         assert dec.n_channels == 19
-        assert dec.grid_dim == 8
+        assert dec.grid_size == 8
 
     def test_forward(self, dec):
         x = torch.zeros(10, 128).cuda()
@@ -146,11 +146,14 @@ class TestDecoder(object):
 
 class TestGenerator(object):
 
-    def get_gen(self, n_channels_in, var_input):
-        return models.Generator(
-            n_channels_in=n_channels_in,
+    @pytest.fixture(params=['AE','CE','VAE','CVAE','GAN','CGAN'])
+    def gen(self, request):
+        model_type = getattr(models, request.param)
+        return model_type(
+            n_channels_in=19 if model_type.has_input_encoder else None,
+            n_channels_cond=16 if model_type.has_conditional_encoder else None,
             n_channels_out=19,
-            grid_dim=8,
+            grid_size=8,
             n_filters=5,
             width_factor=2,
             n_levels=3,
@@ -160,83 +163,65 @@ class TestGenerator(object):
             pool_type='a',
             unpool_type='n',
             n_latent=128,
-            var_input=var_input,
-        ).cuda()
-
-    @pytest.fixture
-    def gen0(self):
-        return self.get_gen(
-            n_channels_in=[],
-            var_input=None,
+            variational=model_type.variational,
+            device='cuda'
         )
 
-    @pytest.fixture
-    def gen1(self):
-        return self.get_gen(
-            n_channels_in=19,
-            var_input=None,
-        )
+    def test_gen_init(self, gen):
+        assert True
 
-    @pytest.fixture
-    def gen2(self):
-        return self.get_gen(
-            n_channels_in=[19, 16],
-            var_input=None,
-        )
+    def test_gen_forward(self, gen):
 
-    @pytest.fixture
-    def vae(self):
-        return self.get_gen(
-            n_channels_in=[19],
-            var_input=0,
-        )
+        batch_size = 10
+        inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
+        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
 
-    @pytest.fixture
-    def cvae(self):
-        return self.get_gen(
-            n_channels_in=[19, 16],
-            var_input=0,
-        )
+        if type(gen) == models.AE:
+            generated, latents = gen(inputs)
 
-    def test_gen1_init(self, gen1):
-        assert gen1.n_inputs == 1
-        assert not gen1.variational
+        elif type(gen) == models.CE:
+            generated, latents = gen(conditions)
 
-    def test_gen2_init(self, gen2):
-        assert gen2.n_inputs == 2
-        assert not gen2.variational
+        elif type(gen) == models.VAE:
+            generated, latents, means, log_stds = gen(inputs, batch_size)
 
-    def test_vae_init(self, vae):
-        assert vae.n_inputs == 1
-        assert vae.variational
+        elif type(gen) == models.CVAE:
+            generated, latents, means, log_stds = gen(inputs, conditions, batch_size)
 
-    def test_cvae_init(self, cvae):
-        assert cvae.n_inputs == 2
-        assert cvae.variational
+        elif type(gen) == models.GAN:
+            generated, latents = gen(batch_size)
 
-    def test_gen1_forward(self, gen1):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y, latents = gen1(x)
-        assert y.shape == (10, 19, 8, 8, 8)
-        assert latents.shape == (10, 128)
+        elif type(gen) == models.CGAN:
+            generated, latents = gen(conditions, batch_size)
 
-    def test_gen2_forward(self, gen2):
-        x0 = torch.zeros(10, 19, 8, 8, 8).cuda()
-        x1 = torch.zeros(10, 16, 8, 8, 8).cuda()
-        y, latents = gen2(x0, x1)
-        assert y.shape == (10, 19, 8, 8, 8)
-        assert latents.shape == (10, 128)
+        assert generated.shape == (batch_size, 19, 8, 8, 8)
+        assert latents.shape == (batch_size, gen.n_decoder_input)
 
-    def test_vae_forward(self, vae):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y, latents = vae(x)
-        assert y.shape == (10, 19, 8, 8, 8)
-        assert latents.shape == (10, 128)
+    def test_gen_forward_prior(self, gen):
 
-    def test_cvae_forward(self, cvae):
-        x0 = torch.zeros(10, 19, 8, 8, 8).cuda()
-        x1 = torch.zeros(10, 16, 8, 8, 8).cuda()
-        y, latents = cvae(x0, x1)
-        assert y.shape == (10, 19, 8, 8, 8)
-        assert latents.shape == (10, 128)
+        batch_size = 10
+        inputs = None
+        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
 
+        if type(gen) == models.AE:
+            with pytest.raises(TypeError):
+                generated, latents = gen(inputs)
+            return
+
+        elif type(gen) == models.CE:
+            generated, latents = gen(conditions)
+
+        elif type(gen) == models.VAE:
+            generated, latents, means, log_stds = gen(inputs, batch_size)
+
+        elif type(gen) == models.CVAE:
+            generated, latents, means, log_stds = gen(inputs, conditions, batch_size)
+
+        elif type(gen) == models.GAN:
+            generated, latents = gen(batch_size)
+
+        elif type(gen) == models.CGAN:
+            generated, latents = gen(conditions, batch_size)
+
+        assert generated.shape == (batch_size, 19, 8, 8, 8)
+        assert latents.shape == (batch_size, gen.n_decoder_input)
