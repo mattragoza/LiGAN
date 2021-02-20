@@ -1,82 +1,214 @@
 import time
 from collections import OrderedDict
+import numpy as np
 import pandas as pd
 import torch
 from torch import nn
 torch.backends.cudnn.benchmark = True
 
+import molgrid
+from . import data, models
+
 
 class Solver(nn.Module):
 
+    split_rec_lig = False
+    ligand_only = False
+    generative = False
+    variational = False
+    adversarial = False
+    gen_model_type = None
+    index_cols = ['iteration', 'phase', 'batch']
+
     def __init__(
         self,
-        train_data,
-        test_data,
-        model,
-        loss_fn,
+        data_root,
+        train_file,
+        test_file,
+        batch_size,
+        rec_map_file,
+        lig_map_file,
+        resolution,
+        grid_size,
+        shuffle,
+        random_rotation,
+        random_translation,
+        rec_molcache,
+        lig_molcache,
+        n_filters,
+        width_factor,
+        n_levels,
+        conv_per_level,
+        kernel_size,
+        relu_leak,
+        pool_type,
+        unpool_type,
+        pool_factor,
+        n_latent,
+        init_conv_pool,
+        loss_weights,
         optim_type,
+        optim_kws,
         save_prefix,
+        random_seed=None,
         device='cuda',
-        **kwargs
     ):
         super().__init__()
         self.device = device
 
-        self.train_data = train_data
-        self.test_data = test_data
-        self.model = model
-        self.loss_fn = loss_fn
-        self.optimizer = optim_type(model.parameters(), **kwargs)
-        self.save_prefix = save_prefix
+        if random_seed is not None:
+            self.set_random_seed(random_seed)
 
-        # keep track of current training iteration
+        self.train_data, self.test_data = (
+            data.AtomGridData(
+                data_root=data_root,
+                batch_size=batch_size,
+                rec_map_file=rec_map_file,
+                lig_map_file=lig_map_file,
+                resolution=resolution,
+                grid_size=grid_size,
+                shuffle=shuffle,
+                random_rotation=random_rotation,
+                random_translation=random_translation,
+                split_rec_lig=self.split_rec_lig,
+                ligand_only=self.ligand_only,
+                rec_molcache=rec_molcache,
+                lig_molcache=lig_molcache,
+                device=device
+        ) for i in range(2))
+
+        self.train_data.populate(train_file)
+        self.test_data.populate(test_file)
+
+        if self.generative:
+
+            self.gen_model = self.gen_model_type(
+                n_channels_in=self.n_channels_in,
+                n_channels_cond=self.n_channels_cond,
+                n_channels_out=self.n_channels_out,
+                grid_size=grid_size,
+                n_filters=n_filters,
+                width_factor=width_factor,
+                n_levels=n_levels,
+                conv_per_level=conv_per_level,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                pool_type=pool_type,
+                unpool_type=unpool_type,
+                n_latent=n_latent,
+                variational=self.variational,
+                device=device
+            )
+            self.gen_optimizer = optim_type(
+                self.gen_model.parameters(), **optim_kws
+            )
+
+        if not self.generative or self.adversarial:
+
+            self.disc_model = models.Encoder(
+                n_channels=self.n_channels_in,
+                grid_size=grid_size,
+                n_filters=n_filters,
+                width_factor=width_factor,
+                n_levels=n_levels,
+                conv_per_level=conv_per_level,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                pool_type=pool_type,
+                pool_factor=pool_factor,
+                n_output=1
+            ).to(device)
+
+            self.disc_optimizer = optim_type(
+                self.disc_mode.parameters(), **optim_kws
+            )
+
+        self.loss_weights = loss_weights
+
+        # set up a data frame of training metrics
+        self.metrics = pd.DataFrame(
+            columns=self.index_cols
+        ).set_index(self.index_cols)
+
+        self.save_prefix = save_prefix
         self.curr_iter = 0
 
-        # set up a data frame of metrics wrt training iteration
-        index_cols = ['iteration', 'phase', 'batch']
-        self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
+    @property
+    def n_channels_in(self):
+        return None
+
+    @property
+    def n_channels_cond(self):
+        return None
+
+    @property
+    def n_channels_out(self):
+        return None
+    
+    def set_random_seed(random_seed):
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
+        molgrid.set_random_seed(random_seed)
+
+    @property
+    def state_file(self):
+        return '{}_iter_{}.checkpoint'.format(self.save_prefix, self.curr_iter)
 
     def save_state(self):
-        save_file = self.save_prefix + '_iter_' + str(self.curr_iter) + '.checkpoint'
-        checkpoint = dict(
-            model_state=self.model.state_dict(),
-            optimizer_state=self.optimizer.state_dict(),
-            curr_iter=self.curr_iter,
-            metrics=self.metrics,
-        )
-        torch.save(checkpoint, save_file)
-        csv_file = self.save_prefix + '.train_metrics'
+        checkpoint = OrderedDict()
+
+        if self.generative:
+            checkpoint['gen_model_state'] = self.gen_model.state_dict()
+            checkpoint['gen_optim_state'] = self.gen_optimizer.state_dict()
+
+        if not self.generative or self.adversarial:
+            checkpoint['disc_model_state'] = self.disc_model.state_dict()
+            checkpoint['disc_optim_state'] = self.disc_optimizer.state_dict()
+
+        torch.save(checkpoint, self.state_file)
+
+    def load_state(self):
+        checkpoint = torch.load(self.state_file)
+
+        if self.generative:
+            self.gen_model.load_state_dict(checkpoint['gen_model_state'])
+            self.gen_optimizer.load_state_dict(checkpoint['gen_optim_state'])
+
+        if not self.generative or self.adversarial:
+            self.disc_model.load_state_dict(checkpoint['disc_model_state'])
+            self.disc_optimizer.load_state_dict(checkpoint['disc_optim_state'])
+
+    def save_metrics(self):
+        csv_file = self.save_prefix + '.metrics'
         self.metrics.to_csv(csv_file, sep=' ')
 
-    def load_state(self, save_file):
-        checkpoint = torch.load(save_file)
-        self.model.load_state_dict(checkpoint['model_state'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state'])
-        self.curr_iter = checkpoint['curr_iter']
-        self.metrics = checkpoint['metrics']
+    def load_metrics(self):
+        csv_file = self.save_prefix + '.metrics'
+        self.metrics = pd.read_csv(
+            csv_file, sep=' '
+        ).set_index(self.index_cols)
 
     def print_metrics(self, idx, metrics):
-        print('[{}] {}'.format(' '.join(
-                '{}={}'.format(*kv) for kv in zip(self.metrics.index.names, idx)
-            ), ' '.join(
-                '{}={:.4f}'.format(*kv) for kv in metrics.items()
-            ))
+        index_str = ' '.join(
+            '{}={}'.format(*kv) for kv in zip(self.index_cols, idx)
         )
+        metrics_str = ' '.join(
+            '{}={:.4f}'.format(*kv) for kv in metrics.items()
+        )
+        print('[{}] {}'.format(index_str, metrics_str))
 
     def insert_metrics(self, idx, metrics):
         for k, v in metrics.items():
             self.metrics.loc[idx, k] = v
 
+    def compute_loss(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def compute_metrics(self, *args, **kwargs):
+        raise NotImplementedError
+
     def forward(self, data):
-        inputs, labels = data.forward()
-        predictions = self.model(inputs)
-        loss = self.loss_fn(predictions, labels)
-        metrics = OrderedDict(
-            loss=loss.item(),
-            pred_norm=predictions.detach().norm().item(),
-            grad_norm=self.model.compute_grad_norm(),
-        )
-        return predictions, loss, metrics
+        raise NotImplementedError
 
     def test(self, n_batches):
 
@@ -96,22 +228,22 @@ class Solver(nn.Module):
         idx = (self.curr_iter, 'train', 0)
         t_start = time.time()
         predictions, loss, metrics = self.forward(self.train_data)
+        torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
 
         if update:
-            self.optimizer.zero_grad()
-            torch.cuda.synchronize()
             t_start = time.time()
+            self.optimizer.zero_grad()
             loss.backward()
-            metrics['backward_time'] = time.time() - t_start
             self.optimizer.step()
+            torch.cuda.synchronize()
+            metrics['backward_time'] = time.time() - t_start
             self.curr_iter += 1
 
         self.insert_metrics(idx, metrics)
-
-        m = self.metrics.loc[idx]
-        self.print_metrics(idx[:-1], m)
-        return m
+        metrics = self.metrics.loc[idx]
+        self.print_metrics(idx[:-1], metrics)
+        return metrics
 
     def train(
         self,
@@ -137,97 +269,161 @@ class Solver(nn.Module):
         self.save_state()
 
 
-class AESolver(Solver):
+class DiscriminativeSolver(Solver):
+
+    @property
+    def n_channels_in(self):
+        return self.train_data.n_channels
+
+    @property
+    def model(self):
+        return self.disc_model
+
+    @property
+    def optimizer(self):
+        return self.disc_optimizer
+
+    def compute_metrics(self, labels, predictions):
+        metrics = OrderedDict()
+        metrics['true_norm'] = labels.detach().norm().item()
+        metrics['pred_norm'] = predictions.detach().norm().item()
+        metrics['grad_norm'] = self.model.compute_grad_norm()
+        return metrics
+
+    def forward(self, data):
+        inputs, labels = data.forward()
+        predictions = self.disc_model(inputs)
+        loss, metrics = self.compute_loss(labels, predictions)
+        metrics.update(self.compute_metrics(labels, predictions))
+        return predictions, loss, metrics
+
+
+class GenerativeSolver(Solver):
+    generative = True
+    split_rec_lig = True
+
+    @property
+    def n_channels_out(self):
+        return self.train_data.n_lig_channels
+
+    @property
+    def model(self):
+        return self.gen_model
+
+    @property
+    def optimizer(self):
+        return self.gen_optimizer
+
+    def compute_L2_loss(self, inputs, generated):
+        return ((inputs - generated)**2).sum() / 2 / inputs.shape[0]
+
+    def compute_metrics(self, inputs, generated, latents):
+        metrics = OrderedDict()
+        metrics['lig_norm'] = inputs.detach().norm().item()
+        metrics['lig_gen_norm'] = generated.detach().norm().item()
+        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['gen_grad_norm'] = self.model.compute_grad_norm()
+        return metrics
+
+
+class AESolver(GenerativeSolver):
+    ligand_only = True
+    gen_model_type = models.AE
+
+    @property
+    def n_channels_in(self):
+        return self.train_data.n_lig_channels
+
+    def compute_loss(self, inputs, generated):
+        loss = self.compute_L2_loss(inputs, generated) #TODO different recon. losses
+        return loss, OrderedDict([
+            ('loss', loss.item()),
+            ('recon_loss', loss.item())
+        ])
 
     def forward(self, data):
         inputs, _ = data.forward()
-        generated, latents = self.model(inputs)
-        loss = self.loss_fn(generated, inputs)
-        metrics = OrderedDict(
-            loss=loss.item(),
-            lig_gen_norm=generated.detach().norm().item(),
-            gen_grad_norm=self.model.compute_grad_norm(),
-        )
+        generated, latents = self.gen_model(inputs)
+        loss, metrics = self.compute_loss(inputs, generated)
+        metrics.update(self.compute_metrics(inputs, generated, latents))
+        return generated, loss, metrics  
+
+
+class VAESolver(AESolver):
+    variational = True
+    gen_model_type = models.VAE
+
+    def compute_KL_divergence(self, means, log_stds):
+        stds = torch.exp(log_stds)
+        means2 = means * means
+        vars = stds * stds
+        return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
+
+    def compute_loss(self, inputs, generated, means, log_stds):
+        recon_loss = self.compute_L2_loss(generated, inputs)
+        kldiv_loss = self.compute_KL_divergence(means, log_stds)
+        loss = recon_loss + kldiv_loss #TODO loss weights
+        return loss, OrderedDict([
+            ('loss', loss.item()),
+            ('recon_loss', recon_loss.item()),
+            ('kldiv_loss', kldiv_loss.item())
+        ])
+
+    def forward(self, data):
+        inputs, _ = data.forward()
+        generated, latents, means, log_stds = self.gen_model(inputs, data.batch_size)
+        loss, metrics = self.compute_loss(inputs, generated, means, log_stds)
+        metrics.update(self.compute_metrics(inputs, generated, latents))
         return generated, loss, metrics
 
 
-class CESolver(Solver):
+class CESolver(GenerativeSolver):
+    ligand_only = False
+    gen_model_type = models.CE
+
+    @property
+    def n_channels_cond(self):
+        return self.train_data.n_rec_channels
+
+    def compute_loss(self, inputs, generated):
+        loss = self.compute_L2_loss(inputs, generated) #TODO different recon. losses
+        return loss, OrderedDict([
+            ('loss', loss.item()),
+            ('recon_loss', loss.item())
+        ])
 
     def forward(self, data):
         (context, missing), _ = data.forward()
-        generated, latents = self.model(context)
-        loss = self.loss_fn(generated, missing)
-        metrics = OrderedDict(
-            loss=loss.item(),
-            lig_gen_norm=generated.detach().norm().item(),
-            gen_grad_norm=self.model.compute_grad_norm(),
-        )
-        return generated, loss, metrics
-
-
-class VAESolver(Solver):
-
-    def kl_div(self, latents):
-        return 0
-
-    def forward(self, data):
-        inputs, _ = data.forward()
-        generated, latents = self.model(inputs)
-        loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
-        metrics = OrderedDict(
-            loss=loss.item(),
-            lig_gen_norm=generated.detach().norm().item(),
-            gen_grad_norm=self.model.compute_grad_norm(),
-        )
+        generated, latents = self.gen_model(context)
+        loss, metrics = self.compute_loss(missing, generated)
+        metrics.update(self.compute_metrics(missing, generated, latents))
         return generated, loss, metrics
 
 
 class CVAESolver(VAESolver):
+    ligand_only = False
+    gen_model_type = models.CVAE
+
+    @property
+    def n_channels_cond(self):
+        return self.train_data.n_rec_channels
 
     def forward(self, data):
-        (conditions, inputs), _ = data.forward()
-        generated, latents = self.model(conditions, inputs)
-        loss = self.loss_fn(generated, inputs) + self.kl_div(latents)
-        metrics = OrderedDict(
-            loss=loss.item(),
-            lig_gen_norm=generated.detach().norm().item(),
-            gen_grad_norm=self.model.compute_grad_norm(),
-        )
+        asdf = data.forward()
+        print(type(asdf), len(asdf))
+        (conditions, inputs), _ = asdf #data.forward()
+        generated, latents, means, log_stds = self.gen_model(inputs, conditions, data.batch_size)
+        loss, metrics = self.compute_loss(inputs, generated, means, log_stds)
+        metrics.update(self.compute_metrics(inputs, generated, latents))
         return generated, loss, metrics
 
 
 class GANSolver(nn.Module):
-
-    def __init__(
-        self,
-        train_data,
-        test_data,
-        gen_model,
-        disc_model,
-        loss_fn,
-        optim_type,
-        save_prefix,
-        device='cuda',
-        **kwargs
-    ):
-        super().__init__()
-        self.device = device
-
-        self.train_data = train_data
-        self.test_data = test_data
-        self.gen_model = gen_model
-        self.disc_model = disc_model
-        self.loss_fn = loss_fn
-        self.gen_optimizer = optim_type(gen_model.parameters(), **kwargs)
-        self.disc_optimizer = optim_type(disc_model.parameters(), **kwargs)
-        self.save_prefix = save_prefix
-        
-        # keep track of current training iteration
-        self.curr_iter = 0
-
-        # set up data frame of metrics wrt train iteration, phase, and agent
-        index_cols = ['iteration', 'phase', 'agent']
-        self.metrics = pd.DataFrame(columns=index_cols).set_index(index_cols)
+    ligand_only = True
+    variational = True
+    adversarial = True
+    gen_model_type = models.GAN
+    index_cols = ['iteration', 'phase', 'model', 'batch']
 
     def disc_forward(self, data, real):
         '''
@@ -241,17 +437,13 @@ class GANSolver(nn.Module):
                 labels = torch.ones(data.batch_size, 1, device=self.device)
 
             else: # get generated examples
-                latents = torch.randn(
-                    data.batch_size,
-                    self.gen_model.n_input,
-                    device=self.device
-                )
-                inputs = self.gen_model(latents)
+                inputs, latents = self.gen_model(data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
 
         predictions = self.disc_model(inputs)
-        loss = self.loss_fn(predictions, labels)
-        return predictions, loss
+        loss, metrics = self.compute_loss(labels, predictions)
+        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        return predictions, loss, metrics
 
     def gen_forward(self, data):
         '''
@@ -259,53 +451,82 @@ class GANSolver(nn.Module):
         to produce data that is misclassified by the discriminator.
         '''
         # get generated examples
-        latents = torch.randn(
-            data.batch_size, self.gen_model.n_input, device=self.device
-        )
-        inputs = self.gen_model(latents)
+        inputs, latents = self.gen_model(data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
         predictions = self.disc_model(inputs)
-        loss = self.loss_fn(predictions, labels)
-        return predictions, loss
+        loss, metrics = self.compute_loss(labels, predictions, inputs)
+        metrics.update(self.compute_metrics())
+        return predictions, loss, metrics
+
+    def test(self, n_batches):
+
+        for i in range(n_batches):
+            t_start = time.time()
+            predictions, loss, metrics = self.disc_forward(self.test_data)
+
+        for i in range(n_batches):
+            t_start = time.time()
+            predictions, loss, metrics = self.gen_forward(self.test_data)
 
     def disc_step(self, real, update=True):
 
-        predictions, loss = self.disc_forward(self.train_data, real)
+        idx = (
+            self.curr_gen_iter, self.curr_disc_iter, 'train', 'disc', 0
+        )
+        t_start = time.time()
+        predictions, loss, metrics = self.disc_forward(self.train_data, real)
+        torch.cuda.syncrhonize()
+        metrics['forward_time'] = time.time() - t_start
         
-        idx = (self.curr_iter, 'train', 'disc')
-        self.metrics.loc[idx, 'loss'] = loss.item()
-
         if update:
+            t_start = time.time()
             self.disc_optimizer.zero_grad()
             loss.backward()
             self.disc_optimizer.step()
+            torch.cuda.synchronize()
+            metrics['backward_time'] = time.time() - t_start
+            self.curr_disc_iter += 1
+
+        self.insert_metrics(idx, metrics)
+        m = self.metrics.loc[idx]
+        self.print_metrics(idx[:-1], m)
 
         return predictions, loss
 
     def gen_step(self, update=True):
 
-        predictions, loss = self.gen_forward(self.train_data)
-
-        idx = (self.curr_iter, 'train', 'gen')
-        self.metrics.loc[idx, 'loss'] = loss.item()
+        idx = (
+            self.curr_gen_iter, self.curr_disc_iter, 'train', 'gen', 0
+        )
+        t_start = time.time()
+        predictions, loss, metrics = self.gen_forward(self.train_data)
+        torch.cuda.synchronize()
+        metrics['forward_time'] = time.time() - t_start
 
         if update:
+            t_start = time.time()
             self.gen_optimizer.zero_grad()
             loss.backward()
             self.gen_optimizer.step()
+            torch.cuda.synchronize()
+            metrics['backward_time'] = time.time() - t_start
+            self.curr_gen_iter += 1
+
+        self.insert_metrics(idx, metrics)
+        m = self.metrics.loc[idx]
+        self.print_metrics(idx[:-1], m)
 
         return predictions, loss
 
-    def train_disc(self, n_iters):
+    def train_disc(self, n_iters, update=True):
 
         for i in range(n_iters):
-            real = (i%2 == 0)
-            self.disc_step(real=real, update=True)
+            self.disc_step(real=(i%2 == 0), update=update)
 
-    def train_gen(self, n_iters):
+    def train_gen(self, n_iters, update=True):
         for i in range(n_iters):
-            self.gen_step(update=True)
+            self.gen_step(update=update)
  
     def train(
         self,
@@ -313,26 +534,32 @@ class GANSolver(nn.Module):
         n_gen_train_iters,
         n_disc_train_iters,
         test_interval,
-        test_iters, 
+        n_test_batches, 
         save_interval,
-        print_interval,
     ):
         while self.curr_iter <= max_iter:
-
-            if self.curr_iter % test_interval == 0:
-                self.test(test_iters)
 
             if self.curr_iter % save_interval == 0:
                 self.save_state()
 
-            self.step(self.curr_iter < max_iter)
+            if self.curr_iter % test_interval == 0:
+                self.test(n_test_batches)
 
-            if self.curr_iter % print_interval == 0:
-                self.print_metrics()
+            if self.curr_iter < max_iter:
+                self.train_disc(n_disc_train_iters, update=True)
+                self.train_gen(n_gen_train_iters, update=True)
+            else:
+                self.train_disc(n_disc_train_iters, update=False)
+                self.train_gen(n_gen_train_iters, update=False)
+                break
 
-            self.curr_iter += 1
+        self.save_state()
 
-        self.curr_iter = max_iter
+
+class CGANSolver(GANSolver):
+    split_rec_lig = True
+    gen_model_type = models.GAN
+
 
 
 class VAEGANSolver(GANSolver):

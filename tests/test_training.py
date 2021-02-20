@@ -6,81 +6,43 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-def get_data(model_type):
-    data = liGAN.data.AtomGridData(
+@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
+def solver(request):
+    return getattr(
+        liGAN.training, request.param + 'Solver'
+    )(
         data_root='data/molport',
+        train_file='data/molportFULL_rand_test0_1000.types',
+        test_file='data/molportFULL_rand_test0_1000.types',
         batch_size=1000,
         rec_map_file='data/my_rec_map',
         lig_map_file='data/my_lig_map',
         resolution=1.0,
-        dimension=7,
+        grid_size=8,
         shuffle=False,
         random_rotation=False,
         random_translation=0,
-        split_rec_lig=(model_type in {'CE', 'CVAE'}),
-        ligand_only=(model_type in {'AE', 'VAE'}),
-        device='cuda'
-    )
-    data.populate('data/molportFULL_rand_test0_1000.types')
-    return data
-
-
-def get_model(model_type):
-    if model_type == 'base':
-        model = liGAN.models.Encoder(
-            n_channels=19+16,
-            grid_dim=8,
-            n_filters=5,
-            width_factor=2,
-            n_levels=3,
-            conv_per_level=1,
-            kernel_size=3,
-            relu_leak=0.1,
-            pool_type='a',
-            pool_factor=2,
-            n_output=1,
-        )
-    else:
-        model = liGAN.models.Generator(
-            n_channels_in=dict(
-                AE=19, CE=16, VAE=19, CVAE=[16, 19]
-            )[model_type],
-            n_channels_out=19,
-            grid_dim=8,
-            n_filters=5,
-            width_factor=2,
-            n_levels=3,
-            conv_per_level=1,
-            kernel_size=3,
-            relu_leak=0.1,
-            pool_type='a',
-            unpool_type='n',
-            n_latent=128,
-            var_input=dict(
-                VAE=0, CVAE=1
-            ).get(model_type, None)
-        )
-    return model.cuda()
-
-
-@pytest.fixture(params=['base', 'AE', 'CE', 'VAE', 'CVAE'])
-def solver(request):
-    model_type = request.param
-    return dict(
-        base=liGAN.training.Solver,
-        AE=liGAN.training.AESolver,
-        CE=liGAN.training.CESolver,
-        VAE=liGAN.training.VAESolver,
-        CVAE=liGAN.training.CVAESolver,
-    )[model_type](
-        train_data=get_data(model_type),
-        test_data=get_data(model_type),
-        model=get_model(model_type),
-        loss_fn=lambda yp, yt: ((yt - yp)**2).sum() / 2 / yt.shape[0],
+        rec_molcache=None,
+        lig_molcache=None,
+        n_filters=5,
+        width_factor=2,
+        n_levels=3,
+        conv_per_level=1,
+        kernel_size=3,
+        relu_leak=0.1,
+        pool_type='a',
+        unpool_type='n',
+        pool_factor=2,
+        n_latent=128,
+        init_conv_pool=False,
+        loss_weights=None,
         optim_type=optim.Adam,
-        lr=1e-5,
-        betas=(0.9, 0.999),
-        save_prefix='TEST'
+        optim_kws=dict(
+            lr=1e-5,
+            betas=(0.9, 0.999),
+        ),
+        save_prefix='TEST',
+        device='cuda'
     )
 
 
@@ -88,7 +50,7 @@ class TestSolver(object):
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        for params in solver.model.parameters():
+        for params in solver.parameters():
             assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_forward(self, solver):

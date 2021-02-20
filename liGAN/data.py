@@ -67,7 +67,6 @@ class AtomGridData(nn.Module):
         self.split_rec_lig = split_rec_lig
         self.ligand_only = ligand_only
 
-
     @classmethod
     def from_param(cls, param):
 
