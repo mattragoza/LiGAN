@@ -1,37 +1,29 @@
 import sys, os, pytest
-
-import numpy as np
 from numpy import isclose, isnan
-
-import torch
-from torch import nn, optim
+from torch import optim
 
 sys.path.insert(0, '.')
 import liGAN
 
 
-def get_data(split_rec_lig, ligand_only):
-    data = liGAN.data.AtomGridData(
+@pytest.fixture(params=['GAN', 'CGAN'])
+def solver(request):
+    return getattr(
+        liGAN.training, request.param + 'Solver'
+    )(
         data_root='data/molport',
+        train_file='data/molportFULL_rand_test0_1000.types',
+        test_file='data/molportFULL_rand_test0_1000.types',
         batch_size=1000,
         rec_map_file='data/my_rec_map',
         lig_map_file='data/my_lig_map',
         resolution=1.0,
-        dimension=7,
+        grid_size=8,
         shuffle=False,
         random_rotation=False,
         random_translation=0,
-        split_rec_lig=split_rec_lig,
-        ligand_only=ligand_only,
-    )
-    data.populate('data/molportFULL_rand_test0_1000.types')
-    return data
-
-
-def get_encoder():
-    return liGAN.models.Encoder(
-        n_channels=19,
-        grid_dim=8,
+        rec_molcache=None,
+        lig_molcache=None,
         n_filters=5,
         width_factor=2,
         n_levels=3,
@@ -39,86 +31,60 @@ def get_encoder():
         kernel_size=3,
         relu_leak=0.1,
         pool_type='a',
-        pool_factor=2,
-        n_output=1,
-        output_activ_fn=nn.Sigmoid(),
-    ).cuda()
-
-
-def get_decoder():
-    return liGAN.models.Decoder(
-        n_input=1024,
-        grid_dim=2,
-        n_channels=20,
-        width_factor=2,
-        n_levels=3,
-        deconv_per_level=1,
-        kernel_size=3,
-        relu_leak=0.1,
         unpool_type='n',
-        unpool_factor=2,
-        n_output=19,
-    ).cuda()
-
-
-def L2_loss(y_pred, y_true):
-    return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
+        pool_factor=2,
+        n_latent=128,
+        init_conv_pool=False,
+        loss_weights=None,
+        optim_type=optim.Adam,
+        optim_kws=dict(
+            lr=1e-5,
+            betas=(0.9, 0.999),
+        ),
+        save_prefix='TEST',
+        device='cuda'
+    )
 
 
 class TestGANSolver(object):
 
-    @pytest.fixture
-    def solver(self):
-        return liGAN.training.GANSolver(
-            train_data=get_data(split_rec_lig=False, ligand_only=True),
-            test_data=get_data(split_rec_lig=False, ligand_only=True),
-            gen_model=get_decoder(),
-            disc_model=get_encoder(),
-            loss_fn=nn.BCELoss(),
-            optim_type=optim.Adam,
-            lr=1e-5,
-            betas=(0.9, 0.999),
-            save_prefix='TEST_GAN'
-        )
-
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        for model in (solver.gen_model, solver.disc_model):
-            for params in model.parameters():
-                assert params.detach().norm().cpu() > 0, 'params are zero'
+        for params in solver.parameters():
+            assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_disc_forward_real(self, solver):
-        predictions, loss = solver.disc_forward(solver.train_data, real=True)
+        predictions, loss, metrics = solver.disc_forward(solver.train_data, real=True)
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_disc_forward_gen(self, solver):
-        predictions, loss = solver.disc_forward(solver.train_data, real=False)
+        predictions, loss, metrics = solver.disc_forward(solver.train_data, real=False)
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_gen_forward(self, solver):
-        predictions, loss = solver.gen_forward(solver.train_data)
+        predictions, loss, metrics = solver.gen_forward(solver.train_data)
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_disc_step_real(self, solver):
-        _, loss0 = solver.disc_step(real=True)
-        _, loss1 = solver.disc_forward(solver.train_data, real=True)
-        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
+        metrics0 = solver.disc_step(real=True)
+        _, _, metrics1 = solver.disc_forward(solver.train_data, real=True)
+        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_disc_step_gen(self, solver):
-        _, loss0 = solver.disc_step(real=False)
-        _, loss1 = solver.disc_forward(solver.train_data, real=False)
-        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
+        metrics0 = solver.disc_step(real=False)
+        _, _, metrics1 = solver.disc_forward(solver.train_data, real=False)
+        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_gen_step(self, solver):
-        _, loss0 = solver.gen_step()
-        _, loss1 = solver.gen_forward(solver.train_data)
-        assert loss1.detach() < loss0.detach(), 'loss did not decrease'
+        metrics0 = solver.gen_step()
+        _, _, metrics1 = solver.gen_forward(solver.train_data)
+        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
 if False:
 
