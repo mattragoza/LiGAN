@@ -125,8 +125,8 @@ class Solver(nn.Module):
             )
             self.disc_iter = 0
 
-        self.initialize_loss()
-        self.loss_weights = loss_weights
+        self.loss_fns = self.initialize_loss()
+        self.loss_weights = loss_weights or {}
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -174,7 +174,9 @@ class Solver(nn.Module):
 
     @property
     def state_file(self):
-        return '{}_iter_{}.checkpoint'.format(self.save_prefix, self.curr_iter)
+        return '{}_iter_{}.checkpoint'.format(
+            self.save_prefix, self.curr_iter
+        )
 
     def save_state(self):
         checkpoint = OrderedDict()
@@ -193,12 +195,20 @@ class Solver(nn.Module):
         checkpoint = torch.load(self.state_file)
 
         if self.generative:
-            self.gen_model.load_state_dict(checkpoint['gen_model_state'])
-            self.gen_optimizer.load_state_dict(checkpoint['gen_optim_state'])
+            self.gen_model.load_state_dict(
+                checkpoint['gen_model_state']
+            )
+            self.gen_optimizer.load_state_dict(
+                checkpoint['gen_optim_state']
+            )
 
         if not self.generative or self.adversarial:
-            self.disc_model.load_state_dict(checkpoint['disc_model_state'])
-            self.disc_optimizer.load_state_dict(checkpoint['disc_optim_state'])
+            self.disc_model.load_state_dict(
+                checkpoint['disc_model_state']
+            )
+            self.disc_optimizer.load_state_dict(
+                checkpoint['disc_optim_state']
+            )
 
     def save_metrics(self):
         csv_file = self.save_prefix + '.metrics'
@@ -352,9 +362,6 @@ class GenerativeSolver(Solver):
     def curr_iter(self, i):
         self.gen_iter = i
 
-    def compute_L2_loss(self, inputs, generated):
-        return ((inputs - generated)**2).sum() / 2 / inputs.shape[0]
-
     def compute_metrics(self, inputs, generated, latents):
         metrics = OrderedDict()
         metrics['lig_norm'] = inputs.detach().norm().item()
@@ -372,11 +379,14 @@ class AESolver(GenerativeSolver):
     def n_channels_in(self):
         return self.train_data.n_lig_channels
 
+    def initialize_loss(self):
+        self.recon_loss_fn = torch.nn.MSELoss()
+
     def compute_loss(self, inputs, generated):
-        loss = self.compute_L2_loss(inputs, generated) #TODO different recon. losses
-        return loss, OrderedDict([
-            ('loss', loss.item()),
-            ('recon_loss', loss.item())
+        recon_loss = self.recon_loss_fn(inputs, generated)
+        return recon_loss, OrderedDict([
+            ('loss', recon_loss.item()),
+            ('recon_loss', recon_loss.item())
         ])
 
     def forward(self, data):
@@ -384,23 +394,32 @@ class AESolver(GenerativeSolver):
         generated, latents = self.gen_model(inputs)
         loss, metrics = self.compute_loss(inputs, generated)
         metrics.update(self.compute_metrics(inputs, generated, latents))
-        return generated, loss, metrics  
+        return generated, loss, metrics
+
+
+def KL_divergence(means, log_stds):
+    stds = torch.exp(log_stds)
+    means2 = means * means
+    vars = stds * stds
+    return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
 
 
 class VAESolver(AESolver):
     variational = True
     gen_model_type = models.VAE
 
-    def compute_KL_divergence(self, means, log_stds):
-        stds = torch.exp(log_stds)
-        means2 = means * means
-        vars = stds * stds
-        return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
+    def initialize_loss(self):
+        self.recon_loss_fn = torch.nn.MSELoss()
+        self.kldiv_loss_fn = KL_divergence
 
     def compute_loss(self, inputs, generated, means, log_stds):
-        recon_loss = self.compute_L2_loss(generated, inputs)
-        kldiv_loss = self.compute_KL_divergence(means, log_stds)
-        loss = recon_loss + kldiv_loss #TODO loss weights
+        recon_loss = self.recon_loss_fn(generated, inputs)
+        kldiv_loss = self.kldiv_loss_fn(means, log_stds)
+        loss = (
+            self.loss_weights.get('recon_loss', 1.0) * recon_loss
+        ) + (
+            self.loss_weights.get('kldiv_loss', 1.0) * kldiv_loss
+        )
         return loss, OrderedDict([
             ('loss', loss.item()),
             ('recon_loss', recon_loss.item()),
@@ -409,7 +428,9 @@ class VAESolver(AESolver):
 
     def forward(self, data):
         inputs, _ = data.forward()
-        generated, latents, means, log_stds = self.gen_model(inputs, data.batch_size)
+        generated, latents, means, log_stds = self.gen_model(
+            inputs, data.batch_size
+        )
         loss, metrics = self.compute_loss(inputs, generated, means, log_stds)
         metrics.update(self.compute_metrics(inputs, generated, latents))
         return generated, loss, metrics
@@ -423,11 +444,14 @@ class CESolver(GenerativeSolver):
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
 
+    def initialize_loss(self):
+        self.recon_loss_fn = torch.nn.MSELoss()
+
     def compute_loss(self, inputs, generated):
-        loss = self.compute_L2_loss(inputs, generated) #TODO diff recon losses
-        return loss, OrderedDict([
-            ('loss', loss.item()),
-            ('recon_loss', loss.item())
+        recon_loss = self.recon_loss_fn(generated, inputs)
+        return recon_loss, OrderedDict([
+            ('loss', recon_loss.item()),
+            ('recon_loss', recon_loss.item())
         ])
 
     def forward(self, data):
@@ -470,10 +494,10 @@ class GANSolver(GenerativeSolver):
         return self.train_data.n_lig_channels
 
     def initialize_loss(self):
-        self.gan_loss = torch.nn.BCEWithLogitsLoss()
+        self.gan_loss_fn = torch.nn.BCEWithLogitsLoss()
 
-    def compute_loss(self, labels, predictions):
-        gan_loss = self.gan_loss(predictions, labels)
+    def compute_loss(self, inputs, generated):
+        gan_loss = self.gan_loss_fn(generated, inputs)
         return gan_loss, OrderedDict([
             ('loss', gan_loss.item()),
             ('gan_loss', gan_loss.item())
@@ -615,7 +639,9 @@ class CGANSolver(GANSolver):
 
     @property
     def n_channels_disc(self):
-        return self.train_data.n_rec_channels + self.train_data.n_lig_channels
+        return (
+            self.train_data.n_rec_channels + self.train_data.n_lig_channels
+        )
 
     @property
     def n_channels_cond(self):
