@@ -609,9 +609,54 @@ class GANSolver(GenerativeSolver):
 
 
 class CGANSolver(GANSolver):
+    ligand_only = False
     split_rec_lig = True
-    gen_model_type = models.GAN
+    gen_model_type = models.CGAN
 
+    @property
+    def n_channels_disc(self):
+        return self.train_data.n_rec_channels + self.train_data.n_lig_channels
+
+    @property
+    def n_channels_cond(self):
+        return self.train_data.n_rec_channels
+
+    def disc_forward(self, data, real):
+        '''
+        Compute predictions and loss for the discriminator's
+        ability to correctly classify real or generated data.
+        '''
+        with torch.no_grad(): # do not backprop to generator or data
+
+            # get real examples
+            (conditions, inputs), _ = data.forward()
+
+            if real:
+                labels = torch.ones(data.batch_size, 1, device=self.device)
+
+            else: # get generated examples
+                inputs, latents = self.gen_model(conditions, data.batch_size)
+                labels = torch.zeros(data.batch_size, 1, device=self.device)
+
+        predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
+        loss, metrics = self.compute_loss(labels, predictions)
+        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        return predictions, loss, metrics
+
+    def gen_forward(self, data):
+        '''
+        Compute predictions and loss for the generator's ability
+        to produce data that is misclassified by the discriminator.
+        '''
+        # get generated examples
+        (conditions, inputs), _ = data.forward()
+        inputs, latents = self.gen_model(conditions, data.batch_size)
+        labels = torch.ones(data.batch_size, 1, device=self.device)
+
+        predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
+        loss, metrics = self.compute_loss(labels, predictions)
+        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        return predictions, loss, metrics
 
 
 class VAEGANSolver(GANSolver):
