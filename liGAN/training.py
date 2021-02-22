@@ -250,10 +250,10 @@ class Solver(nn.Module):
             metrics['forward_time'] = time.time() - t_start
             self.insert_metrics((self.curr_iter, 'test', i), metrics)
 
-        idx = (self.curr_iter, 'test')
-        m = self.metrics.loc[idx].mean()
-        self.print_metrics(idx, m)
-        return m
+        idx = (self.curr_iter, 'test') # batch mean
+        metrics = self.metrics.loc[idx].mean()
+        self.print_metrics(idx, metrics)
+        return metrics
 
     def step(self, update=True):
 
@@ -541,11 +541,31 @@ class GANSolver(GenerativeSolver):
 
         for i in range(n_batches):
             t_start = time.time()
-            predictions, loss, metrics = self.disc_forward(self.test_data)
+            predictions, loss, metrics = self.disc_forward(
+                self.test_data, real=(i%2 == 0)
+            )
+            metrics['forward_time'] = time.time() - t_start
+            idx = (self.gen_iter, self.disc_iter, 'test', 'disc', i)
+            self.insert_metrics(idx, metrics)
+
+        idx = (self.gen_iter, self.disc_iter, 'test', 'disc') # batch mean
+        metrics = self.metrics.loc[idx].mean()
+        self.print_metrics(idx, metrics)
 
         for i in range(n_batches):
             t_start = time.time()
-            predictions, loss, metrics = self.gen_forward(self.test_data)
+            predictions, loss, metrics = self.gen_forward(
+                self.test_data
+            )
+            metrics['forward_time'] = time.time() - t_start
+            idx = (self.gen_iter, self.disc_iter, 'test', 'gen', i)
+            self.insert_metrics(idx, metrics)
+
+        idx = (self.gen_iter, self.disc_iter, 'test', 'gen') # batch mean
+        metrics = self.metrics.loc[idx].mean()
+        self.print_metrics(idx, metrics)
+
+        return self.metrics.loc[idx[:-1]]
 
     def disc_step(self, real, update=True):
 

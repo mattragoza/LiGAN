@@ -77,7 +77,7 @@ class TestSolver(object):
             save_interval=10,
         )
         assert solver.curr_iter == 10
-        assert len(solver.metrics) == 13
+        assert len(solver.metrics) == (1 + 10 + 1 + 1)
         loss_i = solver.metrics.loc[( 0, 'test'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 'test'), 'loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
