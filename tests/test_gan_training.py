@@ -38,6 +38,7 @@ def solver(request):
         n_latent=128,
         init_conv_pool=False,
         loss_weights=None,
+        loss_types={},
         optim_type=optim.Adam,
         optim_kws=dict(
             lr=1e-5,

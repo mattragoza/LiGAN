@@ -10,6 +10,33 @@ import molgrid
 from . import data, models
 
 
+def kl_divergence(means, log_stds):
+    stds = torch.exp(log_stds)
+    means2 = means * means
+    vars = stds * stds
+    return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
+
+
+def wasserstein_loss(predicted, labels):
+    return (2*labels - 1) * predicted
+
+
+def get_recon_loss_fn(loss_type='2'):
+    assert loss_type in {'1', '2'}
+    if loss_type == '1':
+        return torch.nn.L1Loss()
+    else:
+        return torch.nn.MSELoss()
+
+
+def get_gan_loss_fn(loss_type='x'):
+    assert loss_type in {'x', 'w'}
+    if loss_type == 'w':
+        return wasserstein_loss
+    else:
+        return torch.nn.BCEWithLogitsLoss()
+
+
 class Solver(nn.Module):
 
     split_rec_lig = False
@@ -47,6 +74,7 @@ class Solver(nn.Module):
         n_latent,
         init_conv_pool,
         loss_weights,
+        loss_types,
         optim_type,
         optim_kws,
         save_prefix,
@@ -125,7 +153,7 @@ class Solver(nn.Module):
             )
             self.disc_iter = 0
 
-        self.loss_fns = self.initialize_loss()
+        self.loss_fns = self.initialize_loss(loss_types or {})
         self.loss_weights = loss_weights or {}
 
         # set up a data frame of training metrics
@@ -380,8 +408,10 @@ class AESolver(GenerativeSolver):
     def n_channels_in(self):
         return self.train_data.n_lig_channels
 
-    def initialize_loss(self):
-        self.recon_loss_fn = torch.nn.MSELoss()
+    def initialize_loss(self, loss_types):
+        self.recon_loss_fn = get_recon_loss_fn(
+            loss_types.get('recon_loss', '2')
+        )
 
     def compute_loss(self, inputs, generated):
         recon_loss = self.recon_loss_fn(inputs, generated)
@@ -398,20 +428,15 @@ class AESolver(GenerativeSolver):
         return generated, loss, metrics
 
 
-def KL_divergence(means, log_stds):
-    stds = torch.exp(log_stds)
-    means2 = means * means
-    vars = stds * stds
-    return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
-
-
 class VAESolver(AESolver):
     variational = True
     gen_model_type = models.VAE
 
-    def initialize_loss(self):
-        self.recon_loss_fn = torch.nn.MSELoss()
-        self.kldiv_loss_fn = KL_divergence
+    def initialize_loss(self, loss_types):
+        self.kldiv_loss_fn = kl_divergence
+        self.recon_loss_fn = get_recon_loss_fn(
+            loss_types.get('recon_loss', '2')
+        )
 
     def compute_loss(self, inputs, generated, means, log_stds):
         recon_loss = self.recon_loss_fn(generated, inputs)
@@ -445,8 +470,10 @@ class CESolver(GenerativeSolver):
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
 
-    def initialize_loss(self):
-        self.recon_loss_fn = torch.nn.MSELoss()
+    def initialize_loss(self, loss_types):
+        self.recon_loss_fn = get_recon_loss_fn(
+            loss_types.get('recon_loss', '2')
+        )
 
     def compute_loss(self, inputs, generated):
         recon_loss = self.recon_loss_fn(generated, inputs)
@@ -494,8 +521,10 @@ class GANSolver(GenerativeSolver):
     def n_channels_disc(self):
         return self.train_data.n_lig_channels
 
-    def initialize_loss(self):
-        self.gan_loss_fn = torch.nn.BCEWithLogitsLoss()
+    def initialize_loss(self, loss_types):
+        self.gan_loss_fn = get_gan_loss_fn(
+            loss_types.get('gan_loss', 'x')
+        )
 
     def compute_loss(self, inputs, generated):
         gan_loss = self.gan_loss_fn(generated, inputs)
