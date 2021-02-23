@@ -99,15 +99,15 @@ class TestGANSolver(object):
             n_gen_train_iters=2,
             n_disc_train_iters=2,
             test_interval=10,
-            n_test_batches=10,
+            n_test_batches=1,
             save_interval=10,
         )
         assert solver.curr_iter == 10
-        print(solver.metrics)
-        assert len(solver.metrics) == (2*10 + 2*10 + 2*10 + 2)
-        loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc', 0), 'loss']
-        loss_f = solver.metrics.loc[(10, 10, 'test', 'disc', 0), 'loss']
+        print(solver.metrics)         # test train test test_on_train
+        assert len(solver.metrics) == (2*1 + 2*10 + 2*1 + 2*2)
+        loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc'), 'loss'].mean()
+        loss_f = solver.metrics.loc[(10, 10, 'test', 'disc'), 'loss'].mean()
         assert (loss_f - loss_i) < 0
-        loss_i = solver.metrics.loc[( 0,  0, 'test', 'gen', 0), 'loss']
-        loss_f = solver.metrics.loc[(10, 10, 'test', 'gen', 0), 'loss']
+        loss_i = solver.metrics.loc[( 0,  0, 'test', 'gen'), 'loss'].mean()
+        loss_f = solver.metrics.loc[(10, 10, 'test', 'gen'), 'loss'].mean()
         assert (loss_f - loss_i) < 0

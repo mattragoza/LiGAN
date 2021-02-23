@@ -253,6 +253,7 @@ class Solver(nn.Module):
         idx = (self.curr_iter, 'test') # batch mean
         metrics = self.metrics.loc[idx].mean()
         self.print_metrics(idx, metrics)
+        self.save_metrics()
         return metrics
 
     def step(self, update=True):
@@ -487,7 +488,7 @@ class GANSolver(GenerativeSolver):
     variational = True
     adversarial = True
     gen_model_type = models.GAN
-    index_cols = ['gen_iter', 'disc_iter', 'phase', 'model', 'batch']
+    index_cols = ['gen_iter', 'disc_iter', 'phase', 'model', 'batch', 'real']
 
     @property
     def n_channels_disc(self):
@@ -502,6 +503,13 @@ class GANSolver(GenerativeSolver):
             ('loss', gan_loss.item()),
             ('gan_loss', gan_loss.item())
         ])
+
+    def compute_metrics(self, inputs):
+        metrics = OrderedDict()
+        metrics['lig_norm'] = inputs.detach().norm().item()
+        metrics['disc_grad_norm'] = self.disc_model.compute_grad_norm()
+        metrics['gen_grad_norm'] = self.gen_model.compute_grad_norm()
+        return metrics
 
     def disc_forward(self, data, real):
         '''
@@ -520,7 +528,7 @@ class GANSolver(GenerativeSolver):
 
         predictions = self.disc_model(inputs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        metrics.update(self.compute_metrics(inputs))
         return predictions, loss, metrics
 
     def gen_forward(self, data):
@@ -534,43 +542,47 @@ class GANSolver(GenerativeSolver):
 
         predictions = self.disc_model(inputs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        metrics.update(self.compute_metrics(inputs))
         return predictions, loss, metrics
 
     def test(self, n_batches):
 
+        # test discriminator on alternating real/generated batches
         for i in range(n_batches):
+            real = (i%2 == 0)
             t_start = time.time()
             predictions, loss, metrics = self.disc_forward(
-                self.test_data, real=(i%2 == 0)
+                self.test_data, real
             )
             metrics['forward_time'] = time.time() - t_start
-            idx = (self.gen_iter, self.disc_iter, 'test', 'disc', i)
+            idx = (self.gen_iter, self.disc_iter, 'test', 'disc', i, real)
             self.insert_metrics(idx, metrics)
 
         idx = (self.gen_iter, self.disc_iter, 'test', 'disc') # batch mean
         metrics = self.metrics.loc[idx].mean()
         self.print_metrics(idx, metrics)
 
+        # test generator on same number of batches
         for i in range(n_batches):
             t_start = time.time()
             predictions, loss, metrics = self.gen_forward(
                 self.test_data
             )
             metrics['forward_time'] = time.time() - t_start
-            idx = (self.gen_iter, self.disc_iter, 'test', 'gen', i)
+            idx = (self.gen_iter, self.disc_iter, 'test', 'gen', i, False)
             self.insert_metrics(idx, metrics)
 
         idx = (self.gen_iter, self.disc_iter, 'test', 'gen') # batch mean
         metrics = self.metrics.loc[idx].mean()
         self.print_metrics(idx, metrics)
 
-        return self.metrics.loc[idx[:-1]]
+        self.save_metrics()
+        return self.metrics.loc[(self.gen_iter, self.disc_iter, 'test')]
 
-    def disc_step(self, real, update=True):
+    def disc_step(self, real, update=True, batch_idx=0):
 
         idx = (
-            self.gen_iter, self.disc_iter, 'train', 'disc', 0
+            self.gen_iter, self.disc_iter, 'train', 'disc', batch_idx, real
         )
         t_start = time.time()
         predictions, loss, metrics = self.disc_forward(self.train_data, real)
@@ -591,10 +603,10 @@ class GANSolver(GenerativeSolver):
         self.print_metrics(idx[:-1], metrics)
         return metrics
 
-    def gen_step(self, update=True):
+    def gen_step(self, update=True, batch_idx=0):
 
         idx = (
-            self.gen_iter, self.disc_iter, 'train', 'gen', 0
+            self.gen_iter, self.disc_iter, 'train', 'gen', batch_idx, False
         )
         t_start = time.time()
         predictions, loss, metrics = self.gen_forward(self.train_data)
@@ -618,11 +630,14 @@ class GANSolver(GenerativeSolver):
     def train_disc(self, n_iters, update=True):
 
         for i in range(n_iters):
-            self.disc_step(real=(i%2 == 0), update=update)
+            real = (i%2 == 0)
+            batch_idx = 0 if update else i
+            self.disc_step(real, update, batch_idx)
 
     def train_gen(self, n_iters, update=True):
         for i in range(n_iters):
-            self.gen_step(update=update)
+            batch_idx = 0 if update else i
+            self.gen_step(update, batch_idx)
  
     def train(
         self,
@@ -686,7 +701,7 @@ class CGANSolver(GANSolver):
 
         predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        metrics.update(self.compute_metrics(inputs))
         return predictions, loss, metrics
 
     def gen_forward(self, data):
@@ -701,7 +716,7 @@ class CGANSolver(GANSolver):
 
         predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(labels, predictions, inputs))
+        metrics.update(self.compute_metrics(inputs))
         return predictions, loss, metrics
 
 
