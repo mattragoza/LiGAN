@@ -18,13 +18,27 @@ def reduce_list(obj):
     return obj[0] if isinstance(obj, list) and len(obj) == 1 else obj
 
 
+def is_positive_int(x):
+    return isinstance(x, int) and x > 0
+
+
 def compute_grad_norm(model):
     grad_norm2 = 0
     for p in model.parameters():
         if p.grad is None:
-            return np.nan
+            continue
         grad_norm2 += (p.grad.data**2).sum().item()
     return grad_norm2**(1/2)
+
+
+def normalize_grad(model):
+    grad_norm = compute_grad_norm(model)
+    if grad_norm is None:
+        return
+    for p in model.parameters():
+        if p.grad is None:
+            continue
+        p.grad /= grad_norm
 
 
 class ConvReLU(nn.Sequential):
@@ -202,6 +216,7 @@ class Encoder(nn.Module):
     # - densely-connected
     # - batch discrimination
     # - fully-convolutional
+    # - skip connections
     
     def __init__(
         self,
@@ -308,9 +323,6 @@ class Encoder(nn.Module):
 
         return reduce_list(outputs)
 
-    def compute_grad_norm(self):
-        return compute_grad_norm(self)
-
 
 class Decoder(nn.Sequential):
 
@@ -319,6 +331,7 @@ class Decoder(nn.Sequential):
     # - densely-connected
     # - fully-convolutional
     # - gaussian output
+    # - skip connections
 
     def __init__(
         self,
@@ -386,15 +399,8 @@ class Decoder(nn.Sequential):
         self.modules.append(deconv_block)
         self.n_channels = n_filters
 
-    def compute_grad_norm(self):
-        return compute_grad_norm(self)
 
-
-def is_positive_int(x):
-    return isinstance(x, int) and x > 0
-
-
-class Generator(nn.Module):
+class Generator(nn.Sequential):
     has_input_encoder = False
     has_conditional_encoder = False
     variational = False
@@ -510,9 +516,6 @@ class Generator(nn.Module):
         if means is not None:
             latents += means
         return latents
-
-    def compute_grad_norm(self):
-        return compute_grad_norm(self)
 
 
 class AE(Generator):

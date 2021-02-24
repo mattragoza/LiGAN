@@ -75,6 +75,7 @@ class Solver(nn.Module):
         init_conv_pool,
         loss_weights,
         loss_types,
+        grad_norms,
         optim_type,
         optim_kws,
         save_prefix,
@@ -155,6 +156,8 @@ class Solver(nn.Module):
 
         self.loss_fns = self.initialize_loss(loss_types or {})
         self.loss_weights = loss_weights or {}
+
+        self.grad_norms = self.initialize_norm(grad_norms or {})
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -270,6 +273,18 @@ class Solver(nn.Module):
     def forward(self, data):
         raise NotImplementedError
 
+    def initialize_norm(self, grad_norms):
+        self.gen_grad_norm = grad_norms.get('gen', '0')
+        self.disc_grad_norm = grad_norms.get('disc', '0')
+        assert self.gen_grad_norm in {'0', '2', 's'}
+        assert self.disc_grad_norm in {'0', '2', 's'}
+
+    def normalize_grad(self):
+        if self.gen_grad_norm == '2':
+            models.normalize_grad(self.gen_model)
+        if self.disc_grad_norm == '2':
+            models.normalize_grad(self.disc_model)
+
     def test(self, n_batches):
 
         for i in range(n_batches):
@@ -296,6 +311,7 @@ class Solver(nn.Module):
             t_start = time.time()
             self.optimizer.zero_grad()
             loss.backward()
+            self.normalize_grad()
             self.optimizer.step()
             torch.cuda.synchronize()
             metrics['backward_time'] = time.time() - t_start
@@ -356,7 +372,7 @@ class DiscriminativeSolver(Solver):
         metrics = OrderedDict()
         metrics['true_norm'] = labels.detach().norm().item()
         metrics['pred_norm'] = predictions.detach().norm().item()
-        metrics['grad_norm'] = self.model.compute_grad_norm()
+        metrics['grad_norm'] = models.compute_grad_norm(self.model)
         return metrics
 
     def forward(self, data):
@@ -396,7 +412,7 @@ class GenerativeSolver(Solver):
         metrics['lig_norm'] = inputs.detach().norm().item()
         metrics['lig_gen_norm'] = generated.detach().norm().item()
         metrics['latent_norm'] = latents.detach().norm().item()
-        metrics['gen_grad_norm'] = self.model.compute_grad_norm()
+        metrics['gen_grad_norm'] = models.compute_grad_norm(self.model)
         return metrics
 
 
@@ -536,8 +552,8 @@ class GANSolver(GenerativeSolver):
     def compute_metrics(self, inputs):
         metrics = OrderedDict()
         metrics['lig_norm'] = inputs.detach().norm().item()
-        metrics['disc_grad_norm'] = self.disc_model.compute_grad_norm()
-        metrics['gen_grad_norm'] = self.gen_model.compute_grad_norm()
+        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
+        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
         return metrics
 
     def disc_forward(self, data, real):

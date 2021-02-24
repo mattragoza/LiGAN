@@ -39,6 +39,7 @@ def solver(request):
         init_conv_pool=False,
         loss_weights=None,
         loss_types={},
+        grad_norms={},
         optim_type=optim.Adam,
         optim_kws=dict(
             lr=1e-5,
