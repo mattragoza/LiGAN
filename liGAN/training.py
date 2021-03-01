@@ -279,12 +279,6 @@ class Solver(nn.Module):
         assert self.gen_grad_norm in {'0', '2', 's'}
         assert self.disc_grad_norm in {'0', '2', 's'}
 
-    def normalize_grad(self):
-        if self.gen_grad_norm == '2':
-            models.normalize_grad(self.gen_model)
-        if self.disc_grad_norm == '2':
-            models.normalize_grad(self.disc_model)
-
     def test(self, n_batches):
 
         for i in range(n_batches):
@@ -368,6 +362,10 @@ class DiscriminativeSolver(Solver):
     def curr_iter(self, i):
         self.disc_iter = i
 
+    def normalize_grad(self):
+        if self.disc_grad_norm == '2':
+            models.normalize_grad(self.disc_model)
+
     def compute_metrics(self, labels, predictions):
         metrics = OrderedDict()
         metrics['true_norm'] = labels.detach().norm().item()
@@ -406,6 +404,10 @@ class GenerativeSolver(Solver):
     @curr_iter.setter
     def curr_iter(self, i):
         self.gen_iter = i
+
+    def normalize_grad(self):
+        if self.gen_grad_norm == '2':
+            models.normalize_grad(self.gen_model)
 
     def compute_metrics(self, inputs, generated, latents):
         metrics = OrderedDict()
@@ -541,6 +543,12 @@ class GANSolver(GenerativeSolver):
         self.gan_loss_fn = get_gan_loss_fn(
             loss_types.get('gan_loss', 'x')
         )
+
+    def normalize_grad(self):
+        if self.gen_grad_norm == '2':
+            models.normalize_grad(self.gen_model)
+        if self.disc_grad_norm == '2':
+            models.normalize_grad(self.disc_model)
 
     def compute_loss(self, inputs, generated):
         gan_loss = self.gan_loss_fn(generated, inputs)

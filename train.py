@@ -51,15 +51,18 @@ def parse_args(argv):
     parser.add_argument('--kldiv_loss_wt', default=1.0, type=float)
     parser.add_argument('--recon_loss_wt', default=1.0, type=float)
     parser.add_argument('--gan_loss_wt', default=1.0, type=float)
+    parser.add_argument('--recon_loss_type', default='2', help='1|2')
+    parser.add_argument('--gan_loss_type', default='x', help='x|w')
     parser.add_argument('--optim_type', default='Adam', help='SGD|Adam')
     parser.add_argument('--learning_rate', default=1e-5, type=float)
     parser.add_argument('--momentum', default=0.9, type=float)
     parser.add_argument('--beta1', default=0.9, type=float)
     parser.add_argument('--beta2', default=0.999, type=float)
-    parser.add_argument('--clip_gradient', default=0, type=float)
     parser.add_argument('--max_iter', default=100000, type=int, help='maximum number of training iterations (default 100,000)')
     parser.add_argument('--n_gen_train_iters', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
     parser.add_argument('--n_disc_train_iters', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
+    parser.add_argument('--gen_grad_norm', default='0', help='0|2|s')
+    parser.add_argument('--disc_grad_norm', default='0', help='0|2|s')
     parser.add_argument('--test_interval', default=100, type=int, help='evaluate test data every # train iters (default 100)')
     parser.add_argument('--n_test_batches', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
     parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
@@ -72,10 +75,6 @@ def parse_args(argv):
     parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
-    parser.add_argument('--gen_grad_norm', default=False, action='store_true', help='gen gradient normalization')
-    parser.add_argument('--disc_grad_norm', default=False, action='store_true', help='disc gradient normalization')
-    parser.add_argument('--gen_spectral_norm', default=False, action='store_true', help='gen spectral normalization')
-    parser.add_argument('--disc_spectral_norm', default=False, action='store_true', help='disc spectral normalization')
     parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
     parser.add_argument('--lr_policy', type=str, help='learning rate policy')
     parser.add_argument('--weight_decay', type=float, help='weight decay (L2 regularization)')
@@ -85,7 +84,6 @@ def parse_args(argv):
 
 def main(argv):
     args = parse_args(argv)
-    assert not args.clip_gradient, 'TODO gradient clipping/normalization'
 
     if args.wandb:
         import wandb
@@ -132,6 +130,14 @@ def main(argv):
             kldiv_loss=args.kldiv_loss_wt,
             recon_loss=args.recon_loss_wt,
             gan_loss=args.gan_loss_wt
+        ),
+        loss_types=dict(
+            recon_loss=args.recon_loss_type,
+            gan_loss=args.gan_loss_type,
+        ),
+        grad_norms=dict(
+            gen=args.gen_grad_norm,
+            disc=args.disc_grad_norm,
         ),
         optim_type=getattr(torch.optim, args.optim_type),
         optim_kws=dict([
