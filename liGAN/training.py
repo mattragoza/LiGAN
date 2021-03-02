@@ -409,10 +409,10 @@ class GenerativeSolver(Solver):
         if self.gen_grad_norm == '2':
             models.normalize_grad(self.gen_model)
 
-    def compute_metrics(self, inputs, generated, latents):
+    def compute_metrics(self, real_ligs, gen_ligs, latents):
         metrics = OrderedDict()
-        metrics['lig_norm'] = inputs.detach().norm().item()
-        metrics['lig_gen_norm'] = generated.detach().norm().item()
+        metrics['lig_norm'] = real_ligs.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
         metrics['latent_norm'] = latents.detach().norm().item()
         metrics['gen_grad_norm'] = models.compute_grad_norm(self.model)
         return metrics
@@ -431,19 +431,19 @@ class AESolver(GenerativeSolver):
             loss_types.get('recon_loss', '2')
         )
 
-    def compute_loss(self, inputs, generated):
-        recon_loss = self.recon_loss_fn(inputs, generated)
+    def compute_loss(self, real_ligs, gen_ligs):
+        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
         return recon_loss, OrderedDict([
             ('loss', recon_loss.item()),
             ('recon_loss', recon_loss.item())
         ])
 
     def forward(self, data):
-        inputs, _ = data.forward()
-        generated, latents = self.gen_model(inputs)
-        loss, metrics = self.compute_loss(inputs, generated)
-        metrics.update(self.compute_metrics(inputs, generated, latents))
-        return generated, loss, metrics
+        real_ligs, _ = data.forward()
+        gen_ligs, latents = self.gen_model(real_ligs)
+        loss, metrics = self.compute_loss(real_ligs, gen_ligs)
+        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
+        return gen_ligs, loss, metrics
 
 
 class VAESolver(AESolver):
@@ -456,8 +456,8 @@ class VAESolver(AESolver):
             loss_types.get('recon_loss', '2')
         )
 
-    def compute_loss(self, inputs, generated, means, log_stds):
-        recon_loss = self.recon_loss_fn(generated, inputs)
+    def compute_loss(self, real_ligs, gen_ligs, means, log_stds):
+        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
             self.loss_weights.get('recon_loss', 1.0) * recon_loss
@@ -471,13 +471,15 @@ class VAESolver(AESolver):
         ])
 
     def forward(self, data):
-        inputs, _ = data.forward()
-        generated, latents, means, log_stds = self.gen_model(
-            inputs, data.batch_size
+        real_ligs, _ = data.forward()
+        gen_ligs, latents, means, log_stds = self.gen_model(
+            real_ligs, data.batch_size
         )
-        loss, metrics = self.compute_loss(inputs, generated, means, log_stds)
-        metrics.update(self.compute_metrics(inputs, generated, latents))
-        return generated, loss, metrics
+        loss, metrics = self.compute_loss(
+            real_ligs, gen_ligs, means, log_stds
+        )
+        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
+        return gen_ligs, loss, metrics
 
 
 class CESolver(GenerativeSolver):
@@ -493,19 +495,19 @@ class CESolver(GenerativeSolver):
             loss_types.get('recon_loss', '2')
         )
 
-    def compute_loss(self, inputs, generated):
-        recon_loss = self.recon_loss_fn(generated, inputs)
+    def compute_loss(self, real_ligs, gen_ligs):
+        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
         return recon_loss, OrderedDict([
             ('loss', recon_loss.item()),
             ('recon_loss', recon_loss.item())
         ])
 
     def forward(self, data):
-        (context, missing), _ = data.forward()
-        generated, latents = self.gen_model(context)
-        loss, metrics = self.compute_loss(missing, generated)
-        metrics.update(self.compute_metrics(missing, generated, latents))
-        return generated, loss, metrics
+        (real_recs, real_ligs), _ = data.forward()
+        gen_ligs, latents = self.gen_model(real_recs)
+        loss, metrics = self.compute_loss(real_ligs, gen_ligs)
+        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
+        return gen_ligs, loss, metrics
 
 
 class CVAESolver(VAESolver):
@@ -523,14 +525,16 @@ class CVAESolver(VAESolver):
         return self.train_data.n_rec_channels
 
     def forward(self, data):
-        (conditions, real), _ = data.forward()
-        inputs = data.grids
-        generated, latents, means, log_stds = self.gen_model(
-            inputs, conditions, data.batch_size
+        (real_recs, real_ligs), _ = data.forward()
+        real_complexes = data.grids
+        gen_ligs, latents, means, log_stds = self.gen_model(
+            real_complexes, real_recs, data.batch_size
         )
-        loss, metrics = self.compute_loss(real, generated, means, log_stds)
-        metrics.update(self.compute_metrics(real, generated, latents))
-        return generated, loss, metrics
+        loss, metrics = self.compute_loss(
+            real_ligs, gen_ligs, means, log_stds
+        )
+        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
+        return gen_ligs, loss, metrics
 
 
 class GANSolver(GenerativeSolver):
@@ -577,17 +581,19 @@ class GANSolver(GenerativeSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
-                inputs, _ = data.forward()
+                real_ligs, _ = data.forward()
                 labels = torch.ones(data.batch_size, 1, device=self.device)
+                ligs = real_ligs
 
             else: # get generated examples
-                inputs, latents = self.gen_model(data.batch_size)
+                gen_ligs, _ = self.gen_model(data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
+                ligs = gen_ligs
 
-        predictions = self.disc_model(inputs)
+        predictions = self.disc_model(ligs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(inputs))
-        return predictions, loss, metrics
+        metrics.update(self.compute_metrics(ligs))
+        return ligs, loss, metrics
 
     def gen_forward(self, data):
         '''
@@ -595,13 +601,13 @@ class GANSolver(GenerativeSolver):
         to produce data that is misclassified by the discriminator.
         '''
         # get generated examples
-        inputs, latents = self.gen_model(data.batch_size)
+        gen_ligs, _ = self.gen_model(data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions = self.disc_model(inputs)
+        predictions = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(inputs))
-        return predictions, loss, metrics
+        return gen_ligs, loss, metrics
 
     def test(self, n_batches):
 
@@ -609,7 +615,7 @@ class GANSolver(GenerativeSolver):
         for i in range(n_batches):
             real = (i%2 == 0)
             t_start = time.time()
-            predictions, loss, metrics = self.disc_forward(
+            ligs, loss, metrics = self.disc_forward(
                 self.test_data, real
             )
             metrics['forward_time'] = time.time() - t_start
@@ -623,7 +629,7 @@ class GANSolver(GenerativeSolver):
         # test generator on same number of batches
         for i in range(n_batches):
             t_start = time.time()
-            predictions, loss, metrics = self.gen_forward(
+            ligs, loss, metrics = self.gen_forward(
                 self.test_data
             )
             metrics['forward_time'] = time.time() - t_start
@@ -643,7 +649,7 @@ class GANSolver(GenerativeSolver):
             self.gen_iter, self.disc_iter, 'train', 'disc', batch_idx, real
         )
         t_start = time.time()
-        predictions, loss, metrics = self.disc_forward(self.train_data, real)
+        ligs, loss, metrics = self.disc_forward(self.train_data, real)
         torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
         
@@ -667,7 +673,7 @@ class GANSolver(GenerativeSolver):
             self.gen_iter, self.disc_iter, 'train', 'gen', batch_idx, False
         )
         t_start = time.time()
-        predictions, loss, metrics = self.gen_forward(self.train_data)
+        ligs, loss, metrics = self.gen_forward(self.train_data)
         torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
 
@@ -741,47 +747,112 @@ class CGANSolver(GANSolver):
         return self.train_data.n_rec_channels
 
     def disc_forward(self, data, real):
-        '''
-        Compute predictions and loss for the discriminator's
-        ability to correctly classify real or generated data.
-        '''
+
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (conditions, inputs), _ = data.forward()
-
+            (real_recs, real_ligs), _ = data.forward()
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
+                ligs = real_ligs
 
             else: # get generated examples
-                inputs, latents = self.gen_model(conditions, data.batch_size)
+                gen_ligs, _ = self.gen_model(real_recs, data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
+                ligs = gen_ligs
 
-        predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
+        predictions = self.disc_model(torch.cat([real_recs, ligs], dim=1))
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(inputs))
-        return predictions, loss, metrics
+        metrics.update(self.compute_metrics(ligs))
+        return ligs, loss, metrics
 
     def gen_forward(self, data):
-        '''
-        Compute predictions and loss for the generator's ability
-        to produce data that is misclassified by the discriminator.
-        '''
+
         # get generated examples
-        (conditions, inputs), _ = data.forward()
-        inputs, latents = self.gen_model(conditions, data.batch_size)
+        (real_recs, real_ligs), _ = data.forward()
+        gen_ligs, _ = self.gen_model(real_recs, data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions = self.disc_model(torch.cat([conditions, inputs], dim=1))
+        predictions = self.disc_model(torch.cat([real_recs, gen_ligs], dim=1))
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(inputs))
-        return predictions, loss, metrics
+        metrics.update(self.compute_metrics(gen_ligs))
+        return gen_ligs, loss, metrics
 
 
 class VAEGANSolver(GANSolver):
-    pass
+    gen_model_type = models.VAE
+
+    @property
+    def n_channels_in(self):
+        return self.train_data.n_lig_channels
+
+    def initialize_loss(self, loss_types):
+        self.kldiv_loss_fn = kl_divergence
+        self.recon_loss_fn = get_recon_loss_fn(
+            loss_types.get('recon_loss', '2')
+        )
+        self.gan_loss_fn = get_gan_loss_fn(
+            loss_types.get('gan_loss', 'x')
+        )
+
+    def compute_loss(self, inputs, generated, means, log_stds):
+        recon_loss = self.recon_loss_fn(generated, inputs)
+        kldiv_loss = self.kldiv_loss_fn(means, log_stds)
+        gan_loss = self.gan_loss_fn(generated)
+        loss = (
+            self.loss_weights.get('recon_loss', 1.0) * recon_loss
+        ) + (
+            self.loss_weights.get('kldiv_loss', 1.0) * kldiv_loss
+        ) + (
+            self.loss_weights.get('gan_loss', 1.0) * gan_loss
+        )
+        return loss, OrderedDict([
+            ('loss', loss.item()),
+            ('recon_loss', recon_loss.item()),
+            ('kldiv_loss', kldiv_loss.item()),
+            ('gan_loss', gan_loss.item()),
+        ])
+
+    def disc_forward(self, data, real):
+
+        with torch.no_grad(): # do not backprop to generator or data
+
+            # get real examples
+            real_ligs, _ = data.forward()
+            if real:
+                labels = torch.ones(data.batch_size, 1, device=self.device)
+                ligs = real_ligs
+                gen_ligs = latents = means = log_stds = None
+
+            else: # get generated examples
+                gen_ligs, latents, means, log_stds = self.gen_model(
+                    real_ligs, data.batch_size
+                )
+                labels = torch.zeros(data.batch_size, 1, device=self.device)
+                ligs = gen_ligs
+
+        predictions = self.disc_model(ligs)
+        loss, metrics = self.compute_loss(real_ligs, gen_ligs, means, log_stds)
+        metrics.update(self.compute_metrics(ligs))
+        return ligs, loss, metrics
+
+    def gen_forward(self, data):
+
+        # get generated examples
+        real_ligs, _ = data.forward()
+        gen_ligs, latents, means, log_stds = self.gen_model(
+            real_ligs, data.batch_size
+        )
+        labels = torch.ones(data.batch_size, 1, device=self.device)
+
+        predictions = self.disc_model(gen_ligs)
+        loss, metrics = self.compute_loss(
+            real_ligs, gen_ligs, means, log_stds
+        )
+        metrics.update(self.compute_metrics(gen_ligs))
+        return gen_ligs, loss, metrics
 
 
-class CVAEGANSolver(GANSolver):
-    pass
-
+class CVAEGANSolver(VAEGANSolver):
+    ligand_only = False
+    gen_model_type = models.CVAE
