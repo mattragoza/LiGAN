@@ -513,18 +513,23 @@ class CVAESolver(VAESolver):
     gen_model_type = models.CVAE
 
     @property
+    def n_channels_in(self):
+        return (
+            self.train_data.n_rec_channels + self.train_data.n_lig_channels
+        )
+
+    @property
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
 
     def forward(self, data):
-        asdf = data.forward()
-        print(type(asdf), len(asdf))
-        (conditions, inputs), _ = asdf #data.forward()
+        (conditions, real), _ = data.forward()
+        inputs = data.grids
         generated, latents, means, log_stds = self.gen_model(
             inputs, conditions, data.batch_size
         )
-        loss, metrics = self.compute_loss(inputs, generated, means, log_stds)
-        metrics.update(self.compute_metrics(inputs, generated, latents))
+        loss, metrics = self.compute_loss(real, generated, means, log_stds)
+        metrics.update(self.compute_metrics(real, generated, latents))
         return generated, loss, metrics
 
 
