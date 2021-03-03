@@ -55,9 +55,10 @@ def parse_args(argv):
     parser.add_argument('--gan_loss_type', default='x', help='x|w')
     parser.add_argument('--optim_type', default='Adam', help='SGD|Adam')
     parser.add_argument('--learning_rate', default=1e-5, type=float)
-    parser.add_argument('--momentum', default=0.9, type=float)
-    parser.add_argument('--beta1', default=0.9, type=float)
-    parser.add_argument('--beta2', default=0.999, type=float)
+    parser.add_argument('--momentum', default=0.0, type=float)
+    parser.add_argument('--alpha', default=0.99, type=float, help='for RMSprop optimizer')
+    parser.add_argument('--beta1', default=0.9, type=float, help='for Adam optimizer')
+    parser.add_argument('--beta2', default=0.999, type=float, help='for Adam optimizer')
     parser.add_argument('--max_iter', default=100000, type=int, help='maximum number of training iterations (default 100,000)')
     parser.add_argument('--n_gen_train_iters', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
     parser.add_argument('--n_disc_train_iters', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
@@ -144,7 +145,8 @@ def main(argv):
             ('lr', args.learning_rate)
         ] + dict(
             SGD=[('momentum', args.momentum)],
-            Adam=[('betas', (args.beta1, args.beta2))]
+            Adam=[('betas', (args.beta1, args.beta2))],
+            RMSprop=[('momentum', args.momentum), ('alpha', args.alpha)],
         ).get(args.optim_type, [])
         ),
         save_prefix='TEST',
