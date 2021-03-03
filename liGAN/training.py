@@ -376,7 +376,7 @@ class DiscriminativeSolver(Solver):
     def forward(self, data):
         inputs, labels = data.forward()
         predictions = self.disc_model(inputs)
-        loss, metrics = self.compute_loss(labels, predictions)
+        loss, metrics = self.compute_loss(predictions, labels)
         metrics.update(self.compute_metrics(labels, predictions))
         return predictions, loss, metrics
 
@@ -432,9 +432,10 @@ class AESolver(GenerativeSolver):
         )
 
     def compute_loss(self, real_ligs, gen_ligs):
-        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
-        return recon_loss, OrderedDict([
-            ('loss', recon_loss.item()),
+        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
+        loss = self.loss_weights.get('recon_loss', 1.0) * recon_loss
+        return loss, OrderedDict([
+            ('loss', loss.item()),
             ('recon_loss', recon_loss.item())
         ])
 
@@ -457,7 +458,7 @@ class VAESolver(AESolver):
         )
 
     def compute_loss(self, real_ligs, gen_ligs, means, log_stds):
-        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
+        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
             self.loss_weights.get('recon_loss', 1.0) * recon_loss
@@ -496,9 +497,10 @@ class CESolver(GenerativeSolver):
         )
 
     def compute_loss(self, real_ligs, gen_ligs):
-        recon_loss = self.recon_loss_fn(real_ligs, gen_ligs)
-        return recon_loss, OrderedDict([
-            ('loss', recon_loss.item()),
+        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
+        loss = self.loss_weights.get('recon_loss', 1.0) * recon_loss
+        return loss, OrderedDict([
+            ('loss', loss.item()),
             ('recon_loss', recon_loss.item())
         ])
 
@@ -559,16 +561,17 @@ class GANSolver(GenerativeSolver):
         if self.disc_grad_norm == '2':
             models.normalize_grad(self.disc_model)
 
-    def compute_loss(self, inputs, generated):
-        gan_loss = self.gan_loss_fn(generated, inputs)
-        return gan_loss, OrderedDict([
-            ('loss', gan_loss.item()),
+    def compute_loss(self, labels, predictions):
+        gan_loss = self.gan_loss_fn(predictions, labels)
+        loss = self.loss_weights.get('gan_loss', 1.0) * gan_loss
+        return loss, OrderedDict([
+            ('loss', loss.item()),
             ('gan_loss', gan_loss.item())
         ])
 
-    def compute_metrics(self, inputs):
+    def compute_metrics(self, ligs):
         metrics = OrderedDict()
-        metrics['lig_norm'] = inputs.detach().norm().item()
+        metrics['lig_norm'] = ligs.detach().norm().item()
         metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
         return metrics
@@ -606,7 +609,7 @@ class GANSolver(GenerativeSolver):
 
         predictions = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(inputs))
+        metrics.update(self.compute_metrics(gen_ligs))
         return gen_ligs, loss, metrics
 
     def test(self, n_batches):
@@ -733,7 +736,6 @@ class GANSolver(GenerativeSolver):
 
 class CGANSolver(GANSolver):
     ligand_only = False
-    split_rec_lig = True
     gen_model_type = models.CGAN
 
     @property
@@ -761,7 +763,8 @@ class CGANSolver(GANSolver):
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
                 ligs = gen_ligs
 
-        predictions = self.disc_model(torch.cat([real_recs, ligs], dim=1))
+        complexes = torch.cat([real_recs, ligs], dim=1)
+        predictions = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(ligs))
         return ligs, loss, metrics
@@ -773,7 +776,8 @@ class CGANSolver(GANSolver):
         gen_ligs, _ = self.gen_model(real_recs, data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions = self.disc_model(torch.cat([real_recs, gen_ligs], dim=1))
+        complexes = torch.cat([real_recs, gen_ligs], dim=1)
+        predictions = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(gen_ligs))
         return gen_ligs, loss, metrics
@@ -795,23 +799,32 @@ class VAEGANSolver(GANSolver):
             loss_types.get('gan_loss', 'x')
         )
 
-    def compute_loss(self, inputs, generated, means, log_stds):
-        recon_loss = self.recon_loss_fn(generated, inputs)
+    def compute_loss(
+        self, labels, predictions, real_ligs, gen_ligs, means, log_stds
+    ):
+        gan_loss = self.gan_loss_fn(predictions, labels)
+        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
-        gan_loss = self.gan_loss_fn(generated)
         loss = (
+            self.loss_weights.get('gan_loss', 1.0) * gan_loss
+        ) + (
             self.loss_weights.get('recon_loss', 1.0) * recon_loss
         ) + (
             self.loss_weights.get('kldiv_loss', 1.0) * kldiv_loss
-        ) + (
-            self.loss_weights.get('gan_loss', 1.0) * gan_loss
         )
         return loss, OrderedDict([
             ('loss', loss.item()),
+            ('gan_loss', gan_loss.item()),
             ('recon_loss', recon_loss.item()),
             ('kldiv_loss', kldiv_loss.item()),
-            ('gan_loss', gan_loss.item()),
         ])
+
+    def compute_gen_metrics(self):
+        metrics['lig_norm'] = real_ligs.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
+        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
+        return metrics
 
     def disc_forward(self, data, real):
 
@@ -822,7 +835,6 @@ class VAEGANSolver(GANSolver):
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
                 ligs = real_ligs
-                gen_ligs = latents = means = log_stds = None
 
             else: # get generated examples
                 gen_ligs, latents, means, log_stds = self.gen_model(
@@ -832,7 +844,15 @@ class VAEGANSolver(GANSolver):
                 ligs = gen_ligs
 
         predictions = self.disc_model(ligs)
-        loss, metrics = self.compute_loss(real_ligs, gen_ligs, means, log_stds)
+
+        if real:
+            loss, metrics = GANSolver.compute_loss(
+                self, labels, predictions
+            )
+        else:
+            loss, metrics = self.compute_loss(
+                labels, predictions, real_ligs, gen_ligs, means, log_stds
+            )
         metrics.update(self.compute_metrics(ligs))
         return ligs, loss, metrics
 
@@ -847,7 +867,7 @@ class VAEGANSolver(GANSolver):
 
         predictions = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(
-            real_ligs, gen_ligs, means, log_stds
+            labels, predictions, real_ligs, gen_ligs, means, log_stds
         )
         metrics.update(self.compute_metrics(gen_ligs))
         return gen_ligs, loss, metrics
