@@ -314,17 +314,19 @@ class Encoder(nn.Module):
     def forward(self, input):
 
         # conv pool sequence
+        grid_outputs = []
         for f in self.grid_modules:
             output = f(input)
+            grid_outputs.append(output)
             input = output
 
         # fully-connected outputs
         outputs = [f(input) for f in self.task_modules]
 
-        return reduce_list(outputs)
+        return reduce_list(outputs), grid_outputs
 
 
-class Decoder(nn.Sequential):
+class Decoder(nn.Module):
 
     # TODO re-implement the following:
     # - self-attention
@@ -348,56 +350,84 @@ class Decoder(nn.Sequential):
         n_output,
         final_unpool=False,
     ):
-        self.modules = []
+        super().__init__()
 
         # first fc layer maps to initial grid shape
+        self.fc_modules = []
         self.n_input = n_input
-        self.add_fc_reshape(n_input, n_channels, grid_size, relu_leak)
+        self.add_fc_reshape(
+            'fc', n_input, n_channels, grid_size, relu_leak
+        )
         n_filters = n_channels
 
+        self.grid_modules = []
         for i in reversed(range(n_levels)):
 
             if i + 1 < n_levels: # unpool between deconv blocks
-                self.add_unpool(unpool_type, unpool_factor)
+                unpool_name = 'level' + str(i) + '_unpool'
+                self.add_unpool(
+                    unpool_name, unpool_type, unpool_factor
+                )
                 n_filters //= width_factor
 
+            deconv_block_name = 'level' + str(i)
             self.add_deconv_block(
-                deconv_per_level, n_filters, kernel_size, relu_leak
+                deconv_block_name,
+                deconv_per_level,
+                n_filters,
+                kernel_size,
+                relu_leak
             )
 
         if final_unpool:
-            self.add_unpool(unpool_type, unpool_factor)
+            self.add_unpool('final_unpool', unpool_type, unpool_factor)
 
         # final deconv maps to correct n_output channels
-        self.add_deconv(n_output, kernel_size, relu_leak)
+        self.add_deconv('final_conv', n_output, kernel_size, relu_leak)
 
-        super().__init__(*self.modules)
-
-    def add_fc_reshape(self, n_input, n_channels, grid_size, relu_leak):
+    def add_fc_reshape(self, name, n_input, n_channels, grid_size, relu_leak):
         out_shape = (n_channels,) + (grid_size,)*3
         fc_reshape = FcReshape(n_input, out_shape, relu_leak)
-        self.modules.append(fc_reshape)
+        self.add_module(name, fc_reshape)
+        self.fc_modules.append(fc_reshape)
         self.n_channels = n_channels
         self.grid_size = grid_size
 
-    def add_unpool(self, unpool_type, unpool_factor):
+    def add_unpool(self, name, unpool_type, unpool_factor):
         unpool = Unpooling(self.n_channels, unpool_type, unpool_factor)
-        self.modules.append(unpool)
+        self.add_module(name, unpool)
+        self.grid_modules.append(unpool)
         self.grid_size *= unpool_factor
 
-    def add_deconv(self, n_filters, kernel_size, relu_leak):
+    def add_deconv(self, name, n_filters, kernel_size, relu_leak):
         deconv = DeconvReLU(
             self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.modules.append(deconv)
+        self.add_module(name, deconv)
+        self.grid_modules.append(deconv)
         self.n_channels = n_filters
 
-    def add_deconv_block(self, n_deconvs, n_filters, kernel_size, relu_leak):
+    def add_deconv_block(
+        self, name, n_deconvs, n_filters, kernel_size, relu_leak
+    ):
         deconv_block = DeconvBlock(
             n_deconvs, self.n_channels, n_filters, kernel_size, relu_leak
         )
-        self.modules.append(deconv_block)
+        self.add_module(name, deconv_block)
+        self.grid_modules.append(deconv_block)
         self.n_channels = n_filters
+
+    def forward(self, input):
+
+        for f in self.fc_modules:
+            output = f(input)
+            input = output
+
+        for f in self.grid_modules:
+            output = f(input)
+            input = output
+
+        return output
 
 
 class Generator(nn.Sequential):
@@ -522,7 +552,7 @@ class AE(Generator):
     has_input_encoder = True
 
     def forward(self, inputs):
-        latents = self.input_encoder(inputs)
+        latents, _ = self.input_encoder(inputs)
         return self.decoder(latents), latents
 
 
@@ -532,7 +562,7 @@ class VAE(AE):
     def forward(self, inputs, batch_size):
 
         if inputs is not None: # posterior
-            means, log_stds = self.input_encoder(inputs)
+            (means, log_stds), _ = self.input_encoder(inputs)
         else: # prior
             means, log_stds = None, None
 
@@ -545,7 +575,7 @@ class CE(Generator):
     has_conditional_encoder = True
 
     def forward(self, conditions):
-        latents = self.conditional_encoder(conditions)
+        latents, grid_outputs = self.conditional_encoder(conditions)
         return self.decoder(latents), latents
 
 
@@ -555,12 +585,12 @@ class CVAE(VAE):
     def forward(self, inputs, conditions, batch_size):
 
         if inputs is not None: # posterior
-            means, log_stds = self.input_encoder(inputs)
+            (means, log_stds), _ = self.input_encoder(inputs)
         else: # prior
             means, log_stds = None, None
 
         input_latents = self.sample_latents(batch_size, means, log_stds)
-        conditional_latents = self.conditional_encoder(conditions)
+        conditional_latents, grid_outputs = self.conditional_encoder(conditions)
         latents = torch.cat([input_latents, conditional_latents], dim=1)
 
         return self.decoder(latents), latents, means, log_stds
@@ -579,6 +609,6 @@ class CGAN(GAN):
 
     def forward(self, conditions, batch_size):
         sampled_latents = self.sample_latents(batch_size)
-        conditional_latents = self.conditional_encoder(conditions)
+        conditional_latents, grid_outputs = self.conditional_encoder(conditions)
         latents = torch.cat([sampled_latents, conditional_latents], dim=1)
         return self.decoder(latents), latents

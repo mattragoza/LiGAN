@@ -85,12 +85,12 @@ class TestEncoder(object):
 
     def test_enc1_forward(self, enc1):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y = enc1(x)
+        y, _ = enc1(x)
         assert y.shape == (10, 128)
 
     def test_enc1_backward(self, enc1):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y = enc1(x)
+        y, _ = enc1(x)
         y.backward(torch.zeros(10, 128).cuda())
 
     def test_enc2_init(self, enc2):
@@ -101,12 +101,12 @@ class TestEncoder(object):
 
     def test_enc2_forward(self, enc2):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y0, y1 = enc2(x)
+        (y0, y1), _ = enc2(x)
         assert y0.shape == y1.shape == (10, 128)
 
     def test_enc2_backward(self, enc2):
         x = torch.zeros(10, 19, 8, 8, 8).cuda()
-        y0, y1 = enc2(x)
+        (y0, y1), _ = enc2(x)
         (y0 + y1).backward(torch.zeros(10, 128).cuda())
 
 
@@ -129,7 +129,8 @@ class TestDecoder(object):
         ).cuda()
 
     def test_init(self, dec):
-        assert len(dec.modules) == 7
+        assert len(dec.fc_modules) == 1
+        assert len(dec.grid_modules) == 6
         assert dec.n_channels == 19
         assert dec.grid_size == 8
 
