@@ -8,7 +8,7 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['GAN', 'CGAN', 'VAEGAN']) #, 'CVAEGAN'])
+@pytest.fixture(params=['GAN', 'CGAN', 'VAEGAN', 'CVAEGAN'])
 def solver(request):
     return getattr(
         liGAN.training, request.param + 'Solver'

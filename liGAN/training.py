@@ -13,12 +13,14 @@ from . import data, models
 def kl_divergence(means, log_stds):
     stds = torch.exp(log_stds)
     means2 = means * means
-    vars = stds * stds
-    return (-log_stds + means2/2 + vars/2 - 1/2).sum() / means.shape[0]
+    vars_ = stds * stds
+    return (
+        -log_stds + means2/2 + vars_/2 - 0.5
+    ).sum() / means.shape[0]
 
 
-def wasserstein_loss(predicted, labels):
-    return (2*labels - 1) * predicted
+def wasserstein_loss(predictions, labels):
+    return (2*labels - 1) * predictions
 
 
 def get_recon_loss_fn(loss_type='2'):
@@ -875,4 +877,73 @@ class VAEGANSolver(GANSolver):
 
 class CVAEGANSolver(VAEGANSolver):
     ligand_only = False
+    split_rec_lig = True
     gen_model_type = models.CVAE
+
+    @property
+    def n_channels_in(self):
+        return (
+            self.train_data.n_rec_channels + self.train_data.n_lig_channels
+        )
+
+    @property
+    def n_channels_cond(self):
+        return self.train_data.n_rec_channels
+
+    @property
+    def n_channels_disc(self):
+        return (
+            self.train_data.n_rec_channels + self.train_data.n_lig_channels
+        )
+
+    def disc_forward(self, data, real):
+
+        with torch.no_grad(): # do not backprop to generator or data
+
+            # get real examples
+            (real_recs, real_ligs), _ = data.forward()
+            real_complexes = data.grids
+
+            if real:
+                labels = torch.ones(data.batch_size, 1, device=self.device)
+                ligs = real_ligs
+
+            else: # get generated examples
+                gen_ligs, latents, means, log_stds = self.gen_model(
+                    real_complexes, real_recs, data.batch_size
+                )
+                labels = torch.zeros(data.batch_size, 1, device=self.device)
+                ligs = gen_ligs
+
+        complexes = torch.cat([real_recs, ligs], dim=1)
+        predictions = self.disc_model(complexes)
+
+        if real:
+            loss, metrics = GANSolver.compute_loss(
+                self, labels, predictions
+            )
+        else:
+            loss, metrics = self.compute_loss(
+                labels, predictions, real_ligs, gen_ligs, means, log_stds
+            )
+        metrics.update(self.compute_metrics(ligs))
+        return ligs, loss, metrics
+
+    def gen_forward(self, data):
+
+        # get generated examples
+        (real_recs, real_ligs), _ = data.forward()
+        real_complexes = data.grids
+
+        gen_ligs, latents, means, log_stds = self.gen_model(
+            real_complexes, real_recs, data.batch_size
+        )
+        labels = torch.ones(data.batch_size, 1, device=self.device)
+
+        complexes = torch.cat([real_recs, gen_ligs], dim=1)
+        predictions = self.disc_model(complexes)
+        loss, metrics = self.compute_loss(
+            labels, predictions, real_ligs, gen_ligs, means, log_stds
+        )
+        metrics.update(self.compute_metrics(gen_ligs))
+        return gen_ligs, loss, metrics
