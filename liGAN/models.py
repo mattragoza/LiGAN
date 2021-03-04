@@ -314,16 +314,18 @@ class Encoder(nn.Module):
     def forward(self, input):
 
         # conv pool sequence
-        grid_outputs = []
+        conv_features = []
         for f in self.grid_modules:
             output = f(input)
-            grid_outputs.append(output)
             input = output
+
+            if not isinstance(f, Pooling):
+                conv_features.append(output)
 
         # fully-connected outputs
         outputs = [f(input) for f in self.task_modules]
 
-        return reduce_list(outputs), grid_outputs
+        return reduce_list(outputs), conv_features
 
 
 class Decoder(nn.Module):
@@ -349,8 +351,10 @@ class Decoder(nn.Module):
         unpool_factor,
         n_output,
         final_unpool=False,
+        skip_connect=False,
     ):
         super().__init__()
+        self.skip_connect = skip_connect
 
         # first fc layer maps to initial grid shape
         self.fc_modules = []
@@ -385,6 +389,7 @@ class Decoder(nn.Module):
         # final deconv maps to correct n_output channels
         self.add_deconv('final_conv', n_output, kernel_size, relu_leak)
 
+
     def add_fc_reshape(self, name, n_input, n_channels, grid_size, relu_leak):
         out_shape = (n_channels,) + (grid_size,)*3
         fc_reshape = FcReshape(n_input, out_shape, relu_leak)
@@ -400,8 +405,11 @@ class Decoder(nn.Module):
         self.grid_size *= unpool_factor
 
     def add_deconv(self, name, n_filters, kernel_size, relu_leak):
+        n_channels = self.n_channels
+        if self.skip_connect:
+            n_channels *= 2
         deconv = DeconvReLU(
-            self.n_channels, n_filters, kernel_size, relu_leak
+            n_channels, n_filters, kernel_size, relu_leak
         )
         self.add_module(name, deconv)
         self.grid_modules.append(deconv)
@@ -410,20 +418,26 @@ class Decoder(nn.Module):
     def add_deconv_block(
         self, name, n_deconvs, n_filters, kernel_size, relu_leak
     ):
+        n_channels = self.n_channels
+        if self.skip_connect:
+            n_channels *= 2
         deconv_block = DeconvBlock(
-            n_deconvs, self.n_channels, n_filters, kernel_size, relu_leak
+            n_deconvs, n_channels, n_filters, kernel_size, relu_leak
         )
         self.add_module(name, deconv_block)
         self.grid_modules.append(deconv_block)
         self.n_channels = n_filters
 
-    def forward(self, input):
+    def forward(self, input, conv_featuresS=None):
 
         for f in self.fc_modules:
             output = f(input)
             input = output
 
-        for f in self.grid_modules:
+        for i, f in enumerate(self.grid_modules):
+            if self.skip_connect and not isinstance(f, Unpooling):
+                print(i, input.shape, conv_features[i].shape)
+                input = torch.cat([input, conv_features[-i-1]], dim=1)
             output = f(input)
             input = output
 
@@ -452,7 +466,7 @@ class Generator(nn.Sequential):
         pool_factor=2,
         n_latent=1024,
         init_conv_pool=False,
-        variational=False,
+        skip_connect=False,
         device='cuda',
     ):
         assert type(self) != Generator, 'Generator is abstract'
@@ -505,6 +519,8 @@ class Generator(nn.Sequential):
                 n_output=n_latent,
                 init_conv_pool=init_conv_pool,
             )
+
+        self.skip_connect = skip_connect
 
         self.decoder = Decoder(
             n_input=self.n_decoder_input,
@@ -575,8 +591,10 @@ class CE(Generator):
     has_conditional_encoder = True
 
     def forward(self, conditions):
-        latents, grid_outputs = self.conditional_encoder(conditions)
-        return self.decoder(latents), latents
+        latents, cond_features = self.conditional_encoder(conditions)
+        return self.decoder(
+            latents, cond_features if self.skip_connect else None
+        ), latents
 
 
 class CVAE(VAE):
@@ -590,10 +608,12 @@ class CVAE(VAE):
             means, log_stds = None, None
 
         input_latents = self.sample_latents(batch_size, means, log_stds)
-        conditional_latents, grid_outputs = self.conditional_encoder(conditions)
-        latents = torch.cat([input_latents, conditional_latents], dim=1)
+        cond_latents, cond_features = self.conditional_encoder(conditions)
+        latents = torch.cat([input_latents, cond_latents], dim=1)
 
-        return self.decoder(latents), latents, means, log_stds
+        return self.decoder(
+            latents, cond_features if self.skip_connect else None
+        ), latents, means, log_stds
 
 
 class GAN(Generator):
@@ -609,6 +629,8 @@ class CGAN(GAN):
 
     def forward(self, conditions, batch_size):
         sampled_latents = self.sample_latents(batch_size)
-        conditional_latents, grid_outputs = self.conditional_encoder(conditions)
-        latents = torch.cat([sampled_latents, conditional_latents], dim=1)
-        return self.decoder(latents), latents
+        cond_latents, cond_features = self.conditional_encoder(conditions)
+        latents = torch.cat([sampled_latents, cond_latents], dim=1)
+        return self.decoder(
+            latents, cond_features if self.skip_connect else None
+        ), latents

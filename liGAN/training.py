@@ -75,6 +75,7 @@ class Solver(nn.Module):
         pool_factor,
         n_latent,
         init_conv_pool,
+        skip_connect,
         loss_weights,
         loss_types,
         grad_norms,
@@ -127,7 +128,6 @@ class Solver(nn.Module):
                 pool_type=pool_type,
                 unpool_type=unpool_type,
                 n_latent=n_latent,
-                variational=self.variational,
                 device=device
             )
             self.gen_optimizer = optim_type(
@@ -595,7 +595,7 @@ class GANSolver(GenerativeSolver):
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
                 ligs = gen_ligs
 
-        predictions = self.disc_model(ligs)
+        predictions, _ = self.disc_model(ligs)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(ligs))
         return ligs, loss, metrics
@@ -609,7 +609,7 @@ class GANSolver(GenerativeSolver):
         gen_ligs, _ = self.gen_model(data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions = self.disc_model(gen_ligs)
+        predictions, _ = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(gen_ligs))
         return gen_ligs, loss, metrics
@@ -766,7 +766,7 @@ class CGANSolver(GANSolver):
                 ligs = gen_ligs
 
         complexes = torch.cat([real_recs, ligs], dim=1)
-        predictions = self.disc_model(complexes)
+        predictions, _ = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(ligs))
         return ligs, loss, metrics
@@ -779,7 +779,7 @@ class CGANSolver(GANSolver):
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
         complexes = torch.cat([real_recs, gen_ligs], dim=1)
-        predictions = self.disc_model(complexes)
+        predictions, _ = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
         metrics.update(self.compute_metrics(gen_ligs))
         return gen_ligs, loss, metrics
@@ -845,7 +845,7 @@ class VAEGANSolver(GANSolver):
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
                 ligs = gen_ligs
 
-        predictions = self.disc_model(ligs)
+        predictions, _ = self.disc_model(ligs)
 
         if real:
             loss, metrics = GANSolver.compute_loss(
@@ -867,7 +867,7 @@ class VAEGANSolver(GANSolver):
         )
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions = self.disc_model(gen_ligs)
+        predictions, _ = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(
             labels, predictions, real_ligs, gen_ligs, means, log_stds
         )
@@ -916,7 +916,7 @@ class CVAEGANSolver(VAEGANSolver):
                 ligs = gen_ligs
 
         complexes = torch.cat([real_recs, ligs], dim=1)
-        predictions = self.disc_model(complexes)
+        predictions, _ = self.disc_model(complexes)
 
         if real:
             loss, metrics = GANSolver.compute_loss(
@@ -941,7 +941,7 @@ class CVAEGANSolver(VAEGANSolver):
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
         complexes = torch.cat([real_recs, gen_ligs], dim=1)
-        predictions = self.disc_model(complexes)
+        predictions, _ = self.disc_model(complexes)
         loss, metrics = self.compute_loss(
             labels, predictions, real_ligs, gen_ligs, means, log_stds
         )

@@ -164,7 +164,7 @@ class TestGenerator(object):
             pool_type='a',
             unpool_type='n',
             n_latent=128,
-            variational=model_type.variational,
+            skip_connect=True,
             device='cuda'
         )
 

@@ -37,6 +37,7 @@ def solver(request):
         pool_factor=2,
         n_latent=128,
         init_conv_pool=False,
+        skip_connect=True,
         loss_weights=None,
         loss_types={},
         grad_norms={},

@@ -48,6 +48,7 @@ def parse_args(argv):
     parser.add_argument('--pool_factor', default=2, type=int)
     parser.add_argument('--n_latent', default=1024, type=int)
     parser.add_argument('--init_conv_pool', default=False, type=str_to_bool)
+    parser.add_argument('--skip_connect', default=False, type=str_to_bool)
     parser.add_argument('--kldiv_loss_wt', default=1.0, type=float)
     parser.add_argument('--recon_loss_wt', default=1.0, type=float)
     parser.add_argument('--gan_loss_wt', default=1.0, type=float)
@@ -127,6 +128,7 @@ def main(argv):
         pool_factor=args.pool_factor,
         n_latent=args.n_latent,
         init_conv_pool=args.init_conv_pool,
+        skip_connect=args.skip_connect,
         loss_weights=dict(
             kldiv_loss=args.kldiv_loss_wt,
             recon_loss=args.recon_loss_wt,
