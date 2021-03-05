@@ -20,7 +20,7 @@ def kl_divergence(means, log_stds):
 
 
 def wasserstein_loss(predictions, labels):
-    return (2*labels - 1) * predictions
+    return ((2*labels - 1) * predictions).sum() / labels.shape[0]
 
 
 def get_recon_loss_fn(loss_type='2'):

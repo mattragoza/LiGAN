@@ -39,7 +39,7 @@ def solver(request):
         init_conv_pool=False,
         skip_connect=True,
         loss_weights=None,
-        loss_types={},
+        loss_types={'gan_loss': 'w'},
         grad_norms={},
         optim_type=optim.Adam,
         optim_kws=dict(
