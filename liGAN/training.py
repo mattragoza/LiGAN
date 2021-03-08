@@ -537,7 +537,7 @@ class GANSolver(GenerativeSolver):
     variational = True
     adversarial = True
     gen_model_type = models.GAN
-    index_cols = ['gen_iter', 'disc_iter', 'phase', 'model', 'batch', 'real']
+    index_cols = ['iteration', 'disc_iter', 'phase', 'model', 'batch', 'real']
 
     @property
     def n_channels_disc(self):
