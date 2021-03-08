@@ -485,26 +485,17 @@ class VAESolver(AESolver):
         return gen_ligs, loss, metrics
 
 
-class CESolver(GenerativeSolver):
+class CESolver(AESolver):
     ligand_only = False
     gen_model_type = models.CE
 
     @property
+    def n_channels_in(self):
+        return 0
+
+    @property
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
-
-    def initialize_loss(self, loss_types):
-        self.recon_loss_fn = get_recon_loss_fn(
-            loss_types.get('recon_loss', '2')
-        )
-
-    def compute_loss(self, real_ligs, gen_ligs):
-        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
-        loss = self.loss_weights.get('recon_loss', 1.0) * recon_loss
-        return loss, OrderedDict([
-            ('loss', loss.item()),
-            ('recon_loss', recon_loss.item())
-        ])
 
     def forward(self, data):
         (real_recs, real_ligs), _ = data.forward()
