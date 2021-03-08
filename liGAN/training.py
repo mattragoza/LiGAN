@@ -278,8 +278,8 @@ class Solver(nn.Module):
     def initialize_norm(self, grad_norms):
         self.gen_grad_norm = grad_norms.get('gen', '0')
         self.disc_grad_norm = grad_norms.get('disc', '0')
-        assert self.gen_grad_norm in {'0', '2', 's'}
-        assert self.disc_grad_norm in {'0', '2', 's'}
+        assert self.gen_grad_norm in {'0', '2'}
+        assert self.disc_grad_norm in {'0', '2'}
 
     def test(self, n_batches):
 
@@ -411,14 +411,6 @@ class GenerativeSolver(Solver):
         if self.gen_grad_norm == '2':
             models.normalize_grad(self.gen_model)
 
-    def compute_metrics(self, real_ligs, gen_ligs, latents):
-        metrics = OrderedDict()
-        metrics['lig_norm'] = real_ligs.detach().norm().item()
-        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
-        metrics['latent_norm'] = latents.detach().norm().item()
-        metrics['gen_grad_norm'] = models.compute_grad_norm(self.model)
-        return metrics
-
 
 class AESolver(GenerativeSolver):
     ligand_only = True
@@ -440,6 +432,14 @@ class AESolver(GenerativeSolver):
             ('loss', loss.item()),
             ('recon_loss', recon_loss.item())
         ])
+
+    def compute_metrics(self, real_ligs, gen_ligs, latents):
+        metrics = OrderedDict()
+        metrics['lig_norm'] = real_ligs.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
+        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['gen_grad_norm'] = models.compute_grad_norm(self.model)
+        return metrics
 
     def forward(self, data):
         real_ligs, _ = data.forward()
@@ -557,9 +557,11 @@ class GANSolver(GenerativeSolver):
             loss_types.get('gan_loss', 'x')
         )
 
-    def normalize_grad(self):
+    def normalize_gen_grad(self):
         if self.gen_grad_norm == '2':
             models.normalize_grad(self.gen_model)
+
+    def normalize_disc_grad(self):
         if self.disc_grad_norm == '2':
             models.normalize_grad(self.disc_model)
 
@@ -571,11 +573,22 @@ class GANSolver(GenerativeSolver):
             ('gan_loss', gan_loss.item())
         ])
 
-    def compute_metrics(self, ligs):
+    def compute_disc_metrics(self, ligs, real):
         metrics = OrderedDict()
-        metrics['lig_norm'] = ligs.detach().norm().item()
-        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
+        if real:
+            metrics['lig_norm'] = ligs.detach().norm().item()
+        else:
+            metrics['lig_gen_norm'] = ligs.detach().norm().item()
         metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
+        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
+        return metrics
+
+    def compute_gen_metrics(self, gen_ligs, latents):
+        metrics = OrderedDict()
+        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
+        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
+        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         return metrics
 
     def disc_forward(self, data, real):
@@ -597,7 +610,7 @@ class GANSolver(GenerativeSolver):
 
         predictions, _ = self.disc_model(ligs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(ligs))
+        metrics.update(self.compute_disc_metrics(ligs, real))
         return ligs, loss, metrics
 
     def gen_forward(self, data):
@@ -606,12 +619,12 @@ class GANSolver(GenerativeSolver):
         to produce data that is misclassified by the discriminator.
         '''
         # get generated examples
-        gen_ligs, _ = self.gen_model(data.batch_size)
+        gen_ligs, latents = self.gen_model(data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
         predictions, _ = self.disc_model(gen_ligs)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(gen_ligs))
+        metrics.update(self.compute_gen_metrics(gen_ligs, latents))
         return gen_ligs, loss, metrics
 
     def test(self, n_batches):
@@ -662,6 +675,7 @@ class GANSolver(GenerativeSolver):
             t_start = time.time()
             self.disc_optimizer.zero_grad()
             loss.backward()
+            self.normalize_disc_grad()
             self.disc_optimizer.step()
             torch.cuda.synchronize()
             metrics['backward_time'] = time.time() - t_start
@@ -686,6 +700,7 @@ class GANSolver(GenerativeSolver):
             t_start = time.time()
             self.gen_optimizer.zero_grad()
             loss.backward()
+            self.normalize_gen_grad()
             self.gen_optimizer.step()
             torch.cuda.synchronize()
             metrics['backward_time'] = time.time() - t_start
@@ -768,20 +783,20 @@ class CGANSolver(GANSolver):
         complexes = torch.cat([real_recs, ligs], dim=1)
         predictions, _ = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(ligs))
+        metrics.update(self.compute_disc_metrics(ligs, real))
         return ligs, loss, metrics
 
     def gen_forward(self, data):
 
         # get generated examples
         (real_recs, real_ligs), _ = data.forward()
-        gen_ligs, _ = self.gen_model(real_recs, data.batch_size)
+        gen_ligs, latents = self.gen_model(real_recs, data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
         complexes = torch.cat([real_recs, gen_ligs], dim=1)
         predictions, _ = self.disc_model(complexes)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_metrics(gen_ligs))
+        metrics.update(self.compute_gen_metrics(gen_ligs, latents))
         return gen_ligs, loss, metrics
 
 
@@ -821,11 +836,13 @@ class VAEGANSolver(GANSolver):
             ('kldiv_loss', kldiv_loss.item()),
         ])
 
-    def compute_gen_metrics(self):
+    def compute_gen_metrics(self, real_ligs, gen_ligs, latents):
+        metrics = OrderedDict()
         metrics['lig_norm'] = real_ligs.detach().norm().item()
         metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
         metrics['latent_norm'] = latents.detach().norm().item()
         metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
+        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         return metrics
 
     def disc_forward(self, data, real):
@@ -855,7 +872,7 @@ class VAEGANSolver(GANSolver):
             loss, metrics = self.compute_loss(
                 labels, predictions, real_ligs, gen_ligs, means, log_stds
             )
-        metrics.update(self.compute_metrics(ligs))
+        metrics.update(self.compute_disc_metrics(ligs, real))
         return ligs, loss, metrics
 
     def gen_forward(self, data):
@@ -871,7 +888,7 @@ class VAEGANSolver(GANSolver):
         loss, metrics = self.compute_loss(
             labels, predictions, real_ligs, gen_ligs, means, log_stds
         )
-        metrics.update(self.compute_metrics(gen_ligs))
+        metrics.update(self.compute_gen_metrics(real_ligs, gen_ligs, latents))
         return gen_ligs, loss, metrics
 
 
@@ -926,7 +943,7 @@ class CVAEGANSolver(VAEGANSolver):
             loss, metrics = self.compute_loss(
                 labels, predictions, real_ligs, gen_ligs, means, log_stds
             )
-        metrics.update(self.compute_metrics(ligs))
+        metrics.update(self.compute_disc_metrics(ligs, real))
         return ligs, loss, metrics
 
     def gen_forward(self, data):
@@ -945,5 +962,5 @@ class CVAEGANSolver(VAEGANSolver):
         loss, metrics = self.compute_loss(
             labels, predictions, real_ligs, gen_ligs, means, log_stds
         )
-        metrics.update(self.compute_metrics(gen_ligs))
+        metrics.update(self.compute_gen_metrics(real_ligs, gen_ligs, latents))
         return gen_ligs, loss, metrics
