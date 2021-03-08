@@ -22,32 +22,6 @@ class TestAtomGridData(object):
         )
 
     @pytest.fixture
-    def lig_data(self):
-        return AtomGridData(
-            data_root='data/molport',
-            batch_size=10,
-            rec_map_file='data/my_rec_map',
-            lig_map_file='data/my_lig_map',
-            resolution=0.5,
-            dimension=23.5,
-            shuffle=False,
-            ligand_only=True,
-        )
-
-    @pytest.fixture
-    def split_data(self):
-        return AtomGridData(
-            data_root='data/molport',
-            batch_size=10,
-            rec_map_file='data/my_rec_map',
-            lig_map_file='data/my_lig_map',
-            resolution=0.5,
-            dimension=23.5,
-            shuffle=False,
-            split_rec_lig=True,
-        )
-
-    @pytest.fixture
     def param(self):
         param = caffe_pb2.MolGridDataParameter()
         param.root_folder = 'data/molport'
@@ -98,19 +72,17 @@ class TestAtomGridData(object):
         assert not isclose(0, grids.norm().cpu())
         assert all(labels == 1)
 
-    def test_lig_data_forward_ok(self, lig_data):
-        data = lig_data
+    def test_data_forward_ligs(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        lig_grids, labels = data.forward()
+        lig_grids, labels = data.forward(ligand_only=True)
         assert lig_grids.shape == (10, 19, 48, 48, 48)
         assert labels.shape == (10,)
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
 
-    def test_split_data_forward_ok(self, split_data):
-        data = split_data
+    def test_data_forward_split(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        (rec_grids, lig_grids), labels = data.forward()
+        (rec_grids, lig_grids), labels = data.forward(split_rec_lig=True)
         assert rec_grids.shape == (10, 16, 48, 48, 48)
         assert lig_grids.shape == (10, 19, 48, 48, 48)
         assert labels.shape == (10,)

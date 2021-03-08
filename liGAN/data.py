@@ -19,8 +19,6 @@ class AtomGridData(nn.Module):
         shuffle=False,
         random_rotation=False,
         random_translation=0.0,
-        split_rec_lig=False,
-        ligand_only=False,
         rec_molcache=None,
         lig_molcache=None,
         device='cuda',
@@ -64,9 +62,6 @@ class AtomGridData(nn.Module):
         self.random_rotation = random_rotation
         self.random_translation = random_translation
 
-        self.split_rec_lig = split_rec_lig
-        self.ligand_only = ligand_only
-
     @classmethod
     def from_param(cls, param):
 
@@ -109,7 +104,7 @@ class AtomGridData(nn.Module):
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
-    def forward(self):
+    def forward(self, split_rec_lig=False, ligand_only=False):
         assert len(self) > 0
 
         # get next batch of structures and labels
@@ -122,14 +117,14 @@ class AtomGridData(nn.Module):
         )
         examples.extract_label(0, self.labels)
 
-        if self.split_rec_lig or self.ligand_only:
+        if split_rec_lig or ligand_only:
 
             rec_grids, lig_grids = torch.split(
                 self.grids,
                 [self.n_rec_channels, self.n_lig_channels],
                 dim=1,
             )
-            if self.ligand_only:
+            if ligand_only:
                 return lig_grids, self.labels
             else:
                 return (rec_grids, lig_grids), self.labels

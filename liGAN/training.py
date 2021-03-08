@@ -40,12 +40,6 @@ def get_gan_loss_fn(loss_type='x'):
 
 
 class Solver(nn.Module):
-
-    split_rec_lig = False
-    ligand_only = False
-    generative = False
-    variational = False
-    adversarial = False
     gen_model_type = None
     index_cols = ['iteration', 'phase', 'batch']
 
@@ -102,8 +96,6 @@ class Solver(nn.Module):
                 shuffle=shuffle,
                 random_rotation=random_rotation,
                 random_translation=random_translation,
-                split_rec_lig=self.split_rec_lig,
-                ligand_only=self.ligand_only,
                 rec_molcache=rec_molcache,
                 lig_molcache=lig_molcache,
                 device=device
@@ -112,7 +104,7 @@ class Solver(nn.Module):
         self.train_data.populate(train_file)
         self.test_data.populate(test_file)
 
-        if self.generative:
+        if isinstance(self, GenerativeSolver):
 
             self.gen_model = self.gen_model_type(
                 n_channels_in=self.n_channels_in,
@@ -135,7 +127,7 @@ class Solver(nn.Module):
             )
             self.gen_iter = 0
 
-        if not self.generative or self.adversarial:
+        if isinstance(self, (DiscriminativeSolver, GANSolver)):
 
             self.disc_model = models.Encoder(
                 n_channels=self.n_channels_disc,
@@ -214,11 +206,11 @@ class Solver(nn.Module):
     def save_state(self):
         checkpoint = OrderedDict()
 
-        if self.generative:
+        if hasattr(self, 'gen_model'):
             checkpoint['gen_model_state'] = self.gen_model.state_dict()
             checkpoint['gen_optim_state'] = self.gen_optimizer.state_dict()
 
-        if not self.generative or self.adversarial:
+        if hasattr(self, 'disc_model'):
             checkpoint['disc_model_state'] = self.disc_model.state_dict()
             checkpoint['disc_optim_state'] = self.disc_optimizer.state_dict()
 
@@ -227,7 +219,7 @@ class Solver(nn.Module):
     def load_state(self):
         checkpoint = torch.load(self.state_file)
 
-        if self.generative:
+        if hasattr(self, 'gen_model'):
             self.gen_model.load_state_dict(
                 checkpoint['gen_model_state']
             )
@@ -235,7 +227,7 @@ class Solver(nn.Module):
                 checkpoint['gen_optim_state']
             )
 
-        if not self.generative or self.adversarial:
+        if hasattr(self, 'disc_model'):
             self.disc_model.load_state_dict(
                 checkpoint['disc_model_state']
             )
@@ -265,12 +257,6 @@ class Solver(nn.Module):
     def insert_metrics(self, idx, metrics):
         for k, v in metrics.items():
             self.metrics.loc[idx, k] = v
-
-    def compute_loss(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def compute_metrics(self, *args, **kwargs):
-        raise NotImplementedError
 
     def forward(self, data):
         raise NotImplementedError
@@ -376,16 +362,14 @@ class DiscriminativeSolver(Solver):
         return metrics
 
     def forward(self, data):
-        inputs, labels = data.forward()
-        predictions = self.disc_model(inputs)
+        complexes, labels = data.forward()
+        predictions = self.disc_model(complexes)
         loss, metrics = self.compute_loss(predictions, labels)
         metrics.update(self.compute_metrics(labels, predictions))
         return predictions, loss, metrics
 
 
 class GenerativeSolver(Solver):
-    generative = True
-    split_rec_lig = True
 
     @property
     def n_channels_out(self):
@@ -413,7 +397,6 @@ class GenerativeSolver(Solver):
 
 
 class AESolver(GenerativeSolver):
-    ligand_only = True
     gen_model_type = models.AE
 
     @property
@@ -442,7 +425,7 @@ class AESolver(GenerativeSolver):
         return metrics
 
     def forward(self, data):
-        real_ligs, _ = data.forward()
+        real_ligs, _ = data.forward(ligand_only=True)
         gen_ligs, latents = self.gen_model(real_ligs)
         loss, metrics = self.compute_loss(real_ligs, gen_ligs)
         metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
@@ -450,7 +433,6 @@ class AESolver(GenerativeSolver):
 
 
 class VAESolver(AESolver):
-    variational = True
     gen_model_type = models.VAE
 
     def initialize_loss(self, loss_types):
@@ -474,7 +456,7 @@ class VAESolver(AESolver):
         ])
 
     def forward(self, data):
-        real_ligs, _ = data.forward()
+        real_ligs, _ = data.forward(ligand_only=True)
         gen_ligs, latents, means, log_stds = self.gen_model(
             real_ligs, data.batch_size
         )
@@ -486,7 +468,6 @@ class VAESolver(AESolver):
 
 
 class CESolver(AESolver):
-    ligand_only = False
     gen_model_type = models.CE
 
     @property
@@ -498,7 +479,7 @@ class CESolver(AESolver):
         return self.train_data.n_rec_channels
 
     def forward(self, data):
-        (real_recs, real_ligs), _ = data.forward()
+        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
         gen_ligs, latents = self.gen_model(real_recs)
         loss, metrics = self.compute_loss(real_ligs, gen_ligs)
         metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
@@ -506,7 +487,6 @@ class CESolver(AESolver):
 
 
 class CVAESolver(VAESolver):
-    ligand_only = False
     gen_model_type = models.CVAE
 
     @property
@@ -520,8 +500,9 @@ class CVAESolver(VAESolver):
         return self.train_data.n_rec_channels
 
     def forward(self, data):
-        (real_recs, real_ligs), _ = data.forward()
+        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
         real_complexes = data.grids
+
         gen_ligs, latents, means, log_stds = self.gen_model(
             real_complexes, real_recs, data.batch_size
         )
@@ -533,9 +514,6 @@ class CVAESolver(VAESolver):
 
 
 class GANSolver(GenerativeSolver):
-    ligand_only = True
-    variational = True
-    adversarial = True
     gen_model_type = models.GAN
     index_cols = ['iteration', 'disc_iter', 'phase', 'model', 'batch', 'real']
 
@@ -590,7 +568,7 @@ class GANSolver(GenerativeSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
-                real_ligs, _ = data.forward()
+                real_ligs, _ = data.forward(ligand_only=True)
                 labels = torch.ones(data.batch_size, 1, device=self.device)
                 ligs = real_ligs
 
@@ -743,7 +721,6 @@ class GANSolver(GenerativeSolver):
 
 
 class CGANSolver(GANSolver):
-    ligand_only = False
     gen_model_type = models.CGAN
 
     @property
@@ -761,7 +738,7 @@ class CGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (real_recs, real_ligs), _ = data.forward()
+            (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
                 ligs = real_ligs
@@ -780,7 +757,7 @@ class CGANSolver(GANSolver):
     def gen_forward(self, data):
 
         # get generated examples
-        (real_recs, real_ligs), _ = data.forward()
+        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
         gen_ligs, latents = self.gen_model(real_recs, data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
@@ -841,7 +818,7 @@ class VAEGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            real_ligs, _ = data.forward()
+            real_ligs, _ = data.forward(ligand_only=True)
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
                 ligs = real_ligs
@@ -869,7 +846,7 @@ class VAEGANSolver(GANSolver):
     def gen_forward(self, data):
 
         # get generated examples
-        real_ligs, _ = data.forward()
+        real_ligs, _ = data.forward(ligand_only=True)
         gen_ligs, latents, means, log_stds = self.gen_model(
             real_ligs, data.batch_size
         )
@@ -884,8 +861,6 @@ class VAEGANSolver(GANSolver):
 
 
 class CVAEGANSolver(VAEGANSolver):
-    ligand_only = False
-    split_rec_lig = True
     gen_model_type = models.CVAE
 
     @property
@@ -909,7 +884,7 @@ class CVAEGANSolver(VAEGANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (real_recs, real_ligs), _ = data.forward()
+            (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
             real_complexes = data.grids
 
             if real:
@@ -940,7 +915,7 @@ class CVAEGANSolver(VAEGANSolver):
     def gen_forward(self, data):
 
         # get generated examples
-        (real_recs, real_ligs), _ = data.forward()
+        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
         real_complexes = data.grids
 
         gen_ligs, latents, means, log_stds = self.gen_model(

@@ -617,7 +617,7 @@ class CVAE(VAE):
 
 
 class GAN(Generator):
-    variational = True
+    variational = True # just means we provide noise to decoder here
 
     def forward(self, batch_size):
         latents = self.sample_latents(batch_size)
