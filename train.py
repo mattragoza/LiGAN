@@ -155,7 +155,7 @@ def main(argv):
         device='cuda'
     )
 
-    if solver.adversarial:
+    if isinstance(solver, liGAN.training.GANSolver):
         solver.train(
             max_iter=args.max_iter,
             n_gen_train_iters=args.n_gen_train_iters,

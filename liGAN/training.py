@@ -23,12 +23,20 @@ def wasserstein_loss(predictions, labels):
     return ((2*labels - 1) * predictions).sum() / labels.shape[0]
 
 
+def L1_loss(predictions, labels):
+    return (labels - predictions).abs() / labels.shape[0]
+
+
+def L2_loss(predictions, labels):
+    return ((labels - predictions)**2).sum() / 2 / labels.shape[0]
+
+
 def get_recon_loss_fn(loss_type='2'):
     assert loss_type in {'1', '2'}
     if loss_type == '1':
-        return torch.nn.L1Loss()
+        return L1_loss
     else:
-        return torch.nn.MSELoss()
+        return L2_loss
 
 
 def get_gan_loss_fn(loss_type='x'):
