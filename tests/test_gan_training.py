@@ -108,6 +108,10 @@ class TestGANSolver(object):
         assert solver.curr_iter == 10
         print(solver.metrics)         # test train test test_on_train
         assert len(solver.metrics) == (2*1 + 2*10 + 2*1 + 2*2)
+        assert 'gan_loss' in solver.metrics
+        if isinstance(solver, liGAN.training.VAEGANSolver):
+            assert 'recon_loss' in solver.metrics
+            assert 'kldiv_loss' in solver.metrics
         loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 10, 'test', 'disc'), 'loss'].mean()
         assert (loss_f - loss_i) < 0

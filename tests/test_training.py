@@ -81,6 +81,9 @@ class TestSolver(object):
         )
         assert solver.curr_iter == 10
         assert len(solver.metrics) == (1 + 10 + 1 + 1)
+        assert 'recon_loss' in solver.metrics
+        if isinstance(solver, liGAN.training.VAESolver):
+            assert 'kldiv_loss' in solver.metrics
         loss_i = solver.metrics.loc[( 0, 'test'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 'test'), 'loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
