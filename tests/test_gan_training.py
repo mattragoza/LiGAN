@@ -40,7 +40,7 @@ def solver(request):
         skip_connect=True,
         loss_weights=None,
         loss_types={'gan_loss': 'w'},
-        grad_norms={},
+        grad_norm_types={'disc': '2'},
         optim_type=optim.Adam,
         optim_kws=dict(
             lr=1e-5,

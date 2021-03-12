@@ -63,8 +63,8 @@ def parse_args(argv):
     parser.add_argument('--max_iter', default=100000, type=int, help='maximum number of training iterations (default 100,000)')
     parser.add_argument('--n_gen_train_iters', default=2, type=int, help='number of sub-iterations to train gen model each train iter (default 20)')
     parser.add_argument('--n_disc_train_iters', default=2, type=int, help='number of sub-iterations to train disc model each train iter (default 20)')
-    parser.add_argument('--gen_grad_norm', default='0', help='0|2|s')
-    parser.add_argument('--disc_grad_norm', default='0', help='0|2|s')
+    parser.add_argument('--gen_grad_norm_type', default='0', help='0|2|s')
+    parser.add_argument('--disc_grad_norm_type', default='0', help='0|2|s')
     parser.add_argument('--test_interval', default=100, type=int, help='evaluate test data every # train iters (default 100)')
     parser.add_argument('--n_test_batches', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
     parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
@@ -138,9 +138,9 @@ def main(argv):
             recon_loss=args.recon_loss_type,
             gan_loss=args.gan_loss_type,
         ),
-        grad_norms=dict(
-            gen=args.gen_grad_norm,
-            disc=args.disc_grad_norm,
+        grad_norm_types=dict(
+            gen=args.gen_grad_norm_type,
+            disc=args.disc_grad_norm_type,
         ),
         optim_type=getattr(torch.optim, args.optim_type),
         optim_kws=dict([

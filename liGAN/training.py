@@ -80,7 +80,7 @@ class Solver(nn.Module):
         skip_connect,
         loss_weights,
         loss_types,
-        grad_norms,
+        grad_norm_types,
         optim_type,
         optim_kws,
         save_prefix,
@@ -159,7 +159,7 @@ class Solver(nn.Module):
         self.loss_fns = self.initialize_loss(loss_types or {})
         self.loss_weights = loss_weights or {}
 
-        self.grad_norms = self.initialize_norm(grad_norms or {})
+        self.grad_norm_types = self.initialize_norm(grad_norm_types or {})
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -269,11 +269,11 @@ class Solver(nn.Module):
     def forward(self, data):
         raise NotImplementedError
 
-    def initialize_norm(self, grad_norms):
-        self.gen_grad_norm = grad_norms.get('gen', '0')
-        self.disc_grad_norm = grad_norms.get('disc', '0')
-        assert self.gen_grad_norm in {'0', '2'}
-        assert self.disc_grad_norm in {'0', '2'}
+    def initialize_norm(self, grad_norm_types):
+        self.gen_grad_norm_type = grad_norm_types.get('gen', '0')
+        self.disc_grad_norm_type = grad_norm_types.get('disc', '0')
+        assert self.gen_grad_norm_type in {'0', '2'}
+        assert self.disc_grad_norm_type in {'0', '2'}
 
     def test(self, n_batches):
 
@@ -359,7 +359,7 @@ class DiscriminativeSolver(Solver):
         self.disc_iter = i
 
     def normalize_grad(self):
-        if self.disc_grad_norm == '2':
+        if self.disc_grad_norm_type == '2':
             models.normalize_grad(self.disc_model)
 
     def compute_metrics(self, labels, predictions):
@@ -400,7 +400,7 @@ class GenerativeSolver(Solver):
         self.gen_iter = i
 
     def normalize_grad(self):
-        if self.gen_grad_norm == '2':
+        if self.gen_grad_norm_type == '2':
             models.normalize_grad(self.gen_model)
 
 
@@ -535,11 +535,11 @@ class GANSolver(GenerativeSolver):
         )
 
     def normalize_gen_grad(self):
-        if self.gen_grad_norm == '2':
+        if self.gen_grad_norm_type == '2':
             models.normalize_grad(self.gen_model)
 
     def normalize_disc_grad(self):
-        if self.disc_grad_norm == '2':
+        if self.disc_grad_norm_type == '2':
             models.normalize_grad(self.disc_model)
 
     def compute_loss(self, labels, predictions):
