@@ -556,16 +556,12 @@ class GANSolver(GenerativeSolver):
             metrics['lig_norm'] = ligs.detach().norm().item()
         else:
             metrics['lig_gen_norm'] = ligs.detach().norm().item()
-        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
-        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         return metrics
 
     def compute_gen_metrics(self, gen_ligs, latents):
         metrics = OrderedDict()
         metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
         metrics['latent_norm'] = latents.detach().norm().item()
-        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
-        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         return metrics
 
     def disc_forward(self, data, real):
@@ -653,6 +649,7 @@ class GANSolver(GenerativeSolver):
             self.disc_optimizer.zero_grad()
             loss.backward()
             self.normalize_disc_grad()
+            metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
             self.disc_optimizer.step()
             torch.cuda.synchronize()
             metrics['backward_time'] = time.time() - t_start
@@ -678,6 +675,7 @@ class GANSolver(GenerativeSolver):
             self.gen_optimizer.zero_grad()
             loss.backward()
             self.normalize_gen_grad()
+            metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
             self.gen_optimizer.step()
             torch.cuda.synchronize()
             metrics['backward_time'] = time.time() - t_start
@@ -817,8 +815,6 @@ class VAEGANSolver(GANSolver):
         metrics['lig_norm'] = real_ligs.detach().norm().item()
         metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
         metrics['latent_norm'] = latents.detach().norm().item()
-        metrics['gen_grad_norm'] = models.compute_grad_norm(self.gen_model)
-        metrics['disc_grad_norm'] = models.compute_grad_norm(self.disc_model)
         return metrics
 
     def disc_forward(self, data, real):

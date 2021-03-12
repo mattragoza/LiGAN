@@ -41,11 +41,8 @@ def solver(request):
         loss_weights=None,
         loss_types={'gan_loss': 'w'},
         grad_norm_types={'disc': '2'},
-        optim_type=optim.Adam,
-        optim_kws=dict(
-            lr=1e-5,
-            betas=(0.9, 0.999),
-        ),
+        optim_type=optim.RMSprop,
+        optim_kws=dict(),
         save_prefix='TEST',
         device='cuda'
     )
@@ -59,13 +56,17 @@ class TestGANSolver(object):
             assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_disc_forward_real(self, solver):
-        predictions, loss, metrics = solver.disc_forward(solver.train_data, real=True)
+        predictions, loss, metrics = solver.disc_forward(
+            solver.train_data, real=True
+        )
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_disc_forward_gen(self, solver):
-        predictions, loss, metrics = solver.disc_forward(solver.train_data, real=False)
+        predictions, loss, metrics = solver.disc_forward(
+            solver.train_data, real=False
+        )
         assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
@@ -80,11 +81,13 @@ class TestGANSolver(object):
         metrics0 = solver.disc_step(real=True)
         _, _, metrics1 = solver.disc_forward(solver.train_data, real=True)
         assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+        assert isclose(1, metrics0['disc_grad_norm']), 'gradient not normalized'
 
     def test_solver_disc_step_gen(self, solver):
         metrics0 = solver.disc_step(real=False)
         _, _, metrics1 = solver.disc_forward(solver.train_data, real=False)
         assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+        assert isclose(1, metrics0['disc_grad_norm']), 'gradient not normalized'
 
     def test_solver_gen_step(self, solver):
         metrics0 = solver.gen_step()
