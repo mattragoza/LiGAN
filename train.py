@@ -151,7 +151,7 @@ def main(argv):
             RMSprop=[('momentum', args.momentum), ('alpha', args.alpha)],
         ).get(args.optim_type, [])
         ),
-        save_prefix='TEST',
+        out_prefix=args.out_prefix,
         device='cuda'
     )
 

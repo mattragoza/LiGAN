@@ -83,7 +83,7 @@ class Solver(nn.Module):
         grad_norm_types,
         optim_type,
         optim_kws,
-        save_prefix,
+        out_prefix,
         random_seed=None,
         device='cuda',
     ):
@@ -166,7 +166,7 @@ class Solver(nn.Module):
             columns=self.index_cols
         ).set_index(self.index_cols)
 
-        self.save_prefix = save_prefix
+        self.out_prefix = out_prefix
 
     @property
     def n_channels_in(self):
@@ -208,11 +208,13 @@ class Solver(nn.Module):
     @property
     def state_file(self):
         return '{}_iter_{}.checkpoint'.format(
-            self.save_prefix, self.curr_iter
+            self.out_prefix, self.curr_iter
         )
 
     def save_state(self):
+
         checkpoint = OrderedDict()
+        print('Writing model and optimizer state(s) to ' + self.state_file)
 
         if hasattr(self, 'gen_model'):
             checkpoint['gen_model_state'] = self.gen_model.state_dict()
@@ -244,11 +246,12 @@ class Solver(nn.Module):
             )
 
     def save_metrics(self):
-        csv_file = self.save_prefix + '.metrics'
+        csv_file = self.out_prefix + '.metrics'
+        print('Writing training metrics to ' + csv_file)
         self.metrics.to_csv(csv_file, sep=' ')
 
     def load_metrics(self):
-        csv_file = self.save_prefix + '.metrics'
+        csv_file = self.out_prefix + '.metrics'
         self.metrics = pd.read_csv(
             csv_file, sep=' '
         ).set_index(self.index_cols)
