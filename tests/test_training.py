@@ -44,6 +44,8 @@ def solver(request):
             lr=1e-5,
             betas=(0.9, 0.999),
         ),
+        atom_fitter_type=liGAN.atom_fitting.AtomFitter,
+        atom_fitter_kws=dict(),
         out_prefix='TEST',
         device='cuda'
     )
@@ -72,11 +74,19 @@ class TestSolver(object):
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
 
+    def test_solver_test_fit(self, solver): #TODO batch_size is 1000, too slow
+        solver.test(1, fit_atoms=True)
+        assert solver.curr_iter == 0
+        assert len(solver.metrics) == 1
+        assert 'lig_gen_fit_type_diff' in solver.metrics
+
     def test_solver_train(self, solver):
         solver.train(
             max_iter=10,
             test_interval=10,
             n_test_batches=1,
+            fit_interval=0,
+            n_fit_batches=0,
             save_interval=10,
         )
         assert solver.curr_iter == 10

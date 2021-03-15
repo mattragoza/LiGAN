@@ -66,27 +66,31 @@ class TestAtomGridData(object):
 
     def test_data_forward_ok(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        grids, labels = data.forward()
+        grids, lig_structs, labels = data.forward()
         assert grids.shape == (10, 16+19, 48, 48, 48)
+        assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, grids.norm().cpu())
         assert all(labels == 1)
 
     def test_data_forward_ligs(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        lig_grids, labels = data.forward(ligand_only=True)
+        lig_grids, lig_structs, labels = data.forward(ligand_only=True)
         assert lig_grids.shape == (10, 19, 48, 48, 48)
+        assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
 
     def test_data_forward_split(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        (rec_grids, lig_grids), labels = data.forward(split_rec_lig=True)
+        (rec_grids, lig_grids), lig_structs, labels = data.forward(
+            split_rec_lig=True
+        )
         assert rec_grids.shape == (10, 16, 48, 48, 48)
         assert lig_grids.shape == (10, 19, 48, 48, 48)
+        assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, rec_grids.norm().cpu())
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
-

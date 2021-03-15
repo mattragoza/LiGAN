@@ -1,7 +1,7 @@
 import os, struct
 import numpy as np
 
-from . import molecules
+from . import atom_types, molecules
 
 
 class AtomStruct(object):
@@ -72,6 +72,10 @@ class AtomStruct(object):
     def n_atoms(self):
         return self.xyz.shape[0]
 
+    @property
+    def type_counts(self):
+        return atom_types.count_types(self.c, len(self.channels))
+    
     def to_ob_mol(self):
         mol = molecules.make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
         return mol

@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 import molgrid
-from . import atom_grids
+from . import atom_types, atom_structs, atom_grids
 
 
 class AtomGridData(nn.Module):
@@ -25,13 +25,21 @@ class AtomGridData(nn.Module):
     ):
         super().__init__()
 
-        assert (dimension or grid_size) and not (dimension and grid_size)
+        assert (dimension or grid_size) and not (dimension and grid_size), \
+            'must specify one of either dimension or grid_size'
         if grid_size:
             dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
         self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
         self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
+
+        self.rec_channels = atom_types.get_channels_from_map(
+            self.rec_typer, use_covalent_radius=False, name_prefix=''
+        )
+        self.lig_channels = atom_types.get_channels_from_map(
+            self.lig_typer, use_covalent_radius=False, name_prefix=''
+        )
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
@@ -44,9 +52,7 @@ class AtomGridData(nn.Module):
         )
 
         # create molgrid maker and output tensors
-        self.grid_maker = molgrid.GridMaker(
-            resolution, dimension
-        )
+        self.grid_maker = molgrid.GridMaker(resolution, dimension)
         self.grids = torch.zeros(
             batch_size,
             self.n_rec_channels + self.n_lig_channels,
@@ -98,13 +104,21 @@ class AtomGridData(nn.Module):
         else:
             return self.n_rec_channels + self.n_lig_channels
 
+    @property
+    def resolution(self):
+        return self.grid_maker.get_resolution()
+
     def __len__(self):
         return self.ex_provider.size()
 
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
-    def forward(self, split_rec_lig=False, ligand_only=False):
+    def forward(
+        self,
+        split_rec_lig=False,
+        ligand_only=False,
+    ):
         assert len(self) > 0
 
         # get next batch of structures and labels
@@ -117,6 +131,12 @@ class AtomGridData(nn.Module):
         )
         examples.extract_label(0, self.labels)
 
+        lig_structs = [
+            atom_structs.AtomStruct.from_coord_set(
+                ex.coord_sets[1], self.lig_channels
+            ) for ex in examples
+        ]
+
         if split_rec_lig or ligand_only:
 
             rec_grids, lig_grids = torch.split(
@@ -125,8 +145,8 @@ class AtomGridData(nn.Module):
                 dim=1,
             )
             if ligand_only:
-                return lig_grids, self.labels
+                return lig_grids, lig_structs, self.labels
             else:
-                return (rec_grids, lig_grids), self.labels
+                return (rec_grids, lig_grids), lig_structs, self.labels
         else:
-            return self.grids, self.labels
+            return self.grids, lig_structs, self.labels

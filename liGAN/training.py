@@ -7,7 +7,7 @@ from torch import nn
 torch.backends.cudnn.benchmark = True
 
 import molgrid
-from . import data, models
+from . import data, models, metrics, atom_types
 
 
 def kl_divergence(means, log_stds):
@@ -83,6 +83,8 @@ class Solver(nn.Module):
         grad_norm_types,
         optim_type,
         optim_kws,
+        atom_fitter_type,
+        atom_fitter_kws,
         out_prefix,
         random_seed=None,
         device='cuda',
@@ -160,6 +162,9 @@ class Solver(nn.Module):
         self.loss_weights = loss_weights or {}
 
         self.grad_norm_types = self.initialize_norm(grad_norm_types or {})
+
+        if isinstance(self, GenerativeSolver):
+            self.atom_fitter = atom_fitter_type(**atom_fitter_kws)
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -278,11 +283,11 @@ class Solver(nn.Module):
         assert self.gen_grad_norm_type in {'0', '2'}
         assert self.disc_grad_norm_type in {'0', '2'}
 
-    def test(self, n_batches):
+    def test(self, n_batches, fit_atoms=False):
 
         for i in range(n_batches):
             t_start = time.time()
-            predictions, loss, metrics = self.forward(self.test_data)
+            predictions, loss, metrics = self.forward(self.test_data, fit_atoms)
             metrics['forward_time'] = time.time() - t_start
             self.insert_metrics((self.curr_iter, 'test', i), metrics)
 
@@ -319,7 +324,9 @@ class Solver(nn.Module):
         self,
         max_iter,
         test_interval,
-        n_test_batches, 
+        n_test_batches,
+        fit_interval,
+        n_fit_batches,
         save_interval,
     ):
         while self.curr_iter <= max_iter:
@@ -328,7 +335,10 @@ class Solver(nn.Module):
                 self.save_state()
 
             if self.curr_iter % test_interval == 0:
-                self.test(n_test_batches)
+                fit_atoms = (
+                    fit_interval > 0 and self.curr_iter %fit_interval == 0
+                )
+                self.test(n_test_batches, fit_atoms)
 
             if self.curr_iter < max_iter:
                 self.step(update=True)
@@ -373,8 +383,8 @@ class DiscriminativeSolver(Solver):
         return metrics
 
     def forward(self, data):
-        complexes, labels = data.forward()
-        predictions = self.disc_model(complexes)
+        complex_grids, _, labels = data.forward()
+        predictions = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(predictions, labels)
         metrics.update(self.compute_metrics(labels, predictions))
         return predictions, loss, metrics
@@ -419,28 +429,73 @@ class AESolver(GenerativeSolver):
             loss_types.get('recon_loss', '2')
         )
 
-    def compute_loss(self, real_ligs, gen_ligs):
-        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
+    def compute_loss(self, real_lig_grids, gen_lig_grids):
+        recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
         loss = self.loss_weights.get('recon_loss', 1.0) * recon_loss
         return loss, OrderedDict([
             ('loss', loss.item()),
             ('recon_loss', recon_loss.item())
         ])
 
-    def compute_metrics(self, real_ligs, gen_ligs, latents):
+    def compute_metrics(self, real_lig_grids, gen_lig_grids, latent_vecs):
         metrics = OrderedDict()
-        metrics['lig_norm'] = real_ligs.detach().norm().item()
-        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
-        metrics['latent_norm'] = latents.detach().norm().item()
-        metrics['gen_grad_norm'] = models.compute_grad_norm(self.model)
+        metrics['lig_norm'] = real_lig_grids.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_lig_grids.detach().norm().item()
+        metrics['latent_norm'] = latent_vecs.detach().norm().item()
         return metrics
 
-    def forward(self, data):
-        real_ligs, _ = data.forward(ligand_only=True)
-        gen_ligs, latents = self.gen_model(real_ligs)
-        loss, metrics = self.compute_loss(real_ligs, gen_ligs)
-        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+    def compute_struct_metrics(self, real_lig_structs, fit_lig_structs, real):
+
+        real_n_atoms = [s.n_atoms for s in real_lig_structs]
+        real_radius = [s.radius for s in real_lig_structs]
+
+        fit_n_atoms = [s.n_atoms for s in fit_lig_structs]
+        fit_radius = [s.radius for s in fit_lig_structs]
+
+        # get atom type count vectors and differences
+        real_type_counts = [
+            s.type_counts for s in real_lig_structs
+        ]
+        fit_type_counts = [
+            s.type_counts for s in fit_lig_structs
+        ]
+        fit_type_diffs = [
+            np.linalg.norm(rt - ft, ord=1) for rt,ft in zip(
+                real_type_counts, fit_type_counts
+            )
+        ]
+
+        metrics = OrderedDict()
+        metrics['lig_n_atoms'] = np.mean(real_n_atoms)
+        metrics['lig_radius'] = np.mean(real_radius)
+
+        struct_type = 'lig' if real else 'lig_gen'
+        metrics[struct_type+'_fit_n_atoms'] = np.mean(fit_n_atoms)
+        metrics[struct_type+'_fit_radius'] = np.mean(fit_radius)
+        metrics[struct_type+'_fit_type_diff'] = np.mean(fit_type_diffs)
+        metrics[struct_type+'_fit_exact_types'] = np.mean(fit_type_diffs == 0)
+        return metrics
+
+    def forward(self, data, fit_atoms=False):
+
+        real_lig_grids, real_lig_structs, _ = data.forward(ligand_only=True)
+
+        gen_lig_grids, latent_vecs = self.gen_model(real_lig_grids)
+
+        loss, metrics = self.compute_loss(real_lig_grids, gen_lig_grids)
+        metrics.update(self.compute_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+
+        if fit_atoms: # TODO test this and generalize to other model types
+            gen_lig_fit_structs = self.atom_fitter.fit_batch(
+                gen_lig_grids, real_lig_structs, data.resolution
+            )
+            metrics.update(self.compute_struct_metrics(
+                real_lig_structs, gen_lig_fit_structs, real=False
+            ))
+    
+        return gen_lig_grids, loss, metrics
 
 
 class VAESolver(AESolver):
@@ -452,8 +507,8 @@ class VAESolver(AESolver):
             loss_types.get('recon_loss', '2')
         )
 
-    def compute_loss(self, real_ligs, gen_ligs, means, log_stds):
-        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
+    def compute_loss(self, real_lig_grids, gen_lig_grids, means, log_stds):
+        recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
             self.loss_weights.get('recon_loss', 1.0) * recon_loss
@@ -466,16 +521,28 @@ class VAESolver(AESolver):
             ('kldiv_loss', kldiv_loss.item())
         ])
 
-    def forward(self, data):
-        real_ligs, _ = data.forward(ligand_only=True)
-        gen_ligs, latents, means, log_stds = self.gen_model(
-            real_ligs, data.batch_size
-        )
+    def forward(self, data, fit_atoms=False):
+
+        real_lig_grids, real_lig_structs, _ = data.forward(ligand_only=True)
+
+        gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+            self.gen_model(real_lig_grids, data.batch_size)
+
         loss, metrics = self.compute_loss(
-            real_ligs, gen_ligs, means, log_stds
+            real_lig_grids, gen_lig_grids, latent_means, latent_log_stds
         )
-        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+
+        if fit_atoms:
+            gen_lig_fit_structs = self.atom_fitter.fit(gen_lig_grids)
+            metrics.update(self.compute_struct_metrics(
+                real_lig_structs, gen_lig_fit_structs, real=False
+            ))
+            return gen_lig_fit_structs, gen_lig_grids, loss, metrics
+        else:
+            return gen_lig_grids, loss, metrics
 
 
 class CESolver(AESolver):
@@ -489,12 +556,26 @@ class CESolver(AESolver):
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
 
-    def forward(self, data):
-        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
-        gen_ligs, latents = self.gen_model(real_recs)
-        loss, metrics = self.compute_loss(real_ligs, gen_ligs)
-        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+    def forward(self, data, fit_atoms=False):
+
+        (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+            data.forward(split_rec_lig=True)
+
+        gen_lig_grids, latent_vecs = self.gen_model(real_rec_grids)
+
+        loss, metrics = self.compute_loss(real_lig_grids, gen_lig_grids)
+        metrics.update(self.compute_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+
+        if fit_atoms:
+            gen_lig_fit_structs = self.atom_fitter.fit(gen_lig_grids)
+            metrics.update(self.compute_struct_metrics(
+                real_lig_structs, gen_lig_fit_structs, real=False
+            ))
+            return gen_lig_fit_structs, gen_lig_grids, loss, metrics
+        else:
+            return gen_lig_grids, loss, metrics
 
 
 class CVAESolver(VAESolver):
@@ -510,18 +591,30 @@ class CVAESolver(VAESolver):
     def n_channels_cond(self):
         return self.train_data.n_rec_channels
 
-    def forward(self, data):
-        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
-        real_complexes = data.grids
+    def forward(self, data, fit_atoms=False):
 
-        gen_ligs, latents, means, log_stds = self.gen_model(
-            real_complexes, real_recs, data.batch_size
-        )
+        (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+            data.forward(split_rec_lig=True)
+        real_complex_grids = data.grids
+
+        gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+            self.gen_model(real_complex_grids, real_rec_grids, data.batch_size)
+
         loss, metrics = self.compute_loss(
-            real_ligs, gen_ligs, means, log_stds
+            real_lig_grids, gen_lig_grids, latent_means, latent_log_stds
         )
-        metrics.update(self.compute_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+
+        if fit_atoms:
+            gen_lig_fit_structs = self.atom_fitter.fit(gen_lig_grids)
+            metrics.update(self.compute_struct_metrics(
+                real_lig_structs, gen_lig_fit_structs, real=False
+            ))
+            return gen_lig_fit_structs, gen_lig_grids, loss, metrics
+        else:
+            return gen_lig_grids, loss, metrics
 
 
 class GANSolver(GenerativeSolver):
@@ -553,18 +646,18 @@ class GANSolver(GenerativeSolver):
             ('gan_loss', gan_loss.item())
         ])
 
-    def compute_disc_metrics(self, ligs, real):
+    def compute_disc_metrics(self, lig_grids, real):
         metrics = OrderedDict()
         if real:
-            metrics['lig_norm'] = ligs.detach().norm().item()
+            metrics['lig_norm'] = lig_grids.detach().norm().item()
         else:
-            metrics['lig_gen_norm'] = ligs.detach().norm().item()
+            metrics['lig_gen_norm'] = lig_grids.detach().norm().item()
         return metrics
 
-    def compute_gen_metrics(self, gen_ligs, latents):
+    def compute_gen_metrics(self, gen_lig_grids, latent_vecs):
         metrics = OrderedDict()
-        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
-        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_lig_grids.detach().norm().item()
+        metrics['latent_norm'] = latent_vecs.detach().norm().item()
         return metrics
 
     def disc_forward(self, data, real):
@@ -575,19 +668,20 @@ class GANSolver(GenerativeSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
-                real_ligs, _ = data.forward(ligand_only=True)
+                real_lig_grids, real_lig_structs, _ = \
+                    data.forward(ligand_only=True)
                 labels = torch.ones(data.batch_size, 1, device=self.device)
-                ligs = real_ligs
+                lig_grids = real_lig_grids
 
             else: # get generated examples
-                gen_ligs, _ = self.gen_model(data.batch_size)
+                gen_lig_grids, _ = self.gen_model(data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
-                ligs = gen_ligs
+                lig_grids = gen_lig_grids
 
-        predictions, _ = self.disc_model(ligs)
+        predictions, _ = self.disc_model(lig_grids)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_disc_metrics(ligs, real))
-        return ligs, loss, metrics
+        metrics.update(self.compute_disc_metrics(lig_grids, real))
+        return lig_grids, loss, metrics
 
     def gen_forward(self, data):
         '''
@@ -595,13 +689,13 @@ class GANSolver(GenerativeSolver):
         to produce data that is misclassified by the discriminator.
         '''
         # get generated examples
-        gen_ligs, latents = self.gen_model(data.batch_size)
+        gen_lig_grids, latent_vecs = self.gen_model(data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions, _ = self.disc_model(gen_ligs)
+        predictions, _ = self.disc_model(gen_lig_grids)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_gen_metrics(gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_gen_metrics(gen_lig_grids, latent_vecs))
+        return gen_lig_grids, loss, metrics
 
     def test(self, n_batches):
 
@@ -609,7 +703,7 @@ class GANSolver(GenerativeSolver):
         for i in range(n_batches):
             real = (i%2 == 0)
             t_start = time.time()
-            ligs, loss, metrics = self.disc_forward(
+            lig_grids, loss, metrics = self.disc_forward(
                 self.test_data, real
             )
             metrics['forward_time'] = time.time() - t_start
@@ -623,7 +717,7 @@ class GANSolver(GenerativeSolver):
         # test generator on same number of batches
         for i in range(n_batches):
             t_start = time.time()
-            ligs, loss, metrics = self.gen_forward(
+            lig_grids, loss, metrics = self.gen_forward(
                 self.test_data
             )
             metrics['forward_time'] = time.time() - t_start
@@ -643,7 +737,7 @@ class GANSolver(GenerativeSolver):
             self.gen_iter, self.disc_iter, 'train', 'disc', batch_idx, real
         )
         t_start = time.time()
-        ligs, loss, metrics = self.disc_forward(self.train_data, real)
+        lig_grids, loss, metrics = self.disc_forward(self.train_data, real)
         torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
         
@@ -669,7 +763,7 @@ class GANSolver(GenerativeSolver):
             self.gen_iter, self.disc_iter, 'train', 'gen', batch_idx, False
         )
         t_start = time.time()
-        ligs, loss, metrics = self.gen_forward(self.train_data)
+        lig_grids, loss, metrics = self.gen_forward(self.train_data)
         torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
 
@@ -747,34 +841,42 @@ class CGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
+            (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+                data.forward(split_rec_lig=True)
+
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
-                ligs = real_ligs
+                lig_grids = real_lig_grids
 
             else: # get generated examples
-                gen_ligs, _ = self.gen_model(real_recs, data.batch_size)
+                gen_lig_grids, _ = self.gen_model(
+                    real_rec_grids, data.batch_size
+                )
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
-                ligs = gen_ligs
+                lig_grids = gen_lig_grids
 
-        complexes = torch.cat([real_recs, ligs], dim=1)
-        predictions, _ = self.disc_model(complexes)
+        complex_grids = torch.cat([real_rec_grids, lig_grids], dim=1)
+        predictions, _ = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_disc_metrics(ligs, real))
-        return ligs, loss, metrics
+        metrics.update(self.compute_disc_metrics(lig_grids, real))
+        return lig_grids, loss, metrics
 
     def gen_forward(self, data):
 
         # get generated examples
-        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
-        gen_ligs, latents = self.gen_model(real_recs, data.batch_size)
+        (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+            data.forward(split_rec_lig=True)
+
+        gen_lig_grids, latent_vecs = self.gen_model(
+            real_rec_grids, data.batch_size
+        )
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        complexes = torch.cat([real_recs, gen_ligs], dim=1)
-        predictions, _ = self.disc_model(complexes)
+        complex_grids = torch.cat([real_rec_grids, gen_lig_grids], dim=1)
+        predictions, _ = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(labels, predictions)
-        metrics.update(self.compute_gen_metrics(gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_gen_metrics(gen_lig_grids, latent_vecs))
+        return gen_lig_grids, loss, metrics
 
 
 class VAEGANSolver(GANSolver):
@@ -794,10 +896,10 @@ class VAEGANSolver(GANSolver):
         )
 
     def compute_loss(
-        self, labels, predictions, real_ligs, gen_ligs, means, log_stds
+        self, labels, predictions, real_lig_grids, gen_lig_grids, means, log_stds
     ):
         gan_loss = self.gan_loss_fn(predictions, labels)
-        recon_loss = self.recon_loss_fn(gen_ligs, real_ligs)
+        recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
             self.loss_weights.get('gan_loss', 1.0) * gan_loss
@@ -813,11 +915,11 @@ class VAEGANSolver(GANSolver):
             ('kldiv_loss', kldiv_loss.item()),
         ])
 
-    def compute_gen_metrics(self, real_ligs, gen_ligs, latents):
+    def compute_gen_metrics(self, real_lig_grids, gen_lig_grids, latent_vecs):
         metrics = OrderedDict()
-        metrics['lig_norm'] = real_ligs.detach().norm().item()
-        metrics['lig_gen_norm'] = gen_ligs.detach().norm().item()
-        metrics['latent_norm'] = latents.detach().norm().item()
+        metrics['lig_norm'] = real_lig_grids.detach().norm().item()
+        metrics['lig_gen_norm'] = gen_lig_grids.detach().norm().item()
+        metrics['latent_norm'] = latent_vecs.detach().norm().item()
         return metrics
 
     def disc_forward(self, data, real):
@@ -825,19 +927,21 @@ class VAEGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            real_ligs, _ = data.forward(ligand_only=True)
+            real_lig_grids, real_lig_structs, _ = \
+                data.forward(ligand_only=True)
+
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
-                ligs = real_ligs
+                lig_grids = real_lig_grids
 
             else: # get generated examples
-                gen_ligs, latents, means, log_stds = self.gen_model(
-                    real_ligs, data.batch_size
-                )
-                labels = torch.zeros(data.batch_size, 1, device=self.device)
-                ligs = gen_ligs
+                gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+                    self.gen_model(real_lig_grids, data.batch_size)
 
-        predictions, _ = self.disc_model(ligs)
+                labels = torch.zeros(data.batch_size, 1, device=self.device)
+                lig_grids = gen_lig_grids
+
+        predictions, _ = self.disc_model(lig_grids)
 
         if real:
             loss, metrics = GANSolver.compute_loss(
@@ -845,26 +949,39 @@ class VAEGANSolver(GANSolver):
             )
         else:
             loss, metrics = self.compute_loss(
-                labels, predictions, real_ligs, gen_ligs, means, log_stds
+                labels,
+                predictions,
+                real_lig_grids,
+                gen_lig_grids,
+                latent_means,
+                latent_log_stds
             )
-        metrics.update(self.compute_disc_metrics(ligs, real))
-        return ligs, loss, metrics
+        metrics.update(self.compute_disc_metrics(lig_grids, real))
+        return lig_grids, loss, metrics
 
     def gen_forward(self, data):
 
         # get generated examples
-        real_ligs, _ = data.forward(ligand_only=True)
-        gen_ligs, latents, means, log_stds = self.gen_model(
-            real_ligs, data.batch_size
-        )
+        real_lig_grids, real_lig_structs, _ = data.forward(ligand_only=True)
+
+        gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+            self.gen_model(real_lig_grids, data.batch_size)
+
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        predictions, _ = self.disc_model(gen_ligs)
+        predictions, _ = self.disc_model(gen_lig_grids)
         loss, metrics = self.compute_loss(
-            labels, predictions, real_ligs, gen_ligs, means, log_stds
+            labels,
+            predictions,
+            real_lig_grids,
+            gen_lig_grids,
+            latent_means,
+            latent_log_stds
         )
-        metrics.update(self.compute_gen_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_gen_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+        return gen_lig_grids, loss, metrics
 
 
 class CVAEGANSolver(VAEGANSolver):
@@ -891,22 +1008,26 @@ class CVAEGANSolver(VAEGANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
-            real_complexes = data.grids
+            (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+                data.forward(split_rec_lig=True)
+            real_complex_grids = data.grids
 
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
-                ligs = real_ligs
+                lig_grids = real_lig_grids
 
             else: # get generated examples
-                gen_ligs, latents, means, log_stds = self.gen_model(
-                    real_complexes, real_recs, data.batch_size
-                )
+                gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+                    self.gen_model(
+                        real_complex_grids,
+                        real_rec_grids,
+                        data.batch_size
+                    )
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
-                ligs = gen_ligs
+                lig_grids = gen_lig_grids
 
-        complexes = torch.cat([real_recs, ligs], dim=1)
-        predictions, _ = self.disc_model(complexes)
+        complex_grids = torch.cat([real_rec_grids, lig_grids], dim=1)
+        predictions, _ = self.disc_model(complex_grids)
 
         if real:
             loss, metrics = GANSolver.compute_loss(
@@ -914,26 +1035,40 @@ class CVAEGANSolver(VAEGANSolver):
             )
         else:
             loss, metrics = self.compute_loss(
-                labels, predictions, real_ligs, gen_ligs, means, log_stds
+                labels,
+                predictions,
+                real_lig_grids,
+                gen_lig_grids,
+                latent_means,
+                latent_log_stds
             )
-        metrics.update(self.compute_disc_metrics(ligs, real))
-        return ligs, loss, metrics
+        metrics.update(self.compute_disc_metrics(lig_grids, real))
+        return lig_grids, loss, metrics
 
     def gen_forward(self, data):
 
         # get generated examples
-        (real_recs, real_ligs), _ = data.forward(split_rec_lig=True)
-        real_complexes = data.grids
+        (real_rec_grids, real_lig_grids), real_lig_structs, _ = \
+            data.forward(split_rec_lig=True)
+        real_complex_grids = data.grids
 
-        gen_ligs, latents, means, log_stds = self.gen_model(
-            real_complexes, real_recs, data.batch_size
-        )
+        gen_lig_grids, latent_vecs, latent_means, latent_log_stds = \
+            self.gen_model(
+                real_complex_grids, real_rec_grids, data.batch_size
+            )
         labels = torch.ones(data.batch_size, 1, device=self.device)
 
-        complexes = torch.cat([real_recs, gen_ligs], dim=1)
-        predictions, _ = self.disc_model(complexes)
+        complex_grids = torch.cat([real_rec_grids, gen_lig_grids], dim=1)
+        predictions, _ = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(
-            labels, predictions, real_ligs, gen_ligs, means, log_stds
+            labels,
+            predictions,
+            real_lig_grids,
+            gen_lig_grids,
+            latent_means,
+            latent_log_stds
         )
-        metrics.update(self.compute_gen_metrics(real_ligs, gen_ligs, latents))
-        return gen_ligs, loss, metrics
+        metrics.update(self.compute_gen_metrics(
+            real_lig_grids, gen_lig_grids, latent_vecs
+        ))
+        return gen_lig_grids, loss, metrics

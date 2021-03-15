@@ -1,8 +1,17 @@
 import gzip
 import numpy as np
-from rdkit import Chem, Geometry
+
 from openbabel import openbabel as ob
 from openbabel import pybel
+
+import rdkit
+from rdkit import Chem, Geometry, DataStructs
+from rdkit.Chem import AllChem, Descriptors, QED, Crippen
+from rdkit.Chem.Fingerprints import FingerprintMols
+
+from SA_Score import sascorer
+from NP_Score import npscorer
+nps_model = npscorer.readNPModel()
 
 
 def make_rd_mol(xyz, c, bonds, channels):
@@ -170,3 +179,177 @@ def ob_mol_to_rd_mol(ob_mol):
         rd_mol.AddBond(i, j, bond_type)
 
     return rd_mol
+
+
+def catch_exc(func, exc=Exception, default=np.nan):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except exc as e:            
+            return default
+    return wrapper
+
+
+get_rd_mol_weight = catch_exc(Descriptors.MolWt)
+get_rd_mol_logP = catch_exc(Chem.Crippen.MolLogP)
+get_rd_mol_QED = catch_exc(Chem.QED.default)
+get_rd_mol_SAS = catch_exc(sascorer.calculateScore)
+get_rd_mol_NPS = catch_exc(npscorer.scoreMol)
+get_aligned_rmsd  = catch_exc(AllChem.GetBestRMS)
+
+
+@catch_exc
+def get_smiles_string(rd_mol):
+    return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
+
+
+@catch_exc
+def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
+
+    if fingerprint == 'morgan':
+        fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
+        fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
+
+    elif fingerprint == 'rdkit':
+        fgp1 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol1)
+        fgp2 = Chem.Fingerprints.FingerprintMols.FingerprintMol(rd_mol2)
+
+    elif fingerprint == 'maccs':
+        fgp1 = AllChem.GetMACCSKeysFingerprint(rd_mol1)
+        fgp2 = AllChem.GetMACCSKeysFingerprint(rd_mol2)
+
+    return DataStructs.TanimotoSimilarity(fgp1, fgp2)
+
+
+@catch_exc
+def get_ob_smi_similarity(smi1, smi2):
+    fgp1 = pybel.readstring('smi', smi1).calcfp()
+    fgp2 = pybel.readstring('smi', smi2).calcfp()
+    return fgp1 | fgp2
+
+
+def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+    if rd_mol.GetNumAtoms() == 0:
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
+    try:
+        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+        ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+        ff.Initialize()
+        E_init = ff.CalcEnergy()
+        try:
+            res = ff.Minimize(maxIts=max_iters)
+            E_final = ff.CalcEnergy()
+            rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
+            if res == 0:
+                e = None
+            else:
+                e = RuntimeError('minimization not converged')
+            return rd_mol, E_init, E_final, e
+        except RuntimeError as e:
+            w = Chem.SDWriter('badmol.sdf')
+            w.write(rd_mol)
+            w.close()
+            print("NumAtoms",rd_mol.GetNumAtoms())
+            traceback.print_exc(file=sys.stdout)
+            return Chem.RWMol(rd_mol), E_init, np.nan, e
+    except Exception as e:
+        print("UFF Exception")
+        traceback.print_exc(file=sys.stdout)
+        return Chem.RWMol(rd_mol), np.nan, np.nan, None
+
+
+@catch_exc
+def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
+    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
+    ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+    return ff.CalcEnergy()
+
+
+def get_rd_mol_validity(rd_mol):
+    n_frags = len(Chem.GetMolFrags(rd_mol))
+    try:
+        Chem.SanitizeMol(rd_mol)
+        error = None
+    except Exception as e:
+        error = e
+    valid = n_frags == 1 and error is None
+    return n_frags, error, valid
+
+
+@catch_exc
+def get_gpu_usage(gpu_id=0):
+    return getGPUs()[gpu_id].memoryUtil
+
+
+def set_rd_mol_aromatic(rd_mol, c, channels):
+
+    # get aromatic carbon channels
+    aroma_c_channels = set()
+    for i, channel in enumerate(channels):
+        if 'AromaticCarbon' in channel.name:
+            aroma_c_channels.add(i)
+
+    # get aromatic carbon atoms
+    aroma_c_atoms = set()
+    for i, c_ in enumerate(c):
+        if c_ in aroma_c_channels:
+            aroma_c_atoms.add(i)
+
+    # make aromatic rings using channel info
+    rings = Chem.GetSymmSSSR(rd_mol)
+    for ring_atoms in rings:
+        ring_atoms = set(ring_atoms)
+        if len(ring_atoms & aroma_c_atoms) == 0: #TODO test < 3 instead, and handle heteroatoms
+            continue
+        if (len(ring_atoms) - 2)%4 != 0:
+            continue
+        for bond in rd_mol.GetBonds():
+            atom1 = bond.GetBeginAtom()
+            atom2 = bond.GetEndAtom()
+            if atom1.GetIdx() in ring_atoms and atom2.GetIdx() in ring_atoms:
+                atom1.SetIsAromatic(True)
+                atom2.SetIsAromatic(True)
+                bond.SetBondType(Chem.BondType.AROMATIC)
+
+
+def connect_rd_mol_frags(rd_mol):
+
+    # try to connect fragments by adding min distance bonds
+    frags = Chem.GetMolFrags(rd_mol)
+    n_frags = len(frags)
+    if n_frags > 1:
+
+        nax = np.newaxis
+        xyz = rd_mol.GetConformer(0).GetPositions()
+        dist2 = ((xyz[nax,:,:] - xyz[:,nax,:])**2).sum(axis=2)
+
+        pt = Chem.GetPeriodicTable()
+        while n_frags > 1:
+
+            frag_map = {ai: fi for fi, f in enumerate(frags) for ai in f}
+            frag_idx = np.array([frag_map[i] for i in range(rd_mol.GetNumAtoms())])
+            diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
+
+            can_bond = []
+            for a in rd_mol.GetAtoms():
+                n_bonds = sum(b.GetBondTypeAsDouble() for b in a.GetBonds())
+                max_bonds = pt.GetDefaultValence(a.GetAtomicNum())
+                can_bond.append(n_bonds < max_bonds)
+
+            can_bond = np.array(can_bond)
+            can_bond = can_bond[nax,:] & can_bond[:,nax]
+
+            cond_dist2 = np.where(diff_frags & can_bond & (dist2<25), dist2, np.inf)
+
+            if not np.any(np.isfinite(cond_dist2)):
+                break # no possible bond meets the conditions
+
+            a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
+            rd_mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
+            try:
+                rd_mol.UpdatePropertyCache() # update explicit valences
+            except:
+                pass
+
+            frags = Chem.GetMolFrags(rd_mol)
+            n_frags = len(frags)

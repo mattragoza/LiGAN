@@ -42,7 +42,9 @@ def solver(request):
         loss_types={'gan_loss': 'w'},
         grad_norm_types={'disc': '2'},
         optim_type=optim.RMSprop,
-        optim_kws=dict(),
+        optim_kws=dict(lr=1e-8, momentum=0),
+        atom_fitter_type=liGAN.atom_fitting.AtomFitter,
+        atom_fitter_kws=dict(),
         out_prefix='TEST',
         device='cuda'
     )
@@ -115,9 +117,9 @@ class TestGANSolver(object):
         if isinstance(solver, liGAN.training.VAEGANSolver):
             assert 'recon_loss' in solver.metrics
             assert 'kldiv_loss' in solver.metrics
-        loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc'), 'loss'].mean()
-        loss_f = solver.metrics.loc[(10, 10, 'test', 'disc'), 'loss'].mean()
-        assert (loss_f - loss_i) < 0
         loss_i = solver.metrics.loc[( 0,  0, 'test', 'gen'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 10, 'test', 'gen'), 'loss'].mean()
-        assert (loss_f - loss_i) < 0
+        assert (loss_f - loss_i) < 0, 'generator loss did not decrease'
+        loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc'), 'loss'].mean()
+        loss_f = solver.metrics.loc[(10, 10, 'test', 'disc'), 'loss'].mean()
+        assert (loss_f - loss_i) < 0, 'discriminator loss did not decrease'
