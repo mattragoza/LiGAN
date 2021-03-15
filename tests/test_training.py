@@ -38,13 +38,13 @@ def solver(request):
         skip_connect=True,
         loss_weights=None,
         loss_types={},
-        grad_norms={},
+        grad_norm_types={},
         optim_type=optim.Adam,
         optim_kws=dict(
             lr=1e-5,
             betas=(0.9, 0.999),
         ),
-        save_prefix='TEST',
+        out_prefix='TEST',
         device='cuda'
     )
 

@@ -43,7 +43,7 @@ def solver(request):
         grad_norm_types={'disc': '2'},
         optim_type=optim.RMSprop,
         optim_kws=dict(),
-        save_prefix='TEST',
+        out_prefix='TEST',
         device='cuda'
     )
 
