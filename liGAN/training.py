@@ -332,7 +332,6 @@ class Solver(nn.Module):
         test_interval,
         n_test_batches,
         fit_interval,
-        n_fit_batches,
         save_interval,
     ):
         while self.curr_iter <= max_iter:
@@ -341,7 +340,10 @@ class Solver(nn.Module):
                 self.save_state()
 
             if self.curr_iter % test_interval == 0:
-                self.test(n_test_batches)
+                fit_atoms = (
+                    fit_interval > 0 and self.curr_iter % fit_interval == 0
+                )
+                self.test(n_test_batches, fit_atoms)
 
             if self.curr_iter < max_iter:
                 self.step(update=True)
@@ -761,7 +763,6 @@ class GANSolver(GenerativeSolver):
         test_interval,
         n_test_batches,
         fit_interval,
-        n_fit_batches,
         save_interval,
     ):
         while self.curr_iter <= max_iter:
@@ -770,7 +771,10 @@ class GANSolver(GenerativeSolver):
                 self.save_state()
 
             if self.curr_iter % test_interval == 0:
-                self.test(n_test_batches)
+                fit_atoms = (
+                    fit_interval > 0 and self.curr_iter % fit_interval == 0
+                )
+                self.test(n_test_batches, fit_atoms)
 
             if self.curr_iter < max_iter:
                 self.train_disc(n_disc_train_iters, update=True)

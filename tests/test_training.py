@@ -84,8 +84,7 @@ class TestSolver(object):
             max_iter=10,
             test_interval=10,
             n_test_batches=1,
-            fit_interval=0,
-            n_fit_batches=0,
+            fit_interval=10,
             save_interval=10,
         )
         assert solver.curr_iter == 10

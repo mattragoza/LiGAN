@@ -111,6 +111,7 @@ class TestGANSolver(object):
             n_disc_train_iters=2,
             test_interval=10,
             n_test_batches=1,
+            fit_interval=10,
             save_interval=10,
         )
         assert solver.curr_iter == 10

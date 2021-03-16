@@ -67,8 +67,7 @@ def parse_args(argv):
     parser.add_argument('--disc_grad_norm_type', default='0', help='0|2|s')
     parser.add_argument('--test_interval', default=100, type=int, help='evaluate test data every # train iters (default 100)')
     parser.add_argument('--n_test_batches', default=10, type=int, help='# test batches to evaluate every test_interval (default 10)')
-    parser.add_argument('--fit_interval', default=100, type=int, help='run atom fitting every # train iters (default 1000)')
-    parser.add_argument('--n_fit_batches', default=1, type=int, help='# test and train batches to run atom fitting on (default 1)')
+    parser.add_argument('--fit_interval', default=1000, type=int, help='run atom fitting every # train iters (default 1000, must be a multiple of test_interval)')
     parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
     parser.add_argument('--out_prefix', required=True)
 
@@ -165,7 +164,6 @@ def main(argv):
             test_interval=args.test_interval,
             n_test_batches=args.n_test_batches,
             fit_interval=args.fit_interval,
-            n_fit_batches=args.n_fit_batches,
             save_interval=args.save_interval,
         )
     else:
