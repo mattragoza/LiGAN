@@ -58,48 +58,51 @@ class TestGANSolver(object):
             assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_disc_forward_real(self, solver):
-        predictions, loss, metrics = solver.disc_forward(
+        loss, metrics = solver.disc_forward(
             solver.train_data, real=True
         )
-        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_disc_forward_gen(self, solver):
-        predictions, loss, metrics = solver.disc_forward(
+        loss, metrics = solver.disc_forward(
             solver.train_data, real=False
         )
-        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_gen_forward(self, solver):
-        predictions, loss, metrics = solver.gen_forward(solver.train_data)
-        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        loss, metrics = solver.gen_forward(solver.train_data)
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_disc_step_real(self, solver):
-        metrics0 = solver.disc_step(real=True)
-        _, _, metrics1 = solver.disc_forward(solver.train_data, real=True)
-        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
-        assert isclose(1, metrics0['disc_grad_norm']), 'gradient not normalized'
+        metrics_i = solver.disc_step(real=True)
+        _, metrics_f = solver.disc_forward(solver.train_data, real=True)
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+        assert isclose(1, metrics_i['disc_grad_norm']), 'gradient not normalized'
 
     def test_solver_disc_step_gen(self, solver):
-        metrics0 = solver.disc_step(real=False)
-        _, _, metrics1 = solver.disc_forward(solver.train_data, real=False)
-        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
-        assert isclose(1, metrics0['disc_grad_norm']), 'gradient not normalized'
+        metrics_i = solver.disc_step(real=False)
+        _, metrics_f = solver.disc_forward(solver.train_data, real=False)
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+        assert isclose(1, metrics_i['disc_grad_norm']), 'gradient not normalized'
 
     def test_solver_gen_step(self, solver):
-        metrics0 = solver.gen_step()
-        _, _, metrics1 = solver.gen_forward(solver.train_data)
-        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+        metrics_i = solver.gen_step()
+        _, metrics_f = solver.gen_forward(solver.train_data)
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
 
     def test_solver_test(self, solver):
-        solver.test(1)
+        solver.test(1, fit_atoms=False)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 2
+
+    def test_solver_test_fit(self, solver):
+        solver.test(1, fit_atoms=True)
+        assert solver.curr_iter == 0
+        assert len(solver.metrics) == 2
+        assert 'lig_gen_fit_n_atoms' in solver.metrics
 
     def test_solver_train(self, solver):
         solver.train(

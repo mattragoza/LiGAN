@@ -6,7 +6,7 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['AE']) #, 'CE', 'VAE', 'CVAE'])
+@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
 def solver(request):
     return getattr(
         liGAN.training, request.param + 'Solver'

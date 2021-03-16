@@ -34,13 +34,6 @@ class AtomGridData(nn.Module):
         self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
         self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
 
-        self.rec_channels = atom_types.get_channels_from_map(
-            self.rec_typer, use_covalent_radius=False, name_prefix=''
-        )
-        self.lig_channels = atom_types.get_channels_from_map(
-            self.lig_typer, use_covalent_radius=False, name_prefix=''
-        )
-
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
             self.rec_typer,
@@ -96,14 +89,17 @@ class AtomGridData(nn.Module):
         return self.lig_typer.num_types() if self.lig_typer else 0
 
     @property
-    def n_channels(self):
-        if self.ligand_only:
-            return self.n_lig_channels
-        elif self.split_rec_lig:
-            return (self.n_rec_channels, self.n_lig_channels)
-        else:
-            return self.n_rec_channels + self.n_lig_channels
+    def rec_channels(self):
+        return atom_types.get_channels_from_map(
+            self.rec_typer, use_covalent_radius=False, name_prefix=''
+        )
 
+    @property
+    def lig_channels(self):
+        return atom_types.get_channels_from_map(
+            self.lig_typer, use_covalent_radius=False, name_prefix=''
+        )
+ 
     @property
     def resolution(self):
         return self.grid_maker.get_resolution()
