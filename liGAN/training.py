@@ -7,7 +7,13 @@ from torch import nn
 torch.backends.cudnn.benchmark = True
 
 import molgrid
-from . import data, models, metrics, atom_types
+from . import data, models, atom_types
+from .metrics import (
+    compute_grid_metrics,
+    compute_paired_grid_metrics,
+    compute_struct_metrics,
+    compute_paired_struct_metrics
+)
 
 
 def kl_divergence(means, log_stds):
@@ -287,11 +293,11 @@ class Solver(nn.Module):
 
         for i in range(n_batches):
             t_start = time.time()
-            predictions, loss, metrics = self.forward(self.test_data, fit_atoms)
+            loss, metrics = self.forward(self.test_data, fit_atoms)
             metrics['forward_time'] = time.time() - t_start
             self.insert_metrics((self.curr_iter, 'test', i), metrics)
 
-        idx = (self.curr_iter, 'test') # batch mean
+        idx = (self.curr_iter, 'test') # mean across batches
         metrics = self.metrics.loc[idx].mean()
         self.print_metrics(idx, metrics)
         self.save_metrics()
@@ -301,7 +307,7 @@ class Solver(nn.Module):
 
         idx = (self.curr_iter, 'train', 0)
         t_start = time.time()
-        predictions, loss, metrics = self.forward(self.train_data)
+        loss, metrics = self.forward(self.train_data)
         torch.cuda.synchronize()
         metrics['forward_time'] = time.time() - t_start
 
@@ -375,19 +381,11 @@ class DiscriminativeSolver(Solver):
         if self.disc_grad_norm_type == '2':
             models.normalize_grad(self.disc_model)
 
-    def compute_metrics(self, labels, predictions):
-        metrics = OrderedDict()
-        metrics['true_norm'] = labels.detach().norm().item()
-        metrics['pred_norm'] = predictions.detach().norm().item()
-        metrics['grad_norm'] = models.compute_grad_norm(self.model)
-        return metrics
-
     def forward(self, data):
         complex_grids, _, labels = data.forward()
         predictions = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(predictions, labels)
-        metrics.update(self.compute_metrics(labels, predictions))
-        return predictions, loss, metrics
+        return loss, metrics
 
 
 class GenerativeSolver(Solver):
@@ -437,65 +435,24 @@ class AESolver(GenerativeSolver):
             ('recon_loss', recon_loss.item())
         ])
 
-    def compute_metrics(self, real_lig_grids, gen_lig_grids, latent_vecs):
-        metrics = OrderedDict()
-        metrics['lig_norm'] = real_lig_grids.detach().norm().item()
-        metrics['lig_gen_norm'] = gen_lig_grids.detach().norm().item()
-        metrics['latent_norm'] = latent_vecs.detach().norm().item()
-        return metrics
-
-    def compute_struct_metrics(self, real_lig_structs, fit_lig_structs, real):
-
-        real_n_atoms = [s.n_atoms for s in real_lig_structs]
-        real_radius = [s.radius for s in real_lig_structs]
-
-        fit_n_atoms = [s.n_atoms for s in fit_lig_structs]
-        fit_radius = [s.radius for s in fit_lig_structs]
-
-        # get atom type count vectors and differences
-        real_type_counts = [
-            s.type_counts for s in real_lig_structs
-        ]
-        fit_type_counts = [
-            s.type_counts for s in fit_lig_structs
-        ]
-        fit_type_diffs = [
-            np.linalg.norm(rt - ft, ord=1) for rt,ft in zip(
-                real_type_counts, fit_type_counts
-            )
-        ]
-
-        metrics = OrderedDict()
-        metrics['lig_n_atoms'] = np.mean(real_n_atoms)
-        metrics['lig_radius'] = np.mean(real_radius)
-
-        struct_type = 'lig' if real else 'lig_gen'
-        metrics[struct_type+'_fit_n_atoms'] = np.mean(fit_n_atoms)
-        metrics[struct_type+'_fit_radius'] = np.mean(fit_radius)
-        metrics[struct_type+'_fit_type_diff'] = np.mean(fit_type_diffs)
-        metrics[struct_type+'_fit_exact_types'] = np.mean(fit_type_diffs == 0)
-        return metrics
-
     def forward(self, data, fit_atoms=False):
 
-        real_lig_grids, real_lig_structs, _ = data.forward(ligand_only=True)
+        lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+        lig_gen_grids, latent_vecs = self.gen_model(lig_grids)
 
-        gen_lig_grids, latent_vecs = self.gen_model(real_lig_grids)
-
-        loss, metrics = self.compute_loss(real_lig_grids, gen_lig_grids)
-        metrics.update(self.compute_metrics(
-            real_lig_grids, gen_lig_grids, latent_vecs
+        loss, metrics = self.compute_loss(lig_grids, lig_gen_grids)
+        metrics.update(compute_paired_grid_metrics(
+            'lig_gen', lig_gen_grids, 'lig', lig_grids
         ))
-
-        if fit_atoms: # TODO test this and generalize to other model types
-            gen_lig_fit_structs = self.atom_fitter.fit_batch(
-                gen_lig_grids, real_lig_structs, data.resolution
+        if fit_atoms:
+            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+                lig_gen_grids, lig_structs, data.resolution
             )
-            metrics.update(self.compute_struct_metrics(
-                real_lig_structs, gen_lig_fit_structs, real=False
+            metrics.update(compute_paired_struct_metrics(
+                'lig_gen_fit', lig_gen_fit_structs, 'lig', lig_structs
             ))
     
-        return gen_lig_grids, loss, metrics
+        return loss, metrics
 
 
 class VAESolver(AESolver):

@@ -933,48 +933,6 @@ def find_blobs_in_net(net, blob_pattern):
     return re.findall('^{}$'.format(blob_pattern), '\n'.join(net.blobs), re.MULTILINE)
 
 
-def get_min_rmsd(xyz1, c1, xyz2, c2):
-    '''
-    Compute an RMSD between two sets of positions of the same
-    atom types with no prior mapping between particular atom
-    positions of a given type. Returns the minimum RMSD across
-    all permutations of this mapping.
-    '''
-    # check that structs are same size
-    if len(c1) != len(c2):
-        raise ValueError('structs must have same num atoms')
-    n_atoms = len(c1)
-
-    # copy everything into arrays
-    xyz1 = np.array(xyz1)
-    xyz2 = np.array(xyz2)
-    c1 = np.array(c1)
-    c2 = np.array(c2)
-
-    # check that types are compatible
-    idx1 = np.argsort(c1)
-    idx2 = np.argsort(c2)
-    c1 = c1[idx1]
-    c2 = c2[idx2]
-    if any(c1 != c2):
-        raise ValueError('structs must have same num atoms of each type')
-    xyz1 = xyz1[idx1]
-    xyz2 = xyz2[idx2]
-
-    # find min rmsd by solving linear sum assignment
-    # problem on squared dist matrix for each type
-    ssd = 0.0
-    nax = np.newaxis
-    for c in set(c1): 
-        xyz1_c = xyz1[c1 == c]
-        xyz2_c = xyz2[c2 == c]
-        dist2_c = ((xyz1_c[:,nax,:] - xyz2_c[nax,:,:])**2).sum(axis=2)
-        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_c)
-        ssd += dist2_c[idx1, idx2].sum()
-
-    return np.sqrt(ssd/n_atoms)
-
-
 def slerp(v0, v1, t):
     '''
     Spherical linear interpolation between

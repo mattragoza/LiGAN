@@ -6,7 +6,7 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
+@pytest.fixture(params=['AE']) #, 'CE', 'VAE', 'CVAE'])
 def solver(request):
     return getattr(
         liGAN.training, request.param + 'Solver'
@@ -59,22 +59,21 @@ class TestSolver(object):
             assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_forward(self, solver):
-        predictions, loss, metrics = solver.forward(solver.train_data)
-        assert predictions.detach().norm().cpu() > 0, 'predictions are zero'
+        loss, metrics = solver.forward(solver.train_data)
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_step(self, solver):
-        metrics0 = solver.step()
-        _, _, metrics1 = solver.forward(solver.train_data)
-        assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+        metrics_i = solver.step()
+        _, metrics_f = solver.forward(solver.train_data)
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
 
     def test_solver_test(self, solver):
-        solver.test(1)
+        solver.test(1, fit_atoms=False)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
 
-    def test_solver_test_fit(self, solver): #TODO batch_size is 1000, too slow
+    def test_solver_test_fit(self, solver):
         solver.test(1, fit_atoms=True)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
