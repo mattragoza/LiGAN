@@ -14,9 +14,9 @@ def solver(request):
         liGAN.training, request.param + 'Solver'
     )(
         data_root='data/molport',
-        train_file='data/molportFULL_rand_test0_1000.types',
-        test_file='data/molportFULL_rand_test0_1000.types',
-        batch_size=1000,
+        train_file='data/molportFULL_rand_test0_50.types',
+        test_file='data/molportFULL_rand_test0_50.types',
+        batch_size=50,
         rec_map_file='data/my_rec_map',
         lig_map_file='data/my_lig_map',
         resolution=1.0,
