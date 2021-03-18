@@ -393,7 +393,7 @@ class DiscriminativeSolver(Solver):
 
     def normalize_grad(self):
         if self.disc_grad_norm_type == '2':
-            models.normalize_grad(self.disc_model)
+            torch.nn.utils.clip_grad_norm_(self.disc_model.parameters(), 1.0)
 
     def forward(self, data):
         complex_grids, _, labels = data.forward()
@@ -426,7 +426,7 @@ class GenerativeSolver(Solver):
 
     def normalize_grad(self):
         if self.gen_grad_norm_type == '2':
-            models.normalize_grad(self.gen_model)
+            torch.nn.utils.clip_grad_norm_(self.gen_model.parameters(), 1.0)
 
 
 class AESolver(GenerativeSolver):
@@ -661,11 +661,11 @@ class GANSolver(GenerativeSolver):
 
     def normalize_gen_grad(self):
         if self.gen_grad_norm_type == '2':
-            models.normalize_grad(self.gen_model)
+            torch.nn.utils.clip_grad_norm_(self.gen_model.parameters(), 1.0)
 
     def normalize_disc_grad(self):
         if self.disc_grad_norm_type == '2':
-            models.normalize_grad(self.disc_model)
+            torch.nn.utils.clip_grad_norm_(self.disc_model.parameters(), 1.0)
 
     def compute_loss(self, labels, predictions):
         gan_loss = self.gan_loss_fn(predictions, labels)
