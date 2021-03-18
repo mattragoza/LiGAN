@@ -338,6 +338,7 @@ class Solver(nn.Module):
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
+        assert not loss.isnan(), 'loss is nan'
         return metrics
 
     def train(
@@ -817,6 +818,7 @@ class GANSolver(GenerativeSolver):
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
+        assert not loss.isnan(), 'loss is nan'
         return metrics
 
     def gen_step(self, update=True, batch_idx=0, sync=False):
@@ -858,6 +860,7 @@ class GANSolver(GenerativeSolver):
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
+        assert not loss.isnan(), 'loss is nan'
         return metrics
 
     def train_disc(self, n_iters, update=True):
