@@ -147,11 +147,13 @@ def main(argv):
         optim_kws=dict([
             ('lr', args.learning_rate)
         ] + dict(
-            SGD=[('momentum', args.momentum)],
-            Adam=[('betas', (args.beta1, args.beta2))],
-            RMSprop=[('momentum', args.momentum), ('alpha', args.alpha)],
-        ).get(args.optim_type, [])
+                SGD=[('momentum', args.momentum)],
+                Adam=[('betas', (args.beta1, args.beta2))],
+                RMSprop=[('momentum', args.momentum), ('alpha', args.alpha)],
+            ).get(args.optim_type, [])
         ),
+        atom_fitter_type=liGAN.atom_fitting.AtomFitter,
+        atom_fitter_kws=dict(),
         out_prefix=args.out_prefix,
         device='cuda'
     )
