@@ -1,6 +1,5 @@
-import gzip
+import sys, gzip, traceback
 import numpy as np
-import traceback
 
 from openbabel import openbabel as ob
 from openbabel import pybel

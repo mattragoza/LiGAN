@@ -509,7 +509,7 @@ def make_obmol(struct,verbose=False):
                     carbon_cnt += 1
                     if a.IsAromatic():
                         aromatic_ccnt += 1
-            if aromatic_ccnt/carbon_cnt >= .5 and aromatic_ccnt != ring.Size():
+            if aromatic_ccnt >= carbon_cnt/2 and aromatic_ccnt != ring.Size():
                 #set all ring atoms to be aromatic
                 for ai in ring._path:
                     a = mol.GetAtom(ai)
