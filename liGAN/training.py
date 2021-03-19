@@ -1,4 +1,4 @@
-import time
+import os, time, psutil, pynvml
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
@@ -14,6 +14,12 @@ from .metrics import (
     compute_struct_metrics,
     compute_paired_struct_metrics
 )
+
+
+MB = 1024 ** 2
+
+def get_memory_used():
+    return psutil.Process(os.getpid()).memory_info().rss
 
 
 def kl_divergence(means, log_stds):
@@ -292,9 +298,12 @@ class Solver(nn.Module):
     def test(self, n_batches, fit_atoms=False):
 
         for i in range(n_batches):
-            t_start = time.time()
+            torch.cuda.reset_max_memory_allocated()
+            t0 = time.time()
             loss, metrics = self.forward(self.test_data, fit_atoms)
-            metrics['forward_time'] = time.time() - t_start
+            metrics['forward_time'] = time.time() - t0
+            metrics['forward_gpu'] = torch.cuda.max_memory_allocated() / MB
+            metrics['memory'] = get_memory_used() / MB
             self.insert_metrics((self.curr_iter, 'test', i), metrics)
 
         idx = (self.curr_iter, 'test') # mean across batches
@@ -304,12 +313,16 @@ class Solver(nn.Module):
         return metrics
 
     def step(self, update=True, sync=False):
+        torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
         idx = (self.curr_iter, 'train', 0)
         loss, metrics = self.forward(self.train_data)
         if sync:
             torch.cuda.synchronize()
+
+        m1 = torch.cuda.max_memory_allocated()
+        torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
 
         if update:
@@ -326,14 +339,18 @@ class Solver(nn.Module):
 
             self.curr_iter += 1
 
+        m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
 
         metrics['forward_time'] = t1 - t0
+        metrics['forward_gpu'] = m1 / MB
+        metrics['memory'] = get_memory_used() / MB
         if update:
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
             metrics['backward_update_time'] = t4 - t3
+            metrics['backward_gpu'] = m2 / MB
 
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
@@ -753,10 +770,13 @@ class GANSolver(GenerativeSolver):
 
         # test discriminator on alternating real/generated batches
         for i in range(n_batches):
+            torch.cuda.reset_max_memory_allocated()
+            t0 = time.time()
             real = (i%2 == 0)
-            t_start = time.time()
             loss, metrics = self.disc_forward(self.test_data, real)
-            metrics['forward_time'] = time.time() - t_start
+            metrics['forward_time'] = time.time() - t0
+            metrics['forward_gpu'] = torch.cuda.max_memory_allocated() / MB
+            metrics['memory'] = get_memory_used() / MB
             idx = (self.gen_iter, self.disc_iter, 'test', 'disc', i, real)
             self.insert_metrics(idx, metrics)
 
@@ -766,9 +786,12 @@ class GANSolver(GenerativeSolver):
 
         # test generator on same number of batches
         for i in range(n_batches):
-            t_start = time.time()
+            torch.cuda.reset_max_memory_allocated()
+            t0 = time.time()
             loss, metrics = self.gen_forward(self.test_data, fit_atoms)
-            metrics['forward_time'] = time.time() - t_start
+            metrics['forward_time'] = time.time() - t0
+            metrics['forward_gpu'] = torch.cuda.max_memory_allocated() / MB
+            metrics['memory'] = get_memory_used() / MB
             idx = (self.gen_iter, self.disc_iter, 'test', 'gen', i, False)
             self.insert_metrics(idx, metrics)
 
@@ -780,6 +803,7 @@ class GANSolver(GenerativeSolver):
         return self.metrics.loc[(self.gen_iter, self.disc_iter, 'test')]
 
     def disc_step(self, real, update=True, batch_idx=0, sync=False):
+        torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
         idx = (
@@ -788,6 +812,9 @@ class GANSolver(GenerativeSolver):
         loss, metrics = self.disc_forward(self.train_data, real)
         if sync:
             torch.cuda.synchronize()
+
+        m1 = torch.cuda.max_memory_allocated()
+        torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
         
         if update:
@@ -806,14 +833,18 @@ class GANSolver(GenerativeSolver):
 
             self.disc_iter += 1
 
+        m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
 
         metrics['forward_time'] = t1 - t0
+        metrics['forward_gpu'] = m1 / MB
+        metrics['memory'] = get_memory_used() / MB
         if update:
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
             metrics['backward_update_time'] = t4 - t3
+            metrics['backward_gpu'] = m2 / MB
 
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
@@ -822,6 +853,7 @@ class GANSolver(GenerativeSolver):
         return metrics
 
     def gen_step(self, update=True, batch_idx=0, sync=False):
+        torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
         idx = (
@@ -830,6 +862,9 @@ class GANSolver(GenerativeSolver):
         loss, metrics = self.gen_forward(self.train_data)
         if sync:
             torch.cuda.synchronize()
+
+        m1 = torch.cuda.max_memory_allocated()
+        torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
 
         if update:
@@ -848,14 +883,18 @@ class GANSolver(GenerativeSolver):
 
             self.gen_iter += 1
 
+        m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
 
         metrics['forward_time'] = t1 - t0
+        metrics['forward_gpu'] = m1 / MB
+        metrics['memory'] = get_memory_used() / MB
         if update:
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
             metrics['backward_update_time'] = t4 - t3
+            metrics['backward_gpu'] = m2 / MB
 
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
