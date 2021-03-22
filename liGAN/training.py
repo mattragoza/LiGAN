@@ -331,6 +331,7 @@ class Solver(nn.Module):
             t2 = time.time()
 
             self.normalize_grad()
+            grad_norm = models.compute_grad_norm(self.model)
             t3 = time.time()
 
             self.optimizer.step()
@@ -346,6 +347,10 @@ class Solver(nn.Module):
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
         if update:
+            if isinstance(self, DiscriminativeSolver):
+                metrics['disc_grad_norm'] = grad_norm
+            elif isinstance(self, GenerativeSolver):
+                metrics['gen_grad_norm'] = grad_norm
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
@@ -356,6 +361,9 @@ class Solver(nn.Module):
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
         assert not loss.isnan(), 'loss is nan'
+        if update:
+            assert not np.isnan(grad_norm), 'gradient is nan'
+            assert not np.isclose(0, grad_norm), 'gradient is zero'
         return metrics
 
     def train(
@@ -823,8 +831,7 @@ class GANSolver(GenerativeSolver):
             t2 = time.time()
 
             self.normalize_disc_grad()
-            metrics['disc_grad_norm'] = \
-                models.compute_grad_norm(self.disc_model)
+            grad_norm = models.compute_grad_norm(self.disc_model)
             t3 = time.time()
 
             self.disc_optimizer.step()
@@ -840,6 +847,7 @@ class GANSolver(GenerativeSolver):
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
         if update:
+            metrics['disc_grad_norm'] = grad_norm
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
@@ -849,7 +857,10 @@ class GANSolver(GenerativeSolver):
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
-        assert not loss.isnan(), 'loss is nan'
+        assert not loss.isnan(), 'discriminator loss is nan'
+        if update:
+            assert not np.isnan(grad_norm), 'discriminator gradient is nan'
+            assert not np.isclose(0, grad_norm), 'discriminator gradient is zero'
         return metrics
 
     def gen_step(self, update=True, batch_idx=0, sync=False):
@@ -873,8 +884,7 @@ class GANSolver(GenerativeSolver):
             t2 = time.time()
 
             self.normalize_gen_grad()
-            metrics['gen_grad_norm'] = \
-                models.compute_grad_norm(self.gen_model)
+            grad_norm = models.compute_grad_norm(self.gen_model)
             t3 = time.time()
 
             self.gen_optimizer.step()
@@ -890,6 +900,7 @@ class GANSolver(GenerativeSolver):
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
         if update:
+            metrics['gen_grad_norm'] = grad_norm
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
             metrics['backward_norm_time'] = t3 - t2
@@ -899,7 +910,10 @@ class GANSolver(GenerativeSolver):
         self.insert_metrics(idx, metrics)
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
-        assert not loss.isnan(), 'loss is nan'
+        assert not loss.isnan(), 'generator loss is nan'
+        if update:
+            assert not np.isnan(grad_norm), 'generator gradient is nan'
+            assert not np.isclose(0, grad_norm), 'generator gradient is zero'
         return metrics
 
     def train_disc(self, n_iters, update=True):
