@@ -59,6 +59,16 @@ def get_gan_loss_fn(loss_type='x'):
         return torch.nn.BCEWithLogitsLoss()
 
 
+def save_on_exception(method):
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except:
+            self.save_state()
+            raise
+    return wrapper
+
+
 class Solver(nn.Module):
     gen_model_type = None
     index_cols = ['iteration', 'phase', 'batch']
@@ -297,6 +307,7 @@ class Solver(nn.Module):
         assert self.gen_grad_norm_type in {'0', '2'}
         assert self.disc_grad_norm_type in {'0', '2'}
 
+    @save_on_exception
     def test(self, n_batches, fit_atoms=False):
 
         for i in range(n_batches):
@@ -314,6 +325,7 @@ class Solver(nn.Module):
         self.save_metrics()
         return metrics
 
+    @save_on_exception
     def step(self, update=True, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
@@ -776,6 +788,7 @@ class GANSolver(GenerativeSolver):
         metrics['forward_metrics_time'] = t4 - t3
         return loss, metrics
 
+    @save_on_exception
     def test(self, n_batches, fit_atoms=False):
 
         # test discriminator on alternating real/generated batches
@@ -812,6 +825,7 @@ class GANSolver(GenerativeSolver):
         self.save_metrics()
         return self.metrics.loc[(self.gen_iter, self.disc_iter, 'test')]
 
+    @save_on_exception
     def disc_step(self, real, update=True, batch_idx=0, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
@@ -865,6 +879,7 @@ class GANSolver(GenerativeSolver):
             assert not np.isclose(0, grad_norm), 'discriminator gradient is zero'
         return metrics
 
+    @save_on_exception
     def gen_step(self, update=True, batch_idx=0, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
