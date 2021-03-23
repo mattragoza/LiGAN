@@ -50,11 +50,13 @@ class AtomFitter(object):
             betas=(0.9, 0.999),
             weight_decay=0.0,
         ),
+        do_validify=True,
         dkoes_make_mol=True,
         use_openbabel=False,
         output_kernel=False,
         device='cuda',
         verbose=0,
+        debug=False,
     ):
         # number of best structures to store and expand during search
         self.beam_size = beam_size
@@ -83,6 +85,7 @@ class AtomFitter(object):
         self.gd_kwargs = gd_kwargs
 
         # alternate bond adding methods
+        self.do_validify = do_validify
         self.dkoes_make_mol = dkoes_make_mol
         self.mtr22_make_mol = False
         self.use_openbabel = use_openbabel
@@ -90,6 +93,7 @@ class AtomFitter(object):
         self.output_kernel = output_kernel
         self.device = device
         self.verbose = verbose
+        self.debug = debug
 
         self.grid_maker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
@@ -301,23 +305,12 @@ class AtomFitter(object):
         grid_sum = grid.sum(dim=(1,2,3))
         return grid_sum / kernel_sum
 
-    def fit_batch(self, grids, channels, center, resolution):
-
-        fit_structs = []
-        for grid in grids:
-            grid = AtomGrid(
-                grid.detach(), channels, center, resolution
-            )
-            fit_struct = self.fit(grid).info['src_struct']
-            fit_structs.append(fit_struct)
-
-        return fit_structs
-
     def fit(self, grid, type_counts=None):
         '''
         Fit atom types and coordinates to atomic density grid.
         '''
         t_start = time.time()
+        torch.cuda.reset_max_memory_allocated()
 
         # get true grid on appropriate device
         grid_true = AtomGrid(
@@ -385,8 +378,12 @@ class AtomFitter(object):
         visited_structs = [(objective, struct_id, time.time()-t_start, xyz, c)]
         struct_count = 1
 
+        mi = torch.cuda.max_memory_allocated()
+        ms = []
+
         # search until we can't find a better structure
         while found_new_best_struct:
+            torch.cuda.reset_max_memory_allocated()
 
             new_best_structs = []
             found_new_best_struct = False
@@ -524,6 +521,10 @@ class AtomFitter(object):
                 if len(xyz_new) >= 50:
                     found_new_best_struct = False #dkoes: limit molecular size
 
+            ms.append(torch.cuda.max_memory_allocated())
+
+        torch.cuda.reset_max_memory_allocated()
+
         # done searching for atomic structures
         best_objective, best_id, xyz_best, c_best, _, _ = best_structs[0]
 
@@ -578,8 +579,6 @@ class AtomFitter(object):
             visited_structs=visited_structs,
         )
 
-        self.validify(struct_best)
-
         grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
             channels=grid.channels,
@@ -588,7 +587,32 @@ class AtomFitter(object):
             src_struct=struct_best,
         )
 
+        mf = torch.cuda.max_memory_allocated()
+        torch.cuda.reset_max_memory_allocated()
+
+        if self.do_validify:
+            del grid, grid_diff # avoids GPU memory leak
+            self.validify(struct_best)
+
+        mv = torch.cuda.max_memory_allocated()
+
+        if self.debug:
+            MB = int(1024 ** 2)
+            print('GPU', mi//MB, [m//MB for m in ms], mf//MB, mv//MB)
+
         return remove_tensors(grid_pred)
+
+    def fit_batch(self, grids, channels, center, resolution):
+
+        fit_structs = []
+        for grid in grids:
+            grid = AtomGrid(
+                grid.detach(), channels, center, resolution
+            )
+            fit_struct = self.fit(grid).info['src_struct']
+            fit_structs.append(fit_struct)
+
+        return fit_structs
 
     def fit_gd(self, grid, xyz, c, n_iters):
 

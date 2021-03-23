@@ -70,6 +70,7 @@ def parse_args(argv):
     parser.add_argument('--fit_interval', default=1000, type=int, help='run atom fitting every # train iters (default 1000, must be a multiple of test_interval)')
     parser.add_argument('--save_interval', default=10000, type=int, help='save weights every # train iters (default 10,000)')
     parser.add_argument('--out_prefix', required=True)
+    parser.add_argument('--debug', default=False, action='store_true')
 
     # TODO reimplement the following arguments
     parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
@@ -156,7 +157,8 @@ def main(argv):
         atom_fitter_kws=dict(),
         out_prefix=args.out_prefix,
         random_seed=args.random_seed,
-        device='cuda'
+        device='cuda',
+        debug=args.debug
     )
 
     if isinstance(solver, liGAN.training.GANSolver):

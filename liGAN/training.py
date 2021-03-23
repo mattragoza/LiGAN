@@ -100,6 +100,7 @@ class Solver(nn.Module):
         out_prefix,
         random_seed=None,
         device='cuda',
+        debug=False,
     ):
         super().__init__()
         self.device = device
@@ -176,7 +177,7 @@ class Solver(nn.Module):
         self.grad_norm_types = self.initialize_norm(grad_norm_types or {})
 
         if isinstance(self, GenerativeSolver):
-            self.atom_fitter = atom_fitter_type(**atom_fitter_kws)
+            self.atom_fitter = atom_fitter_type(debug=debug, **atom_fitter_kws)
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -184,6 +185,7 @@ class Solver(nn.Module):
         ).set_index(self.index_cols)
 
         self.out_prefix = out_prefix
+        self.debug = debug
 
     @property
     def n_channels_in(self):
