@@ -217,7 +217,7 @@ class Solver(nn.Module):
     def curr_iter(self, i):
         raise NotImplementedError
     
-    def set_random_seed(random_seed):
+    def set_random_seed(self, random_seed):
         np.random.seed(random_seed)
         torch.manual_seed(random_seed)
         molgrid.set_random_seed(random_seed)

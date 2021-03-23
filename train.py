@@ -155,6 +155,7 @@ def main(argv):
         atom_fitter_type=liGAN.atom_fitting.AtomFitter,
         atom_fitter_kws=dict(),
         out_prefix=args.out_prefix,
+        random_seed=args.random_seed,
         device='cuda'
     )
 
