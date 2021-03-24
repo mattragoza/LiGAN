@@ -50,7 +50,6 @@ class AtomFitter(object):
             betas=(0.9, 0.999),
             weight_decay=0.0,
         ),
-        do_validify=True,
         dkoes_make_mol=True,
         use_openbabel=False,
         output_kernel=False,
@@ -85,7 +84,6 @@ class AtomFitter(object):
         self.gd_kwargs = gd_kwargs
 
         # alternate bond adding methods
-        self.do_validify = do_validify
         self.dkoes_make_mol = dkoes_make_mol
         self.mtr22_make_mol = False
         self.use_openbabel = use_openbabel
@@ -291,6 +289,46 @@ class AtomFitter(object):
         c = F.one_hot(idx_c, n_channels).to(dtype=torch.float32, device=self.device)
 
         return xyz.detach(), c.detach()
+
+    def fit_gd(self, grid, xyz, c, n_iters):
+
+        r = torch.tensor(
+            [ch.atomic_radius for ch in grid.channels],
+            device=self.device,
+        )
+        xyz = xyz.clone().detach().to(self.device)
+        c = c.clone().detach().to(self.device)
+        xyz.requires_grad = True
+
+        solver = torch.optim.Adam((xyz,), **self.gd_kwargs)
+
+        self.grid_maker.set_radii_type_indexed(True)
+        self.grid_maker.set_dimension(grid.dimension)
+        self.grid_maker.set_resolution(grid.resolution)
+        self.c2grid.center = tuple(grid.center.cpu().numpy().astype(float))
+
+        for i in range(n_iters + 1):
+            solver.zero_grad()
+
+            grid_pred = self.c2grid(xyz, c, r)
+            grid_diff = grid.values - grid_pred
+            if self.fit_L1_loss:
+                loss = grid_diff.abs().sum()
+            else:
+                loss = (grid_diff**2).sum() / 2.0
+
+            if i == n_iters: # or converged
+                break
+
+            loss.backward()
+            solver.step()
+
+        return (
+            xyz.detach(),
+            grid_pred.detach(),
+            grid_diff.detach(),
+            loss.detach()
+        )
 
     def get_types_estimate(self, grid, channels, resolution):
         '''
@@ -578,6 +616,7 @@ class AtomFitter(object):
             time=time.time()-t_start,
             visited_structs=visited_structs,
         )
+        self.validify(struct_best)
 
         grid_pred = AtomGrid(
             values=grid_pred.cpu().detach().numpy(),
@@ -588,77 +627,18 @@ class AtomFitter(object):
         )
 
         mf = torch.cuda.max_memory_allocated()
-        torch.cuda.reset_max_memory_allocated()
-
-        if self.do_validify:
-            del grid, grid_diff # avoids GPU memory leak
-            self.validify(struct_best)
-
-        mv = torch.cuda.max_memory_allocated()
 
         if self.debug:
             MB = int(1024 ** 2)
-            print('GPU', mi//MB, [m//MB for m in ms], mf//MB, mv//MB)
+            print('GPU', mi//MB, [m//MB for m in ms], mf//MB)
 
-        return remove_tensors(grid_pred)
-
-    def fit_batch(self, grids, channels, center, resolution):
-
-        fit_structs = []
-        for grid in grids:
-            grid = AtomGrid(
-                grid.detach(), channels, center, resolution
-            )
-            fit_struct = self.fit(grid).info['src_struct']
-            fit_structs.append(fit_struct)
-
-        return fit_structs
-
-    def fit_gd(self, grid, xyz, c, n_iters):
-
-        r = torch.tensor(
-            [ch.atomic_radius for ch in grid.channels],
-            device=self.device,
-        )
-        xyz = xyz.clone().detach().to(self.device)
-        c = c.clone().detach().to(self.device)
-        xyz.requires_grad = True
-
-        solver = torch.optim.Adam((xyz,), **self.gd_kwargs)
-
-        self.grid_maker.set_radii_type_indexed(True)
-        self.grid_maker.set_dimension(grid.dimension)
-        self.grid_maker.set_resolution(grid.resolution)
-        self.c2grid.center = tuple(grid.center.cpu().numpy().astype(float))
-
-        for i in range(n_iters + 1):
-            solver.zero_grad()
-
-            grid_pred = self.c2grid(xyz, c, r)
-            grid_diff = grid.values - grid_pred
-            if self.fit_L1_loss:
-                loss = grid_diff.abs().sum()
-            else:
-                loss = (grid_diff**2).sum() / 2.0
-
-            if i == n_iters: # or converged
-                break
-
-            loss.backward()
-            solver.step()
-
-        return (
-            xyz.detach(),
-            grid_pred.detach(),
-            grid_diff.detach(),
-            loss.detach()
-        )
+        return remove_tensors(struct_best), remove_tensors(grid_pred)
 
     def validify(self, struct, use_ob=False):
         '''
         Attempt to construct a valid molecule from an atomic
         structure by inferring bonds, setting aromaticity
-        and connecting fragments, then minimizing energy.
+        and connecting fragments. Returns an RDKit molecule.
         '''
         # initial struct from atom fitting (no bonds)
         rd_mol = struct.to_rd_mol()
@@ -703,6 +683,11 @@ class AtomFitter(object):
         struct.info['add_mol'] = rd_mol
 
     def uff_minimize(self, mol):
+        '''
+        Minimize molecular geometry using UFF.
+        The minimization results are stored in
+        the info attribute of the input mol.
+        '''
         t_start = time.time()
         min_mol, E_init, E_min, error = molecules.uff_minimize_rd_mol(mol)
 
@@ -718,6 +703,19 @@ class AtomFitter(object):
         mol.info['E_min'] = E_min
         mol.info['min_error'] = error
         mol.info['min_time'] = time.time() - t_start
+
+    def fit_batch(self, grids, channels, center, resolution):
+
+        fit_structs, fit_grids = [], []
+        for grid in grids:
+            grid = AtomGrid(
+                grid.detach(), channels, center, resolution
+            )
+            fit_struct, fit_grid = self.fit(grid)
+            fit_structs.append(fit_struct)
+            fit_grids.append(fit_grid)
+
+        return fit_structs, fit_grids
 
 
 class DkoesAtomFitter(AtomFitter):

@@ -229,40 +229,53 @@ def get_ob_smi_similarity(smi1, smi2):
 
 
 def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+    '''
+    Attempt to minimize rd_mol with UFF.
+    Returns min_mol, E_init, E_final, error
+    '''
+    E_init = E_final = np.nan
+
     if rd_mol.GetNumAtoms() == 0:
-        return Chem.RWMol(rd_mol), np.nan, np.nan, None
-    try:
+        return Chem.RWMol(rd_mol), E_init, E_final, None
+
+    try: # initialize molecule and force field
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-        ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
-        ff.Initialize()
-        E_init = ff.CalcEnergy()
-        try:
-            res = ff.Minimize(maxIts=max_iters)
-            E_final = ff.CalcEnergy()
-            rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
-            if res == 0:
-                e = None
-            else:
-                e = RuntimeError('minimization not converged')
-            return rd_mol, E_init, E_final, e
-        except RuntimeError as e:
-            w = Chem.SDWriter('badmol.sdf')
-            w.write(rd_mol)
-            w.close()
-            print("NumAtoms",rd_mol.GetNumAtoms())
-            traceback.print_exc(file=sys.stdout)
-            return Chem.RWMol(rd_mol), E_init, np.nan, e
-    except Exception as e:
-        print("UFF Exception")
+        uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+        uff.Initialize()
+        E_init = uff.CalcEnergy()
+
+    except Chem.rdchem.AtomValenceException as e:
+        print('UFF1', e)
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), np.nan, np.nan, None
+        return Chem.RWMol(rd_mol), E_init, E_final, e
+
+    try: # minimize molecule with force field
+        res = uff.Minimize(maxIts=max_iters)
+        E_final = uff.CalcEnergy()
+        rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
+        e = RuntimeError('minimization not converged') if res else None
+        return rd_mol, E_init, E_final, e
+
+    except RuntimeError as e:
+        # WARNING: When Invariant Violation: bad direction
+        # is caught here, some or all GPU memory in the
+        # current stack is not freed properly, causing a
+        # memory leak.
+        print('UFF2', e)
+        w = Chem.SDWriter('badmol.sdf')
+        w.SetKekulize(False)
+        w.write(rd_mol_H)
+        w.close()
+        print("NumAtoms", rd_mol.GetNumAtoms())
+        traceback.print_exc(file=sys.stdout)
+        return Chem.RWMol(rd_mol), E_init, np.nan, e
 
 
 @catch_exc
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
     rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-    ff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
-    return ff.CalcEnergy()
+    uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+    return uff.CalcEnergy()
 
 
 def get_rd_mol_validity(rd_mol):
