@@ -247,14 +247,14 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     except Chem.rdchem.AtomValenceException as e:
         print('UFF1', e)
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), E_init, E_final, e
+        return Chem.RWMol(rd_mol), E_init, E_final, str(e)
 
     try: # minimize molecule with force field
         res = uff.Minimize(maxIts=max_iters)
         E_final = uff.CalcEnergy()
         rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
         e = RuntimeError('minimization not converged') if res else None
-        return rd_mol, E_init, E_final, e
+        return rd_mol, E_init, E_final, str(e)
 
     except RuntimeError as e:
         # WARNING: When Invariant Violation: bad direction
@@ -268,7 +268,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
         w.close()
         print("NumAtoms", rd_mol.GetNumAtoms())
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), E_init, np.nan, e
+        return Chem.RWMol(rd_mol), E_init, np.nan, str(e)
 
 
 @catch_exc
