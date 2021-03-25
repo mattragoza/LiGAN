@@ -43,19 +43,25 @@ def normalize_grad(model):
 
 class ConvReLU(nn.Sequential):
 
-    def __init__(self, n_input, n_output, kernel_size, relu_leak):
+    def __init__(
+        self, n_input, n_output, kernel_size, relu_leak, batch_norm
+    ):
+        modules = [
+            nn.Conv3d(
+                in_channels=n_input,
+                out_channels=n_output,
+                kernel_size=kernel_size,
+                padding=kernel_size//2,
+            ),
+            nn.LeakyReLU(
+                negative_slope=relu_leak,
+                inplace=True,
+            )
+        ]
+        if batch_norm > 0:
+            modules.insert(batch_norm, nn.BatchNorm3d(n_output))
 
-        conv = nn.Conv3d(
-            in_channels=n_input,
-            out_channels=n_output,
-            kernel_size=kernel_size,
-            padding=kernel_size//2,
-        )
-        relu = nn.LeakyReLU(
-            negative_slope=relu_leak,
-            inplace=True,
-        )
-        super().__init__(conv, relu)
+        super().__init__(*modules)
 
 
 class ConvBlock(nn.Sequential):
@@ -67,6 +73,7 @@ class ConvBlock(nn.Sequential):
         n_output,
         kernel_size,
         relu_leak,
+        batch_norm,
         dense_net=False,
     ):
         if dense_net:
@@ -74,7 +81,9 @@ class ConvBlock(nn.Sequential):
 
         modules = []
         for i in range(n_convs):
-            conv_relu = ConvReLU(n_input, n_output, kernel_size, relu_leak)
+            conv_relu = ConvReLU(
+                n_input, n_output, kernel_size, relu_leak, batch_norm
+            )
             n_input = n_output
             modules.append(conv_relu)
 
@@ -83,19 +92,25 @@ class ConvBlock(nn.Sequential):
 
 class DeconvReLU(nn.Sequential):
 
-    def __init__(self, n_input, n_output, kernel_size, relu_leak):
+    def __init__(
+        self, n_input, n_output, kernel_size, relu_leak, batch_norm,
+    ):
+        modules = [
+            nn.ConvTranspose3d(
+                in_channels=n_input,
+                out_channels=n_output,
+                kernel_size=kernel_size,
+                padding=kernel_size//2,
+            ),
+            nn.LeakyReLU(
+                negative_slope=relu_leak,
+                inplace=True,
+            )
+        ]
+        if batch_norm > 0:
+            modules.insert(batch_norm, nn.BatchNorm3d(n_output))
 
-        deconv = nn.ConvTranspose3d(
-            in_channels=n_input,
-            out_channels=n_output,
-            kernel_size=kernel_size,
-            padding=kernel_size//2,
-        )
-        relu = nn.LeakyReLU(
-            negative_slope=relu_leak,
-            inplace=True,
-        )
-        super().__init__(deconv, relu)
+        super().__init__(*modules)
 
 
 class DeconvBlock(nn.Sequential):
@@ -107,6 +122,7 @@ class DeconvBlock(nn.Sequential):
         n_output,
         kernel_size,
         relu_leak,
+        batch_norm,
         dense_net=False,
     ):
         if dense_net:
@@ -115,7 +131,7 @@ class DeconvBlock(nn.Sequential):
         modules = []
         for i in range(n_deconvs):
             deconv_relu = DeconvReLU(
-                n_input, n_output, kernel_size, relu_leak
+                n_input, n_output, kernel_size, relu_leak, batch_norm
             )
             n_input = n_output
             modules.append(deconv_relu)
@@ -181,32 +197,41 @@ class Unpooling(nn.Sequential):
         super().__init__(unpool)
 
 
-class ReshapeFc(nn.Module):
+class Reshape(nn.Module):
+
+    def __init__(self, *args):
+        super().__init__()
+        self.shape = tuple(args)
+
+    def forward(self, x):
+        return x.reshape(self.shape)
+
+
+class ReshapeFc(nn.Sequential):
 
     def __init__(self, in_shape, n_output, activ_fn=None):
-        super().__init__()
-        self.n_input = np.prod(in_shape)
-        self.fc = nn.Linear(self.n_input, n_output)
-        self.activ_fn = activ_fn
-
-    def forward(self, x):
-        x = x.reshape(-1, self.n_input)
-        x = self.fc(x)
-        if self.activ_fn:
-            x = self.activ_fn(x)
-        return x
+        n_input = np.prod(in_shape)
+        modules = [
+            Reshape(-1, n_input),
+            nn.Linear(n_input, n_output)
+        ]
+        if activ_fn:
+            modules.append(activ_fn)
+        super().__init__(*modules)
 
 
-class FcReshape(nn.Module):
+class FcReshape(nn.Sequential):
 
-    def __init__(self, n_input, out_shape, relu_leak):
-        super().__init__()
-        self.fc = nn.Linear(n_input, np.prod(out_shape))
-        self.relu = nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
-        self.out_shape = (-1,) + tuple(out_shape)
-
-    def forward(self, x):
-        return self.relu(self.fc(x)).reshape(self.out_shape)
+    def __init__(self, n_input, out_shape, relu_leak, batch_norm):
+        n_output = np.prod(out_shape)
+        modules = [
+            nn.Linear(n_input, n_output),
+            nn.LeakyReLU(negative_slope=relu_leak, inplace=True),
+            Reshape(-1, *out_shape)
+        ]
+        if batch_norm > 0:
+            modules.append(nn.BatchNorm3d(out_shape[0]))
+        super().__init__(*modules)
 
 
 class Encoder(nn.Module):
@@ -228,6 +253,7 @@ class Encoder(nn.Module):
         conv_per_level,
         kernel_size,
         relu_leak,
+        batch_norm,
         pool_type,
         pool_factor,
         n_output,
@@ -244,7 +270,9 @@ class Encoder(nn.Module):
         self.grid_size = grid_size
 
         if init_conv_pool:
-            self.add_conv('init_conv', n_filters, kernel_size, relu_leak)
+            self.add_conv(
+                'init_conv', n_filters, kernel_size, relu_leak, batch_norm
+            )
             self.add_pool('init_pool', pool_type, pool_factor)
 
         for i in range(n_levels):
@@ -262,7 +290,8 @@ class Encoder(nn.Module):
                 conv_per_level,
                 n_filters,
                 kernel_size,
-                relu_leak
+                relu_leak,
+                batch_norm
             )
 
         # fully-connected outputs
@@ -281,9 +310,9 @@ class Encoder(nn.Module):
             fc_name = 'fc' + str(i)
             self.add_reshape_fc(fc_name, n_o, activ_fn)
 
-    def add_conv(self, name, n_filters, kernel_size, relu_leak):
+    def add_conv(self, name, n_filters, kernel_size, relu_leak, batch_norm):
         conv = ConvReLU(
-            self.n_channels, n_filters, kernel_size, relu_leak
+            self.n_channels, n_filters, kernel_size, relu_leak, batch_norm
         )
         self.add_module(name, conv)
         self.grid_modules.append(conv)
@@ -296,10 +325,15 @@ class Encoder(nn.Module):
         self.grid_size //= pool_factor
 
     def add_conv_block(
-        self, name, n_convs, n_filters, kernel_size, relu_leak
+        self, name, n_convs, n_filters, kernel_size, relu_leak, batch_norm
     ):
         conv_block = ConvBlock(
-            n_convs, self.n_channels, n_filters, kernel_size, relu_leak
+            n_convs,
+            self.n_channels,
+            n_filters,
+            kernel_size,
+            relu_leak,
+            batch_norm
         )
         self.add_module(name, conv_block)
         self.grid_modules.append(conv_block)
@@ -347,6 +381,7 @@ class Decoder(nn.Module):
         deconv_per_level,
         kernel_size,
         relu_leak,
+        batch_norm,
         unpool_type,
         unpool_factor,
         n_output,
@@ -360,7 +395,7 @@ class Decoder(nn.Module):
         self.fc_modules = []
         self.n_input = n_input
         self.add_fc_reshape(
-            'fc', n_input, n_channels, grid_size, relu_leak
+            'fc', n_input, n_channels, grid_size, relu_leak, batch_norm
         )
         n_filters = n_channels
 
@@ -380,19 +415,23 @@ class Decoder(nn.Module):
                 deconv_per_level,
                 n_filters,
                 kernel_size,
-                relu_leak
+                relu_leak,
+                batch_norm
             )
 
         if final_unpool:
             self.add_unpool('final_unpool', unpool_type, unpool_factor)
 
         # final deconv maps to correct n_output channels
-        self.add_deconv('final_conv', n_output, kernel_size, relu_leak)
+        self.add_deconv(
+            'final_conv', n_output, kernel_size, relu_leak, batch_norm
+        )
 
-
-    def add_fc_reshape(self, name, n_input, n_channels, grid_size, relu_leak):
+    def add_fc_reshape(
+        self, name, n_input, n_channels, grid_size, relu_leak, batch_norm
+    ):
         out_shape = (n_channels,) + (grid_size,)*3
-        fc_reshape = FcReshape(n_input, out_shape, relu_leak)
+        fc_reshape = FcReshape(n_input, out_shape, relu_leak, batch_norm)
         self.add_module(name, fc_reshape)
         self.fc_modules.append(fc_reshape)
         self.n_channels = n_channels
@@ -404,25 +443,32 @@ class Decoder(nn.Module):
         self.grid_modules.append(unpool)
         self.grid_size *= unpool_factor
 
-    def add_deconv(self, name, n_filters, kernel_size, relu_leak):
+    def add_deconv(
+        self, name, n_filters, kernel_size, relu_leak, batch_norm
+    ):
         n_channels = self.n_channels
         if self.skip_connect:
             n_channels *= 2
         deconv = DeconvReLU(
-            n_channels, n_filters, kernel_size, relu_leak
+            n_channels, n_filters, kernel_size, relu_leak, batch_norm
         )
         self.add_module(name, deconv)
         self.grid_modules.append(deconv)
         self.n_channels = n_filters
 
     def add_deconv_block(
-        self, name, n_deconvs, n_filters, kernel_size, relu_leak
+        self, name, n_deconvs, n_filters, kernel_size, relu_leak, batch_norm
     ):
         n_channels = self.n_channels
         if self.skip_connect:
             n_channels *= 2
         deconv_block = DeconvBlock(
-            n_deconvs, n_channels, n_filters, kernel_size, relu_leak
+            n_deconvs,
+            n_channels,
+            n_filters,
+            kernel_size,
+            relu_leak,
+            batch_norm
         )
         self.add_module(name, deconv_block)
         self.grid_modules.append(deconv_block)
@@ -461,6 +507,7 @@ class Generator(nn.Sequential):
         conv_per_level=3,
         kernel_size=3,
         relu_leak=0.1,
+        batch_norm=0,
         pool_type='a',
         unpool_type='n',
         pool_factor=2,
@@ -497,6 +544,7 @@ class Generator(nn.Sequential):
                 conv_per_level=conv_per_level,
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
+                batch_norm=batch_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=n_output,
@@ -514,6 +562,7 @@ class Generator(nn.Sequential):
                 conv_per_level=conv_per_level,
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
+                batch_norm=batch_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=n_latent,
@@ -531,6 +580,7 @@ class Generator(nn.Sequential):
             deconv_per_level=conv_per_level,
             kernel_size=kernel_size,
             relu_leak=relu_leak,
+            batch_norm=batch_norm,
             unpool_type=unpool_type,
             unpool_factor=pool_factor,
             n_output=n_channels_out,

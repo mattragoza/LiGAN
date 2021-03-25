@@ -30,6 +30,7 @@ def solver(request):
         conv_per_level=1,
         kernel_size=3,
         relu_leak=0.1,
+        batch_norm=2,
         pool_type='a',
         unpool_type='n',
         pool_factor=2,
@@ -56,7 +57,8 @@ class TestSolver(object):
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
         for params in solver.parameters():
-            assert params.detach().norm().cpu() > 0, 'params are zero'
+            if len(params.shape) > 1: # ignore bias
+                assert params.detach().norm().cpu() > 0, 'params are zero'
 
     def test_solver_forward(self, solver):
         loss, metrics = solver.forward(solver.train_data)

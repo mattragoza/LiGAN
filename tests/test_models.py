@@ -12,10 +12,10 @@ class TestConvReLU(object):
 
     @pytest.fixture
     def conv(self):
-        return models.ConvReLU(19, 16, 3, 0.1)
+        return models.ConvReLU(19, 16, 3, 0.1, 2)
 
     def test_init(self, conv):
-        assert len(conv) == 2
+        assert len(conv) == 3
 
     def test_forward_cpu(self, conv):
         x = torch.zeros(10, 19, 8, 8, 8).cpu()
@@ -32,7 +32,7 @@ class TestConvBlock(object):
 
     @pytest.fixture
     def convs(self):
-        return models.ConvBlock(4, 19, 16, 3, 0.1)
+        return models.ConvBlock(4, 19, 16, 3, 0.1, 2)
 
     def test_init(self, convs):
         assert len(convs) == 4
@@ -60,6 +60,7 @@ class TestEncoder(object):
             conv_per_level=1,
             kernel_size=3,
             relu_leak=0.1,
+            batch_norm=2,
             pool_type='a',
             pool_factor=2,
             n_output=n_output,
@@ -123,6 +124,7 @@ class TestDecoder(object):
             deconv_per_level=1,
             kernel_size=3,
             relu_leak=0.1,
+            batch_norm=2,
             unpool_type='n',
             unpool_factor=2,
             n_output=19,
@@ -161,6 +163,7 @@ class TestGenerator(object):
             conv_per_level=1,
             kernel_size=3,
             relu_leak=0.1,
+            batch_norm=2,
             pool_type='a',
             unpool_type='n',
             n_latent=128,

@@ -94,6 +94,7 @@ class Solver(nn.Module):
         conv_per_level,
         kernel_size,
         relu_leak,
+        batch_norm,
         pool_type,
         unpool_type,
         pool_factor,
@@ -150,6 +151,7 @@ class Solver(nn.Module):
                 conv_per_level=conv_per_level,
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
+                batch_norm=batch_norm,
                 pool_type=pool_type,
                 unpool_type=unpool_type,
                 n_latent=n_latent,
@@ -171,6 +173,7 @@ class Solver(nn.Module):
                 conv_per_level=conv_per_level,
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
+                batch_norm=batch_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=1
@@ -235,7 +238,7 @@ class Solver(nn.Module):
         molgrid.set_random_seed(random_seed)
 
     @property
-    def state_file(self):
+    def state_file(self, disc=False, optim=False):
         return '{}_iter_{}.checkpoint'.format(
             self.out_prefix, self.curr_iter
         )
