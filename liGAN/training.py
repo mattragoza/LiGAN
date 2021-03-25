@@ -499,7 +499,7 @@ class AESolver(GenerativeSolver):
         t2 = time.time()
         
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -560,7 +560,7 @@ class VAESolver(AESolver):
         t2 = time.time()
         
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -607,7 +607,7 @@ class CESolver(AESolver):
         t2 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -661,7 +661,7 @@ class CVAESolver(VAESolver):
         t2 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -767,7 +767,7 @@ class GANSolver(GenerativeSolver):
         t2 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -1046,7 +1046,7 @@ class CGANSolver(GANSolver):
         t3 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -1176,7 +1176,7 @@ class VAEGANSolver(GANSolver):
         t3 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
@@ -1297,7 +1297,7 @@ class CVAEGANSolver(VAEGANSolver):
         t3 = time.time()
 
         if fit_atoms:
-            lig_gen_fit_structs = self.atom_fitter.fit_batch(
+            lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
                 lig_gen_grids,
                 data.lig_channels,
                 torch.zeros(3),
