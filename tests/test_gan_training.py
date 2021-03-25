@@ -47,7 +47,7 @@ def solver(request):
         optim_kws=dict(lr=1e-8, momentum=0),
         atom_fitter_type=liGAN.atom_fitting.AtomFitter,
         atom_fitter_kws=dict(),
-        out_prefix='TEST',
+        out_prefix='tests/TEST',
         device='cuda'
     )
 

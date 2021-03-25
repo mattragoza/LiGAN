@@ -7,7 +7,7 @@ from torch import nn
 torch.backends.cudnn.benchmark = True
 
 import molgrid
-from . import data, models, atom_types
+from . import data, models, atom_types, molecules
 from .metrics import (
     compute_grid_metrics,
     compute_paired_grid_metrics,
@@ -306,6 +306,14 @@ class Solver(nn.Module):
         for k, v in metrics.items():
             self.metrics.loc[idx, k] = v
 
+    def save_structs(self, structs):
+        sdf_file = '{}_iter_{}.sdf'.format(
+            self.out_prefix, self.curr_iter
+        )
+        molecules.write_rd_mols_to_sdf_file(sdf_file, (
+            s.info['add_mol'] for s in structs
+        ))
+
     def forward(self, data):
         raise NotImplementedError
 
@@ -519,6 +527,7 @@ class AESolver(GenerativeSolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -580,6 +589,7 @@ class VAESolver(AESolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t3 = time.time()
         
         metrics.update(compute_paired_grid_metrics(
@@ -627,6 +637,7 @@ class CESolver(AESolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -681,6 +692,7 @@ class CVAESolver(VAESolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -787,6 +799,7 @@ class GANSolver(GenerativeSolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t3 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
@@ -1066,6 +1079,7 @@ class CGANSolver(GANSolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t4 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
@@ -1196,6 +1210,7 @@ class VAEGANSolver(GANSolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t4 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -1317,6 +1332,7 @@ class CVAEGANSolver(VAEGANSolver):
                 torch.zeros(3),
                 data.resolution
             )
+            self.save_structs(lig_gen_fit_structs)
         t4 = time.time()
 
         metrics.update(compute_paired_grid_metrics(

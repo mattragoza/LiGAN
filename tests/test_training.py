@@ -48,7 +48,7 @@ def solver(request):
         ),
         atom_fitter_type=liGAN.atom_fitting.AtomFitter,
         atom_fitter_kws=dict(),
-        out_prefix='TEST',
+        out_prefix='tests/TEST',
         device='cuda'
     )
 
