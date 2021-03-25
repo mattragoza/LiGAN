@@ -12,7 +12,7 @@ class TestConvReLU(object):
 
     @pytest.fixture
     def conv(self):
-        return models.ConvReLU(19, 16, 3, 0.1, 2)
+        return models.ConvReLU(19, 16, 3, 0.1, 2, 1)
 
     def test_init(self, conv):
         assert len(conv) == 3
@@ -32,7 +32,7 @@ class TestConvBlock(object):
 
     @pytest.fixture
     def convs(self):
-        return models.ConvBlock(4, 19, 16, 3, 0.1, 2)
+        return models.ConvBlock(4, 19, 16, 3, 0.1, 2, 1)
 
     def test_init(self, convs):
         assert len(convs) == 4
@@ -61,6 +61,7 @@ class TestEncoder(object):
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
+            spectral_norm=1,
             pool_type='a',
             pool_factor=2,
             n_output=n_output,
@@ -125,6 +126,7 @@ class TestDecoder(object):
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
+            spectral_norm=1,
             unpool_type='n',
             unpool_factor=2,
             n_output=19,
@@ -164,6 +166,7 @@ class TestGenerator(object):
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
+            spectral_norm=1,
             pool_type='a',
             unpool_type='n',
             n_latent=128,

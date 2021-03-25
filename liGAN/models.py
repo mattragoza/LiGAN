@@ -56,7 +56,13 @@ def normalize_grad(model):
 class ConvReLU(nn.Sequential):
 
     def __init__(
-        self, n_input, n_output, kernel_size, relu_leak, batch_norm
+        self,
+        n_input,
+        n_output,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         modules = [
             nn.Conv3d(
@@ -70,8 +76,14 @@ class ConvReLU(nn.Sequential):
                 inplace=True,
             )
         ]
+
         if batch_norm > 0:
             modules.insert(batch_norm, nn.BatchNorm3d(n_output))
+
+        if spectral_norm > 0:
+            modules[0] = nn.utils.spectral_norm(
+                modules[0], n_power_iterations=spectral_norm
+            )
 
         super().__init__(*modules)
 
@@ -86,6 +98,7 @@ class ConvBlock(nn.Sequential):
         kernel_size,
         relu_leak,
         batch_norm,
+        spectral_norm,
         dense_net=False,
     ):
         if dense_net:
@@ -93,9 +106,16 @@ class ConvBlock(nn.Sequential):
 
         modules = []
         for i in range(n_convs):
+
             conv_relu = ConvReLU(
-                n_input, n_output, kernel_size, relu_leak, batch_norm
+                n_input,
+                n_output,
+                kernel_size,
+                relu_leak,
+                batch_norm,
+                spectral_norm,
             )
+
             n_input = n_output
             modules.append(conv_relu)
 
@@ -105,7 +125,13 @@ class ConvBlock(nn.Sequential):
 class DeconvReLU(nn.Sequential):
 
     def __init__(
-        self, n_input, n_output, kernel_size, relu_leak, batch_norm,
+        self,
+        n_input,
+        n_output,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         modules = [
             nn.ConvTranspose3d(
@@ -119,8 +145,14 @@ class DeconvReLU(nn.Sequential):
                 inplace=True,
             )
         ]
+
         if batch_norm > 0:
             modules.insert(batch_norm, nn.BatchNorm3d(n_output))
+
+        if spectral_norm > 0:
+            modules[0] = nn.utils.spectral_norm(
+                modules[0], n_power_iterations=spectral_norm
+            )
 
         super().__init__(*modules)
 
@@ -135,6 +167,7 @@ class DeconvBlock(nn.Sequential):
         kernel_size,
         relu_leak,
         batch_norm,
+        spectral_norm,
         dense_net=False,
     ):
         if dense_net:
@@ -142,9 +175,16 @@ class DeconvBlock(nn.Sequential):
 
         modules = []
         for i in range(n_deconvs):
+
             deconv_relu = DeconvReLU(
-                n_input, n_output, kernel_size, relu_leak, batch_norm
+                n_input,
+                n_output,
+                kernel_size,
+                relu_leak,
+                batch_norm,
+                spectral_norm,
             )
+
             n_input = n_output
             modules.append(deconv_relu)
 
@@ -221,28 +261,46 @@ class Reshape(nn.Module):
 
 class ReshapeFc(nn.Sequential):
 
-    def __init__(self, in_shape, n_output, activ_fn=None):
+    def __init__(
+        self, in_shape, n_output, activ_fn=None, spectral_norm=0
+    ):
         n_input = np.prod(in_shape)
         modules = [
             Reshape(-1, n_input),
             nn.Linear(n_input, n_output)
         ]
+
         if activ_fn:
             modules.append(activ_fn)
+
+        if spectral_norm > 0:
+            modules[1] = nn.utils.spectral_norm(
+                modules[1], n_power_iterations=spectral_norm
+            )
+
         super().__init__(*modules)
 
 
 class FcReshape(nn.Sequential):
 
-    def __init__(self, n_input, out_shape, relu_leak, batch_norm):
+    def __init__(
+        self, n_input, out_shape, relu_leak, batch_norm, spectral_norm
+    ):
         n_output = np.prod(out_shape)
         modules = [
             nn.Linear(n_input, n_output),
+            Reshape(-1, *out_shape),
             nn.LeakyReLU(negative_slope=relu_leak, inplace=True),
-            Reshape(-1, *out_shape)
         ]
+
         if batch_norm > 0:
-            modules.append(nn.BatchNorm3d(out_shape[0]))
+            modules.insert(batch_norm+1, nn.BatchNorm3d(out_shape[0]))
+
+        if spectral_norm > 0:
+            modules[0] = nn.utils.spectral_norm(
+                modules[0], n_power_iterations=spectral_norm
+            )
+
         super().__init__(*modules)
 
 
@@ -253,7 +311,6 @@ class Encoder(nn.Module):
     # - densely-connected
     # - batch discrimination
     # - fully-convolutional
-    # - skip connections
     
     def __init__(
         self,
@@ -266,6 +323,7 @@ class Encoder(nn.Module):
         kernel_size,
         relu_leak,
         batch_norm,
+        spectral_norm,
         pool_type,
         pool_factor,
         n_output,
@@ -282,8 +340,14 @@ class Encoder(nn.Module):
         self.grid_size = grid_size
 
         if init_conv_pool:
+
             self.add_conv(
-                'init_conv', n_filters, kernel_size, relu_leak, batch_norm
+                'init_conv',
+                n_filters,
+                kernel_size,
+                relu_leak,
+                batch_norm,
+                spectral_norm,
             )
             self.add_pool('init_pool', pool_type, pool_factor)
 
@@ -303,7 +367,8 @@ class Encoder(nn.Module):
                 n_filters,
                 kernel_size,
                 relu_leak,
-                batch_norm
+                batch_norm,
+                spectral_norm,
             )
 
         # fully-connected outputs
@@ -320,11 +385,24 @@ class Encoder(nn.Module):
 
         for i, (n_o, activ_fn) in enumerate(zip(n_output, output_activ_fn)):
             fc_name = 'fc' + str(i)
-            self.add_reshape_fc(fc_name, n_o, activ_fn)
+            self.add_reshape_fc(fc_name, n_o, activ_fn, spectral_norm)
 
-    def add_conv(self, name, n_filters, kernel_size, relu_leak, batch_norm):
+    def add_conv(
+        self,
+        name,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
+    ):
         conv = ConvReLU(
-            self.n_channels, n_filters, kernel_size, relu_leak, batch_norm
+            self.n_channels,
+            n_filters,
+            kernel_size,
+            relu_leak,
+            batch_norm,
+            spectral_norm,
         )
         self.add_module(name, conv)
         self.grid_modules.append(conv)
@@ -337,7 +415,14 @@ class Encoder(nn.Module):
         self.grid_size //= pool_factor
 
     def add_conv_block(
-        self, name, n_convs, n_filters, kernel_size, relu_leak, batch_norm
+        self,
+        name,
+        n_convs,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         conv_block = ConvBlock(
             n_convs,
@@ -345,15 +430,16 @@ class Encoder(nn.Module):
             n_filters,
             kernel_size,
             relu_leak,
-            batch_norm
+            batch_norm,
+            spectral_norm,
         )
         self.add_module(name, conv_block)
         self.grid_modules.append(conv_block)
         self.n_channels = n_filters
 
-    def add_reshape_fc(self, name, n_output, activ_fn):
+    def add_reshape_fc(self, name, n_output, activ_fn, spectral_norm):
         in_shape = (self.n_channels,) + (self.grid_size,)*3
-        fc = ReshapeFc(in_shape, n_output, activ_fn)
+        fc = ReshapeFc(in_shape, n_output, activ_fn, spectral_norm)
         self.add_module(name, fc)
         self.task_modules.append(fc)
 
@@ -381,7 +467,6 @@ class Decoder(nn.Module):
     # - densely-connected
     # - fully-convolutional
     # - gaussian output
-    # - skip connections
 
     def __init__(
         self,
@@ -394,6 +479,7 @@ class Decoder(nn.Module):
         kernel_size,
         relu_leak,
         batch_norm,
+        spectral_norm,
         unpool_type,
         unpool_factor,
         n_output,
@@ -407,7 +493,13 @@ class Decoder(nn.Module):
         self.fc_modules = []
         self.n_input = n_input
         self.add_fc_reshape(
-            'fc', n_input, n_channels, grid_size, relu_leak, batch_norm
+            'fc',
+            n_input,
+            n_channels,
+            grid_size,
+            relu_leak,
+            batch_norm,
+            spectral_norm,
         )
         n_filters = n_channels
 
@@ -428,7 +520,8 @@ class Decoder(nn.Module):
                 n_filters,
                 kernel_size,
                 relu_leak,
-                batch_norm
+                batch_norm,
+                spectral_norm,
             )
 
         if final_unpool:
@@ -436,14 +529,28 @@ class Decoder(nn.Module):
 
         # final deconv maps to correct n_output channels
         self.add_deconv(
-            'final_conv', n_output, kernel_size, relu_leak, batch_norm
+            'final_conv',
+            n_output,
+            kernel_size,
+            relu_leak,
+            batch_norm,
+            spectral_norm,
         )
 
     def add_fc_reshape(
-        self, name, n_input, n_channels, grid_size, relu_leak, batch_norm
+        self,
+        name,
+        n_input,
+        n_channels,
+        grid_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         out_shape = (n_channels,) + (grid_size,)*3
-        fc_reshape = FcReshape(n_input, out_shape, relu_leak, batch_norm)
+        fc_reshape = FcReshape(
+            n_input, out_shape, relu_leak, batch_norm, spectral_norm
+        )
         self.add_module(name, fc_reshape)
         self.fc_modules.append(fc_reshape)
         self.n_channels = n_channels
@@ -456,32 +563,54 @@ class Decoder(nn.Module):
         self.grid_size *= unpool_factor
 
     def add_deconv(
-        self, name, n_filters, kernel_size, relu_leak, batch_norm
+        self,
+        name,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         n_channels = self.n_channels
         if self.skip_connect:
             n_channels *= 2
         deconv = DeconvReLU(
-            n_channels, n_filters, kernel_size, relu_leak, batch_norm
+            n_channels,
+            n_filters,
+            kernel_size,
+            relu_leak,
+            batch_norm,
+            spectral_norm,
         )
         self.add_module(name, deconv)
         self.grid_modules.append(deconv)
         self.n_channels = n_filters
 
     def add_deconv_block(
-        self, name, n_deconvs, n_filters, kernel_size, relu_leak, batch_norm
+        self,
+        name,
+        n_deconvs,
+        n_filters,
+        kernel_size,
+        relu_leak,
+        batch_norm,
+        spectral_norm,
     ):
         n_channels = self.n_channels
+
         if self.skip_connect:
             n_channels *= 2
+
         deconv_block = DeconvBlock(
             n_deconvs,
             n_channels,
             n_filters,
             kernel_size,
             relu_leak,
-            batch_norm
+            batch_norm,
+            spectral_norm,
         )
+
         self.add_module(name, deconv_block)
         self.grid_modules.append(deconv_block)
         self.n_channels = n_filters
@@ -520,6 +649,7 @@ class Generator(nn.Sequential):
         kernel_size=3,
         relu_leak=0.1,
         batch_norm=0,
+        spectral_norm=0,
         pool_type='a',
         unpool_type='n',
         pool_factor=2,
@@ -557,6 +687,7 @@ class Generator(nn.Sequential):
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=n_output,
@@ -575,6 +706,7 @@ class Generator(nn.Sequential):
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=n_latent,
@@ -593,6 +725,7 @@ class Generator(nn.Sequential):
             kernel_size=kernel_size,
             relu_leak=relu_leak,
             batch_norm=batch_norm,
+            spectral_norm=spectral_norm,
             unpool_type=unpool_type,
             unpool_factor=pool_factor,
             n_output=n_channels_out,

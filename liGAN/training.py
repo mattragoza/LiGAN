@@ -95,6 +95,7 @@ class Solver(nn.Module):
         kernel_size,
         relu_leak,
         batch_norm,
+        spectral_norm,
         pool_type,
         unpool_type,
         pool_factor,
@@ -152,6 +153,7 @@ class Solver(nn.Module):
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
                 pool_type=pool_type,
                 unpool_type=unpool_type,
                 n_latent=n_latent,
@@ -174,6 +176,7 @@ class Solver(nn.Module):
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
                 n_output=1

@@ -31,6 +31,7 @@ def solver(request):
         kernel_size=3,
         relu_leak=0.1,
         batch_norm=2,
+        spectral_norm=1,
         pool_type='a',
         unpool_type='n',
         pool_factor=2,
@@ -59,7 +60,7 @@ class TestSolver(object):
         for name, params in solver.named_parameters():
             if name.endswith('weight'):
                 assert params.detach().norm().cpu() > 0, 'weights are zero'
-            else:
+            elif name.endswith('bias'):
                 assert params.detach().norm().cpu() == 0, 'bias is non-zero'
 
     def test_solver_forward(self, solver):

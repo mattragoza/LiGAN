@@ -44,6 +44,7 @@ def parse_args(argv):
     parser.add_argument('--kernel_size', default=3, type=int)
     parser.add_argument('--relu_leak', default=0.1, type=float)
     parser.add_argument('--batch_norm', default=0, type=int)
+    parser.add_argument('--spectral_norm', default=0, type=int)
     parser.add_argument('--pool_type', default='a', help='m|a|c')
     parser.add_argument('--unpool_type', default='n', help='n|c')
     parser.add_argument('--pool_factor', default=2, type=int)
