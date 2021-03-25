@@ -55,9 +55,11 @@ class TestGANSolver(object):
 
     def test_solver_init(self, solver):
         assert solver.curr_iter == 0
-        for params in solver.parameters():
-            if len(params.shape) > 1: # ignore bias
-                assert params.detach().norm().cpu() > 0, 'params are zero'
+        for name, params in solver.named_parameters():
+            if name.endswith('weight'):
+                assert params.detach().norm().cpu() > 0, 'weights are zero'
+            else:
+                assert params.detach().norm().cpu() == 0, 'bias is non-zero'
 
     def test_solver_disc_forward_real(self, solver):
         loss, metrics = solver.disc_forward(

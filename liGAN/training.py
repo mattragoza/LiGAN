@@ -189,6 +189,8 @@ class Solver(nn.Module):
 
         self.grad_norm_types = self.initialize_norm(grad_norm_types or {})
 
+        self.initialize_weights()
+
         if isinstance(self, GenerativeSolver):
             self.atom_fitter = atom_fitter_type(debug=debug, **atom_fitter_kws)
 
@@ -309,6 +311,12 @@ class Solver(nn.Module):
         self.disc_grad_norm_type = grad_norm_types.get('disc', '0')
         assert self.gen_grad_norm_type in {'0', '2'}
         assert self.disc_grad_norm_type in {'0', '2'}
+
+    def initialize_weights(self):
+        if hasattr(self, 'gen_model'):
+            self.gen_model.apply(models.initialize_weights)
+        if hasattr(self, 'disc_model'):
+            self.disc_model.apply(models.initialize_weights)
 
     @save_on_exception
     def test(self, n_batches, fit_atoms=False):
