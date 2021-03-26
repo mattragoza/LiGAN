@@ -127,6 +127,8 @@ def main(argv):
         conv_per_level=args.conv_per_level,
         kernel_size=args.kernel_size,
         relu_leak=args.relu_leak,
+        batch_norm=args.batch_norm,
+        spectral_norm=args.spectral_norm,
         pool_type=args.pool_type,
         unpool_type=args.unpool_type,
         pool_factor=args.pool_factor,

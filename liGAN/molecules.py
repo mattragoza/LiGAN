@@ -51,12 +51,17 @@ def read_rd_mols_from_sdf_file(sdf_file):
     return [mol for mol in suppl]
 
 
-def write_rd_mols_to_sdf_file(sdf_file, mols, name=''):
+def write_rd_mol_to_sdf_file(sdf_file, mol, *args, **kwargs):
+    return write_rd_mols_to_sdf_file(sdf_file, [mol], *args, **kwargs)
+
+
+def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
     '''
     Write a list of rdkit molecules to a file
     or io stream in sdf format.
     '''
     writer = Chem.SDWriter(sdf_file)
+    writer.SetKekulize(kekulize)
     for mol in mols:
         if name:
             mol.SetProp('_Name', name)
@@ -181,29 +186,29 @@ def ob_mol_to_rd_mol(ob_mol):
     return rd_mol
 
 
-def catch_exc(func, exc=Exception, default=np.nan):
+def catch_exception(func, exc_type=Exception, default=np.nan):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except exc as e:            
+        except exc_type:            
             return default
     return wrapper
 
 
-get_rd_mol_weight = catch_exc(Descriptors.MolWt)
-get_rd_mol_logP = catch_exc(Chem.Crippen.MolLogP)
-get_rd_mol_QED = catch_exc(Chem.QED.default)
-get_rd_mol_SAS = catch_exc(sascorer.calculateScore)
-get_rd_mol_NPS = catch_exc(npscorer.scoreMol)
-get_aligned_rmsd  = catch_exc(AllChem.GetBestRMS)
+get_rd_mol_weight = catch_exception(Descriptors.MolWt)
+get_rd_mol_logP = catch_exception(Chem.Crippen.MolLogP)
+get_rd_mol_QED = catch_exception(Chem.QED.default)
+get_rd_mol_SAS = catch_exception(sascorer.calculateScore)
+get_rd_mol_NPS = catch_exception(npscorer.scoreMol)
+get_aligned_rmsd  = catch_exception(AllChem.GetBestRMS)
 
 
-@catch_exc
+@catch_exception
 def get_smiles_string(rd_mol):
     return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
 
 
-@catch_exc
+@catch_exception
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
     if fingerprint == 'morgan':
@@ -221,7 +226,7 @@ def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
     return DataStructs.TanimotoSimilarity(fgp1, fgp2)
 
 
-@catch_exc
+@catch_exception
 def get_ob_smi_similarity(smi1, smi2):
     fgp1 = pybel.readstring('smi', smi1).calcfp()
     fgp2 = pybel.readstring('smi', smi2).calcfp()
@@ -236,7 +241,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     E_init = E_final = np.nan
 
     if rd_mol.GetNumAtoms() == 0:
-        return Chem.RWMol(rd_mol), E_init, E_final, None
+        return Chem.RWMol(rd_mol), E_init, E_final, 'No atoms'
 
     try: # initialize molecule and force field
         rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
@@ -244,34 +249,39 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
         uff.Initialize()
         E_init = uff.CalcEnergy()
 
-    except Chem.rdchem.AtomValenceException as e:
-        print('UFF1', e)
-        traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), E_init, E_final, str(e)
+    except Chem.rdchem.AtomValenceException:
+        return Chem.RWMol(rd_mol), E_init, E_final, 'Invalid valence'
+
+    except Chem.rdchem.KekulizeException:
+        return Chem.RWMol(rd_mol), E_init, E_final, 'Failed to kekulize'
+
+    except Exception as e:
+        print('UFF1 exception')
+        # e.g. RuntimeError: Pre-condition violation: bad params pointer
+        #   possibly due to GenericMetal atom type
+        write_rd_mol_to_sdf_file(
+            'badmol_uff1.sdf', rd_mol, kekulize=False
+        )
+        raise e
 
     try: # minimize molecule with force field
-        res = uff.Minimize(maxIts=max_iters)
+        result = uff.Minimize(maxIts=max_iters)
         E_final = uff.CalcEnergy()
         rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
-        e = RuntimeError('minimization not converged') if res else None
-        return rd_mol, E_init, E_final, str(e)
+        return (
+            rd_mol, E_init, E_final, 'Not converged' if result else None
+        )
 
     except RuntimeError as e:
-        # WARNING: When Invariant Violation: bad direction
-        # is caught here, some or all GPU memory in the
-        # current stack is not freed properly, causing a
-        # memory leak.
-        print('UFF2', e)
-        w = Chem.SDWriter('badmol.sdf')
-        w.SetKekulize(False)
-        w.write(rd_mol_H)
-        w.close()
-        print("NumAtoms", rd_mol.GetNumAtoms())
+        print('UFF2 exception')
+        write_rd_mol_to_sdf_file(
+            'badmol_uff2.sdf', rd_mol_H, kekulize=True
+        )
         traceback.print_exc(file=sys.stdout)
         return Chem.RWMol(rd_mol), E_init, np.nan, str(e)
 
 
-@catch_exc
+@catch_exception
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
     rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
     uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
@@ -289,7 +299,7 @@ def get_rd_mol_validity(rd_mol):
     return n_frags, error, valid
 
 
-@catch_exc
+@catch_exception
 def get_gpu_usage(gpu_id=0):
     return getGPUs()[gpu_id].memoryUtil
 

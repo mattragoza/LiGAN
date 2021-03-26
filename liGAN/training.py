@@ -153,7 +153,7 @@ class Solver(nn.Module):
                 kernel_size=kernel_size,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
-                spectral_norm=spectral_norm,
+                spectral_norm=False, # only apply spectral norm to disc for now
                 pool_type=pool_type,
                 unpool_type=unpool_type,
                 n_latent=n_latent,
