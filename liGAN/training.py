@@ -3,11 +3,11 @@ from collections import OrderedDict
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
+from torch import nn, optim
 torch.backends.cudnn.benchmark = True
 
 import molgrid
-from . import data, models, atom_types, molecules
+from . import data, models, atom_types, atom_fitting, molecules
 from .metrics import (
     compute_grid_metrics,
     compute_paired_grid_metrics,
@@ -75,40 +75,15 @@ class Solver(nn.Module):
 
     def __init__(
         self,
-        data_root,
         train_file,
         test_file,
-        batch_size,
-        rec_map_file,
-        lig_map_file,
-        resolution,
-        grid_size,
-        shuffle,
-        random_rotation,
-        random_translation,
-        rec_molcache,
-        lig_molcache,
-        n_filters,
-        width_factor,
-        n_levels,
-        conv_per_level,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-        pool_type,
-        unpool_type,
-        pool_factor,
-        n_latent,
-        init_conv_pool,
-        skip_connect,
-        loss_weights,
-        loss_types,
-        grad_norm_types,
-        optim_type,
-        optim_kws,
-        atom_fitter_type,
-        atom_fitter_kws,
+        data_kws,
+        gen_model_kws,
+        disc_model_kws,
+        loss_fn_kws,
+        gen_optim_kws,
+        disc_optim_kws,
+        atom_fitting_kws,
         out_prefix,
         random_seed=None,
         device='cuda',
@@ -120,82 +95,58 @@ class Solver(nn.Module):
         if random_seed is not None:
             self.set_random_seed(random_seed)
 
+        print('loading data')
         self.train_data, self.test_data = (
-            data.AtomGridData(
-                data_root=data_root,
-                batch_size=batch_size,
-                rec_map_file=rec_map_file,
-                lig_map_file=lig_map_file,
-                resolution=resolution,
-                grid_size=grid_size,
-                shuffle=shuffle,
-                random_rotation=random_rotation,
-                random_translation=random_translation,
-                rec_molcache=rec_molcache,
-                lig_molcache=lig_molcache,
-                device=device
-        ) for i in range(2))
-
+            data.AtomGridData(device=device, **data_kws) for i in range(2)
+        )
         self.train_data.populate(train_file)
         self.test_data.populate(test_file)
 
         if isinstance(self, GenerativeSolver):
 
+            print('creating generative model and optimizer')
             self.gen_model = self.gen_model_type(
                 n_channels_in=self.n_channels_in,
                 n_channels_cond=self.n_channels_cond,
                 n_channels_out=self.n_channels_out,
-                grid_size=grid_size,
-                n_filters=n_filters,
-                width_factor=width_factor,
-                n_levels=n_levels,
-                conv_per_level=conv_per_level,
-                kernel_size=kernel_size,
-                relu_leak=relu_leak,
-                batch_norm=batch_norm,
-                spectral_norm=False, # only apply spectral norm to disc for now
-                pool_type=pool_type,
-                unpool_type=unpool_type,
-                n_latent=n_latent,
-                device=device
+                grid_size=self.train_data.grid_size,
+                device=device,
+                **gen_model_kws
             )
-            self.gen_optimizer = optim_type(
-                self.gen_model.parameters(), **optim_kws
+            gen_optim_type = getattr(optim, gen_optim_kws.pop('type'))
+            self.n_gen_train_iters = gen_optim_kws.pop('n_train_iters', 2)
+            self.gen_clip_grad = gen_optim_kws.pop('clip_gradient', 0)
+            self.gen_optimizer = gen_optim_type(
+                self.gen_model.parameters(), **gen_optim_kws
             )
             self.gen_iter = 0
 
         if isinstance(self, (DiscriminativeSolver, GANSolver)):
 
+            print('creating discriminative model and optimizer')
             self.disc_model = models.Encoder(
                 n_channels=self.n_channels_disc,
-                grid_size=grid_size,
-                n_filters=n_filters,
-                width_factor=width_factor,
-                n_levels=n_levels,
-                conv_per_level=conv_per_level,
-                kernel_size=kernel_size,
-                relu_leak=relu_leak,
-                batch_norm=batch_norm,
-                spectral_norm=spectral_norm,
-                pool_type=pool_type,
-                pool_factor=pool_factor,
-                n_output=1
+                grid_size=self.train_data.grid_size,
+                **disc_model_kws
             ).to(device)
 
-            self.disc_optimizer = optim_type(
-                self.disc_model.parameters(), **optim_kws
+            disc_optim_type = getattr(optim, disc_optim_kws.pop('type'))
+            self.n_disc_train_iters = disc_optim_kws.pop('n_train_iters', 2)
+            self.disc_clip_grad = disc_optim_kws.pop('clip_gradient', 0)
+            self.disc_optimizer = disc_optim_type(
+                self.disc_model.parameters(), **disc_optim_kws
             )
             self.disc_iter = 0
 
-        self.loss_fns = self.initialize_loss(loss_types or {})
-        self.loss_weights = loss_weights or {}
-
-        self.grad_norm_types = self.initialize_norm(grad_norm_types or {})
+        self.loss_fns = self.initialize_loss(loss_fn_kws.get('types', {}))
+        self.loss_weights = loss_fn_kws.get('weights', {})
 
         self.initialize_weights()
 
         if isinstance(self, GenerativeSolver):
-            self.atom_fitter = atom_fitter_type(debug=debug, **atom_fitter_kws)
+            self.atom_fitter = atom_fitting.AtomFitter(
+                device=device, debug=debug, **atom_fitting_kws
+            )
 
         # set up a data frame of training metrics
         self.metrics = pd.DataFrame(
@@ -317,12 +268,6 @@ class Solver(nn.Module):
     def forward(self, data):
         raise NotImplementedError
 
-    def initialize_norm(self, grad_norm_types):
-        self.gen_grad_norm_type = grad_norm_types.get('gen', '0')
-        self.disc_grad_norm_type = grad_norm_types.get('disc', '0')
-        assert self.gen_grad_norm_type in {'0', '2'}
-        assert self.disc_grad_norm_type in {'0', '2'}
-
     def initialize_weights(self):
         if hasattr(self, 'gen_model'):
             self.gen_model.apply(models.initialize_weights)
@@ -366,7 +311,7 @@ class Solver(nn.Module):
             loss.backward()
             t2 = time.time()
 
-            self.normalize_grad()
+            self.clip_gradient()
             grad_norm = models.compute_grad_norm(self.model)
             t3 = time.time()
 
@@ -452,9 +397,11 @@ class DiscriminativeSolver(Solver):
     def curr_iter(self, i):
         self.disc_iter = i
 
-    def normalize_grad(self):
-        if self.disc_grad_norm_type == '2':
-            torch.nn.utils.clip_grad_norm_(self.disc_model.parameters(), 1.0)
+    def clip_gradient(self):
+        if self.disc_clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.disc_model.parameters(), self.disc_clip_grad
+            )
 
     def forward(self, data):
         complex_grids, _, labels = data.forward()
@@ -485,9 +432,11 @@ class GenerativeSolver(Solver):
     def curr_iter(self, i):
         self.gen_iter = i
 
-    def normalize_grad(self):
-        if self.gen_grad_norm_type == '2':
-            torch.nn.utils.clip_grad_norm_(self.gen_model.parameters(), 1.0)
+    def clip_gradient(self):
+        if self.gen_clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.gen_model.parameters(), self.gen_clip_grad
+            )
 
 
 class AESolver(GenerativeSolver):
@@ -724,13 +673,16 @@ class GANSolver(GenerativeSolver):
             loss_types.get('gan_loss', 'x')
         )
 
-    def normalize_gen_grad(self):
-        if self.gen_grad_norm_type == '2':
-            torch.nn.utils.clip_grad_norm_(self.gen_model.parameters(), 1.0)
+    def clip_gradient(self, gen=False, disc=False):
 
-    def normalize_disc_grad(self):
-        if self.disc_grad_norm_type == '2':
-            torch.nn.utils.clip_grad_norm_(self.disc_model.parameters(), 1.0)
+        if gen and self.gen_clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.gen_model.parameters(), self.gen_clip_grad
+            )
+        if disc and self.disc_clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.disc_model.parameters(), self.disc_clip_grad
+            )
 
     def compute_loss(self, labels, predictions):
         gan_loss = self.gan_loss_fn(predictions, labels)
@@ -873,7 +825,7 @@ class GANSolver(GenerativeSolver):
             loss.backward()
             t2 = time.time()
 
-            self.normalize_disc_grad()
+            self.clip_gradient(disc=True)
             grad_norm = models.compute_grad_norm(self.disc_model)
             t3 = time.time()
 
@@ -927,7 +879,7 @@ class GANSolver(GenerativeSolver):
             loss.backward()
             t2 = time.time()
 
-            self.normalize_gen_grad()
+            self.clip_gradient(gen=True)
             grad_norm = models.compute_grad_norm(self.gen_model)
             t3 = time.time()
 
@@ -975,8 +927,6 @@ class GANSolver(GenerativeSolver):
     def train(
         self,
         max_iter,
-        n_gen_train_iters,
-        n_disc_train_iters,
         test_interval,
         n_test_batches,
         fit_interval,
@@ -994,11 +944,11 @@ class GANSolver(GenerativeSolver):
                 self.test(n_test_batches, fit_atoms)
 
             if self.curr_iter < max_iter:
-                self.train_disc(n_disc_train_iters, update=True)
-                self.train_gen(n_gen_train_iters, update=True)
+                self.train_disc(self.n_disc_train_iters, update=True)
+                self.train_gen(self.n_gen_train_iters, update=True)
             else:
-                self.train_disc(n_disc_train_iters, update=False)
-                self.train_gen(n_gen_train_iters, update=False)
+                self.train_disc(self.n_disc_train_iters, update=False)
+                self.train_gen(self.n_gen_train_iters, update=False)
                 break
 
         self.save_state()

@@ -13,40 +13,54 @@ def solver(request):
     return getattr(
         liGAN.training, request.param + 'Solver'
     )(
-        data_root='data/molport',
         train_file='data/molportFULL_rand_test0_50.types',
         test_file='data/molportFULL_rand_test0_50.types',
-        batch_size=50,
-        rec_map_file='data/my_rec_map',
-        lig_map_file='data/my_lig_map',
-        resolution=1.0,
-        grid_size=8,
-        shuffle=False,
-        random_rotation=False,
-        random_translation=0,
-        rec_molcache=None,
-        lig_molcache=None,
-        n_filters=5,
-        width_factor=2,
-        n_levels=3,
-        conv_per_level=1,
-        kernel_size=3,
-        relu_leak=0.1,
-        batch_norm=2,
-        spectral_norm=1,
-        pool_type='a',
-        unpool_type='n',
-        pool_factor=2,
-        n_latent=128,
-        init_conv_pool=False,
-        skip_connect=True,
-        loss_weights=None,
-        loss_types={'gan_loss': 'w'},
-        grad_norm_types={'disc': '2'},
-        optim_type=optim.RMSprop,
-        optim_kws=dict(lr=1e-8, momentum=0),
-        atom_fitter_type=liGAN.atom_fitting.AtomFitter,
-        atom_fitter_kws=dict(),
+        data_kws=dict(
+            data_root='data/molport',
+            batch_size=50,
+            rec_map_file='data/my_rec_map',
+            lig_map_file='data/my_lig_map',
+            resolution=1.0,
+            grid_size=8,
+            shuffle=False,
+            random_rotation=False,
+            random_translation=0,
+            rec_molcache=None,
+            lig_molcache=None,
+        ),
+        gen_model_kws=dict(
+            n_filters=5,
+            n_levels=3,
+            conv_per_level=1,
+            batch_norm=2,
+            n_latent=128,
+            init_conv_pool=False,
+            skip_connect=True,
+        ),
+        disc_model_kws=dict(
+
+        ),
+        loss_fn_kws=dict(
+            types=dict(
+                recon_loss='2',
+                gan_loss='w'
+            )
+        ),
+        gen_optim_kws=dict(
+            type='RMSprop',
+            lr=1e-8,
+            momentum=0,
+            clip_gradient=0,
+            n_train_iters=2,
+        ),
+        disc_optim_kws=dict(
+            type='RMSprop',
+            lr=1e-7,
+            momentum=0,
+            clip_gradient=1,
+            n_train_iters=2,
+        ),
+        atom_fitting_kws=dict(),
         out_prefix='tests/TEST',
         device='cuda'
     )
@@ -85,13 +99,13 @@ class TestGANSolver(object):
         metrics_i = solver.disc_step(real=True)
         _, metrics_f = solver.disc_forward(solver.train_data, real=True)
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
-        assert isclose(1, metrics_i['disc_grad_norm']), 'gradient not normalized'
+        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
     def test_solver_disc_step_gen(self, solver):
         metrics_i = solver.disc_step(real=False)
         _, metrics_f = solver.disc_forward(solver.train_data, real=False)
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
-        assert isclose(1, metrics_i['disc_grad_norm']), 'gradient not normalized'
+        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
     def test_solver_gen_step(self, solver):
         metrics_i = solver.gen_step()
@@ -112,8 +126,6 @@ class TestGANSolver(object):
     def test_solver_train(self, solver):
         solver.train(
             max_iter=10,
-            n_gen_train_iters=2,
-            n_disc_train_iters=2,
             test_interval=10,
             n_test_batches=1,
             fit_interval=10,

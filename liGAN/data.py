@@ -104,6 +104,14 @@ class AtomGridData(nn.Module):
     def resolution(self):
         return self.grid_maker.get_resolution()
 
+    @property
+    def dimension(self):
+        return self.grid_maker.get_dimension()
+
+    @property
+    def grid_size(self):
+        return atom_grids.dimension_to_size(self.dimension, self.resolution)
+
     def __len__(self):
         return self.ex_provider.size()
 
