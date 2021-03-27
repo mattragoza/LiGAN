@@ -43,7 +43,10 @@ def main(argv):
     solver_type = getattr(
         liGAN.training, config['model_type'] + 'Solver'
     )
+
     solver = solver_type(
+        train_file=config['data'].pop('train_file'),
+        test_file=config['data'].pop('test_file'),
         data_kws=config['data'],
         gen_model_kws=config['gen_model'],
         disc_model_kws=config['disc_model'],
@@ -56,6 +59,11 @@ def main(argv):
         device='cuda',
         debug=args.debug
     )
+
+    if config['continue']:
+        solver.load_state()
+        solver.load_metrics()
+
     solver.train(**config['train'])
 
 

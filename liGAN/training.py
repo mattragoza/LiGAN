@@ -1,4 +1,4 @@
-import os, time, psutil, pynvml
+import os, time, psutil, pynvml, re, glob
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
@@ -67,6 +67,18 @@ def save_on_exception(method):
             self.save_state()
             raise
     return wrapper
+
+
+def find_last_iter(out_prefix, min_iter=-1):
+    last_iter = min_iter
+    state_file_re = re.compile(out_prefix + r'_iter_(\d+)')
+    for state_file in glob.glob(out_prefix + '_iter_*'):
+        m = state_file_re.match(state_file)
+        last_iter = max(last_iter, int(m.group(1)))
+    if last_iter > min_iter:
+        return last_iter
+    else:
+        raise FileNotFoundError('could not find state files')
 
 
 class Solver(nn.Module):
@@ -187,59 +199,82 @@ class Solver(nn.Module):
     @curr_iter.setter
     def curr_iter(self, i):
         raise NotImplementedError
+
+    @property
+    def state_prefix(self):
+        return '{}_iter_{}'.format(self.out_prefix, self.curr_iter)
     
     def set_random_seed(self, random_seed):
         np.random.seed(random_seed)
         torch.manual_seed(random_seed)
         molgrid.set_random_seed(random_seed)
 
-    @property
-    def state_file(self, disc=False, optim=False):
-        return '{}_iter_{}.checkpoint'.format(
-            self.out_prefix, self.curr_iter
-        )
-
     def save_state(self):
 
-        checkpoint = OrderedDict()
-        print('Writing model and optimizer state(s) to ' + self.state_file)
-
         if hasattr(self, 'gen_model'):
-            checkpoint['gen_model_state'] = self.gen_model.state_dict()
-            checkpoint['gen_optim_state'] = self.gen_optimizer.state_dict()
+
+            state_file = self.state_prefix + '.gen_model_state'
+            print('Saving generative model state to ' + state_file)
+            torch.save(self.gen_model.state_dict(), state_file)
+
+            state_file = self.state_prefix + '.gen_solver_state'
+            print('Saving generative solver state to ' + state_file)
+            state_dict = OrderedDict()
+            state_dict['optim_state'] = self.gen_optimizer.state_dict() 
+            state_dict['iter'] = self.gen_iter
+            torch.save(state_dict, state_file)
 
         if hasattr(self, 'disc_model'):
-            checkpoint['disc_model_state'] = self.disc_model.state_dict()
-            checkpoint['disc_optim_state'] = self.disc_optimizer.state_dict()
 
-        torch.save(checkpoint, self.state_file)
+            state_file = self.state_prefix + '.disc_model_state'
+            print('Saving discriminative model state to ' + state_file)
+            torch.save(self.disc_model.state_dict(), state_file)
 
-    def load_state(self):
-        checkpoint = torch.load(self.state_file)
+            state_file = self.state_prefix + '.disc_solver_state'
+            print('Saving discriminative solver state to ' + state_file)
+            state_dict = OrderedDict()
+            state_dict['optim_state'] = self.disc_optimizer.state_dict() 
+            state_dict['iter'] = self.disc_iter
+            torch.save(state_dict, state_file)
+
+    def load_state(self, cont_iter=None):
+        self.curr_iter = cont_iter if cont_iter else self.find_last_iter()
 
         if hasattr(self, 'gen_model'):
-            self.gen_model.load_state_dict(
-                checkpoint['gen_model_state']
-            )
-            self.gen_optimizer.load_state_dict(
-                checkpoint['gen_optim_state']
-            )
+
+            state_file = self.state_prefix + '.gen_model_state'
+            print('Loading generative model state from ' + state_file)
+            self.gen_model.load_state_dict(torch.load(state_file))
+
+            state_file = self.state_prefix + '.gen_solver_state'
+            print('Loading generative solver state from ' + state_file)
+            state_dict = torch.load(state_file)
+            self.gen_optimizer.load_state_dict(state_dict['optim_state'])
+            self.gen_iter = state_dict['iter']
 
         if hasattr(self, 'disc_model'):
-            self.disc_model.load_state_dict(
-                checkpoint['disc_model_state']
-            )
-            self.disc_optimizer.load_state_dict(
-                checkpoint['disc_optim_state']
-            )
+
+            state_file = self.state_prefix + '.disc_model_state'
+            print('Loading discriminative model state from ' + state_file)
+            self.disc_model.load_state_dict(torch.load(state_file))
+
+            state_file = self.state_prefix + '.disc_solver_state'
+            print('Loading discriminative solver state from ' + state_file)
+            state_dict = torch.load(state_file)
+            self.disc_optimizer.load_state_dict(state_dict['optim_state'])
+            self.disc_iter = state_dict['iter']
+
+    def find_last_iter(self):
+        return find_last_iter(self.out_prefix)
 
     def save_metrics(self):
-        csv_file = self.out_prefix + '.metrics'
+        csv_file = self.out_prefix + '.train_metrics'
         print('Writing training metrics to ' + csv_file)
         self.metrics.to_csv(csv_file, sep=' ')
 
     def load_metrics(self):
-        csv_file = self.out_prefix + '.metrics'
+        csv_file = self.out_prefix + '.train_metrics'
+        print('Reading training metrics from ' + csv_file)
         self.metrics = pd.read_csv(
             csv_file, sep=' '
         ).set_index(self.index_cols)
@@ -261,18 +296,19 @@ class Solver(nn.Module):
         sdf_file = '{}_iter_{}.sdf'.format(
             self.out_prefix, self.curr_iter
         )
+        print('Writing generated molecules to ' + sdf_file)
         molecules.write_rd_mols_to_sdf_file(sdf_file, (
             s.info['add_mol'] for s in structs
         ))
-
-    def forward(self, data):
-        raise NotImplementedError
 
     def initialize_weights(self):
         if hasattr(self, 'gen_model'):
             self.gen_model.apply(models.initialize_weights)
         if hasattr(self, 'disc_model'):
             self.disc_model.apply(models.initialize_weights)
+
+    def forward(self, data):
+        raise NotImplementedError
 
     @save_on_exception
     def test(self, n_batches, fit_atoms=False):
