@@ -2,6 +2,13 @@ import numpy as np
 from collections import OrderedDict
 
 
+def compute_scalar_metrics(scalar_type, scalars):
+    m = OrderedDict()
+    m[scalar_type+'_mean'] = scalars.mean().item()
+    m[scalar_type+'_variance'] = scalars.var(unbiased=False).item()
+    return m
+
+
 def compute_mean_grid_norm(grids):
     dim = tuple(range(1, grids.ndim))
     return grids.detach().norm(p=2, dim=dim).mean().item()

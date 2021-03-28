@@ -9,6 +9,7 @@ torch.backends.cudnn.benchmark = True
 import molgrid
 from . import data, models, atom_types, atom_fitting, molecules
 from .metrics import (
+    compute_scalar_metrics,
     compute_grid_metrics,
     compute_paired_grid_metrics,
     compute_struct_metrics,
@@ -443,6 +444,7 @@ class DiscriminativeSolver(Solver):
         complex_grids, _, labels = data.forward()
         predictions = self.disc_model(complex_grids)
         loss, metrics = self.compute_loss(predictions, labels)
+        metrics.update(compute_scalar_metrics('pred', predictions))
         return loss, metrics
 
 
@@ -1030,6 +1032,7 @@ class CGANSolver(GANSolver):
         metrics.update(compute_grid_metrics(
             'lig' if real else 'lig_gen', lig_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         t4 = time.time()
 
         metrics['forward_data_time'] = t1 - t0
@@ -1069,6 +1072,7 @@ class CGANSolver(GANSolver):
         t4 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         if fit_atoms:
             metrics.update(compute_struct_metrics(
                 'lig_gen_fit', lig_gen_fit_structs
@@ -1158,6 +1162,7 @@ class VAEGANSolver(GANSolver):
             'lig' if real else 'lig_gen',
             lig_grids if real else lig_gen_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         t4 = time.time()
 
         metrics['forward_data_time'] = t1 - t0
@@ -1202,6 +1207,7 @@ class VAEGANSolver(GANSolver):
         metrics.update(compute_paired_grid_metrics(
             'lig_gen', lig_gen_grids, 'lig', lig_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         if fit_atoms:
             metrics.update(compute_paired_struct_metrics(
                 'lig_gen_fit', lig_gen_fit_structs, 'lig', lig_structs
@@ -1277,6 +1283,7 @@ class CVAEGANSolver(VAEGANSolver):
             'lig' if real else 'lig_gen',
             lig_grids if real else lig_gen_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         t4 = time.time()
 
         metrics['forward_data_time'] = t1 - t0
@@ -1324,6 +1331,7 @@ class CVAEGANSolver(VAEGANSolver):
         metrics.update(compute_paired_grid_metrics(
             'lig_gen', lig_gen_grids, 'lig', lig_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         if fit_atoms:
             metrics.update(compute_struct_metrics(
                 'lig_gen_fit', lig_gen_fit_structs
