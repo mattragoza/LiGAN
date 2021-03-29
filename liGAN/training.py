@@ -756,6 +756,7 @@ class GANSolver(GenerativeSolver):
         metrics.update(compute_grid_metrics(
             'lig' if real else 'lig_gen', lig_grids
         ))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         t3 = time.time()
 
         if real:
@@ -793,6 +794,7 @@ class GANSolver(GenerativeSolver):
         t3 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
+        metrics.update(compute_scalar_metrics('pred', predictions))
         if fit_atoms:
             metrics.update(compute_struct_metrics(
                 'lig_gen_fit', lig_gen_fit_structs
