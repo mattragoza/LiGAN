@@ -33,7 +33,9 @@ def kl_divergence(means, log_stds):
 
 
 def wasserstein_loss(predictions, labels):
-    return ((2*labels - 1) * predictions).sum() / labels.shape[0]
+    return torch.where(
+        labels.byte(), predictions, -predictions
+    ).sum() / labels.shape[0]
 
 
 def L1_loss(predictions, labels):
@@ -287,7 +289,7 @@ class Solver(nn.Module):
         metrics_str = ' '.join(
             '{}={:.4f}'.format(*kv) for kv in metrics.items()
         )
-        print('[{}] {}'.format(index_str, metrics_str))
+        print('[{}] {}'.format(index_str, metrics_str), flush=True)
 
     def insert_metrics(self, idx, metrics):
         for k, v in metrics.items():
@@ -895,7 +897,7 @@ class GANSolver(GenerativeSolver):
         assert not loss.isnan(), 'discriminator loss is nan'
         if update:
             assert not np.isnan(grad_norm), 'discriminator gradient is nan'
-            assert not np.isclose(0, grad_norm), 'discriminator gradient is zero'
+            #assert not np.isclose(0, grad_norm), 'discriminator gradient is zero'
         return metrics
 
     @save_on_exception
