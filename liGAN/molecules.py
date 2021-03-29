@@ -256,7 +256,12 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
         return Chem.RWMol(rd_mol), E_init, E_final, 'Failed to kekulize'
 
     except Exception as e:
+        if 'bad params pointer' in str(e):
+            return Chem.RWMol(rd_mol), E_init, E_final, 'Invalid atom type'
+
         print('UFF1 exception')
+        n = [a.GetAtomicNum() for a in rd_mol.GetAtoms()]
+        print(len(n), n)
         # e.g. RuntimeError: Pre-condition violation: bad params pointer
         #   possibly due to GenericMetal atom type
         write_rd_mol_to_sdf_file(

@@ -300,9 +300,9 @@ class Solver(nn.Module):
             self.out_prefix, self.curr_iter
         )
         print('Writing generated molecules to ' + sdf_file)
-        molecules.write_rd_mols_to_sdf_file(sdf_file, (
-            s.info['add_mol'] for s in structs
-        ))
+        molecules.write_rd_mols_to_sdf_file(
+            sdf_file, (s.info['add_mol'] for s in structs), kekulize=False
+        )
 
     def initialize_weights(self):
         if hasattr(self, 'gen_model'):
