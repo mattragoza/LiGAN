@@ -34,13 +34,12 @@ def kl_divergence(means, log_stds):
 
 
 def wasserstein_loss(predictions, labels):
-    return torch.where(
-        labels.byte(), predictions, -predictions
-    ).sum() / labels.shape[0]
+    labels = (2*labels - 1) # convert {0, 1} to {-1, 1}
+    return (labels * predictions).sum() / labels.shape[0]
 
 
 def L1_loss(predictions, labels):
-    return (labels - predictions).abs() / labels.shape[0]
+    return (labels - predictions).abs().sum() / labels.shape[0]
 
 
 def L2_loss(predictions, labels):
@@ -493,13 +492,11 @@ class AESolver(GenerativeSolver):
         return self.train_data.n_lig_channels
 
     def initialize_loss(self, loss_types):
-        self.recon_loss_fn = get_recon_loss_fn(
-            loss_types.get('recon_loss', '2')
-        )
+        self.recon_loss_fn = get_recon_loss_fn(loss_types['recon_loss'])
 
     def compute_loss(self, real_lig_grids, gen_lig_grids):
         recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
-        loss = self.loss_weights.get('recon_loss', 1.0) * recon_loss
+        loss = self.loss_weights['recon_loss'] * recon_loss
         return loss, OrderedDict([
             ('loss', loss.item()),
             ('recon_loss', recon_loss.item())
@@ -546,17 +543,15 @@ class VAESolver(AESolver):
 
     def initialize_loss(self, loss_types):
         self.kldiv_loss_fn = kl_divergence
-        self.recon_loss_fn = get_recon_loss_fn(
-            loss_types.get('recon_loss', '2')
-        )
+        self.recon_loss_fn = get_recon_loss_fn(loss_types['recon_loss'])
 
     def compute_loss(self, real_lig_grids, gen_lig_grids, means, log_stds):
         recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
-            self.loss_weights.get('recon_loss', 1.0) * recon_loss
+            self.loss_weights['recon_loss'] * recon_loss
         ) + (
-            self.loss_weights.get('kldiv_loss', 1.0) * kldiv_loss
+            self.loss_weights['kldiv_loss'] * kldiv_loss
         )
         return loss, OrderedDict([
             ('loss', loss.item()),
@@ -715,9 +710,7 @@ class GANSolver(GenerativeSolver):
         return self.train_data.n_lig_channels
 
     def initialize_loss(self, loss_types):
-        self.gan_loss_fn = get_gan_loss_fn(
-            loss_types.get('gan_loss', 'x')
-        )
+        self.gan_loss_fn = get_gan_loss_fn(loss_types['gan_loss'])
 
     def clip_gradient(self, gen=False, disc=False):
 
@@ -732,7 +725,7 @@ class GANSolver(GenerativeSolver):
 
     def compute_loss(self, labels, predictions):
         gan_loss = self.gan_loss_fn(predictions, labels)
-        loss = self.loss_weights.get('gan_loss', 1.0) * gan_loss
+        loss = self.loss_weights['gan_loss'] * gan_loss
         return loss, OrderedDict([
             ('loss', loss.item()),
             ('gan_loss', gan_loss.item())
@@ -751,9 +744,8 @@ class GANSolver(GenerativeSolver):
                 labels = torch.ones(data.batch_size, 1, device=self.device)
 
             else: # get generated examples
-                lig_gen_grids, _ = self.gen_model(data.batch_size)
+                lig_grids, _ = self.gen_model(data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
-                lig_grids = lig_gen_grids
             
         t1 = time.time()
 
@@ -1106,12 +1098,8 @@ class VAEGANSolver(GANSolver):
 
     def initialize_loss(self, loss_types):
         self.kldiv_loss_fn = kl_divergence
-        self.recon_loss_fn = get_recon_loss_fn(
-            loss_types.get('recon_loss', '2')
-        )
-        self.gan_loss_fn = get_gan_loss_fn(
-            loss_types.get('gan_loss', 'x')
-        )
+        self.recon_loss_fn = get_recon_loss_fn(loss_types['recon_loss'])
+        self.gan_loss_fn = get_gan_loss_fn(loss_types['gan_loss'])
 
     def compute_loss(
         self, labels, predictions, real_lig_grids, gen_lig_grids, means, log_stds
@@ -1120,11 +1108,11 @@ class VAEGANSolver(GANSolver):
         recon_loss = self.recon_loss_fn(gen_lig_grids, real_lig_grids)
         kldiv_loss = self.kldiv_loss_fn(means, log_stds)
         loss = (
-            self.loss_weights.get('gan_loss', 1.0) * gan_loss
+            self.loss_weights['gan_loss'] * gan_loss
         ) + (
-            self.loss_weights.get('recon_loss', 1.0) * recon_loss
+            self.loss_weights['recon_loss'] * recon_loss
         ) + (
-            self.loss_weights.get('kldiv_loss', 1.0) * kldiv_loss
+            self.loss_weights['kldiv_loss'] * kldiv_loss
         )
         return loss, OrderedDict([
             ('loss', loss.item()),
