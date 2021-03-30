@@ -56,6 +56,7 @@ def main(argv):
         atom_fitting_kws=config['atom_fitting'],
         out_prefix=config['out_prefix'],
         random_seed=config['random_seed'],
+        caffe_init=config['caffe_init'],
         device='cuda',
         debug=args.debug
     )

@@ -22,16 +22,19 @@ def is_positive_int(x):
     return isinstance(x, int) and x > 0
 
 
-def initialize_weights(m):
+def initialize_weights(m, caffe=False):
     '''
     Xavier initialization with fan-in variance
     norm mode, as implemented in caffe.
     '''
     if isinstance(m, (nn.Linear, nn.Conv3d, nn.ConvTranspose3d)):
         fan_in = nn.init._calculate_correct_fan(m.weight, 'fan_in')
-        scale = np.sqrt(3 / fan_in)
-        nn.init.uniform_(m.weight, -scale, scale)
-        nn.init.constant_(m.bias, 0)
+        if caffe:
+            scale = np.sqrt(3 / fan_in)
+            nn.init.uniform_(m.weight, -scale, scale)
+            nn.init.constant_(m.bias, 0)
+        else:
+            pass # use default PyTorch initialization
 
 
 def compute_grad_norm(model):

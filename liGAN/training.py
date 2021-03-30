@@ -1,5 +1,6 @@
 import os, time, psutil, pynvml, re, glob
 from collections import OrderedDict
+from functools import partial
 import numpy as np
 import pandas as pd
 import torch
@@ -101,6 +102,7 @@ class Solver(nn.Module):
         atom_fitting_kws,
         out_prefix,
         random_seed=None,
+        caffe_init=False,
         device='cuda',
         debug=False,
     ):
@@ -156,7 +158,7 @@ class Solver(nn.Module):
         self.loss_fns = self.initialize_loss(loss_fn_kws.get('types', {}))
         self.loss_weights = loss_fn_kws.get('weights', {})
 
-        self.initialize_weights()
+        self.initialize_weights(caffe=caffe_init)
 
         if isinstance(self, GenerativeSolver):
             self.atom_fitter = atom_fitting.AtomFitter(
@@ -304,11 +306,15 @@ class Solver(nn.Module):
             sdf_file, (s.info['add_mol'] for s in structs), kekulize=False
         )
 
-    def initialize_weights(self):
+    def initialize_weights(self, caffe):
         if hasattr(self, 'gen_model'):
-            self.gen_model.apply(models.initialize_weights)
+            self.gen_model.apply(
+                partial(models.initialize_weights, caffe=caffe)
+            )
         if hasattr(self, 'disc_model'):
-            self.disc_model.apply(models.initialize_weights)
+            self.disc_model.apply(
+                partial(models.initialize_weights, caffe=caffe)
+            )
 
     def forward(self, data):
         raise NotImplementedError
