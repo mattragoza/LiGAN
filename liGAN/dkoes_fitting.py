@@ -643,13 +643,13 @@ def convert_ob_mol_to_rd_mol(ob_mol,struct=None):
         pass
         # dkoes - but we want to make failures as rare as possible and should debug them
         m = pybel.Molecule(ob_mol)
-        if not os.path.isdir('bad_mols'):
-            os.makedirs('bad_mols')
+        if not os.path.isdir('badmols'):
+            os.mkdir('badmols')
         i = np.random.randint(1000000)
-        outname = 'badmols/%d.sdf'%i
+        outname = 'badmols/badmol%d.sdf'%i
         print("WRITING",outname)
         m.write('sdf',outname,overwrite=True)
-        pickle.dump(struct,open('badmols/%d.pkl'%i,'wb'))
+        pickle.dump(struct,open('badmols/badmol%d.pkl'%i,'wb'))
 
     #but at some point stop trying to enforce our aromaticity -
     #openbabel and rdkit have different aromaticity models so they
