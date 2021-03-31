@@ -8,7 +8,7 @@ sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['GAN', 'CGAN'])
+@pytest.fixture(params=['VAEGAN', 'CVAEGAN'])
 def solver(request):
     return getattr(
         liGAN.training, request.param + 'Solver'
@@ -98,15 +98,27 @@ class TestGANSolver(object):
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
-    def test_solver_disc_forward_gen(self, solver):
+    def test_solver_disc_forward_poster(self, solver):
+        loss, metrics = solver.disc_forward(
+            solver.train_data, grid_type='poster'
+        )
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
+
+    def test_solver_disc_forward_poster(self, solver):
         loss, metrics = solver.disc_forward(
             solver.train_data, grid_type='prior'
         )
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
-    def test_solver_gen_forward(self, solver):
-        loss, metrics = solver.gen_forward(solver.train_data)
+    def test_solver_gen_forward_poster(self, solver):
+        loss, metrics = solver.gen_forward(solver.train_data, grid_type='poster')
+        assert not isclose(0, loss.item()), 'loss is zero'
+        assert not isnan(loss.item()), 'loss is nan'
+
+    def test_solver_gen_forward_prior(self, solver):
+        loss, metrics = solver.gen_forward(solver.train_data, grid_type='prior')
         assert not isclose(0, loss.item()), 'loss is zero'
         assert not isnan(loss.item()), 'loss is nan'
 
@@ -116,15 +128,26 @@ class TestGANSolver(object):
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
         assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
-    def test_solver_disc_step_gen(self, solver):
+    def test_solver_disc_step_poster(self, solver):
+        metrics_i = solver.disc_step(grid_type='poster')
+        _, metrics_f = solver.disc_forward(solver.train_data, grid_type='poster')
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
+
+    def test_solver_disc_step_prior(self, solver):
         metrics_i = solver.disc_step(grid_type='prior')
         _, metrics_f = solver.disc_forward(solver.train_data, grid_type='prior')
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
         assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
-    def test_solver_gen_step(self, solver):
-        metrics_i = solver.gen_step()
-        _, metrics_f = solver.gen_forward(solver.train_data)
+    def test_solver_gen_step_poster(self, solver):
+        metrics_i = solver.gen_step(grid_type='poster')
+        _, metrics_f = solver.gen_forward(solver.train_data, grid_type='poster')
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+
+    def test_solver_gen_step_prior(self, solver):
+        metrics_i = solver.gen_step(grid_type='prior')
+        _, metrics_f = solver.gen_forward(solver.train_data, grid_type='prior')
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
 
     def test_solver_test(self, solver):
@@ -142,14 +165,14 @@ class TestGANSolver(object):
         solver.train(
             max_iter=10,
             test_interval=10,
-            n_test_batches=2,
+            n_test_batches=4,
             fit_interval=10,
             save_interval=10,
         )
         assert solver.curr_iter == 10
         print(solver.metrics)         # test train test test_on_train
         assert len(solver.metrics) == (
-            2*2 + 3*10 + 2*2 + 3
+            4*2 + 3*10 + 4*2 + 3
         )
         assert 'gan_loss' in solver.metrics
         if isinstance(solver, liGAN.training.VAEGANSolver):
