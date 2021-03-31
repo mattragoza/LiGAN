@@ -1,4 +1,4 @@
-import time
+import time, os
 import molgrid
 from rdkit.Chem import AllChem as Chem
 from openbabel import openbabel as ob
@@ -643,11 +643,13 @@ def convert_ob_mol_to_rd_mol(ob_mol,struct=None):
         pass
         # dkoes - but we want to make failures as rare as possible and should debug them
         m = pybel.Molecule(ob_mol)
+        if not os.path.isdir('bad_mols'):
+            os.makedirs('bad_mols')
         i = np.random.randint(1000000)
-        outname = 'bad%d.sdf'%i
+        outname = 'badmols/%d.sdf'%i
         print("WRITING",outname)
         m.write('sdf',outname,overwrite=True)
-        pickle.dump(struct,open('bad%d.pkl'%i,'wb'))
+        pickle.dump(struct,open('badmols/%d.pkl'%i,'wb'))
 
     #but at some point stop trying to enforce our aromaticity -
     #openbabel and rdkit have different aromaticity models so they
