@@ -993,7 +993,7 @@ class GANSolver(GenerativeSolver):
 
         for i in range(n_iters):
             batch_idx = 0 if update else i
-            grid_type = self.get_grid_phase(batch_idx, disc=False)
+            grid_type = self.get_grid_phase(batch_idx, disc=True)
             self.disc_step(grid_type, update, batch_idx)
 
     def train_gen(self, n_iters, update=True):
