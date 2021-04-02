@@ -13,7 +13,6 @@ def parse_args(argv):
     parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
     parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
     parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
-    parser.add_argument('--alternate', default=False, action='store_true', help='alternate between encoding and sampling latent prior')
     parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
     parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
@@ -57,6 +56,7 @@ def main(argv):
         out_prefix=config['out_prefix'],
         random_seed=config['random_seed'],
         caffe_init=config['caffe_init'],
+        balance=config['balance'],
         device='cuda',
         debug=args.debug
     )

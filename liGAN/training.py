@@ -102,6 +102,7 @@ class Solver(nn.Module):
         out_prefix,
         random_seed=None,
         caffe_init=False,
+        balance=False,
         device='cuda',
         debug=False,
     ):
@@ -156,6 +157,7 @@ class Solver(nn.Module):
 
         self.loss_fns = self.initialize_loss(loss_fn_kws.get('types', {}))
         self.loss_weights = loss_fn_kws.get('weights', {})
+        self.balance = balance
 
         self.initialize_weights(caffe=caffe_init)
 
@@ -704,7 +706,7 @@ class CVAESolver(VAESolver):
 class GANSolver(GenerativeSolver):
     gen_model_type = models.GAN
     index_cols = [
-        'iteration',
+        'iteration',   # gen_iter
         'disc_iter',
         'data_phase',  # train or test
         'model_phase', # gen or disc
@@ -725,6 +727,7 @@ class GANSolver(GenerativeSolver):
             torch.nn.utils.clip_grad_norm_(
                 self.gen_model.parameters(), self.gen_clip_grad
             )
+
         if disc and self.disc_clip_grad > 0:
             torch.nn.utils.clip_grad_norm_(
                 self.disc_model.parameters(), self.disc_clip_grad
@@ -819,11 +822,8 @@ class GANSolver(GenerativeSolver):
         return loss, metrics
 
     def get_grid_phase(self, batch_idx, disc):
-        if disc:
-            if (self.disc_iter + batch_idx) % 2 == 0:
-                return 'real'
-            else:
-                return 'prior'
+        if disc and (self.disc_iter + batch_idx) % 2 == 0:
+            return 'real'
         else:
             return 'prior'
 
@@ -994,14 +994,23 @@ class GANSolver(GenerativeSolver):
         for i in range(n_iters):
             batch_idx = 0 if update else i
             grid_type = self.get_grid_phase(batch_idx, disc=True)
-            self.disc_step(grid_type, update, batch_idx)
+            loss = self.disc_step(grid_type, update, batch_idx)['gan_loss']
+            if grid_type == 'real':
+                loss_real = loss
+            else:
+                loss_gen = loss
+
+        return loss_real, loss_gen
 
     def train_gen(self, n_iters, update=True):
+
         for i in range(n_iters):
             batch_idx = 0 if update else i
             grid_type = self.get_grid_phase(batch_idx, disc=False)
-            self.gen_step(grid_type, update, batch_idx)
- 
+            loss = self.gen_step(grid_type, update, batch_idx)['gan_loss']
+
+        return loss
+
     def train(
         self,
         max_iter,
@@ -1010,23 +1019,48 @@ class GANSolver(GenerativeSolver):
         fit_interval,
         save_interval,
     ):
+        init_iter = self.curr_iter
+        last_save = None
+        last_test = None
+        divides = lambda d, n: (n % d == 0)
+
         while self.curr_iter <= max_iter:
+            i = self.curr_iter
+            print(i, self.disc_iter)
 
-            if self.curr_iter % save_interval == 0:
+            if last_save != i and divides(save_interval, i):
                 self.save_state()
+                last_save = i
 
-            if self.curr_iter % test_interval == 0:
-                fit_atoms = (
-                    fit_interval > 0 and self.curr_iter % fit_interval == 0
-                )
-                self.test(n_test_batches, fit_atoms)
+            if last_test != i and divides(test_interval, i):
+                fit_atoms = (fit_interval > 0 and divides(fit_interval, i))
+                self.test(n_test_batches, fit_atoms=fit_atoms)
+                last_test = i
 
-            if self.curr_iter < max_iter:
-                self.train_disc(self.n_disc_train_iters, update=True)
-                self.train_gen(self.n_gen_train_iters, update=True)
-            else:
-                self.train_disc(self.n_disc_train_iters, update=False)
-                self.train_gen(self.n_gen_train_iters, update=False)
+            if i == max_iter: # just get final train loss
+                update_disc = update_gen = False 
+
+            elif self.balance: # use WGAN loss balancing
+
+                if self.disc_iter < 1000 or i == init_iter: # train disc only
+                    update_disc = True
+                    update_gen = False
+
+                else: # only train gen when disc is "optimal"
+                    update_disc = True
+                    update_gen = (disc_loss_real < gen_loss)
+
+            else: # train both models
+                update_disc = update_gen = True
+
+            disc_loss_real, disc_loss_gen = self.train_disc(
+                self.n_disc_train_iters, update=update_disc
+            )
+            gen_loss = self.train_gen(
+                self.n_gen_train_iters, update=update_gen
+            )
+
+            if i == max_iter:
                 break
 
         self.save_state()
