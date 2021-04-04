@@ -10,10 +10,6 @@ def parse_args(argv):
     parser.add_argument('--debug', default=False, action='store_true')
 
     # TODO reimplement the following arguments
-    parser.add_argument('--gen_weights_file', help='.caffemodel file to initialize gen weights')
-    parser.add_argument('--disc_weights_file', help='.caffemodel file to initialize disc weights')
-    parser.add_argument('--cont_iter', default=0, type=int, help='continue training from iteration #')
-    parser.add_argument('--balance', default=False, action='store_true', help='dynamically train gen/disc each iter by balancing GAN loss')
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
     parser.add_argument('--wandb',action='store_true',help='enable weights and biases')
     parser.add_argument('--lr_policy', type=str, help='learning rate policy')
@@ -48,10 +44,10 @@ def main(argv):
         test_file=config['data'].pop('test_file'),
         data_kws=config['data'],
         gen_model_kws=config['gen_model'],
-        disc_model_kws=config['disc_model'],
+        disc_model_kws=config.get('disc_model', None),
         loss_fn_kws=config['loss_fn'],
         gen_optim_kws=config['gen_optim'],
-        disc_optim_kws=config['disc_optim'],
+        disc_optim_kws=config.get('disc_optim', None),
         atom_fitting_kws=config['atom_fitting'],
         out_prefix=config['out_prefix'],
         random_seed=config['random_seed'],

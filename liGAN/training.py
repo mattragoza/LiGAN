@@ -122,6 +122,7 @@ class Solver(nn.Module):
         if isinstance(self, GenerativeSolver):
 
             print('creating generative model and optimizer')
+            gen_model_state = gen_model_kws.pop('state', None)
             self.gen_model = self.gen_model_type(
                 n_channels_in=self.n_channels_in,
                 n_channels_cond=self.n_channels_cond,
@@ -130,6 +131,11 @@ class Solver(nn.Module):
                 device=device,
                 **gen_model_kws
             )
+            if gen_model_state:
+                self.gen_model.load_state_dict(
+                    torch.load(gen_model_state)
+                )
+
             gen_optim_type = getattr(optim, gen_optim_kws.pop('type'))
             self.n_gen_train_iters = gen_optim_kws.pop('n_train_iters', 2)
             self.gen_clip_grad = gen_optim_kws.pop('clip_gradient', 0)
@@ -141,11 +147,16 @@ class Solver(nn.Module):
         if isinstance(self, (DiscriminativeSolver, GANSolver)):
 
             print('creating discriminative model and optimizer')
+            disc_model_state = disc_model_kws.pop('state', None)
             self.disc_model = models.Encoder(
                 n_channels=self.n_channels_disc,
                 grid_size=self.train_data.grid_size,
                 **disc_model_kws
             ).to(device)
+            if disc_model_state:
+                self.disc_model.load_state_dict(
+                    torch.load(disc_model_state)
+                )
 
             disc_optim_type = getattr(optim, disc_optim_kws.pop('type'))
             self.n_disc_train_iters = disc_optim_kws.pop('n_train_iters', 2)
@@ -1026,8 +1037,7 @@ class GANSolver(GenerativeSolver):
 
         while self.curr_iter <= max_iter:
             i = self.curr_iter
-            print(i, self.disc_iter)
-
+ 
             if last_save != i and divides(save_interval, i):
                 self.save_state()
                 last_save = i
