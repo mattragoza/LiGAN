@@ -35,6 +35,9 @@ def main(argv):
                 'Setting output prefix to {}\n'.format(config['out_prefix'])
             )
 
+    if 'random_seed' in config:
+        liGAN.set_random_seed(config['random_seed'])
+
     solver_type = getattr(
         liGAN.training, config['model_type'] + 'Solver'
     )

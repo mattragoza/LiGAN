@@ -9,6 +9,7 @@ torch.backends.cudnn.benchmark = True
 
 import molgrid
 from . import data, models, atom_types, atom_fitting, molecules
+from .common import set_random_seed
 from .metrics import (
     compute_scalar_metrics,
     compute_grid_metrics,
@@ -100,7 +101,6 @@ class Solver(nn.Module):
         disc_optim_kws,
         atom_fitting_kws,
         out_prefix,
-        random_seed=None,
         caffe_init=False,
         balance=False,
         device='cuda',
@@ -108,9 +108,6 @@ class Solver(nn.Module):
     ):
         super().__init__()
         self.device = device
-
-        if random_seed is not None:
-            self.set_random_seed(random_seed)
 
         print('loading data')
         self.train_data, self.test_data = (
@@ -220,11 +217,6 @@ class Solver(nn.Module):
     @property
     def state_prefix(self):
         return '{}_iter_{}'.format(self.out_prefix, self.curr_iter)
-    
-    def set_random_seed(self, random_seed):
-        np.random.seed(random_seed)
-        torch.manual_seed(random_seed)
-        molgrid.set_random_seed(random_seed)
 
     def save_state(self):
 
