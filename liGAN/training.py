@@ -109,7 +109,7 @@ class Solver(nn.Module):
         super().__init__()
         self.device = device
 
-        print('loading data')
+        print('Loading data')
         self.train_data, self.test_data = (
             data.AtomGridData(device=device, **data_kws) for i in range(2)
         )
@@ -118,7 +118,7 @@ class Solver(nn.Module):
 
         if isinstance(self, GenerativeSolver):
 
-            print('creating generative model and optimizer')
+            print('Initializing generative model and optimizer')
             gen_model_state = gen_model_kws.pop('state', None)
             self.gen_model = self.gen_model_type(
                 n_channels_in=self.n_channels_in,
@@ -143,7 +143,7 @@ class Solver(nn.Module):
 
         if isinstance(self, (DiscriminativeSolver, GANSolver)):
 
-            print('creating discriminative model and optimizer')
+            print('Initializing discriminative model and optimizer')
             disc_model_state = disc_model_kws.pop('state', None)
             self.disc_model = models.Encoder(
                 n_channels=self.n_channels_disc,
@@ -170,6 +170,8 @@ class Solver(nn.Module):
         self.initialize_weights(caffe=caffe_init)
 
         if isinstance(self, GenerativeSolver):
+
+            print('Initializing atom fitter')
             self.atom_fitter = atom_fitting.AtomFitter(
                 device=device, debug=debug, **atom_fitting_kws
             )

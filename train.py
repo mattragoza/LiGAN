@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, argparse, yaml, ast
+import sys, os, argparse, yaml
 
 import liGAN
 
