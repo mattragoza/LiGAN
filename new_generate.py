@@ -1,4 +1,5 @@
 import sys, os, argparse, yaml
+import pandas as pd
 import torch
 import liGAN
 
@@ -28,11 +29,11 @@ def main(argv):
 
     print('Initializing generative model')
     gen_model_type = getattr(
-        liGAN.models, config['gen_model'].pop('type')
+        liGAN.models, config.pop('model_type')
     )
     gen_model_state = config['gen_model'].pop('state')
     gen_model = gen_model_type(
-        n_channels_in=data.n_lig_channels,
+        n_channels_in=(data.n_lig_channels + data.n_rec_channels),
         n_channels_cond=data.n_rec_channels,
         n_channels_out=data.n_lig_channels,
         grid_size=data.grid_size,
