@@ -619,7 +619,7 @@ class CESolver(AESolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        (rec_grids, lig_grids), lig_structs, _ = \
+        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
             data.forward(split_rec_lig=True)
         t1 = time.time()
 
@@ -669,7 +669,7 @@ class CVAESolver(VAESolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        (rec_grids, lig_grids), lig_structs, _ = \
+        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
             data.forward(split_rec_lig=True)
         rec_lig_grids = data.grids
         t1 = time.time()
@@ -1092,7 +1092,7 @@ class CGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (rec_grids, lig_grids), lig_structs, _ = \
+            (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
                 data.forward(split_rec_lig=True)
             t1 = time.time()
             if real:
@@ -1128,7 +1128,7 @@ class CGANSolver(GANSolver):
         assert grid_type == 'prior', 'invalid grid type'
 
         # get generated examples
-        (rec_grids, lig_grids), lig_structs, _ = \
+        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
             data.forward(split_rec_lig=True)
         t1 = time.time()
 
@@ -1362,7 +1362,7 @@ class CVAEGANSolver(VAEGANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (rec_grids, lig_grids), lig_structs, _ = \
+            (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
                 data.forward(split_rec_lig=True)
             rec_lig_grids = data.grids if not prior else None
             t1 = time.time()
@@ -1401,7 +1401,7 @@ class CVAEGANSolver(VAEGANSolver):
         prior = (grid_type == 'prior')
 
         # get generated examples
-        (rec_grids, lig_grids), lig_structs, _ = \
+        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
             data.forward(split_rec_lig=True)
         rec_lig_grids = None if prior else data.grids
         t1 = time.time()

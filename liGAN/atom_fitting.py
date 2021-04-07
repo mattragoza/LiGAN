@@ -790,3 +790,72 @@ def remove_tensors(obj, visited=None):
             obj[i] = remove_tensors(obj[i], visited)
 
     return obj
+
+
+def conv_grid(grid, kernel):
+    # convolution theorem: g * grid = F-1(F(g)F(grid))
+    F_h = np.fft.fftn(kernel)
+    F_grid = np.fft.fftn(grid)
+    return np.real(np.fft.ifftn(F_grid * F_h))
+
+
+def weiner_invert_kernel(kernel, noise_ratio=0.0):
+    F_h = np.fft.fftn(kernel)
+    conj_F_h = np.conj(F_h)
+    F_g = conj_F_h / (F_h*conj_F_h + noise_ratio)
+    return np.real(np.fft.ifftn(F_g))
+
+
+def wiener_deconv_grid(grid, kernel, noise_ratio=0.0):
+    '''
+    Applies a convolution to the input grid that approximates the inverse
+    of the operation that converts a set of atom positions to a grid of
+    atom density.
+    '''
+    # we want a convolution g such that g * grid = a, where a is the atom positions
+    # we assume that grid = h * a, so g is the inverse of h: g * (h * a) = a
+    # take F() to be the Fourier transform, F-1() the inverse Fourier transform
+    # convolution theorem: g * grid = F-1(F(g)F(grid))
+    # Wiener deconvolution: F(g) = 1/F(h) |F(h)|^2 / (|F(h)|^2 + noise_ratio)
+    F_h = np.fft.fftn(kernel)
+    F_grid = np.fft.fftn(grid)
+    conj_F_h = np.conj(F_h)
+    F_g = conj_F_h / (F_h*conj_F_h + noise_ratio)
+    return np.real(np.fft.ifftn(F_grid * F_g))
+
+
+def wiener_deconv_grids(grids, channels, resolution, radius_multiple, noise_ratio=0.0, radius_factor=1.0):
+
+    deconv_grids = np.zeros_like(grids)
+    points = get_grid_points(grids.shape[1:], 0, resolution)
+
+    for i, grid in enumerate(grids):
+
+        r = channels[i].atomic_radius*radius_factor
+        kernel = get_atom_density(resolution/2, r, points, radius_multiple).reshape(grid.shape)
+        kernel = np.roll(kernel, shift=[d//2 for d in grid.shape], axis=range(grid.ndim))
+        deconv_grids[i,...] = wiener_deconv_grid(grid, kernel, noise_ratio)
+
+    return np.stack(deconv_grids, axis=0)
+
+
+def get_grid_points(shape, center, resolution):
+    '''
+    Return an array of points for a grid with
+    the given shape, center, and resolution.
+    '''
+    shape = np.array(shape)
+    center = np.array(center)
+    resolution = np.array(resolution)
+    origin = center - resolution*(shape - 1)/2.0
+    indices = np.array(list(np.ndindex(*shape)))
+    return origin + resolution*indices
+
+
+def grid_to_points_and_values(grid, center, resolution):
+    '''
+    Convert a grid with a center and resolution to lists
+    of grid points and values at each point.
+    '''
+    points = get_grid_points(grid.shape, center, resolution)
+    return points, grid.flatten()

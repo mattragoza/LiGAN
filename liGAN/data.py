@@ -81,6 +81,10 @@ class AtomGridData(nn.Module):
         )
 
     @property
+    def root_dir(self):
+        return self.ex_provider.settings().data_root
+
+    @property
     def n_rec_channels(self):
         return self.rec_typer.num_types() if self.rec_typer else 0
 
@@ -126,7 +130,7 @@ class AtomGridData(nn.Module):
         assert len(self) > 0
 
         # get next batch of structures and labels
-        examples = self.ex_provider.next_batch(self.grids.shape[0])
+        examples = self.ex_provider.next_batch(self.batch_size)
         self.grid_maker.forward(
             examples,
             self.grids,
@@ -135,12 +139,15 @@ class AtomGridData(nn.Module):
         )
         examples.extract_label(0, self.labels)
 
-        lig_structs = [
-            atom_structs.AtomStruct.from_coord_set(
+        rec_structs, lig_structs = [], []
+        for ex in examples:
+            rec_structs.append(atom_structs.AtomStruct.from_coord_set(
+                ex.coord_sets[0], self.rec_channels
+            ))
+            lig_structs.append(atom_structs.AtomStruct.from_coord_set(
                 ex.coord_sets[1], self.lig_channels
-            ) for ex in examples
-        ]
-
+            ))
+        
         if split_rec_lig or ligand_only:
 
             rec_grids, lig_grids = torch.split(
@@ -151,6 +158,10 @@ class AtomGridData(nn.Module):
             if ligand_only:
                 return lig_grids, lig_structs, self.labels
             else:
-                return (rec_grids, lig_grids), lig_structs, self.labels
+                return (
+                    (rec_grids, lig_grids),
+                    (rec_structs, lig_structs),
+                    self.labels
+                )
         else:
             return self.grids, lig_structs, self.labels

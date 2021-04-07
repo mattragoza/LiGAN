@@ -42,12 +42,12 @@ def make_rd_mol(xyz, c, bonds, channels):
     return rd_mol
 
 
-def read_rd_mols_from_sdf_file(sdf_file):
+def read_rd_mols_from_sdf_file(sdf_file, sanitize=True):
     if sdf_file.endswith('.gz'):
         f = gzip.open(sdf_file)
-        suppl = Chem.ForwardSDMolSupplier(f)
+        suppl = Chem.ForwardSDMolSupplier(f, sanitize=sanitize)
     else:
-        suppl = Chem.SDMolSupplier(sdf_file)
+        suppl = Chem.SDMolSupplier(sdf_file, sanitize=sanitize)
     return [mol for mol in suppl]
 
 

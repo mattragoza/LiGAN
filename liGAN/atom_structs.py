@@ -32,13 +32,6 @@ class AtomStruct(object):
         else:
             self.bonds = np.zeros((self.n_atoms, self.n_atoms))
 
-        if self.n_atoms > 0:
-            self.center = self.xyz.mean(0)
-            self.radius = max(np.linalg.norm(self.xyz - self.center, axis=1))
-        else:
-            self.center = np.full(3, np.nan)
-            self.radius = np.nan
-
         self.info = info
 
     @classmethod
@@ -54,7 +47,7 @@ class AtomStruct(object):
             )
         xyz = coord_set.coords.tonumpy()
         c = coord_set.type_index.tonumpy().astype(int)
-        return cls(xyz, c, channels, **info)
+        return cls(xyz, c, channels, src_file=coord_set.src, **info)
 
     @classmethod
     def from_rd_mol(cls, rd_mol, c, channels, **info):
@@ -75,6 +68,20 @@ class AtomStruct(object):
     @property
     def type_counts(self):
         return atom_types.count_types(self.c, len(self.channels))
+
+    @property
+    def center(self):
+        if self.n_atoms > 0:
+            return self.xyz.mean(0)
+        else:
+            return np.nan
+
+    @property
+    def radius(self):
+        if self.n_atoms > 0:
+            return max(np.linalg.norm(self.xyz - self.center, axis=1))
+        else:
+            return np.nan
     
     def to_ob_mol(self):
         mol = molecules.make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
