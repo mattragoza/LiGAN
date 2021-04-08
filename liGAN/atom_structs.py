@@ -1,38 +1,37 @@
 import os, struct
 import numpy as np
+import torch
 
 from . import atom_types, molecules
 
 
 class AtomStruct(object):
     '''
-    A typed atomic structure.
+    A 3D structure of typed atoms and coordinates.
     '''
-    def __init__(self, xyz, c, channels, bonds=None, **info):
+    def __init__(self, xyz, c, channels, bonds=None, device=None, **info):
 
-        if len(xyz.shape) != 2:
-            raise ValueError('AtomStruct xyz must have 2 dims')
-        if len(c.shape) != 1:
-            raise ValueError('AtomStruct c must have 1 dimension')
-        if xyz.shape[0] != c.shape[0]:
-            raise ValueError('first dim of AtomStruct xyz and c must be equal')
-        if xyz.shape[1] != 3:
-            raise ValueError('second dim of AtomStruct xyz must be 3')
-        if any(c < 0) or any(c >= len(channels)):
-            raise ValueError('invalid channel index in AtomStruct c')
-
-        self.xyz = xyz
-        self.c = c
+        self.check_shapes(xyz, c, channels, bonds)
+        self.xyz = torch.as_tensor(xyz, device=device)
+        self.c = torch.as_tensor(c, device=device)
         self.channels = channels
 
         if bonds is not None:
-            if bonds.shape != (self.n_atoms, self.n_atoms):
-                raise ValueError('AtomStruct bonds must have shape (n_atoms, n_atoms)')
-            self.bonds = bonds
+            self.bonds = torch.as_tensor(bonds, device=device)
         else:
-            self.bonds = np.zeros((self.n_atoms, self.n_atoms))
+            self.bonds = None
 
         self.info = info
+
+    @staticmethod
+    def check_shapes(xyz, c, channels, bonds):
+        assert len(xyz.shape) == 2
+        assert len(c.shape) == 1
+        assert xyz.shape[0] == c.shape[0]
+        assert xyz.shape[1] == 3
+        assert all(c >= 0) and all(c < len(channels))
+        if bonds is not None:
+            assert bonds.shape == (xyz.shape[0], xyz.shape[0])
 
     @classmethod
     def from_gninatypes(cls, gtypes_file, channels, **info):
@@ -40,14 +39,16 @@ class AtomStruct(object):
         return AtomStruct(xyz, c, channels, **info)
 
     @classmethod
-    def from_coord_set(cls, coord_set, channels, **info):
+    def from_coord_set(cls, coord_set, channels, device, **info):
         if not coord_set.has_indexed_types():
             raise ValueError(
                 'can only make AtomStruct from CoordinateSet with indexed types'
             )
         xyz = coord_set.coords.tonumpy()
         c = coord_set.type_index.tonumpy().astype(int)
-        return cls(xyz, c, channels, src_file=coord_set.src, **info)
+        return cls(
+            xyz, c, channels, device=device, src_file=coord_set.src, **info
+        )
 
     @classmethod
     def from_rd_mol(cls, rd_mol, c, channels, **info):
@@ -71,24 +72,35 @@ class AtomStruct(object):
 
     @property
     def center(self):
-        if self.n_atoms > 0:
-            return self.xyz.mean(0)
-        else:
-            return np.nan
+        assert self.n_atoms > 0
+        return self.xyz.mean(dim=0)
 
     @property
     def radius(self):
-        if self.n_atoms > 0:
-            return max(np.linalg.norm(self.xyz - self.center, axis=1))
-        else:
-            return np.nan
+        assert self.n_atoms > 0
+        return (self.xyz - self.center[None,:]).norm(dim=1).max()
+
+    def to(self, device):
+        self.xyz = self.xyz.to(device)
+        self.c = self.c.to(device)
+        self.bonds = self.bonds.to(device)
     
     def to_ob_mol(self):
-        mol = molecules.make_ob_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
+        mol = molecules.make_ob_mol(
+            self.xyz.float().cpu().numpy(),
+            self.c.cpu().numpy(),
+            self.bonds.cpu().numpy(),
+            self.channels
+        )
         return mol
 
     def to_rd_mol(self):
-        mol = molecules.make_rd_mol(self.xyz.astype(float), self.c, self.bonds, self.channels)
+        mol = molecules.make_rd_mol(
+            self.xyz.float().cpu().numpy(),
+            self.c.cpu().numpy(),
+            self.bonds.cpu().numpy(),
+            self.channels
+        )
         return mol
 
     def to_sdf(self, sdf_file):
@@ -96,17 +108,23 @@ class AtomStruct(object):
             outfile = gzip.open(sdf_file, 'wt')
         else:
             outfile = open(sdf_file, 'wt')
-        molecules.write_rd_mols_to_sdf_file(outfile, [self.to_rd_mol()])
+        molecules.write_rd_mol_to_sdf_file(outfile, self.to_rd_mol())
         outfile.close()
 
     def add_bonds(self, tol=0.0):
 
-        nax = np.newaxis
-        channel_radii = np.array([c.atomic_radius for c in self.channels])
+        atomic_radii = torch.tensor(
+            [c.atomic_radius for c in self.channels],
+            device=self.c.device
+        )
+        atom_dist2 = (
+            (self.xyz[None,:,:] - self.xyz[:,None,:])**2
+        ).sum(axis=2)
 
-        atom_dist2 = ((self.xyz[nax,:,:] - self.xyz[:,nax,:])**2).sum(axis=2)
-        max_bond_dist2 = channel_radii[self.c][nax,:] + channel_radii[self.c][:,nax]
-        self.bonds = (atom_dist2 < max_bond_dist2 + tol)
+        max_bond_dist2 = (
+            atomic_radii[self.c][None,:] + atomic_radii[self.c][:,None]
+        )
+        self.bonds = (atom_dist2 < max_bond_dist2 + tol**2)
 
 
 def read_gninatypes_file(gtypes_file, channels):

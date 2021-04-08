@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 
 class AtomGrid(object):
@@ -9,22 +10,26 @@ class AtomGrid(object):
     and the grid values are computed by summing across
     these densities in separate channels per atom type.
     '''
-    def __init__(self, values, channels, center, resolution, **info):
-
-        if len(values.shape) != 4:
-            raise ValueError('AtomGrid values must have 4 dims')
-
-        if values.shape[0] != len(channels):
-            raise ValueError('AtomGrid values have wrong number of channels')
-
-        if not (values.shape[1] == values.shape[2] == values.shape[3]):
-            raise ValueError('last 3 dims of AtomGrid values must be equal')
-
-        self.values = values
+    def __init__(
+        self, values, channels, center, resolution, device=None, **info
+    ):
+        self.check_shapes(values, channels, center)
+        self.values = torch.as_tensor(values, device=device)
         self.channels = channels
-        self.center = center
-        self.resolution = resolution
+        self.center = torch.as_tensor(center, device=device)
+        self.resolution = float(resolution)
         self.info = info
+
+    @staticmethod
+    def check_shapes(values, channels, center):
+        assert len(values.shape) == 4
+        assert values.shape[0] == len(channels)
+        assert values.shape[1] == values.shape[2] == values.shape[3]
+        assert center.shape == (3,)
+
+    @property
+    def n_channels(self):
+        return len(self.channels)
 
     @property
     def size(self):
@@ -34,20 +39,29 @@ class AtomGrid(object):
     def dimension(self):
         return size_to_dimension(self.size, self.resolution)
 
+    def to(self, device):
+        self.values = self.values.to(device)
+        self.center = self.center.to(device)
+
     def to_dx(self, dx_prefix, center=None):
         write_grids_to_dx_files(
             out_prefix=dx_prefix,
-            grids=self.values,
+            grids=self.values.cpu().numpy(),
             channels=self.channels,
-            center=self.center if center is None else center,
+            center=self.center.cpu().numpy() if center is None else center,
             resolution=self.resolution)
 
-    def new_like(self, values, **info):
+    def new_like(self, values, device=None, **info):
         '''
-        Return a AtomGrid with the same grid settings but new values.
+        Return an AtomGrid with the same grid settings but new values.
         '''
         return AtomGrid(
-            values, self.channels, self.center, self.resolution, **info
+            values,
+            self.channels,
+            self.center,
+            self.resolution,
+            self.device if device is None else device,
+            **info
         )
 
 

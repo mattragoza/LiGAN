@@ -7,6 +7,7 @@ import scipy as sp
 from scipy.stats import multivariate_normal
 import torch
 from GPUtil import getGPUs
+from rdkit import Chem
 
 import liGAN
 from liGAN import molecules
@@ -17,7 +18,7 @@ MB = 1024 ** 2
 
 class OutputWriter(object):
     '''
-    A data structure for receiving and organizing AtomGrids and
+    A data structure for receiving and sorting AtomGrids and
     AtomStructs from a generative model or atom fitting algorithm,
     computing metrics, and writing files to disk as necessary.
     '''
@@ -36,7 +37,6 @@ class OutputWriter(object):
         batch_metrics,
         verbose
     ):
-
         self.out_prefix = out_prefix
         self.output_dx = output_dx
         self.output_sdf = output_sdf
@@ -85,7 +85,7 @@ class OutputWriter(object):
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
-        has_struct = is_real_grid or is_fit_grid
+        has_struct = (is_real_grid or is_fit_grid) and self.fit_atoms
         has_conv_grid = not is_fit_grid
         is_generated = is_gen_grid or grid_type.endswith('gen_fit')
 
@@ -103,7 +103,9 @@ class OutputWriter(object):
                 if self.verbose:
                     print('Writing' + conv_sample_prefix + ' .dx files')
 
-                grid.info['conv_grid'].to_dx(conv_sample_prefix, center=np.zeros(3))
+                grid.info['conv_grid'].to_dx(
+                    conv_sample_prefix, center=np.zeros(3)
+                )
                 self.dx_prefixes.append(conv_sample_prefix)
 
         if is_lig_grid and has_struct and self.output_sdf: # write out structs
@@ -149,7 +151,9 @@ class OutputWriter(object):
                             rd_mols = mol.info['visited_mols']
                         else:
                             rd_mols = [mol]
-                    molecules.write_rd_mols_to_sdf_file(out, rd_mols, str(sample_idx))
+                    molecules.write_rd_mols_to_sdf_file(
+                        out, rd_mols, str(sample_idx), kekulize=False
+                    )
                 
                 if sample_idx+1 == self.n_samples or is_real_grid:
                     out.close()
@@ -201,7 +205,9 @@ class OutputWriter(object):
         if self.batch_metrics: # store until grids for all samples are ready
 
             has_all_samples = (len(lig_grids) == self.n_samples)
-            has_all_grids = all(len(lig_grids[i]) == n_grid_types for i in lig_grids)
+            has_all_grids = all(
+                len(lig_grids[i]) == n_grid_types for i in lig_grids
+            )
 
             if has_all_samples and has_all_grids:
 
@@ -531,6 +537,11 @@ def find_real_mol_in_data_root(data_root, lig_src_no_ext):
                 lig_mol_file, sanitize=False
             )[0]
 
+    try:
+        Chem.SanitizeMol(lig_mol)
+    except Chem.MolSanitizeException:
+        pass
+
     return lig_mol
 
 
@@ -741,22 +752,28 @@ def generate(
                 endpoint_idx = 0 if batch_idx < batch_size//2 else -1
 
             is_first = (example_idx == sample_idx == 0)
-            is_first_in_batch = (batch_idx == 0)
+            need_next_batch = (batch_idx == 0)
 
-            if is_first_in_batch: # forward next batch
+            if need_next_batch: # forward next batch
 
-                grids, structs, _ = data.forward(split_rec_lig=True)
-                rec_structs, lig_structs = structs
-                rec_grids, lig_grids = grids
-                complex_grids = data.grids
+                with torch.no_grad():
 
-                print('Calling generator forward')
-                lig_gen_grids, latents, _, _ = gen_model(
-                    complex_grids, rec_grids, batch_size
-                )
-                # TODO interpolation here!
+                    if verbose:
+                        print('Getting next batch of data')
+                    grids, structs, _ = data.forward(split_rec_lig=True)
+                    rec_structs, lig_structs = structs
+                    rec_grids, lig_grids = grids
+                    complex_grids = data.grids
 
-            print('Getting real atom types and coords')
+                    if verbose:
+                        print('Calling generator forward')
+                    lig_gen_grids, latents, _, _ = gen_model(
+                        complex_grids, rec_grids, batch_size
+                    )
+                    # TODO interpolation here!
+
+            if verbose:
+                print('Getting real atom types and coords')
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
             lig_src_file = lig_struct.info['src_file']
@@ -765,19 +782,23 @@ def generate(
 
             if not gen_only:
 
-                print('Getting real molecule from data root')
+                if verbose:
+                    print('Getting real molecule from data root')
                 lig_mol = find_real_mol_in_data_root(
                     data.root_dir, lig_src_no_ext
                 )
-                if fit_atoms:
-                    print('Real molecule for {} has {} atoms'.format(
-                        lig_name, lig_struct.n_atoms
-                    ))
-                    print('Minimizing real molecule')
-                    atom_fitter.uff_minimize(lig_mol)
-                    lig_struct.info['src_mol'] = lig_mol
+                lig_struct.info['src_mol'] = lig_mol
 
-                    print('Validifying real atom types and coords')
+                if fit_atoms:
+                    if verbose:
+                        print('Real molecule for {} has {} atoms'.format(
+                            lig_name, lig_struct.n_atoms
+                        ))
+                        print('Minimizing real molecule')
+                    atom_fitter.uff_minimize(lig_mol)
+
+                    if verbose:
+                        print('Validifying real atom types and coords')
                     atom_fitter.validify(lig_struct)
 
             grid_types = [
@@ -788,11 +809,13 @@ def generate(
             for grid_type, grids, grid_channels in grid_types:
                 torch.cuda.reset_max_memory_allocated()
 
-                print('Processing {} grid'.format(grid_type))
-                grid_needs_fit = (fit_atoms and grid_type.startswith('lig'))
+                if verbose:
+                    print('Processing {} grid'.format(grid_type))
+                is_lig_grid = (grid_type.startswith('lig'))
+                grid_needs_fit = (is_lig_grid and fit_atoms)
 
                 grid = liGAN.atom_grids.AtomGrid(
-                    values=grids[batch_idx].detach(),
+                    values=grids[batch_idx],
                     channels=grid_channels,
                     center=lig_struct.center,
                     resolution=data.resolution
@@ -804,17 +827,16 @@ def generate(
                 elif grid_type == 'lig_gen':
                     grid.info['latent_vec'] = latents[batch_idx]
 
-                if verbose:
-                    index_str = (
-                        '[lig_name={} grid_type={} sample_idx={}]'.format(
-                            lig_name, grid_type, sample_idx
-                        )
+                index_str = (
+                    '[lig_name={} grid_type={} sample_idx={}]'.format(
+                        lig_name, grid_type, sample_idx
                     )
-                    value_str = 'norm={:.4f} gpu={:.4f}'.format(
-                        grid.values.norm().item(),
-                        torch.cuda.max_memory_allocated() / MB,
-                    )
-                    print(index_str + ' ' + value_str, flush=True)
+                )
+                value_str = 'norm={:.4f} gpu={:.4f}'.format(
+                    grid.values.norm(),
+                    torch.cuda.max_memory_allocated() / MB,
+                )
+                print(index_str + ' ' + value_str, flush=True)
 
                 if out_writer.output_conv:
                     grid.info['conv_grid'] = grid.new_like(
@@ -828,7 +850,9 @@ def generate(
                 out_writer.write(lig_name, grid_type, sample_idx, grid)
 
                 if grid_needs_fit:
-                    struct, grid = atom_fitter.fit(grid, lig_struct.type_counts)
+                    struct, grid = atom_fitter.fit(
+                        grid, lig_struct.type_counts
+                    )
                     grid_type = grid_type + '_fit'
                     out_writer.write(lig_name, grid_type, sample_idx, grid)
 
@@ -846,7 +870,7 @@ def main(argv):
     args = parse_args(argv)
 
     with open(args.config_file) as f:
-        config = yaml.load(f)
+        config = yaml.safe_load(f)
 
     device = 'cuda'
     if 'random_seed' in config:

@@ -286,8 +286,9 @@ class AtomFitter(object):
             idx_c = idx_c[:self.n_atoms_detect]
 
         # convert atom type channel index to one-hot type vector
-        c = F.one_hot(idx_c, n_channels).to(dtype=torch.float32, device=self.device)
-
+        c = F.one_hot(idx_c, n_channels).to(
+            dtype=torch.float32, device=self.device
+        )
         return xyz.detach(), c.detach()
 
     def fit_gd(self, grid, xyz, c, n_iters):
@@ -351,24 +352,15 @@ class AtomFitter(object):
         torch.cuda.reset_max_memory_allocated()
 
         # get true grid on appropriate device
-        grid_true = AtomGrid(
-            values=torch.as_tensor(grid.values, device=self.device),
-            channels=grid.channels,
-            center=torch.as_tensor(grid.center, device=self.device),
-            resolution=grid.resolution,
-        )
+        grid_true = grid.to(self.device)
 
         # get true atom type counts on appropriate device
         if type_counts is not None:
-            type_counts = torch.tensor(
-                type_counts, dtype=torch.float32, device=self.device
-            )
+            type_counts = type_counts.to(self.device, dtype=torch.float32)
 
         if self.estimate_types: # estimate atom type counts from grid density
             type_counts_est = self.get_types_estimate(
-                grid_true.values,
-                grid_true.channels,
-                grid_true.resolution,
+                grid_true.values, grid_true.channels, grid_true.resolution,
             )
             est_type_loss = (type_counts - type_counts_est).abs().sum().item()
             type_counts = type_counts_est

@@ -81,6 +81,10 @@ class AtomGridData(nn.Module):
         )
 
     @property
+    def device(self):
+        return self.grids.device
+
+    @property
     def root_dir(self):
         return self.ex_provider.settings().data_root
 
@@ -142,10 +146,10 @@ class AtomGridData(nn.Module):
         rec_structs, lig_structs = [], []
         for ex in examples:
             rec_structs.append(atom_structs.AtomStruct.from_coord_set(
-                ex.coord_sets[0], self.rec_channels
+                ex.coord_sets[0], self.rec_channels, device=self.grids.device
             ))
             lig_structs.append(atom_structs.AtomStruct.from_coord_set(
-                ex.coord_sets[1], self.lig_channels
+                ex.coord_sets[1], self.lig_channels, device=self.grids.device
             ))
         
         if split_rec_lig or ligand_only:
@@ -164,4 +168,4 @@ class AtomGridData(nn.Module):
                     self.labels
                 )
         else:
-            return self.grids, lig_structs, self.labels
+            return self.grids, (rec_structs, lig_structs), self.labels

@@ -244,7 +244,7 @@ def count_types(c, n_types, dtype=None):
     vector of type counts where type_counts[i] is
     the number of occurences of type index i in c.
     '''
-    count = np.zeros(n_types, dtype=dtype)
+    count = torch.zeros(n_types, dtype=dtype, device=c.device)
     for i in c:
         count[i] += 1
     return count
