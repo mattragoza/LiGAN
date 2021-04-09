@@ -236,29 +236,3 @@ def get_default_channels(use_covalent_radius=False):
     rec_channels = get_default_rec_channels(use_covalent_radius)
     lig_channels = get_default_lig_channels(use_covalent_radius)
     return rec_channels + lig_channels
-
-
-def count_types(c, n_types, dtype=None):
-    '''
-    Provided a vector of type indices c, return a
-    vector of type counts where type_counts[i] is
-    the number of occurences of type index i in c.
-    '''
-    count = torch.zeros(n_types, dtype=dtype, device=c.device)
-    for i in c:
-        count[i] += 1
-    return count
-
-
-def make_one_hot(x, n, dtype=None, device=None):
-    y = torch.zeros(x.shape + (n,), dtype=dtype, device=device)
-    for idx, last_idx in np.ndenumerate(x):
-        y[idx + (int(last_idx),)] = 1
-    return y
-
-
-def one_hot_to_index(x):
-    if len(x) > 0:
-        return torch.argmax(x, dim=1)
-    else:
-        return torch.zeros((0,))

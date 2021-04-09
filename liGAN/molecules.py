@@ -1,4 +1,5 @@
 import sys, gzip, traceback
+from functools import lru_cache, partial
 import numpy as np
 
 from openbabel import openbabel as ob
@@ -11,12 +12,28 @@ from rdkit.Chem.Fingerprints import FingerprintMols
 
 from SA_Score import sascorer
 from NP_Score import npscorer
-nps_model = npscorer.readNPModel()
+
+
+class Molecule(Chem.RWMol):
+    
+    @classmethod
+    def from_struct(cls, struct):
+        return make_rd_mol(
+            struct.xyz,
+            struct.c,
+            struct.bonds,
+            struct.channels
+        )
+
+    @classmethod
+    def from_sdf(cls, sdf_file):
+        return read_rd_mols_from_sdf_file(sdf_file)[0]
+
 
 
 def make_rd_mol(xyz, c, bonds, channels):
 
-    rd_mol = Chem.RWMol()
+    rd_mol = Molecule()
 
     for c_ in c:
         atomic_num = channels[c_].atomic_num
@@ -27,11 +44,11 @@ def make_rd_mol(xyz, c, bonds, channels):
     rd_conf = Chem.Conformer(n_atoms)
 
     for i, (x, y, z) in enumerate(xyz):
-        rd_conf.SetAtomPosition(i, (x, y, z))
+        rd_conf.SetAtomPosition(i, (x, y, z)) # must be float64
 
     rd_mol.AddConformer(rd_conf)
 
-    if np.any(bonds):
+    if bonds is not None and np.any(bonds):
         n_bonds = 0
         for i in range(n_atoms):
             for j in range(i+1, n_atoms):
@@ -48,7 +65,7 @@ def read_rd_mols_from_sdf_file(sdf_file, sanitize=True):
         suppl = Chem.ForwardSDMolSupplier(f, sanitize=sanitize)
     else:
         suppl = Chem.SDMolSupplier(sdf_file, sanitize=sanitize)
-    return [mol for mol in suppl]
+    return [Molecule(mol) for mol in suppl]
 
 
 def write_rd_mol_to_sdf_file(sdf_file, mol, *args, **kwargs):
@@ -186,32 +203,87 @@ def ob_mol_to_rd_mol(ob_mol):
     return rd_mol
 
 
-def catch_exception(func, exc_type=Exception, default=np.nan):
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except exc_type:            
-            return default
-    return wrapper
+def get_rd_mol_validity(rd_mol):
+    '''
+    A molecule is considered valid iff it has at
+    least one atom, all atoms are connected in a
+    single fragment, and it raises no errors when
+    passed to rdkit.Chem.SanitizeMol, indicating
+    valid valences and successful kekulization.
+    '''
+    n_atoms = rd_mol.GetNumAtoms()
+    n_frags = len(Chem.GetMolFrags(rd_mol))
+    try:
+        Chem.SanitizeMol(rd_mol)
+        error = None
+    except Chem.MolSanitizeException as e:
+        error = str(e)
+    valid = (n_atoms > 0 and n_frags == 1 and error is None)
+    return n_atoms, n_frags, error, valid
 
 
-get_rd_mol_weight = catch_exception(Descriptors.MolWt)
-get_rd_mol_logP = catch_exception(Chem.Crippen.MolLogP)
-get_rd_mol_QED = catch_exception(Chem.QED.default)
-get_rd_mol_SAS = catch_exception(sascorer.calculateScore)
-get_rd_mol_NPS = catch_exception(npscorer.scoreMol)
-get_aligned_rmsd  = catch_exception(AllChem.GetBestRMS)
+
+def catch_exception(func=None, exc_type=Exception, default=np.nan):
+
+    if func is None: # use as a decorator factory
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+                except exc_type:            
+                    return default
+            return wrapper
+        return decorator
+
+    else: # use as a simple decorator
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except exc_type:            
+                return default
+        return wrapper
 
 
-@catch_exception
+# molecular weight and logP are defined for invalid molecules
+# logP is log water-octanol partition coefficient
+#   where logP < 0 --> hydrophilic
+get_rd_mol_weight = Descriptors.MolWt
+get_rd_mol_logP = Chem.Crippen.MolLogP
+
+# QED, SAS, and NPS are likely undefined for invalid molecules
+# QED does not require calcImplicitHydrogens, SAS and NPS do
+# SAS can raise RingInfo not initialized on invalid molecules
+get_rd_mol_QED = catch_exception(Chem.QED.default, Chem.MolSanitizeException)
+get_rd_mol_SAS = catch_exception(sascorer.calculateScore, Chem.MolSanitizeException)
+
+# mol RMSD is undefined b/tw different molecules (even if same type counts)
+get_rd_mol_rmsd  = catch_exception(AllChem.GetBestRMS, RuntimeError)
+
+
+@lru_cache(maxsize=1)
+def get_NPS_model():
+    '''
+    Read in NPS scoring model on first call
+    and cache it for subsequent calls.
+    '''
+    return npscorer.readNPModel()
+
+
+@catch_exception(exc_type=SyntaxError)
+def get_rd_mol_NPS(rd_mol):
+    return npscorer.scoreMol(rd_mol, get_NPS_model())
+
+
+@catch_exception(exc_type=SyntaxError)
 def get_smiles_string(rd_mol):
     return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
 
 
-@catch_exception
+@catch_exception(exc_type=SyntaxError)
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
     if fingerprint == 'morgan':
+        # this can raise RingInfo not initialized
         fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
         fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
 
@@ -226,7 +298,7 @@ def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
     return DataStructs.TanimotoSimilarity(fgp1, fgp2)
 
 
-@catch_exception
+@catch_exception(exc_type=SyntaxError)
 def get_ob_smi_similarity(smi1, smi2):
     fgp1 = pybel.readstring('smi', smi1).calcfp()
     fgp2 = pybel.readstring('smi', smi2).calcfp()
@@ -286,27 +358,11 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
         return Chem.RWMol(rd_mol), E_init, np.nan, str(e)
 
 
-@catch_exception
+@catch_exception(exc_type=SyntaxError)
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
     rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
     uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
     return uff.CalcEnergy()
-
-
-def get_rd_mol_validity(rd_mol):
-    n_frags = len(Chem.GetMolFrags(rd_mol))
-    try:
-        Chem.SanitizeMol(rd_mol)
-        error = None
-    except Exception as e:
-        error = e
-    valid = n_frags == 1 and error is None
-    return n_frags, error, valid
-
-
-@catch_exception
-def get_gpu_usage(gpu_id=0):
-    return getGPUs()[gpu_id].memoryUtil
 
 
 def set_rd_mol_aromatic(rd_mol, c, channels):

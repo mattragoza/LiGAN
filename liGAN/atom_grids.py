@@ -39,14 +39,10 @@ class AtomGrid(object):
     def dimension(self):
         return size_to_dimension(self.size, self.resolution)
 
-    def to(self, device):
-        self.values = self.values.to(device)
-        self.center = self.center.to(device)
-
     def to_dx(self, dx_prefix, center=None):
         write_grids_to_dx_files(
             out_prefix=dx_prefix,
-            grids=self.values.cpu().numpy(),
+            grids=self.values.to('cpu', dtype=torch.float64),
             channels=self.channels,
             center=self.center.cpu().numpy() if center is None else center,
             resolution=self.resolution)
@@ -63,6 +59,9 @@ class AtomGrid(object):
             self.device if device is None else device,
             **info
         )
+
+    def to(self, device):
+        return self.new_like(values=self.values, device=device)
 
 
 def size_to_dimension(size, resolution):

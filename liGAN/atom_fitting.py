@@ -6,7 +6,6 @@ import molgrid
 
 from .atom_grids import AtomGrid
 from .atom_structs import AtomStruct
-from .atom_types import one_hot_to_index
 from . import dkoes_fitting, molecules
 
 
@@ -145,7 +144,7 @@ class AtomFitter(object):
         if self.output_kernel:
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
-                kernel_norm = np.linalg.norm(values.cpu())
+                kernel_norm = values.norm().item()
                 print(
                     'writing out {} (norm={})'.format(dx_prefix, kernel_norm)
                 )
@@ -585,8 +584,8 @@ class AtomFitter(object):
         for objective, struct_id, fit_time, xyz, c in visited_structs_:
 
             struct = AtomStruct(
-                xyz=xyz.cpu().detach().numpy(),
-                c=one_hot_to_index(c).cpu().detach().numpy(),
+                xyz=xyz.detach(),
+                c=one_hot_to_index(c).detach(),
                 channels=grid.channels,
                 L2_loss=L2_loss,
                 L1_loss=L1_loss,
@@ -598,8 +597,8 @@ class AtomFitter(object):
 
         # finalize the best fit atomic structure and density grid
         struct_best = AtomStruct(
-            xyz=xyz_best.cpu().detach().numpy(),
-            c=one_hot_to_index(c_best).cpu().detach().numpy(),
+            xyz=xyz_best.detach(),
+            c=one_hot_to_index(c_best).detach(),
             channels=grid.channels,
             L2_loss=L2_loss,
             L1_loss=L1_loss,
@@ -611,7 +610,7 @@ class AtomFitter(object):
         self.validify(struct_best)
 
         grid_pred = AtomGrid(
-            values=grid_pred.cpu().detach().numpy(),
+            values=grid_pred.detach(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
@@ -624,7 +623,7 @@ class AtomFitter(object):
             MB = int(1024 ** 2)
             print('GPU', mi//MB, [m//MB for m in ms], mf//MB)
 
-        return remove_tensors(struct_best), remove_tensors(grid_pred)
+        return struct_best, grid_pred
 
     def validify(self, struct, use_ob=False):
         '''
@@ -782,6 +781,20 @@ def remove_tensors(obj, visited=None):
             obj[i] = remove_tensors(obj[i], visited)
 
     return obj
+
+
+def make_one_hot(x, n, dtype=None, device=None):
+    y = torch.zeros(x.shape + (n,), dtype=dtype, device=device)
+    for idx, last_idx in np.ndenumerate(x):
+        y[idx + (int(last_idx),)] = 1
+    return y
+
+
+def one_hot_to_index(x):
+    if len(x) > 0:
+        return torch.argmax(x, dim=1)
+    else:
+        return torch.empty((0,), device=x.device)
 
 
 def conv_grid(grid, kernel):

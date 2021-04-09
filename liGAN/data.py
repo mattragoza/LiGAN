@@ -19,6 +19,7 @@ class AtomGridData(nn.Module):
         shuffle=False,
         random_rotation=False,
         random_translation=0.0,
+        n_samples=1,
         rec_molcache=None,
         lig_molcache=None,
         device='cuda',
@@ -42,6 +43,7 @@ class AtomGridData(nn.Module):
             recmolcache=rec_molcache or '',
             ligmolcache=lig_molcache or '',
             shuffle=shuffle,
+            num_copies=n_samples,
         )
 
         # create molgrid maker and output tensors
