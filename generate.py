@@ -212,7 +212,6 @@ class OutputWriter(object):
             has_all_grids = all(
                 len(lig_grids[i]) == self.n_grid_types for i in lig_grids
             )
-            print(len(lig_grids), dict( (i, len(lig_grids[i]) ) for i in lig_grids))
 
             if has_all_samples and has_all_grids:
 
@@ -448,7 +447,6 @@ class OutputWriter(object):
         m.loc[idx, mol_type+'_valid'] = valid
 
         # other molecular descriptors
-        print(valid)
         m.loc[idx, mol_type+'_MW'] = mols.get_rd_mol_weight(mol)
         m.loc[idx, mol_type+'_logP'] = mols.get_rd_mol_logP(mol)
         m.loc[idx, mol_type+'_QED'] = mols.get_rd_mol_QED(mol)
@@ -468,14 +466,15 @@ class OutputWriter(object):
             # we have to sanitize the ref_mol here each time
             # since we copy before sanitizng on previous calls
             ref_mol_info = ref_mol.info
-            ref_mol = mols.Molecule(Chem.RemoveHs(ref_mol, sanitize=True))
+            ref_mol = mols.Molecule(Chem.RemoveHs(ref_mol, sanitize=False))
             ref_mol.info = ref_mol_info
+            ref_valid = mols.get_rd_mol_validity(mol)[-1]
 
             # get reference SMILES strings
             ref_smi = mols.get_smiles_string(ref_mol)
             m.loc[idx, mol_type+'_SMILES_match'] = (smi == ref_smi)
 
-            if valid: # fingerprint similarity
+            if valid and ref_valid: # fingerprint similarity
                 m.loc[idx, mol_type+'_ob_sim'] = \
                     mols.get_ob_smi_similarity(ref_smi, smi)
                 m.loc[idx, mol_type+'_morgan_sim'] = \
@@ -825,9 +824,8 @@ def generate(
                     grid.info['latent_vec'] = latents[batch_idx]
 
                 index_str = (
-                    '[lig_name={} grid_type={} sample_idx={}]'.format(
-                        lig_name, grid_type, sample_idx
-                    )
+                    '[example_idx={} lig_name={} grid_type={} sample_idx={}]' \
+                        .format(example_idx, lig_name, grid_type, sample_idx)
                 )
                 value_str = 'norm={:.4f} gpu={:.4f}'.format(
                     grid.values.norm(),

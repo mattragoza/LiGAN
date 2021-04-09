@@ -253,8 +253,12 @@ get_rd_mol_logP = Chem.Crippen.MolLogP
 # QED, SAS, and NPS are likely undefined for invalid molecules
 # QED does not require calcImplicitHydrogens, SAS and NPS do
 # SAS can raise RingInfo not initialized on invalid molecules
-get_rd_mol_QED = catch_exception(Chem.QED.default, Chem.MolSanitizeException)
-get_rd_mol_SAS = catch_exception(sascorer.calculateScore, Chem.MolSanitizeException)
+get_rd_mol_QED = catch_exception(
+    Chem.QED.default, Chem.MolSanitizeException
+)
+get_rd_mol_SAS = catch_exception(
+    sascorer.calculateScore, Chem.MolSanitizeException
+)
 
 # mol RMSD is undefined b/tw different molecules (even if same type counts)
 get_rd_mol_rmsd  = catch_exception(AllChem.GetBestRMS, RuntimeError)
@@ -279,11 +283,11 @@ def get_smiles_string(rd_mol):
     return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
 
 
-@catch_exception(exc_type=SyntaxError)
+@catch_exception(exc_type=RuntimeError)
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
     if fingerprint == 'morgan':
-        # this can raise RingInfo not initialized
+        # this can raise RingInfo not initialized even when valid??
         fgp1 = AllChem.GetMorganFingerprintAsBitVect(rd_mol1, 2, 1024)
         fgp2 = AllChem.GetMorganFingerprintAsBitVect(rd_mol2, 2, 1024)
 
@@ -326,6 +330,10 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
 
     except Chem.rdchem.KekulizeException:
         return Chem.RWMol(rd_mol), E_init, E_final, 'Failed to kekulize'
+
+    except RuntimeError: # Pre-condition Violation
+        # getNumImplicitHs() called without preceding call to calcImplicitValence()
+        return Chem.RWMol(rd_mol), E_init, E_final, 'No implicit valence'
 
     except Exception as e:
         if 'bad params pointer' in str(e):
