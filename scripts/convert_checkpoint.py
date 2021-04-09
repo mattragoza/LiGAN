@@ -24,7 +24,7 @@ for in_file in sys.argv[1:]:
 
     prefix = os.path.splitext(in_file)[0]
     curr_iter = int(re.match(r'.*_iter_(\d+)', prefix).group(1))
-    d = torch.load(in_file)
+    d = torch.load(in_file, map_location='cpu')
 
     save = lambda o,f: (print(f) or torch.save(o, f))
 
@@ -37,12 +37,13 @@ for in_file in sys.argv[1:]:
         ('iter', curr_iter),
     ]), prefix + '.gen_solver_state')
 
-    save(
-        d['disc_model_state'],
-        prefix + '.disc_model_state'
-    )
-    save(odict([
-        ('optim_state', d['disc_optim_state']),
-        ('iter', curr_iter),
-    ]), prefix + '.disc_solver_state')
+    if 'disc_model_state' in d:
+        save(
+            d['disc_model_state'],
+            prefix + '.disc_model_state'
+        )
+        save(odict([
+            ('optim_state', d['disc_optim_state']),
+            ('iter', curr_iter),
+        ]), prefix + '.disc_solver_state')
 
