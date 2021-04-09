@@ -880,6 +880,8 @@ def main(argv):
     device = 'cuda'
     if 'random_seed' in config:
         liGAN.set_random_seed(config['random_seed'])
+    else:
+        liGAN.set_random_seed()
 
     print('Loading data')
     data_file = config['data'].pop('data_file')
