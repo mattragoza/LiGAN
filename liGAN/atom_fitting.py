@@ -337,7 +337,7 @@ class AtomFitter(object):
         grid_sum = grid.sum(dim=(1,2,3))
         return grid_sum / kernel_sum
 
-    def fit(self, grid, type_counts=None, transform=None):
+    def fit(self, grid, type_counts=None):
         '''
         Fit atom types and coordinates to atomic density grid.
         '''
@@ -587,8 +587,6 @@ class AtomFitter(object):
                 est_type_diff=est_type_loss,
                 time=fit_time,
             )
-            if transform and struct.n_atoms > 0:
-                transform.backward(struct.xyz, struct.xyz, dotranslate=False)
             visited_structs.append(struct)
 
         # finalize the best fit atomic structure and density grid

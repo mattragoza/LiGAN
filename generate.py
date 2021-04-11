@@ -59,7 +59,6 @@ class OutputWriter(object):
         self.pymol_file = '{}.pymol'.format(out_prefix)
         self.dx_prefixes = []
         self.sdf_files = []
-        self.centers = []
 
         self.verbose = verbose
         
@@ -118,7 +117,6 @@ class OutputWriter(object):
 
         if sample_idx == 0:
             self.sdf_files.append(sdf_file)
-            self.centers.append(mol.center)
         
         if sample_idx + 1 == self.n_samples or is_real:
             out.close()
@@ -268,7 +266,6 @@ class OutputWriter(object):
                     self.out_prefix,
                     self.dx_prefixes,
                     self.sdf_files,
-                    self.centers,
                 )
                 del self.grids[lig_name]
 
@@ -304,7 +301,6 @@ class OutputWriter(object):
                     self.out_prefix,
                     self.dx_prefixes,
                     self.sdf_files,
-                    self.centers,
                 )
                 del self.grids[lig_name][sample_idx]
 
@@ -758,13 +754,12 @@ def generate(
     Generate atomic density grids from gen_model for
     each example in data and fit atomic structures.
     '''
-    device = 'cuda'
     batch_size = data.batch_size
 
     print('Starting to generate grids')
-    for example_idx in range(n_examples):
+    for example_idx in range(n_examples): # iterate over data rows
 
-        for sample_idx in range(n_samples):
+        for sample_idx in range(n_samples): # multiple samples per data row
 
             # keep track of position in current batch
             full_idx = example_idx*n_samples + sample_idx
@@ -795,6 +790,12 @@ def generate(
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
 
+            # undo transform so structs are all aligned
+            transform = data.transforms[batch_idx]
+            lig_center = lig_struct.center # store for atom fitting
+            transform.backward(rec_struct.xyz, rec_struct.xyz)
+            transform.backward(lig_struct.xyz, lig_struct.xyz)
+
             # only process real rec/lig once, since they're
             # the same for all samples of a given ligand
 
@@ -802,7 +803,6 @@ def generate(
 
                 if verbose: print('Getting real molecule from data root')
 
-                # TODO is rec transformed correctly?
                 rec_src_file = rec_struct.info['src_file']
                 rec_src_no_ext = os.path.splitext(rec_src_file)[0]
                 rec_mol = find_real_rec_in_data_root(
@@ -815,6 +815,7 @@ def generate(
                 lig_mol = find_real_lig_in_data_root(
                     data.root_dir, lig_src_no_ext
                 )
+
                 if fit_atoms: # add bonds and minimize
 
                     if verbose: print('Minimizing real molecule')
@@ -842,10 +843,9 @@ def generate(
                 grid = liGAN.atom_grids.AtomGrid(
                     values=grids[batch_idx],
                     channels=grid_channels,
-                    center=lig_struct.center,
+                    center=lig_center, # use original (transformed) center
                     resolution=data.resolution
                 )
-                transform = data.transforms[batch_idx]
 
                 if grid_type == 'rec':
                     grid.info['src_struct'] = rec_struct
@@ -877,8 +877,12 @@ def generate(
                 if grid_needs_fit: # atom fitting, bond adding, minimize
 
                     fit_struct, fit_grid = atom_fitter.fit(
-                        grid, lig_struct.type_counts, transform
+                        grid, lig_struct.type_counts
                     )
+
+                    if fit_struct.n_atoms > 0: # undo transform
+                        transform.backward(fit_struct.xyz, fit_struct.xyz)
+
                     fit_add_mol = fit_struct.make_mol(verbose)
                     fit_add_mol.info['min_mol'] = fit_add_mol.uff_minimize()
                     fit_struct.info['add_mol'] = fit_add_mol

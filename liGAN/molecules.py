@@ -65,6 +65,13 @@ class Molecule(Chem.RWMol):
         mask = [a.GetAtomicNum() != 1 for a in self.GetAtoms()]
         return self.GetConformer(0).GetPositions()[mask].mean(axis=0)
 
+    def translate(self, xyz):
+        dx, dy, dz = xyz
+        rd_conf = self.GetConformer(0)
+        for i in range(rd_conf.GetNumAtoms()):
+            x, y, z = rd_conf.GetAtomPosition(i)
+            rd_conf.SetAtomPosition(i, (x+dx, y+dy, z+dz)) # must be float64
+
     def aligned_rmsd(self, mol):
         return get_rd_mol_rmsd(self, mol)
 
@@ -412,7 +419,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     except RuntimeError as e:
         print('UFF2 exception')
         write_rd_mol_to_sdf_file(
-            'badmol_uff2.sdf', rd_mol_H, kekulize=True
+            'badmol_uff2.sdf', rd_mol, kekulize=True
         )
         traceback.print_exc(file=sys.stdout)
         return rd_mol, E_init, np.nan, str(e)
@@ -420,8 +427,8 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
 
 @catch_exception(exc_type=SyntaxError)
 def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
-    rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-    uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+    rd_mol = Chem.AddHs(rd_mol, addCoords=True)
+    uff = AllChem.UFFGetMoleculeForceField(rd_mol, confId=0)
     return uff.CalcEnergy()
 
 

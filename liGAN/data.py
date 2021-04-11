@@ -164,9 +164,6 @@ class AtomGridData(nn.Module):
                 self.lig_channels,
                 device=self.grids.device
             )
-            # undo transforms so structs are all aligned
-            transform.backward(rec_struct.xyz, rec_struct.xyz)
-            transform.backward(lig_struct.xyz, lig_struct.xyz)
             rec_structs.append(rec_struct)
             lig_structs.append(lig_struct)
         
