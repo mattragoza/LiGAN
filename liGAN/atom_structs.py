@@ -7,7 +7,7 @@ from . import atom_types, molecules
 
 class AtomStruct(object):
     '''
-    A 3D structure of typed atoms and coordinates.
+    A 3D structure of atom types and coordinates.
 
     An optional bond matrix can be provided, but
     this is not currently used for anything.
@@ -43,10 +43,7 @@ class AtomStruct(object):
 
     @classmethod
     def from_coord_set(cls, coord_set, channels, device, **info):
-        if not coord_set.has_indexed_types():
-            raise ValueError(
-                'can only make AtomStruct from CoordinateSet with indexed types'
-            )
+        assert coord_set.has_indexed_types()
         xyz = coord_set.coords.tonumpy()
         c = coord_set.type_index.tonumpy().astype(int)
         return cls(
@@ -128,6 +125,23 @@ class AtomStruct(object):
             atomic_radii[self.c][None,:] + atomic_radii[self.c][:,None]
         )
         self.bonds = (atom_dist2 < max_bond_dist2 + tol**2)
+
+    def make_mol(self, verbose=False):
+        '''
+        Attempt to construct a valid molecule from an atomic
+        structure by inferring bonds, setting aromaticity
+        and connecting fragments, returning a Molecule.
+        '''
+        from . import dkoes_fitting
+        init_mol = self.to_rd_mol()
+        add_mol, n_misses, visited_mols = dkoes_fitting.make_rdmol(
+            self, verbose
+        )
+        visited_mols = [init_mol] + visited_mols
+        visited_mols = [molecules.Molecule(m) for m in visited_mols]
+        return molecules.Molecule(
+            add_mol, n_misses=n_misses, visited_mols=visited_mols
+        )
 
 
 def read_gninatypes_file(gtypes_file, channels):

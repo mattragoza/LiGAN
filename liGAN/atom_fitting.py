@@ -6,7 +6,6 @@ import molgrid
 
 from .atom_grids import AtomGrid
 from .atom_structs import AtomStruct
-from . import dkoes_fitting, molecules
 
 
 class AtomFitter(object):
@@ -81,11 +80,6 @@ class AtomFitter(object):
         self.interm_gd_iters = interm_gd_iters
         self.final_gd_iters = final_gd_iters
         self.gd_kwargs = gd_kwargs
-
-        # alternate bond adding methods
-        self.dkoes_make_mol = dkoes_make_mol
-        self.mtr22_make_mol = False
-        self.use_openbabel = use_openbabel
 
         self.output_kernel = output_kernel
         self.device = device
@@ -343,7 +337,7 @@ class AtomFitter(object):
         grid_sum = grid.sum(dim=(1,2,3))
         return grid_sum / kernel_sum
 
-    def fit(self, grid, type_counts=None):
+    def fit(self, grid, type_counts=None, transform=None):
         '''
         Fit atom types and coordinates to atomic density grid.
         '''
@@ -593,6 +587,8 @@ class AtomFitter(object):
                 est_type_diff=est_type_loss,
                 time=fit_time,
             )
+            if transform and struct.n_atoms > 0:
+                transform.backward(struct.xyz, struct.xyz, dotranslate=False)
             visited_structs.append(struct)
 
         # finalize the best fit atomic structure and density grid
@@ -604,17 +600,15 @@ class AtomFitter(object):
             L1_loss=L1_loss,
             type_diff=type_loss,
             est_type_diff=est_type_loss,
-            time=time.time()-t_start,
             visited_structs=visited_structs,
+            time=time.time()-t_start,
         )
-        self.validify(struct_best)
 
         grid_pred = AtomGrid(
             values=grid_pred.detach(),
             channels=grid.channels,
             center=grid.center,
             resolution=grid.resolution,
-            src_struct=struct_best,
         )
 
         mf = torch.cuda.max_memory_allocated()
@@ -624,76 +618,6 @@ class AtomFitter(object):
             print('GPU', mi//MB, [m//MB for m in ms], mf//MB)
 
         return struct_best, grid_pred
-
-    def validify(self, struct, use_ob=False):
-        '''
-        Attempt to construct a valid molecule from an atomic
-        structure by inferring bonds, setting aromaticity
-        and connecting fragments. Returns an RDKit molecule.
-        '''
-        # initial struct from atom fitting (no bonds)
-        rd_mol = struct.to_rd_mol()
-        visited_mols = [rd_mol]
-
-        if self.dkoes_make_mol:
-
-            rd_mol, misses, dkoes_visited_mols = dkoes_fitting.make_rdmol(
-                struct, self.verbose
-            )
-            visited_mols += dkoes_visited_mols
-
-        else:
-            # connect the dots using openbabel
-            ob_mol = struct.to_ob_mol()
-            ob_mol.ConnectTheDots()
-            visited_mols.append(molecules.ob_mol_to_rd_mol(ob_mol))
-
-            # perceive bonds in openbabel
-            ob_mol.PerceiveBondOrders()
-            rd_mol = molecules.ob_mol_to_rd_mol(ob_mol)
-            visited_mols.append(rd_mol)
-
-            if not self.use_openbabel:
-
-                # connect fragments by adding min distance bonds
-                rd_mol = Chem.RWMol(rd_mol)
-                connect_rd_mol_frags(rd_mol)
-                visited_mols.append(rd_mol)
-
-                # make aromatic rings using channel info
-                rd_mol = Chem.RWMol(rd_mol)
-                molecules.set_rd_mol_aromatic(
-                    rd_mol, struct.c, struct.channels
-                )
-                visited_mols.append(rd_mol)
-
-        # be careful, this info is lost when the mol is copied
-        rd_mol.info = {'visited_mols': visited_mols}
-        self.uff_minimize(rd_mol)
-
-        struct.info['add_mol'] = rd_mol
-
-    def uff_minimize(self, mol):
-        '''
-        Minimize molecular geometry using UFF.
-        The minimization results are stored in
-        the info attribute of the input mol.
-        '''
-        t_start = time.time()
-        min_mol, E_init, E_min, error = molecules.uff_minimize_rd_mol(mol)
-
-        if not hasattr(mol, 'info'):
-            mol.info = dict()
-
-        if 'visited_mols' not in mol.info:
-            mol.info['visited_mols'] = []
-
-        mol.info['visited_mols'].append(min_mol)
-        mol.info['min_mol'] = min_mol
-        mol.info['E_init'] = E_init
-        mol.info['E_min'] = E_min
-        mol.info['min_error'] = error
-        mol.info['min_time'] = time.time() - t_start
 
     def fit_batch(self, grids, channels, center, resolution):
 

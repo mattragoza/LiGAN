@@ -9,6 +9,8 @@ from rdkit import Chem
 
 import liGAN
 from liGAN import molecules, metrics
+from liGAN.atom_grids import AtomGrid
+from liGAN.atom_structs import AtomStruct
 
 
 MB = 1024 ** 2
@@ -61,8 +63,9 @@ class OutputWriter(object):
 
         self.verbose = verbose
         
-        # one file for all samples of a given mol/grid
-        self.out_files = dict()
+        # keep sdf files open so that all samples of a given
+        # struct or molecule can be written to one file
+        self.open_files = dict()
 
         # create directories for output grids and structs
         if output_dx:
@@ -77,6 +80,71 @@ class OutputWriter(object):
             self.latent_dir = Path('latents')
             self.latent_dir.mkdir(exist_ok=True)
 
+    def write_sdf(self, sdf_file, mol, sample_idx, is_real):
+        '''
+        Append molecule or atom sturct tp sdf_file.
+
+        NOTE this method assumes that samples will be
+        produced in sequential order (i.e. not async)
+        because it opens the file on first sample_idx
+        and closes it on the last one.
+        '''
+        if sdf_file not in self.open_files:
+            self.open_files[sdf_file] = gzip.open(sdf_file, 'wt')
+        out = self.open_files[sdf_file]
+
+        if sample_idx == 0 or not is_real:
+
+            if self.verbose:
+                print('Writing {} sample {}'.format(sdf_file, sample_idx))
+                
+            if isinstance(mol, AtomStruct):
+                struct = mol
+                if self.output_visited and 'visited_structs' in struct.info:
+                    visited_structs = struct.info['visited_structs']
+                    rd_mols = [s.to_rd_mol() for s in visited_structs]
+                else:
+                    rd_mols = [struct.to_rd_mol()]
+
+            else: # molecule
+                if self.output_visited and 'visited_mols' in mol.info:
+                    rd_mols = mol.info['visited_mols']
+                else:
+                    rd_mols = [mol]
+
+            molecules.write_rd_mols_to_sdf_file(
+                out, rd_mols, str(sample_idx), kekulize=False
+            )
+
+        if sample_idx == 0:
+            self.sdf_files.append(sdf_file)
+            self.centers.append(mol.center)
+        
+        if sample_idx + 1 == self.n_samples or is_real:
+            out.close()
+
+    def write_channels(self, channels_file, c):
+
+        if self.verbose:
+            print('Writing ' + str(channels_file))
+
+        write_channels_to_file(channels_file, c)
+
+    def write_dx(self, dx_prefix, grid):
+
+        if self.verbose:
+            print('Writing {} .dx files'.format(dx_prefix))
+
+        grid.to_dx(grid_prefix, center=(0,0,0))
+        self.dx_prefixes.append(dx_prefix)
+
+    def write_latent(self, latent_file, latent_vec):
+
+        if self.verbose:
+            print('Writing ' + str(latent_file))
+
+        write_latent_vecs_to_file(latent_file, [latent_vec])
+
     def write(self, lig_name, grid_type, sample_idx, grid):
         '''
         Write output files for grid and compute metrics in
@@ -89,118 +157,78 @@ class OutputWriter(object):
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
         is_real_grid = not (is_gen_grid or is_fit_grid)
+        is_first_real_grid = (is_real_grid and sample_idx == 0)
         has_struct = (is_real_grid or is_fit_grid)
         has_conv_grid = not is_fit_grid
         is_generated = is_gen_grid or grid_type.endswith('gen_fit')
 
-        # write output files
-        if self.output_dx: # write out density grids
-
-            grid_sample_prefix = self.grid_dir / (grid_prefix + '_' + i)
-            if self.verbose:
-                print('Writing {} .dx files'.format(grid_sample_prefix))
-
-            grid.to_dx(grid_sample_prefix, center=np.zeros(3))
-            self.dx_prefixes.append(grid_sample_prefix)
-
-            if has_conv_grid and self.output_conv:
-
-                conv_sample_prefix = self.grid_dir/(grid_prefix + '_conv_' + i)
-                if self.verbose:
-                    print('Writing {} .dx files'.format(conv_sample_prefix))
-
-                grid.info['conv_grid'].to_dx(
-                    conv_sample_prefix, center=np.zeros(3)
-                )
-                self.dx_prefixes.append(conv_sample_prefix)
-
-        if is_lig_grid and has_struct and self.output_sdf: # write out structs
+        # write atom type stucts and molecules
+        if has_struct and self.output_sdf:
 
             # the struct that created this grid (via molgrid.GridMaker)
             # note that depending on the grid_type, this can be either
-            # a real or fit molecule
+            # a fit structure OR from a real molecule
             struct = grid.info['src_struct']
 
-            # write atom type channels
-            if self.output_channels:
+            # note that the real (source) molecule and atom types don't
+            # change between different samples, so only write them once
 
-                channels_base = grid_prefix + '_' + i + '.channels'
-                channels_file = self.struct_dir / channels_base
-                if self.verbose:
-                    print('Writing ' + str(channels_file))
+            # and we don't apply bond adding to the rec struct,
+            # so only lig structs have add_mol and min_mol
 
-                write_channels_to_file(channels_file, struct.c)
-               
-            src_fname = self.struct_dir / (grid_prefix + '_src.sdf.gz')
-            start_fname = self.struct_dir / (grid_prefix + '.sdf.gz')
-            add_fname = self.struct_dir / (grid_prefix + '_add.sdf.gz')
-            min_fname = self.struct_dir / (grid_prefix + '_uff.sdf.gz')
+            # write real molecule
+            if is_first_real_grid:
 
-            if grid_prefix not in self.out_files:              
-                self.out_files[grid_prefix] = {}
-
-            open_files = self.out_files[grid_prefix]
-
-            def write_sdfs(fname, mol):
-                '''
-                Write out sdf files to open file as necessary.
-                '''
-                if fname not in open_files:
-                    open_files[fname] = gzip.open(fname, 'wt')
-                out = open_files[fname]
-
-                if sample_idx == 0:
-                    self.sdf_files.append(fname)
-                    self.centers.append(
-                        struct.center if struct.n_atoms > 0 else (0,0,0)
-                    )
-
-                if sample_idx == 0 or not is_real_grid:
-
-                    if self.verbose:
-                        print('Writing %s %d'%(fname, sample_idx))
-                        
-                    if mol == struct:
-                        if self.output_visited and 'visited_structs' in struct.info:
-                            rd_mols = [s.to_rd_mol() for s in struct.info['visited_structs']]
-                        else:
-                            rd_mols = [struct.to_rd_mol()]
-                    else:
-                        if self.output_visited and 'visited_mols' in mol.info:
-                            rd_mols = mol.info['visited_mols']
-                        else:
-                            rd_mols = [mol]
-                    molecules.write_rd_mols_to_sdf_file(
-                        out, rd_mols, str(sample_idx), kekulize=False
-                    )
-                
-                if sample_idx + 1 == self.n_samples or is_real_grid:
-                    out.close()
-
-            if sample_idx == 0 and 'src_mol' in struct.info: # write source molecule
+                sdf_file = self.struct_dir / (grid_prefix + '_src.sdf.gz')
                 src_mol = struct.info['src_mol']
-                write_sdfs(src_fname, src_mol)
+                self.write_sdf(sdf_file, src_mol, sample_idx, is_real=True)
 
-            # write typed atom structure
-            write_sdfs(start_fname, struct)
+                if is_lig_grid: # no rec minimization
+                    sdf_file = self.struct_dir/(grid_prefix+'_src_uff.sdf.gz')
+                    min_mol = src_mol.info['min_mol']
+                    self.write_sdf(sdf_file, min_mol, sample_idx, is_real=True)
 
-            if 'add_mol' in struct.info: # write molecule with added bonds
+            # write typed atomic structure (real or fit)
+            if is_first_real_grid or is_fit_grid:
+
+                sdf_file = self.struct_dir / (grid_prefix + '.sdf.gz')
+                self.write_sdf(sdf_file, struct, sample_idx, is_real_grid)
+
+                # write atom type channels
+                if self.output_channels:
+
+                    channels_base = grid_prefix + '_' + i + '.channels'
+                    channels_file = self.struct_dir / channels_base
+                    self.write_channels(channels_file, struct.c)
+
+            # write bond-added molecule (real or fit, no rec bond adding)
+            if is_lig_grid and (
+                is_first_real_grid or is_fit_grid
+            ):
+                sdf_file = self.struct_dir / (grid_prefix + '_add.sdf.gz')
                 add_mol = struct.info['add_mol']
-                write_sdfs(add_fname, add_mol)                            
+                self.write_sdf(sdf_file, add_mol, sample_idx, is_real_grid)                            
 
-                if add_mol.info['min_mol']: # write minimized molecule
-                    min_mol = add_mol.info['min_mol']
-                    write_sdfs(min_fname, min_mol)                   
+                sdf_file = self.struct_dir / (grid_prefix + '_add_uff.sdf.gz')
+                min_mol = add_mol.info['min_mol']
+                self.write_sdf(sdf_file, min_mol, sample_idx, is_real_grid)
+
+        # write atomic density grids
+        if self.output_dx:
+
+            dx_prefix = self.grid_dir / (grid_prefix + '_' + i)
+            self.write_dx(dx_prefix, grid)
+
+            if has_conv_grid and self.output_conv:
+
+                dx_prefix = self.grid_dir / (grid_prefix + '_conv_' + i)
+                self.write_dx(dx_prefix, grid.info['conv_grid'])                  
 
         # write latent vector
         if is_gen_grid and self.output_latent:
 
             latent_file = self.latent_dir / (grid_prefix + '_' + i + '.latent')
-            if self.verbose:
-                print('Writing ' + str(latent_file))
-
-            latent_vec = grid.info['latent_vec']
-            write_latent_vecs_to_file(latent_file, [latent_vec])
+            self.write_latent(latent_file, grid.info['src_latent'])
 
         # store grid until ready to compute output metrics
         self.grids[lig_name][sample_idx][grid_type] = grid
@@ -217,14 +245,14 @@ class OutputWriter(object):
 
                 # compute batch metrics
                 if self.verbose:
-                    print('Computing metrics for all ' + lig_name + ' samples')
-
+                    print(
+                        'Computing metrics for all ' + lig_name + ' samples'
+                        )
                 try:
                     self.compute_metrics(lig_name, range(self.n_samples))
                 except:
-                    for open_files in self.out_files.values():
-                        for out in open_files.values():
-                            out.close()
+                    for out in self.open_files.values():
+                        out.close()
                     raise
 
                 if self.verbose:
@@ -287,7 +315,7 @@ class OutputWriter(object):
         '''
         lig_grids = self.grids[lig_name]
 
-        if self.batch_metrics:
+        if self.batch_metrics: # compute mean grids
 
             lig_grid_mean = sum(
                 lig_grids[i]['lig'].values for i in sample_idxs
@@ -298,7 +326,7 @@ class OutputWriter(object):
             ) / self.n_samples
 
             lig_latent_mean = sum(
-                lig_grids[i]['lig_gen'].info['latent_vec'] for i in sample_idxs
+                lig_grids[i]['lig_gen'].info['src_latent'] for i in sample_idxs
             ) / self.n_samples
 
         else:
@@ -315,7 +343,7 @@ class OutputWriter(object):
             self.compute_grid_metrics(idx, 'lig', lig_grid, mean_grid=lig_grid_mean)
             self.compute_grid_metrics(idx, 'lig_gen', lig_gen_grid, lig_grid, lig_gen_grid_mean)
 
-            lig_latent = lig_gen_grid.info['latent_vec']
+            lig_latent = lig_gen_grid.info['src_latent']
             self.compute_latent_metrics(idx, 'lig', lig_latent, lig_latent_mean)
 
             if 'lig_gen_fit' in lig_grids[sample_idx]:
@@ -347,7 +375,9 @@ class OutputWriter(object):
         if self.verbose:
             print(self.metrics.loc[lig_name].loc[sample_idxs])
 
-    def compute_grid_metrics(self, idx, grid_type, grid, ref_grid=None, mean_grid=None):
+    def compute_grid_metrics(
+        self, idx, grid_type, grid, ref_grid=None, mean_grid=None
+    ):
         m = self.metrics
 
         # density magnitude
@@ -377,7 +407,9 @@ class OutputWriter(object):
                 (ref_grid.values - grid.values).abs()
             ).sum().item()
 
-    def compute_latent_metrics(self, idx, latent_type, latent, mean_latent=None):
+    def compute_latent_metrics(
+        self, idx, latent_type, latent, mean_latent=None
+    ):
         m = self.metrics
 
         # latent vector magnitude
@@ -394,7 +426,9 @@ class OutputWriter(object):
 
         m.loc[idx, latent_type+'_latent_variance'] = variance
 
-    def compute_struct_metrics(self, idx, struct_type, struct, ref_struct=None):
+    def compute_struct_metrics(
+        self, idx, struct_type, struct, ref_struct=None
+    ):
         m = self.metrics
 
         m.loc[idx, struct_type+'_n_atoms'] = struct.n_atoms
@@ -421,12 +455,16 @@ class OutputWriter(object):
 
             # fit time and number of visited structures
             m.loc[idx, struct_type+'_time'] = struct.info['time']
-            m.loc[idx, struct_type+'_n_visited'] = len(struct.info['visited_structs'])
+            m.loc[idx, struct_type+'_n_visited'] = len(
+                struct.info['visited_structs']
+            )
 
             # accuracy of estimated type counts, whether or not
             # they were actually used to constrain atom fitting
             est_type = struct_type[:-4] + '_est'
-            m.loc[idx, est_type+'_type_diff'] = struct.info.get('est_type_diff', np.nan)
+            m.loc[idx, est_type+'_type_diff'] = struct.info.get(
+                'est_type_diff', np.nan
+            )
             m.loc[idx, est_type+'_exact_types'] = (
                 m.loc[idx, est_type+'_type_diff'] == 0
             )
@@ -491,23 +529,22 @@ class OutputWriter(object):
 
         # UFF energy minimization
         min_mol = mol.info['min_mol']
-        E_init = mol.info['E_init']
-        E_min = mol.info['E_min']
+        E_init = min_mol.info['E_init']
+        E_min = min_mol.info['E_min']
 
         m.loc[idx, mol_type+'_E'] = E_init
         m.loc[idx, mol_type+'_min_E'] = E_min
         m.loc[idx, mol_type+'_dE_min'] = E_min - E_init
-        m.loc[idx, mol_type+'_min_error'] = mol.info['min_error']
-        m.loc[idx, mol_type+'_min_time'] = mol.info['min_time']
-        m.loc[idx, mol_type+'_RMSD_min'] = \
-            mols.get_rd_mol_rmsd(min_mol, mol)
+        m.loc[idx, mol_type+'_min_error'] = min_mol.info['min_error']
+        m.loc[idx, mol_type+'_min_time'] = min_mol.info['min_time']
+        m.loc[idx, mol_type+'_RMSD_min'] = mols.get_rd_mol_rmsd(min_mol, mol)
 
+        # compare energy to ref mol, before and after minimizing
         if ref_mol is not None:
 
-            # compare energy to ref mol, pre and post-minimization
             min_ref_mol = ref_mol.info['min_mol']
-            E_init_ref = ref_mol.info['E_init']
-            E_min_ref = ref_mol.info['E_init']
+            E_init_ref = min_ref_mol.info['E_init']
+            E_min_ref = min_ref_mol.info['E_init']
 
             m.loc[idx, mol_type+'_dE_ref'] = E_init - E_init_ref
             m.loc[idx, mol_type+'_min_dE_ref'] = E_min - E_min_ref
@@ -521,63 +558,53 @@ class OutputWriter(object):
                 mols.get_rd_mol_rmsd(min_ref_mol, min_mol)
 
 
-def find_real_mol_in_data_root(data_root, lig_src_no_ext):
+def find_real_rec_in_data_root(data_root, rec_src_no_ext):
+
+    # cross-docked set
+    m = re.match(r'(.+)_0', rec_src_no_ext)
+    rec_mol_base = m.group(1) + '.pdb'
+    rec_mol_file = os.path.join(data_root, rec_mol_base)
+    rec_mol = molecules.Molecule.from_pdb(rec_mol_file, sanitize=False)
+    try:
+        Chem.SanitizeMol(rec_mol)
+    except Chem.MolSanitizeException:
+        pass
+    return rec_mol
+
+
+def find_real_lig_in_data_root(data_root, lig_src_no_ext):
     '''
     Try to find the real molecule in data_root using the
-    source path found in the data file, without extension.
+    source path in the data file, without file extension.
     '''
-    try: # docked PDBbind ligands are gzipped together
+    try: # PDBbind
         m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
         lig_mol_base = m.group(1) + '_docked.sdf.gz'
         idx = int(m.group(2))
         lig_mol_file = os.path.join(data_root, lig_mol_base)
-        lig_mol = molecules.read_rd_mols_from_sdf_file(
-            lig_mol_file, sanitize=False
-        )[idx]
-
+        lig_mol = molecules.Molecule.from_sdf(
+            lig_mol_file, sanitize=False, idx=idx
+        )
     except AttributeError:
-
         try: # cross-docked set
             m = re.match(r'(.+)_(\d+)', lig_src_no_ext)
             lig_mol_base = m.group(1) + '.sdf'
             idx = int(m.group(2))
             lig_mol_file = os.path.join(data_root, lig_mol_base)
-            lig_mol = molecules.read_rd_mols_from_sdf_file(
-                lig_mol_file, sanitize=False
-            )[idx]
-
+            lig_mol = molecules.Molecule.from_sdf(
+                lig_mol_file, sanitize=False, idx=idx
+            )
         except OSError:
             lig_mol_base = lig_src_no_ext + '.sdf'
             lig_mol_file = os.path.join(data_root, lig_mol_base)
             lig_mol = molecules.read_rd_mols_from_sdf_file(
-                lig_mol_file, sanitize=False
-            )[0]
-
+                lig_mol_file, sanitize=False, idx=0
+            )
     try:
         Chem.SanitizeMol(lig_mol)
     except Chem.MolSanitizeException:
         pass
-
     return lig_mol
-
-
-def get_sdf_file_and_idx(gninatypes_file):
-    '''
-    Get the name of the .sdf file and conformer idx that a
-    .gninatypes file was created from.
-    '''
-    m = re.match(r'.*_ligand_(\d+)\.gninatypes', gninatypes_file)
-    if m:
-        idx = int(m.group(1))
-        from_str = r'_ligand_{}\.gninatypes$'.format(idx)
-        to_str = '_docked.sdf'
-    else:
-        idx = 0
-        m = re.match(r'.*_(.+)\.gninatypes$', gninatypes_file)
-        from_str = r'_{}\.gninatypes'.format(m.group(1))
-        to_str = '_{}.sdf'.format(m.group(1))
-    sdf_file = re.sub(from_str, to_str, gninatypes_file)
-    return sdf_file, idx
 
 
 def write_latent_vecs_to_file(latent_file, latent_vecs):
@@ -734,7 +761,6 @@ def generate(
     device = 'cuda'
     batch_size = data.batch_size
 
-    # generate density grids from generative model in main thread
     print('Starting to generate grids')
     for example_idx in range(n_examples):
 
@@ -754,48 +780,53 @@ def generate(
 
                 with torch.no_grad():
 
-                    if verbose:
-                        print('Getting next batch of data')
+                    if verbose: print('Getting next batch of data')
                     grids, structs, _ = data.forward(split_rec_lig=True)
                     rec_structs, lig_structs = structs
                     rec_grids, lig_grids = grids
                     complex_grids = None if prior else data.grids
 
-                    if verbose:
-                        print('Calling generator forward')
+                    if verbose: print('Calling generator forward')
                     lig_gen_grids, latents, _, _ = gen_model(
                         complex_grids, rec_grids, batch_size
                     )
                     # TODO interpolation here!
 
-            if verbose:
-                print('Getting real atom types and coords')
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
-            lig_src_file = lig_struct.info['src_file']
-            lig_src_no_ext = os.path.splitext(lig_src_file)[0]
-            lig_name = os.path.basename(lig_src_no_ext)
 
-            if not gen_only:
+            # only process real rec/lig once, since they're
+            # the same for all samples of a given ligand
 
-                if verbose:
-                    print('Getting real molecule from data root')
-                lig_mol = find_real_mol_in_data_root(
+            if sample_idx == 0: # TODO re-implement gen_only
+
+                if verbose: print('Getting real molecule from data root')
+
+                # TODO is rec transformed correctly?
+                rec_src_file = rec_struct.info['src_file']
+                rec_src_no_ext = os.path.splitext(rec_src_file)[0]
+                rec_mol = find_real_rec_in_data_root(
+                    data.root_dir, rec_src_no_ext
+                )
+
+                lig_src_file = lig_struct.info['src_file']
+                lig_src_no_ext = os.path.splitext(lig_src_file)[0]
+                lig_name = os.path.basename(lig_src_no_ext)
+                lig_mol = find_real_lig_in_data_root(
                     data.root_dir, lig_src_no_ext
                 )
-                lig_struct.info['src_mol'] = lig_mol
+                if fit_atoms: # add bonds and minimize
 
-                if fit_atoms:
-                    if verbose:
-                        print('Real molecule for {} has {} atoms'.format(
-                            lig_name, lig_struct.n_atoms
-                        ))
-                        print('Minimizing real molecule')
-                    atom_fitter.uff_minimize(lig_mol)
+                    if verbose: print('Minimizing real molecule')
+                    lig_mol.info['min_mol'] = lig_mol.uff_minimize()
 
-                    if verbose:
-                        print('Validifying real atom types and coords')
-                    atom_fitter.validify(lig_struct)
+                    if verbose: print('Making molecule from real atoms')
+                    lig_add_mol = lig_struct.make_mol(verbose)
+                    lig_add_mol.info['min_mol'] = lig_add_mol.uff_minimize()
+
+            rec_struct.info['src_mol'] = rec_mol
+            lig_struct.info['src_mol'] = lig_mol
+            lig_struct.info['add_mol'] = lig_add_mol
 
             grid_types = [
                 ('rec', rec_grids, data.rec_channels),
@@ -805,8 +836,6 @@ def generate(
             for grid_type, grids, grid_channels in grid_types:
                 torch.cuda.reset_max_memory_allocated()
 
-                if verbose:
-                    print('Processing {} grid'.format(grid_type))
                 is_lig_grid = (grid_type.startswith('lig'))
                 grid_needs_fit = (is_lig_grid and fit_atoms)
 
@@ -816,16 +845,19 @@ def generate(
                     center=lig_struct.center,
                     resolution=data.resolution
                 )
+                transform = data.transforms[batch_idx]
+
                 if grid_type == 'rec':
                     grid.info['src_struct'] = rec_struct
                 elif grid_type == 'lig':
                     grid.info['src_struct'] = lig_struct
                 elif grid_type == 'lig_gen':
-                    grid.info['latent_vec'] = latents[batch_idx]
+                    grid.info['src_latent'] = latents[batch_idx]
 
+                # display progress
                 index_str = (
-                    '[example_idx={} lig_name={} grid_type={} sample_idx={}]' \
-                        .format(example_idx, lig_name, grid_type, sample_idx)
+                    '[example_idx={} sample_idx={} lig_name={} grid_type={}]'\
+                        .format(example_idx, sample_idx, lig_name, grid_type)
                 )
                 value_str = 'norm={:.4f} gpu={:.4f}'.format(
                     grid.values.norm(),
@@ -835,21 +867,26 @@ def generate(
 
                 if out_writer.output_conv:
                     grid.info['conv_grid'] = grid.new_like(
-                        values=atom_fitter.convolve(
-                            grid.values,
-                            grid.channels,
-                            grid.resolution,
+                        atom_fitter.convolve(
+                            grid.values, grid.channels, grid.resolution,
                         )
                     )
 
                 out_writer.write(lig_name, grid_type, sample_idx, grid)
 
-                if grid_needs_fit:
-                    struct, grid = atom_fitter.fit(
-                        grid, lig_struct.type_counts
+                if grid_needs_fit: # atom fitting, bond adding, minimize
+
+                    fit_struct, fit_grid = atom_fitter.fit(
+                        grid, lig_struct.type_counts, transform
                     )
-                    grid_type = grid_type + '_fit'
-                    out_writer.write(lig_name, grid_type, sample_idx, grid)
+                    fit_add_mol = fit_struct.make_mol(verbose)
+                    fit_add_mol.info['min_mol'] = fit_add_mol.uff_minimize()
+                    fit_struct.info['add_mol'] = fit_add_mol
+                    fit_grid.info['src_struct'] = fit_struct
+
+                    out_writer.write(
+                        lig_name, grid_type + '_fit', sample_idx, fit_grid
+                    )
 
 
 def parse_args(argv=None):

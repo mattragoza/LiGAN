@@ -1,5 +1,5 @@
-import sys, gzip, traceback
-from functools import lru_cache, partial
+import sys, gzip, traceback, time
+from functools import lru_cache
 import numpy as np
 
 from openbabel import openbabel as ob
@@ -15,25 +15,84 @@ from NP_Score import npscorer
 
 
 class Molecule(Chem.RWMol):
+    '''
+    A 3D molecular structure.
+
+    This is a subclass of an RDKit molecule with methods
+    for evaluating validity and minimizing with UFF.
+    '''
+    def __init__(self, rd_mol, **info):
+
+        if hasattr(rd_mol, 'info'): # copy over
+            new_info, info = info, rd_mol.info
+            info.update(new_info)
+
+        super().__init__(rd_mol)
+        self.info = info
     
     @classmethod
     def from_struct(cls, struct):
-        return make_rd_mol(
-            struct.xyz,
-            struct.c,
-            struct.bonds,
-            struct.channels
+        return cls(
+            make_rd_mol(struct.xyz, struct.c, struct.bonds, struct.channels)
         )
 
     @classmethod
-    def from_sdf(cls, sdf_file):
-        return read_rd_mols_from_sdf_file(sdf_file)[0]
+    def from_sdf(cls, sdf_file, sanitize=True, idx=0):
+        return cls(
+            read_rd_mols_from_sdf_file(sdf_file, sanitize=sanitize)[idx]
+        )
 
+    @classmethod
+    def from_pdb(cls, pdb_file, sanitize=True):
+        return cls(
+            read_rd_mol_from_pdb_file(pdb_file, sanitize=sanitize)
+        )
+
+    def to_sdf(self, sdf_file, name='', kekulize=True):
+        write_rd_mol_to_sdf_file(sdf_file, self, name, kekulize)
+
+    @property
+    def n_atoms(self):
+        return self.GetNumAtoms()
+
+    @property
+    def n_frags(self):
+        return len(Chem.GetMolFrags(self))
+
+    @property
+    def center(self):
+        # return heavy atom centroid
+        mask = [a.GetAtomicNum() != 1 for a in self.GetAtoms()]
+        return self.GetConformer(0).GetPositions()[mask].mean(axis=0)
+
+    def aligned_rmsd(self, mol):
+        return get_rd_mol_rmsd(self, mol)
+
+    def sanitize(self):
+        return Chem.SanitizeMol(self)
+
+    def uff_minimize(self):
+        '''
+        Minimize molecular geometry using UFF.
+        The minimization results are stored in
+        the info attribute of the returned mol.
+        '''
+        t_start = time.time()
+        min_mol, E_init, E_min, error = uff_minimize_rd_mol(self)
+        rmsd = min_mol
+        return Molecule(
+            min_mol,
+            E_init=E_init,
+            E_min=E_min,
+            min_rmsd=get_rd_mol_rmsd(min_mol, self),
+            min_error=error,
+            min_time=time.time() - t_start,
+        )
 
 
 def make_rd_mol(xyz, c, bonds, channels):
 
-    rd_mol = Molecule()
+    rd_mol = Chem.RWMol()
 
     for c_ in c:
         atomic_num = channels[c_].atomic_num
@@ -59,6 +118,10 @@ def make_rd_mol(xyz, c, bonds, channels):
     return rd_mol
 
 
+def read_rd_mol_from_pdb_file(pdb_file, sanitize=True):
+    return Chem.MolFromPDBFile(pdb_file, sanitize=sanitize)
+
+
 def read_rd_mols_from_sdf_file(sdf_file, sanitize=True):
     if sdf_file.endswith('.gz'):
         f = gzip.open(sdf_file)
@@ -68,8 +131,8 @@ def read_rd_mols_from_sdf_file(sdf_file, sanitize=True):
     return [Molecule(mol) for mol in suppl]
 
 
-def write_rd_mol_to_sdf_file(sdf_file, mol, *args, **kwargs):
-    return write_rd_mols_to_sdf_file(sdf_file, [mol], *args, **kwargs)
+def write_rd_mol_to_sdf_file(sdf_file, mol, name='', kekulize=True):
+    return write_rd_mols_to_sdf_file(sdf_file, [mol], name, kekulize)
 
 
 def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
@@ -246,12 +309,12 @@ def catch_exception(func=None, exc_type=Exception, default=np.nan):
 
 # molecular weight and logP are defined for invalid molecules
 # logP is log water-octanol partition coefficient
-#   where logP < 0 --> hydrophilic
+#   where hydrophilic molecules have logP < 0
 get_rd_mol_weight = Descriptors.MolWt
 get_rd_mol_logP = Chem.Crippen.MolLogP
 
 # QED, SAS, and NPS are likely undefined for invalid molecules
-# QED does not require calcImplicitHydrogens, SAS and NPS do
+# QED does not require calcImplicitHs, but SAS and NPS do
 # SAS can raise RingInfo not initialized on invalid molecules
 get_rd_mol_QED = catch_exception(
     Chem.QED.default, Chem.MolSanitizeException
@@ -260,25 +323,24 @@ get_rd_mol_SAS = catch_exception(
     sascorer.calculateScore, Chem.MolSanitizeException
 )
 
-# mol RMSD is undefined b/tw different molecules (even if same type counts)
+# mol RMSD is undefined b/tw diff molecules (even if same type counts)
+# also note that GetBestRMS(mol1, mol2) aligns mol1 to mol2
 get_rd_mol_rmsd  = catch_exception(AllChem.GetBestRMS, RuntimeError)
 
 
 @lru_cache(maxsize=1)
 def get_NPS_model():
     '''
-    Read in NPS scoring model on first call
+    Read NPS scoring model on first call,
     and cache it for subsequent calls.
     '''
     return npscorer.readNPModel()
 
 
-@catch_exception(exc_type=SyntaxError)
 def get_rd_mol_NPS(rd_mol):
     return npscorer.scoreMol(rd_mol, get_NPS_model())
 
 
-@catch_exception(exc_type=SyntaxError)
 def get_smiles_string(rd_mol):
     return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
 
@@ -317,42 +379,32 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
     E_init = E_final = np.nan
 
     if rd_mol.GetNumAtoms() == 0:
-        return Chem.RWMol(rd_mol), E_init, E_final, 'No atoms'
+        return rd_mol, E_init, E_final, 'No atoms'
 
     try: # initialize molecule and force field
-        rd_mol_H = Chem.AddHs(rd_mol, addCoords=True)
-        uff = AllChem.UFFGetMoleculeForceField(rd_mol_H, confId=0)
+        rd_mol = Chem.AddHs(rd_mol, addCoords=True)
+        uff = AllChem.UFFGetMoleculeForceField(rd_mol, confId=0)
         uff.Initialize()
         E_init = uff.CalcEnergy()
 
     except Chem.rdchem.AtomValenceException:
-        return Chem.RWMol(rd_mol), E_init, E_final, 'Invalid valence'
+        return rd_mol, E_init, E_final, 'Invalid valence'
 
     except Chem.rdchem.KekulizeException:
-        return Chem.RWMol(rd_mol), E_init, E_final, 'Failed to kekulize'
-
-    except RuntimeError: # Pre-condition Violation
-        # getNumImplicitHs() called without preceding call to calcImplicitValence()
-        return Chem.RWMol(rd_mol), E_init, E_final, 'No implicit valence'
+        return rd_mol, E_init, E_final, 'Failed to kekulize'
 
     except Exception as e:
+        if 'getNumImplicitHs' in str(e):
+            return rd_mol, E_init, E_final, 'No implicit valence'
         if 'bad params pointer' in str(e):
-            return Chem.RWMol(rd_mol), E_init, E_final, 'Invalid atom type'
-
+            return rd_mol, E_init, E_final, 'Invalid atom type'
         print('UFF1 exception')
-        n = [a.GetAtomicNum() for a in rd_mol.GetAtoms()]
-        print(len(n), n)
-        # e.g. RuntimeError: Pre-condition violation: bad params pointer
-        #   possibly due to GenericMetal atom type
-        write_rd_mol_to_sdf_file(
-            'badmol_uff1.sdf', rd_mol, kekulize=False
-        )
+        write_rd_mol_to_sdf_file('badmol_uff1.sdf', rd_mol, kekulize=False)
         raise e
 
     try: # minimize molecule with force field
         result = uff.Minimize(maxIts=max_iters)
         E_final = uff.CalcEnergy()
-        rd_mol = Chem.RemoveHs(rd_mol_H, sanitize=False)
         return (
             rd_mol, E_init, E_final, 'Not converged' if result else None
         )
@@ -363,7 +415,7 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
             'badmol_uff2.sdf', rd_mol_H, kekulize=True
         )
         traceback.print_exc(file=sys.stdout)
-        return Chem.RWMol(rd_mol), E_init, np.nan, str(e)
+        return rd_mol, E_init, np.nan, str(e)
 
 
 @catch_exception(exc_type=SyntaxError)

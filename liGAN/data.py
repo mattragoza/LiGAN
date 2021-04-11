@@ -58,6 +58,7 @@ class AtomGridData(nn.Module):
         self.labels = torch.zeros(
             batch_size, dtype=torch.float32, device=device
         )
+        self.transforms = [None for i in range(batch_size)]
         self.batch_size = batch_size
 
         self.random_rotation = random_rotation
@@ -137,22 +138,37 @@ class AtomGridData(nn.Module):
 
         # get next batch of structures and labels
         examples = self.ex_provider.next_batch(self.batch_size)
-        self.grid_maker.forward(
-            examples,
-            self.grids,
-            random_rotation=self.random_rotation,
-            random_translation=self.random_translation,
-        )
         examples.extract_label(0, self.labels)
 
-        rec_structs, lig_structs = [], []
-        for ex in examples:
-            rec_structs.append(atom_structs.AtomStruct.from_coord_set(
-                ex.coord_sets[0], self.rec_channels, device=self.grids.device
-            ))
-            lig_structs.append(atom_structs.AtomStruct.from_coord_set(
-                ex.coord_sets[1], self.lig_channels, device=self.grids.device
-            ))
+        rec_structs = []
+        lig_structs = []
+        for i, example in enumerate(examples):
+
+            rec_coord_set, lig_coord_set = example.coord_sets
+            transform = molgrid.Transform(
+                lig_coord_set.center(),
+                self.random_translation,
+                self.random_rotation,
+            )
+            self.transforms[i] = transform # store transforms
+            transform.forward(example, example)
+            self.grid_maker.forward(example, self.grids[i])
+
+            rec_struct = atom_structs.AtomStruct.from_coord_set(
+                rec_coord_set,
+                self.rec_channels,
+                device=self.grids.device
+            )
+            lig_struct = atom_structs.AtomStruct.from_coord_set(
+                lig_coord_set,
+                self.lig_channels,
+                device=self.grids.device
+            )
+            # undo transforms so structs are all aligned
+            transform.backward(rec_struct.xyz, rec_struct.xyz)
+            transform.backward(lig_struct.xyz, lig_struct.xyz)
+            rec_structs.append(rec_struct)
+            lig_structs.append(lig_struct)
         
         if split_rec_lig or ligand_only:
 
