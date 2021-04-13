@@ -66,7 +66,11 @@ class OutputWriter(object):
         # struct or molecule can be written to one file
         self.open_files = dict()
 
-        # create directories for output grids and structs
+        # create directories for output files
+        if output_latent:
+            self.latent_dir = Path('latents')
+            self.latent_dir.mkdir(exist_ok=True)
+
         if output_dx:
             self.grid_dir = Path('grids')
             self.grid_dir.mkdir(exist_ok=True)
@@ -75,9 +79,9 @@ class OutputWriter(object):
             self.struct_dir = Path('structs')
             self.struct_dir.mkdir(exist_ok=True)
 
-        if output_latent:
-            self.latent_dir = Path('latents')
-            self.latent_dir.mkdir(exist_ok=True)
+            self.mol_dir = Path('molecules')
+            self.mol_dir.mkdir(exist_ok=True)
+
 
     def write_sdf(self, sdf_file, mol, sample_idx, is_real):
         '''
@@ -133,7 +137,7 @@ class OutputWriter(object):
         if self.verbose:
             print('Writing {} .dx files'.format(dx_prefix))
 
-        grid.to_dx(grid_prefix, center=(0,0,0))
+        grid.to_dx(dx_prefix)
         self.dx_prefixes.append(dx_prefix)
 
     def write_latent(self, latent_file, latent_vec):
@@ -177,12 +181,12 @@ class OutputWriter(object):
             # write real molecule
             if is_first_real_grid:
 
-                sdf_file = self.struct_dir / (grid_prefix + '_src.sdf.gz')
+                sdf_file = self.mol_dir / (grid_prefix + '_src.sdf.gz')
                 src_mol = struct.info['src_mol']
                 self.write_sdf(sdf_file, src_mol, sample_idx, is_real=True)
 
                 if is_lig_grid: # no rec minimization
-                    sdf_file = self.struct_dir/(grid_prefix+'_src_uff.sdf.gz')
+                    sdf_file = self.mol_dir / (grid_prefix+'_src_uff.sdf.gz')
                     min_mol = src_mol.info['min_mol']
                     self.write_sdf(sdf_file, min_mol, sample_idx, is_real=True)
 
@@ -203,11 +207,11 @@ class OutputWriter(object):
             if is_lig_grid and (
                 is_first_real_grid or is_fit_grid
             ):
-                sdf_file = self.struct_dir / (grid_prefix + '_add.sdf.gz')
+                sdf_file = self.mol_dir / (grid_prefix + '_add.sdf.gz')
                 add_mol = struct.info['add_mol']
                 self.write_sdf(sdf_file, add_mol, sample_idx, is_real_grid)                            
 
-                sdf_file = self.struct_dir / (grid_prefix + '_add_uff.sdf.gz')
+                sdf_file = self.mol_dir / (grid_prefix + '_add_uff.sdf.gz')
                 min_mol = add_mol.info['min_mol']
                 self.write_sdf(sdf_file, min_mol, sample_idx, is_real_grid)
 
@@ -630,7 +634,7 @@ def n_lines_in_file(file):
 
 
 def write_pymol_script(
-    pymol_file, out_prefix, dx_prefixes, sdf_files, centers=[]
+    pymol_file, out_prefix, dx_prefixes, sdf_files
 ):
     '''
     Write a pymol script that loads all .dx files with a given
@@ -639,29 +643,31 @@ def write_pymol_script(
     '''
     with open(pymol_file, 'w') as f:
 
-        for dx_prefix in dx_prefixes: # load densities
-            dx_pattern = '{}_*.dx'.format(dx_prefix)
-            m = re.match('^grids/.({}_.*)$'.format(out_prefix), dx_prefix)
+        for dx_prefix in dx_prefixes: # load density grids
+            try:
+                m = re.match(
+                    '^grids/({}_.*)$'.format(out_prefix), str(dx_prefix)
+                )
+            except AttributeError:
+                print(dx_prefix, file=sys.stderr)
+                raise
             group_name = m.group(1) + '_grids'
+            dx_pattern = '{}_*.dx'.format(dx_prefix)
             f.write('load_group {}, {}\n'.format(dx_pattern, group_name))
 
-        for sdf_file in sdf_files: # load structures
-            m = re.match(
-                r'^structs/({}_.*)\.sdf(\.gz)?$'.format(out_prefix),
-                str(sdf_file)
-            )
-            obj_name = m.group(1)
+        for sdf_file in sdf_files: # load structs/molecules
+            try:
+                m = re.match(
+                    r'^(molecules|structs)/({}_.*)\.sdf(\.gz)?$'.format(
+                        out_prefix
+                    ),
+                    str(sdf_file)
+                )
+            except AttributeError:
+                print(sdf_file, file=sys.stderr)
+                raise
+            obj_name = m.group(2)
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
-
-        for sdf_file, (x,y,z) in zip(sdf_files, centers): # center structures
-            m = re.match(
-                r'^structs/({}_.*)\.sdf(\.gz)?$'.format(out_prefix),
-                str(sdf_file)
-            )
-            obj_name = m.group(1)
-            f.write('translate [{},{},{}], {}, camera=0, state=0\n'.format(
-                -x, -y, -z, obj_name
-            ))
 
 
 def write_channels_to_file(channels_file, c):
