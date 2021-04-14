@@ -1,5 +1,6 @@
-import sys, re, glob, fnmatch
+import sys, re, glob, fnmatch, shutil
 from collections import OrderedDict
+import pymol
 from pymol import cmd, stored
 
 sys.path.insert(0, '.')
@@ -7,59 +8,317 @@ import isoslider
 import atom_types
 
 
-def set_atom_level(level, selection='*', state=None, rec_map=None, lig_map=None):
+def get_common_prefix(strs):
+    for i, chars in enumerate(zip(*strs)):
+        if len(set(chars)) > 1:
+            return strs[0][:i]
 
-    if rec_map is None:
+
+def get_color(grid_type, atomic_num):
+    '''
+    Color atomic density isosurfaces by
+    element, using different colors for
+    carbon depending on the grid_type.
+    '''
+    if atomic_num == 6:
+        if grid_type == 'rec':
+            return [0.8, 0.8, 0.8] # gray
+        elif grid_type == 'lig_gen':
+            return [1.0, 0.0, 1.0] # magenta
+        elif grid_type.endswith('fit'):
+            return [0.0, 1.0, 0.0] # green
+        else:
+            return [0.0, 1.0, 1.0] # cyan
+    else:
+        return atom_types.get_rgb(atomic_num)
+
+
+def as_bool(s):
+    if s in {'True', 'true', 'T', 't', '1'}:
+        return True
+    elif s in {'False', 'false', 'F', 'f', '0'}:
+        return False
+    else:
+        return bool(s)
+
+
+def set_atom_level(
+    level,
+    selection='*',
+    state=None,
+    rec_map=None,
+    lig_map=None,
+    interp=False,
+    job_name=None,
+    array_job=False,
+):
+    interp = as_bool(interp)
+    array_job = as_bool(array_job)
+
+    # get atom type channel info and set custom colors
+    try:
+        rec_channels = atom_types.get_channels_from_file(rec_map)
+    except:
         rec_channels = atom_types.get_default_rec_channels()
-    else:
-        rec_channels = atom_types.get_channels_from_file(rec_map, name_prefix='Receptor')
-
-    if lig_map is None:
+    try:
+        lig_channels = atom_types.get_channels_from_file(lig_map)
+    except:
         lig_channels = atom_types.get_default_lig_channels()
-    else:
-        lig_channels = atom_types.get_channels_from_file(lig_map, name_prefix='Ligand')
 
     channels = rec_channels + lig_channels
-    channels_by_name = dict((c.name, c) for c in channels)
+    channels_by_name = {ch.name: ch for ch in channels}
+    channel_names = channels_by_name.keys()
 
-    for c in channels:
-        cmd.set_color(c.name+'$', atom_types.get_channel_color(c))
+    for ch in channels:
+        for grid_type in ['rec', 'lig', 'lig_gen', 'lig_fit', 'lig_gen_fit']:
+            color_name = grid_type + '_' + ch.name
+            cmd.set_color(color_name+'$', get_color(grid_type, ch.atomic_num))
 
-    dx_regex = re.compile(r'(.*)_(\d+)_({})\.dx'.format('|'.join(channels_by_name)))
+    # We sort grids based on two different criteria before creating surfaces
+    # for each grid. The first criteria determines what STATE to put the
+    # surface in, the second determines what GROUP to put it in.
 
-    surface_groups = OrderedDict()
-    for dx_object in sorted(cmd.get_names('objects')):
+    # We expect grid names to store info in the following basic format:
+    #   {job_name}_{lig_name}_{grid_type}_{sample_idx}_{channel_name}
 
-        if not fnmatch.fnmatch(dx_object, selection):
+    # By default,
+    #   group=(job_name, lig_name, grid_type)
+    #   state=(sample_idx,)
+
+    # With interp=True,
+    #   group=(job_name, grid_type)
+    #   state=(lig_name, sample_idx)
+
+    # get list of selected grid objects
+    grids = []
+    for obj in cmd.get_names('objects'):
+        m = re.match(r'^(.*)(\.dx|_grid)$', obj)
+        if m and fnmatch.fnmatch(obj, selection):
+            grids.append(obj)
+
+    # try to infer the job_name from working directory
+    if job_name is None:
+        job_name = os.path.basename(os.getcwd())
+
+    # create a regex for parsing grid names
+    grid_re_fields = [r'(?P<job_name>{})'.format(job_name)]
+
+    if array_job:
+        grid_re_fields += [r'(?P<array_idx>\d+)']
+
+    grid_re_fields += [
+        r'(?P<lig_name>.+)',
+        r'(?P<grid_type>rec|lig(_gen)?(_conv|_fit)?)',
+        r'(?P<sample_idx>\d+)',
+        r'(?P<channel_name>{})'.format('|'.join(channel_names)),
+    ]
+    grid_re = re.compile('^' + '_'.join(grid_re_fields) + r'(\.dx|_grid)$')
+
+    # assign grids to groups and states
+    grouped_surfaces = OrderedDict()
+    grouped_lig_names = OrderedDict()
+    state_counter = OrderedDict()
+
+    for i, grid in enumerate(grids):
+
+        m = grid_re.match(grid)
+        try:
+            lig_name = m.group('lig_name')
+            grid_type = m.group('grid_type')
+            sample_idx = int(m.group('sample_idx'))
+            channel_name = m.group('channel_name')
+        except:
+            print(grid_re)
+            print(grid)
+            raise
+
+        if interp:
+            group_criteria = (job_name, grid_type)
+            state_criteria = (lig_name, sample_idx)
+            surface_format = '{job_name}_{grid_type}_{channel_name}_surface'
+        else:
+            group_criteria = (job_name, lig_name, grid_type)
+            state_criteria = sample_idx
+            surface_format = '{job_name}_{lig_name}_{grid_type}_{channel_name}_surface'
+
+        surface = surface_format.format(**m.groupdict())
+
+        if state_criteria not in state_counter:
+            state_counter[state_criteria] = len(state_counter) + 1
+        s = state_counter[state_criteria]
+
+        if group_criteria not in grouped_surfaces:
+            grouped_surfaces[group_criteria] = []
+            grouped_lig_names[group_criteria] = []
+
+        if surface not in grouped_surfaces[group_criteria]:
+            grouped_surfaces[group_criteria].append(surface)
+
+        if lig_name not in grouped_lig_names[group_criteria]:
+            grouped_lig_names[group_criteria].append(lig_name)
+
+        channel = channels_by_name[channel_name]
+        cmd.isosurface(surface, grid, level=level, state=s)
+        cmd.color(grid_type + '_' + channel.name+'$', surface)
+        print('[{}/{}] {}'.format(i+1, len(grids), surface, group_criteria, s))
+
+    for group_criteria, surfaces in grouped_surfaces.items():
+        if interp:
+            job_name, grid_type = group_criteria
+            lig_names = grouped_lig_names[group_criteria]
+            surface_group = '_'.join(
+                (job_name, '_to_'.join(lig_names), grid_type)
+            ) + '_surfaces'
+        else:
+            surface_group = '_'.join(group_criteria) + '_surfaces'
+        cmd.group(surface_group, ' '.join(surfaces))
+
+    print('Done')
+
+
+def join_structs(
+    selection='*',
+    job_name=None,
+    array_job=False,
+    interp=False,
+    delete=False,
+):
+    '''
+    join_structs selection=*, job_name=None, array_job=False, interp=False, delete=False
+    '''
+    # try to infer the job_name from working directory
+    if job_name is None:
+        job_name = os.path.basename(os.getcwd())
+
+    # create regex to parse struct names
+    struct_re_fields = [r'(?P<job_name>{})'.format(job_name)]
+
+    if array_job:
+        struct_re_fields += [r'(?P<array_idx>\d+)']
+
+    struct_re_fields += [
+        r'(?P<lig_name>.+)',
+        r'(?P<struct_type>lig(_gen)?(_fit)?(_add|_src)?(_uff)?)',
+        r'(?P<sample_idx>\d+)',
+    ]
+
+    struct_pat = '^' + '_'.join(struct_re_fields) + '$'
+    struct_re = re.compile(struct_pat)
+
+    # keep track of which structs to join and their lig_names
+    structs_to_join = OrderedDict()
+    lig_names_to_join = OrderedDict()
+
+    for obj in cmd.get_names('objects'):
+
+        if not fnmatch.fnmatch(obj, selection):
             continue
 
-        m = dx_regex.match(dx_object)
+        m = struct_re.match(obj)
+        if not m:
+            continue
+        struct = obj
+
+        lig_name = m.group('lig_name')
+        struct_type = m.group('struct_type')
+        sample_idx = int(m.group('sample_idx'))
+
+        if interp: # join different lig_names
+            join_criteria = (job_name, struct_type)
+        else:
+            join_criteria = (job_name, lig_name, struct_type)
+
+        if join_criteria not in structs_to_join:
+            structs_to_join[join_criteria] = []
+            lig_names_to_join[join_criteria] = []
+
+        if lig_name not in lig_names_to_join[join_criteria]:
+            lig_names_to_join[join_criteria].append(lig_name)
+
+        if struct not in structs_to_join[join_criteria]:
+            lig_idx = lig_names_to_join[join_criteria].index(lig_name)
+            structs_to_join[join_criteria].append(
+                (lig_idx, sample_idx, struct)
+            )
+
+    for join_criteria, structs in structs_to_join.items():
+        print(join_criteria)
+        structs = [struct for _, _, struct in sorted(structs)]
+        lig_names = lig_names_to_join[join_criteria]
+        if interp:
+            job_name, struct_type = join_criteria
+        else:
+            job_name, lig_name, struct_type = join_criteria
+        joined_struct = '_'.join(
+            (job_name, '_to_'.join(lig_names), struct_type)
+        )
+        cmd.join_states(joined_struct, ' '.join(structs), 0)
+        if delete:
+            cmd.delete(' '.join(structs))
+
+    print('Done')
+
+
+def draw_interp(out_dir, selection='*', width=1000, height=1000, antialias=2, dpi=-1):
+
+    structs = []
+    interp_prefixes = []
+    for obj in cmd.get_names('objects'):
+        m = re.match(r'^.*lig(_gen)?(_fit)?(_add)?$', obj)
+        if m:
+            structs.append(obj)
+        m = re.match(r'^(.*_lig_gen)_surfaces$', obj)
+        if m and fnmatch.fnmatch(obj, selection):
+            interp_prefixes.append(m.group(1))
+
+    # try to infer the job_name from working directory
+    job_name = os.path.basename(os.getcwd())
+
+    # once we have a job_name, we can correctly parse the prefixes
+    interp_re = re.compile(
+        '^' + '_'.join([
+            r'(?P<job_name>{})'.format(job_name),
+            r'(?P<array_idx>\d+)',
+            r'(?P<interp_name>(.+)_to_(.+))',
+            r'(?P<grid_type>lig(_gen)?(_fit)?)'
+        ]) + '$'
+    )
+
+    for interp_prefix in interp_prefixes:
+        
+        m = interp_re.match(interp_prefix)
         if not m:
             continue
 
-        grid_prefix = m.group(1)
-        sample_idx = int(m.group(2))
-        channel = channels_by_name[m.group(3)]
+        interp_name = m.group('interp_name')
+        interp_dir = os.path.join(out_dir, job_name, interp_name)
+        os.makedirs(interp_dir, exist_ok=True)
 
-        if state is None:
-            surface_state = sample_idx+1
-        else:
-            surface_state = state
+        density = interp_prefix + '_surfaces'
+        struct = interp_prefix + '_fit_add'
 
-        surface_object = '{}_{}_surface'.format(grid_prefix, channel.name)
-        cmd.isosurface(surface_object, dx_object, level=level, state=surface_state)
-        cmd.color(channel.name+'$', surface_object)
+        # hide everything except the grouped surface objects,
+        # since their visibility is controlled by the group object
+        cmd.disable('all')
+        cmd.enable('*_surface')
 
-        if grid_prefix not in surface_groups:
-            surface_groups[grid_prefix] = []
+        # density only
+        cmd.enable(density)
+        cmd.set('transparency', 0.2, density)
+        im_prefix = os.path.join(interp_dir, interp_prefix) + '_density_'
+        cmd.mpng(im_prefix, first=0, last=0, mode=1, width=width, height=height)
 
-        if surface_object not in surface_groups[grid_prefix]:
-            surface_groups[grid_prefix].append(surface_object)
+        # density and struct
+        cmd.enable(struct)
+        cmd.set('transparency', 0.5, density)
+        im_prefix = os.path.join(interp_dir, interp_prefix) + '_both_'
+        cmd.mpng(im_prefix, first=0, last=0, mode=1, width=width, height=height)
 
-    for grid_prefix, surface_objects in surface_groups.items():
-        surface_group = '{}_surfaces'.format(grid_prefix)
-        cmd.group(surface_group, ' '.join(surface_objects))
+        cmd.disable(density)
+        im_prefix = os.path.join(interp_dir, interp_prefix) + '_struct_'
+        cmd.mpng(im_prefix, first=0, last=0, mode=1, width=width, height=height)
 
+    print('Done')
 
 def load_group(pattern, name):
     group_objs = []
@@ -78,5 +337,7 @@ def my_rotate(name, axis, angle, states, **kwargs):
 
 
 cmd.extend('set_atom_level', set_atom_level)
+cmd.extend('join_structs', join_structs)
+cmd.extend('draw_interp', draw_interp)
 cmd.extend('load_group', load_group)
 cmd.extend('my_rotate', my_rotate)
