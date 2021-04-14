@@ -210,14 +210,14 @@ def get_channels_from_file(map_file, use_covalent_radius=False, name_prefix=''):
     return get_channels_from_map(map_, use_covalent_radius, name_prefix)
 
 
-def get_default_rec_channels(use_covalent_radius=False):
+def get_default_rec_channels(use_covalent_radius=False, name_prefix=''):
     idx = [2, 3, 4, 5, 24, 25, 21, 6, 9, 7, 8, 13, 12, 16, 14, 23]
-    return get_channels_by_index(idx, use_covalent_radius, name_prefix='Receptor')
+    return get_channels_by_index(idx, use_covalent_radius, name_prefix)
 
 
-def get_default_lig_channels(use_covalent_radius=False):
+def get_default_lig_channels(use_covalent_radius=False, name_prefix=''):
     idx = [2, 3, 4, 5, 19, 18, 17, 6, 9, 7, 8, 10, 13, 12, 16, 14, 15, 20, 27]
-    return get_channels_by_index(idx, use_covalent_radius, name_prefix='Ligand')
+    return get_channels_by_index(idx, use_covalent_radius, name_prefix)
 
 
 def get_default_channels(use_covalent_radius=False):
