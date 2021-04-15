@@ -17,7 +17,7 @@ def solver(request):
         test_file='data/molportFULL_rand_test0_50.types',
         data_kws=dict(
             data_root='data/molport',
-            batch_size=50,
+            batch_size=1,
             rec_map_file='data/my_rec_map',
             lig_map_file='data/my_lig_map',
             resolution=1.0,

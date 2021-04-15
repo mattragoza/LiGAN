@@ -60,9 +60,7 @@ def compute_mean_type_diff_and_exact_types(structs, ref_structs):
     type_counts = [s.type_counts for s in structs]
     ref_type_counts = [s.type_counts for s in ref_structs]
     type_diffs = np.array([
-        np.linalg.norm(t-r, ord=1) for t,r in zip(
-            type_counts, ref_type_counts
-        )
+        (t-r).norm(p=1).item() for t,r in zip(type_counts, ref_type_counts)
     ])
     return np.mean(type_diffs), np.mean(type_diffs == 0)
 

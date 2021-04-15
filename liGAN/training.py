@@ -303,14 +303,12 @@ class Solver(nn.Module):
         for k, v in metrics.items():
             self.metrics.loc[idx, k] = v
 
-    def save_structs(self, structs, grid_type):
+    def save_mols(self, mols, grid_type):
         sdf_file = '{}_iter_{}_{}.sdf'.format(
             self.out_prefix, self.curr_iter, grid_type
         )
         print('Writing generated molecules to ' + sdf_file)
-        molecules.write_rd_mols_to_sdf_file(
-            sdf_file, (s.info['add_mol'] for s in structs), kekulize=False
-        )
+        molecules.write_rd_mols_to_sdf_file(sdf_file, mols, kekulize=False)
 
     def initialize_weights(self, caffe):
         if hasattr(self, 'gen_model'):
@@ -526,7 +524,8 @@ class AESolver(GenerativeSolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type='poster')
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -586,7 +585,8 @@ class VAESolver(AESolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type='poster')
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
         
         metrics.update(compute_paired_grid_metrics(
@@ -634,7 +634,8 @@ class CESolver(AESolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type='prior')
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type='prior')
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -689,7 +690,8 @@ class CVAESolver(VAESolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type='poster')
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
 
         metrics.update(compute_paired_grid_metrics(
@@ -809,7 +811,8 @@ class GANSolver(GenerativeSolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type)
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type)
         t3 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
@@ -1150,7 +1153,8 @@ class CGANSolver(GANSolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type)
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 
         metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
@@ -1302,7 +1306,8 @@ class VAEGANSolver(GANSolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type)
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 
         if prior:
@@ -1433,7 +1438,8 @@ class CVAEGANSolver(VAEGANSolver):
                 torch.zeros(3),
                 data.resolution
             )
-            self.save_structs(lig_gen_fit_structs, grid_type)
+            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 
         if prior:

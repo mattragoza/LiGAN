@@ -72,13 +72,17 @@ class AtomStruct(object):
 
     @property
     def center(self):
-        assert self.n_atoms > 0
-        return self.xyz.mean(dim=0)
+        if self.n_atoms > 0:
+            return self.xyz.mean(dim=0)
+        else:
+            return np.nan
 
     @property
     def radius(self):
-        assert self.n_atoms > 0
-        return (self.xyz - self.center[None,:]).norm(dim=1).max().item()
+        if self.n_atoms > 0:
+            return (self.xyz - self.center[None,:]).norm(dim=1).max().item()
+        else:
+            return np.nan
 
     def to(self, device):
         return AtomStruct(
