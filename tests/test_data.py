@@ -66,7 +66,8 @@ class TestAtomGridData(object):
 
     def test_data_forward_ok(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        grids, lig_structs, labels = data.forward()
+        grids, structs, labels = data.forward()
+        rec_structs, lig_structs = structs
         assert grids.shape == (10, 16+19, 48, 48, 48)
         assert len(lig_structs) == 10
         assert labels.shape == (10,)
@@ -84,9 +85,11 @@ class TestAtomGridData(object):
 
     def test_data_forward_split(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
-        (rec_grids, lig_grids), lig_structs, labels = data.forward(
+        grids, structs, labels = data.forward(
             split_rec_lig=True
         )
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         assert rec_grids.shape == (10, 16, 48, 48, 48)
         assert lig_grids.shape == (10, 19, 48, 48, 48)
         assert len(lig_structs) == 10
