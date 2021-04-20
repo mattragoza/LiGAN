@@ -1,7 +1,10 @@
 import sys
+from collections import namedtuple, defaultdict
 import numpy as np
 import torch
-from collections import namedtuple, defaultdict
+import molgrid
+
+from .common import catch_exception
 
 try:
     from openbabel import openbabel as ob
@@ -162,7 +165,53 @@ smina_types = [
 smina_types_by_name = dict((t.name, t) for t in smina_types)
 
 
-channel = namedtuple('channel', ['name', 'atomic_num', 'symbol', 'atomic_radius'])
+channel = namedtuple(
+    'channel',
+    ['name', 'atomic_num', 'symbol', 'atomic_radius']
+)
+
+
+class AtomTyper(molgrid.PythonCallbackVectorTyper):
+
+    def __init__(self):
+        assert len(self.type_funcs) == len(self.type_ranges)
+        super().__init__(
+            lambda a: (self.get_type_vector(a), self.get_radius(a)),
+            self.n_types
+        )
+
+    @property
+    def type_funcs(self):
+        return []
+
+    @property
+    def type_ranges(self):
+        return []
+
+    @property
+    def n_types(self):
+        return sum(len(r) for r in self.type_ranges)
+
+    def get_type_vector(self, ob_atom):
+        type_vec = []
+        for func, range_ in zip(self.type_funcs, self.type_ranges):
+            value = func(ob_atom)
+            type_vec += make_one_hot(value, range_)
+        return type_vec
+
+    def get_radius(self, ob_atom):
+        return 1
+
+
+def make_one_hot(value, range_, other=False):
+    vec = [0] * (len(range_) + 1)
+    try:
+        idx = range_.index(value)
+    except ValueError:
+        idx = -1
+    vec[idx] = 1
+    return vec if other else vec[:-1]
+
 
 
 def get_channel_color(channel):

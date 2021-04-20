@@ -13,6 +13,8 @@ from rdkit.Chem.Fingerprints import FingerprintMols
 from SA_Score import sascorer
 from NP_Score import npscorer
 
+from .common import catch_exception
+
 
 class Molecule(Chem.RWMol):
     '''
@@ -185,18 +187,31 @@ def make_ob_mol(xyz, c, bonds, channels):
     return ob_mol
 
 
-def write_ob_mols_to_sdf_file(sdf_file, mols):
-    conv = ob.OBConversion()
+def read_ob_mols_from_file(mol_file, in_format):
+    ob_conv = ob.OBConversion()
+    ob_conv.SetInFormat(in_format)
+    ob_mol = ob.OBMol()
+    not_at_end = ob_conv.ReadFile(ob_mol, mol_file)
+    ob_mols = [ob_mol]
+    while not_at_end:
+        ob_mol = ob.OBMol()
+        not_at_end = ob_conv.Read(ob_mol)
+        ob_mols.append(ob_mol)
+    return ob_mols
+
+
+def write_ob_mols_to_sdf_file(sdf_file, ob_mols):
+    ob_conv = ob.OBConversion()
     if sdf_file.endswith('.gz'):
-        conv.SetOutFormat('sdf.gz')
+        ob_conv.SetOutFormat('sdf.gz')
     else:
-        conv.SetOutFormat('sdf')
-    for i, mol in enumerate(mols):
+        ob_conv.SetOutFormat('sdf')
+    for i, ob_mol in enumerate(ob_mols):
         if i == 0:
-            conv.WriteFile(mol, sdf_file)
+            ob_conv.WriteFile(ob_mol, sdf_file)
         else:
-            conv.Write(mol)
-    conv.CloseOutFile()
+            ob_conv.Write(ob_mol)
+    ob_conv.CloseOutFile()
 
 
 def rd_mol_to_ob_mol(rd_mol):
@@ -290,28 +305,6 @@ def get_rd_mol_validity(rd_mol):
         error = str(e)
     valid = (n_atoms > 0 and n_frags == 1 and error is None)
     return n_atoms, n_frags, error, valid
-
-
-
-def catch_exception(func=None, exc_type=Exception, default=np.nan):
-
-    if func is None: # use as a decorator factory
-        def decorator(func):
-            def wrapper(*args, **kwargs):
-                try:
-                    return func(*args, **kwargs)
-                except exc_type:            
-                    return default
-            return wrapper
-        return decorator
-
-    else: # use as a simple decorator
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except exc_type:            
-                return default
-        return wrapper
 
 
 # molecular weight and logP are defined for invalid molecules
