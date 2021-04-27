@@ -166,8 +166,7 @@ smina_types_by_name = dict((t.name, t) for t in smina_types)
 
 
 channel = namedtuple(
-    'channel',
-    ['name', 'atomic_num', 'symbol', 'atomic_radius']
+    'channel', ['name', 'atomic_num', 'symbol', 'atomic_radius']
 )
 
 
@@ -209,6 +208,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     '''
     def __init__(self, type_funcs, type_ranges, radius_func):
         assert len(type_funcs) == len(type_ranges)
+        assert type_funcs[0] == ob.OBAtom.GetAtomicNum
         self.type_funcs = type_funcs
         self.type_ranges = type_ranges
         self.radius_func = radius_func
@@ -227,6 +227,49 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             value = func(ob_atom)
             type_vec += make_one_hot(value, range_)
         return type_vec
+
+    @classmethod
+    def get_typer(cls, atom_props, radius_type):
+
+        type_funcs = [ob.OBAtom.GetAtomicNum]
+        type_ranges = [
+            [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, UNK]
+        ]
+        # TODO when to call AddHydrogens, and what if
+        # hydrogens count as UNK when not explicit?
+        # won't hydrogen properties like formal charge
+        # also contribute density when H is not explicit?
+
+        if 'h' in atom_props: # explicit hydrogens
+            type_ranges[0].insert(0, 1)
+
+        if 'o' in atom_props:
+            type_funcs += [ob.OBAtom.IsAromatic]
+            type_ranges += [1]
+
+        if 'a' in atom_props:
+            type_funcs += [ob.OBAtom.IsHbondAcceptor]
+            type_ranges += [1]
+
+        if 'd' in atom_props:
+            type_funcs += [ob.OBAtom.IsHbondDonor]
+            type_ranges += [1]
+
+        if 'c' in atom_props:
+            type_funcs += [ob.OBAtom.GetFormalCharge]
+            type_ranges += [-1, 0, 1]
+
+        if 'n' in atom_props:
+            type_funcs += [get_n_hydrogens]
+            type_ranges += [0, 1, 2, UNK]
+
+        if radius_type == 'd': # default
+            radius_func = get_default_radius
+
+        elif radius_type == 'c': # covalent
+            radius_func = get_covalent_radius
+
+        return cls(type_counts, type_ranges, radius_func)
 
 
 def make_one_hot(value, range_):

@@ -11,8 +11,8 @@ class AtomGridData(nn.Module):
         self,
         data_root,
         batch_size,
-        rec_map_file,
-        lig_map_file,
+        rec_typer,
+        lig_typer,
         resolution=0.5,
         dimension=None,
         grid_size=None,
@@ -32,8 +32,8 @@ class AtomGridData(nn.Module):
             dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
-        self.rec_typer = molgrid.FileMappedGninaTyper(rec_map_file)
-        self.lig_typer = molgrid.FileMappedGninaTyper(lig_map_file)
+        self.rec_typer = rec_typer
+        self.lig_typer = lig_typer
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
@@ -70,8 +70,8 @@ class AtomGridData(nn.Module):
         return cls(
             data_root=param.root_folder,
             batch_size=param.batch_size,
-            rec_map_file=param.recmap,
-            lig_map_file=param.ligmap,
+            rec_typer=molgrid.FileMappedGninaTyper(param.recmap),
+            lig_typer=molgrid.FileMappedGninaTyper(param.ligmap),
             resolution=param.resolution,
             grid_size=atom_grids.dimension_to_size(
                 param.dimension, param.resolution

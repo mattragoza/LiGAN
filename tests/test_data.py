@@ -5,6 +5,7 @@ os.environ['GLOG_minloglevel'] = '1'
 
 sys.path.insert(0, '.')
 from liGAN.data import AtomGridData
+from liGAN.atom_types import AtomTyper
 
 
 class TestAtomGridData(object):
@@ -14,8 +15,8 @@ class TestAtomGridData(object):
         return AtomGridData(
             data_root='data/molport',
             batch_size=10,
-            rec_map_file='data/my_rec_map',
-            lig_map_file='data/my_lig_map',
+            rec_typer=AtomTyper.get_typer(atom_props='oad', radius_type='d'),
+            lig_typer=AtomTyper.get_typer(atom_props='oad', radius_type='d'),
             resolution=0.5,
             dimension=23.5,
             shuffle=False,

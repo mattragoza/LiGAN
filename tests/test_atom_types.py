@@ -1,5 +1,6 @@
 import sys, os, pytest
 from numpy import isclose
+import molgrid
 
 sys.path.insert(0, '.')
 from liGAN.molecules import read_ob_mols_from_file
@@ -91,6 +92,30 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0,
+                ]
+
+    def test_typer_ex_provider(self, typer):
+        data_root = os.path.join(
+            os.environ['LIGAN_ROOT'], 'data'
+        )
+        data_file = os.path.join(data_root, 'benzene.types')
+        ex_provider = molgrid.ExampleProvider(
+            typer, typer,
+            data_root=data_root,
+        )
+        ex_provider.populate(data_file)
+        ex = ex_provider.next_batch(1)[0]
+        type_vecs = ex.coord_sets[1].type_vector
+        for i, type_vec in enumerate(type_vecs):
+            if i < 6: # aromatic carbon
+                assert list(type_vec) == [
+                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                    1, 0, 0,
+                ]
+            else: # non-polar hydrogen
+                assert list(type_vec) == [
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0,
                 ]
