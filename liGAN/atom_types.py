@@ -171,22 +171,51 @@ channel = namedtuple(
 )
 
 
-class AtomTyper(molgrid.PythonCallbackVectorTyper):
+class Unknown(object):
+    '''
+    An object whose only property is that
+    it is considered equal to everthing.
 
-    def __init__(self):
-        assert len(self.type_funcs) == len(self.type_ranges)
+    This can be used as the last element
+    in a type range to catch any values
+    not explicitly specified before it.
+
+    Note that the original value will not
+    be recoverable through atom fitting.
+    '''
+    def __eq__(self, other):
+        '''
+        Returns True.
+        '''
+        return True
+
+
+UNK = Unknown()
+
+
+class AtomTyper(molgrid.PythonCallbackVectorTyper):
+    '''
+    An object for converting OBAtoms to atom type vectors.
+
+    An AtomTyper is defined by a list of typing functions
+    and ranges of valid output values for each function.
+
+    It converts an atom to a type vector by calling each
+    typing function on the atom, using the type ranges to
+    convert each output value to a one-hot vector, then
+    concatenating the one-hot vectors into a single list.
+
+    A function giving the atomic radius is also needed.
+    '''
+    def __init__(self, type_funcs, type_ranges, radius_func):
+        assert len(type_funcs) == len(type_ranges)
+        self.type_funcs = type_funcs
+        self.type_ranges = type_ranges
+        self.radius_func = radius_func
         super().__init__(
-            lambda a: (self.get_type_vector(a), self.get_radius(a)),
+            lambda a: (self.get_type_vector(a), radius_func(a)),
             self.n_types
         )
-
-    @property
-    def type_funcs(self):
-        return []
-
-    @property
-    def type_ranges(self):
-        return []
 
     @property
     def n_types(self):
@@ -199,19 +228,14 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             type_vec += make_one_hot(value, range_)
         return type_vec
 
-    def get_radius(self, ob_atom):
-        return 1
 
-
-def make_one_hot(value, range_, other=False):
-    vec = [0] * (len(range_) + 1)
+def make_one_hot(value, range_):
+    vec = [0] * len(range_)
     try:
-        idx = range_.index(value)
-    except ValueError:
-        idx = -1
-    vec[idx] = 1
-    return vec if other else vec[:-1]
-
+        vec[range_.index(value)] = 1
+    except ValueError: # ignore
+        pass
+    return vec
 
 
 def get_channel_color(channel):
