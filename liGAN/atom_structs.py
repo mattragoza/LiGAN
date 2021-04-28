@@ -7,17 +7,20 @@ from . import atom_types, molecules
 
 class AtomStruct(object):
     '''
-    A 3D structure of atom types and coordinates.
+    A structure of 3D atom coordinates and type
+    vectors, stored as torch tensors along with
+    a reference to the source atom typer.
 
     An optional bond matrix can be provided, but
     this is not currently used for anything.
     '''
-    def __init__(self, xyz, c, channels, bonds=None, device=None, **info):
-
-        self.check_shapes(xyz, c, channels, bonds)
-        self.xyz = torch.as_tensor(xyz, device=device)
-        self.c = torch.as_tensor(c, device=device)
-        self.channels = channels
+    def __init__(
+        self, coords, types, typer, bonds=None, device=None, **info
+    ):
+        self.check_shapes(coords, types, typer, bonds)
+        self.coords = torch.as_tensor(coords, device=device)
+        self.types = torch.as_tensor(types, device=device)
+        self.typer = typer
 
         if bonds is not None:
             self.bonds = torch.as_tensor(bonds, device=device)
@@ -27,28 +30,35 @@ class AtomStruct(object):
         self.info = info
 
     @staticmethod
-    def check_shapes(xyz, c, channels, bonds):
-        assert len(xyz.shape) == 2
-        assert len(c.shape) == 1
-        assert xyz.shape[0] == c.shape[0]
-        assert xyz.shape[1] == 3
-        assert all(c >= 0) and all(c < len(channels))
+    def check_shapes(coords, types, typer, bonds):
+        assert len(coords.shape) == 2
+        assert len(types.shape) == 2
+        assert coords.shape[0] == types.shape[0]
+        assert coords.shape[1] == 3
+        assert types.shape[1] == typer.n_types
+        assert ((types == 0) | (types == 1)).all()
         if bonds is not None:
-            assert bonds.shape == (xyz.shape[0], xyz.shape[0])
+            assert bonds.shape == (coords.shape[0], coords.shape[0])
+
+    @classmethod
+    def from_coord_set(cls, coord_set, typer, device, **info):
+
+        if not coord_set.has_vector_types():
+            coord_set.make_vector_types()
+
+        return cls(
+            coords=coord_set.coords.tonumpy(),
+            types=coord_set.type_vector.tonumpy().astype(float),
+            typer=typer,
+            device=device,
+            src_file=coord_set.src,
+            **info
+        )
 
     @classmethod
     def from_gninatypes(cls, gtypes_file, channels, **info):
         xyz, c = read_gninatypes_file(gtypes_file, channels)
         return AtomStruct(xyz, c, channels, **info)
-
-    @classmethod
-    def from_coord_set(cls, coord_set, channels, device, **info):
-        assert coord_set.has_indexed_types()
-        xyz = coord_set.coords.tonumpy()
-        c = coord_set.type_index.tonumpy().astype(int)
-        return cls(
-            xyz, c, channels, device=device, src_file=coord_set.src, **info
-        )
 
     @classmethod
     def from_rd_mol(cls, rd_mol, c, channels, **info):

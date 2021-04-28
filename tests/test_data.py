@@ -15,8 +15,8 @@ class TestAtomGridData(object):
         return AtomGridData(
             data_root='data/molport',
             batch_size=10,
-            rec_typer=AtomTyper.get_typer(atom_props='oad', radius_type='d'),
-            lig_typer=AtomTyper.get_typer(atom_props='oad', radius_type='d'),
+            rec_typer=AtomTyper.get_typer(atom_props='oad', radius_type='v'),
+            lig_typer=AtomTyper.get_typer(atom_props='oad', radius_type='v'),
             resolution=0.5,
             dimension=23.5,
             shuffle=False,
@@ -34,11 +34,11 @@ class TestAtomGridData(object):
         return param
 
     def test_data_init(self, data):
-        assert data.n_rec_channels == 16
-        assert data.n_lig_channels == 19
+        assert data.n_rec_channels == 14
+        assert data.n_lig_channels == 14
         assert data.ex_provider
         assert data.grid_maker
-        assert data.grids.shape == (10, 16+19, 48, 48, 48)
+        assert data.grids.shape == (10, 14+14, 48, 48, 48)
         assert isclose(0, data.grids.norm().cpu())
         assert len(data) == 0
 
@@ -69,7 +69,7 @@ class TestAtomGridData(object):
         data.populate('data/molportFULL_rand_test0_1000.types')
         grids, structs, labels = data.forward()
         rec_structs, lig_structs = structs
-        assert grids.shape == (10, 16+19, 48, 48, 48)
+        assert grids.shape == (10, data.n_channels, 48, 48, 48)
         assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, grids.norm().cpu())
@@ -78,7 +78,7 @@ class TestAtomGridData(object):
     def test_data_forward_ligs(self, data):
         data.populate('data/molportFULL_rand_test0_1000.types')
         lig_grids, lig_structs, labels = data.forward(ligand_only=True)
-        assert lig_grids.shape == (10, 19, 48, 48, 48)
+        assert lig_grids.shape == (10, data.n_lig_channels, 48, 48, 48)
         assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, lig_grids.norm().cpu())
@@ -91,8 +91,8 @@ class TestAtomGridData(object):
         )
         rec_grids, lig_grids = grids
         rec_structs, lig_structs = structs
-        assert rec_grids.shape == (10, 16, 48, 48, 48)
-        assert lig_grids.shape == (10, 19, 48, 48, 48)
+        assert rec_grids.shape == (10, data.n_lig_channels, 48, 48, 48)
+        assert lig_grids.shape == (10, data.n_rec_channels, 48, 48, 48)
         assert len(lig_structs) == 10
         assert labels.shape == (10,)
         assert not isclose(0, rec_grids.norm().cpu())

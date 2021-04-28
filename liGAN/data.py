@@ -98,19 +98,11 @@ class AtomGridData(nn.Module):
     @property
     def n_lig_channels(self):
         return self.lig_typer.num_types() if self.lig_typer else 0
-
-    @property
-    def rec_channels(self):
-        return atom_types.get_channels_from_map(
-            self.rec_typer, use_covalent_radius=False, name_prefix=''
-        )
-
-    @property
-    def lig_channels(self):
-        return atom_types.get_channels_from_map(
-            self.lig_typer, use_covalent_radius=False, name_prefix=''
-        )
  
+    @property
+    def n_channels(self):
+        return self.n_rec_channels + self.n_lig_channels
+
     @property
     def resolution(self):
         return self.grid_maker.get_resolution()
@@ -156,12 +148,12 @@ class AtomGridData(nn.Module):
 
             rec_struct = atom_structs.AtomStruct.from_coord_set(
                 rec_coord_set,
-                self.rec_channels,
+                self.rec_typer,
                 device=self.grids.device
             )
             lig_struct = atom_structs.AtomStruct.from_coord_set(
                 lig_coord_set,
-                self.lig_channels,
+                self.lig_typer,
                 device=self.grids.device
             )
             rec_structs.append(rec_struct)

@@ -5,7 +5,7 @@ import molgrid
 sys.path.insert(0, '.')
 from liGAN.molecules import read_ob_mols_from_file
 from liGAN.atom_types import (
-    make_one_hot, UNK, AtomTyper, ob
+    make_one_hot, UNK, AtomTyper, Atom, ob
 )
 
 
@@ -57,10 +57,10 @@ class TestAtomTyper(object):
     def typer(self):
         return AtomTyper(
             type_funcs=[
-                ob.OBAtom.GetAtomicNum,
-                ob.OBAtom.IsAromatic,
-                ob.OBAtom.IsHbondAcceptor,
-                ob.OBAtom.IsHbondDonor,
+                Atom.atomic_num,
+                Atom.aromatic,
+                Atom.h_acceptor,
+                Atom.h_donor,
             ],
             type_ranges=[
                 [5, 6, 7, 8, 9, 15, 16, 17, 35, 53],
@@ -82,6 +82,9 @@ class TestAtomTyper(object):
         assert len(typer.type_funcs) == 4
         assert len(typer.type_ranges) == 4
         assert typer.n_types == 13
+
+    def test_typer_names(self, typer):
+        print(list(typer.get_type_names()))
 
     def test_typer_benzene_type_vec(self, typer, benzene):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
