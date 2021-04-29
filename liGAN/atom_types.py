@@ -171,33 +171,42 @@ smina_types_by_name = dict((t.name, t) for t in smina_types)
 
 class Atom(ob.OBAtom):
     '''
-    A simple subclass of OBAtom for computing
-    and naming properties used in atom typing.
+    A simple subclass of OBAtom for naming and
+    accessing properties used in atom typing.
     '''
+    @property
     def symbol(self):
         return ob.GetSymbol(self.GetAtomicNum())
 
+    @property
     def atomic_num(self):
         return self.GetAtomicNum()
 
+    @property
     def aromatic(self):
         return self.IsAromatic()
 
+    @property
     def h_acceptor(self):
         return self.IsHbondAcceptor()
 
+    @property
     def h_donor(self):
         return self.IsHbondDonor()
 
+    @property
     def formal_charge(self):
         return self.GetFormalCharge()
 
+    @property
     def h_degree(self):
         return self.GetTotalDegree() - self.GetHvyDegree()
 
+    @property
     def vdw_radius(self):
         return ob.GetVdwRad(self.GetAtomicNum())
 
+    @property
     def cov_radius(self):
         return ob.GetCovalentRad(self.GetAtomicNum())
 
@@ -231,24 +240,24 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     '''
     An class for converting OBAtoms to atom type vectors.
 
-    An AtomTyper is defined by a list of typing functions
-    and ranges of valid output values for each function.
+    An AtomTyper is defined by a list of typing properties
+    and ranges of valid output values for each property.
 
-    It converts an atom to a type vector by calling each
-    typing function on the atom, using the type ranges to
-    convert each output value to a one-hot vector, then
+    It converts an atom to a type vector by accessing each
+    typing property on the atom, using the type ranges to
+    convert each property value to a one-hot vector, then
     concatenating the one-hot vectors into a single list.
 
     A function giving the atomic radius is also needed.
     '''
-    def __init__(self, type_funcs, type_ranges, radius_func):
-        assert len(type_funcs) == len(type_ranges)
-        assert type_funcs[0] == Atom.atomic_num
-        self.type_funcs = type_funcs
+    def __init__(self, type_props, type_ranges, radius_func):
+        assert len(type_props) == len(type_ranges)
+        assert type_props[0] == 'atomic_num'
+        self.type_props = type_props
         self.type_ranges = type_ranges
         self.radius_func = radius_func
         super().__init__(
-            lambda a: (self.get_type_vector(a), radius_func(a)),
+            lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
         )
 
@@ -257,21 +266,25 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return sum(len(r) for r in self.type_ranges)
 
     def get_type_names(self):
-        for func, range_ in zip(self.type_funcs, self.type_ranges):
+        for prop, range_ in zip(self.type_props, self.type_ranges):
             for value in range_:
-                yield '{}_{}'.format(func.__name__, value)
+                yield '{}_{}'.format(prop, value)
 
     def get_type_vector(self, ob_atom):
         type_vec = []
-        for func, range_ in zip(self.type_funcs, self.type_ranges):
-            value = func(ob_atom)
+        for prop, range_ in zip(self.type_props, self.type_ranges):
+            value = getattr(Atom, prop).fget(ob_atom)
             type_vec += make_one_hot(value, range_)
         return type_vec
 
-    @classmethod
-    def get_typer(cls, atom_props, radius_type):
+    def get_radius(self, ob_atom):
+        return self.radius_func(ob_atom)
 
-        type_funcs = [Atom.atomic_num]
+    @classmethod
+    def get_typer(cls, type_props, radius_func):
+
+        tp, rf = type_props, radius_func
+        type_props = ['atomic_num']
         type_ranges = [
             [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, UNK]
         ]
@@ -280,36 +293,36 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         # won't hydrogen properties like formal charge
         # also contribute density when H is not explicit?
 
-        if 'h' in atom_props: # explicit hydrogens
+        if 'h' in tp: # explicit hydrogens
             type_ranges[0].insert(0, 1)
 
-        if 'o' in atom_props:
-            type_funcs += [Atom.aromatic]
+        if 'o' in tp:
+            type_props += ['aromatic']
             type_ranges += [[1]]
 
-        if 'a' in atom_props:
-            type_funcs += [Atom.h_acceptor]
+        if 'a' in tp:
+            type_props += ['h_acceptor']
             type_ranges += [[1]]
 
-        if 'd' in atom_props:
-            type_funcs += [Atom.h_donor]
+        if 'd' in tp:
+            type_props += ['h_donor']
             type_ranges += [[1]]
 
-        if 'c' in atom_props:
-            type_funcs += [Atom.formal_charge]
+        if 'c' in tp:
+            type_props += ['formal_charge']
             type_ranges += [[-1, 0, 1]]
 
-        if 'n' in atom_props:
-            type_funcs += [Atom.h_degree]
+        if 'n' in tp:
+            type_props += ['h_degree']
             type_ranges += [[0, 1, 2, UNK]]
 
-        if radius_type == 'v': # van der Waals
+        if rf == 'v': # van der Waals
             radius_func = Atom.vdw_radius
 
-        elif radius_type == 'c': # covalent
+        elif rf == 'c': # covalent
             radius_func = Atom.cov_radius
 
-        return cls(type_funcs, type_ranges, radius_func)
+        return cls(type_props, type_ranges, radius_func)
 
 
 def make_one_hot(value, range_):

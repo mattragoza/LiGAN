@@ -56,17 +56,11 @@ class TestAtomTyper(object):
     @pytest.fixture
     def typer(self):
         return AtomTyper(
-            type_funcs=[
-                Atom.atomic_num,
-                Atom.aromatic,
-                Atom.h_acceptor,
-                Atom.h_donor,
+            type_props=[
+                'atomic_num', 'aromatic', 'h_acceptor', 'h_donor',
             ],
             type_ranges=[
-                [5, 6, 7, 8, 9, 15, 16, 17, 35, 53],
-                [1],
-                [1],
-                [1],
+                [5, 6, 7, 8, 9, 15, 16, 17, 35, 53], [1], [1], [1],
             ],
             radius_func=lambda x: 1
         )
@@ -79,7 +73,7 @@ class TestAtomTyper(object):
         return read_ob_mols_from_file(sdf_file, 'sdf')[0]
 
     def test_typer_init(self, typer):
-        assert len(typer.type_funcs) == 4
+        assert len(typer.type_props) == 4
         assert len(typer.type_ranges) == 4
         assert typer.n_types == 13
 
@@ -90,13 +84,11 @@ class TestAtomTyper(object):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
             if i < 6: # aromatic carbon
                 assert typer.get_type_vector(atom) == [
-                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-                    1, 0, 0,
+                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_ex_provider(self, typer):
@@ -114,12 +106,10 @@ class TestAtomTyper(object):
         for i, type_vec in enumerate(type_vecs):
             if i < 6: # aromatic carbon
                 assert list(type_vec) == [
-                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-                    1, 0, 0,
+                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
