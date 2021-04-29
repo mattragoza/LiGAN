@@ -56,66 +56,64 @@ class AtomStruct(object):
         )
 
     @classmethod
-    def from_gninatypes(cls, gtypes_file, channels, **info):
-        xyz, c = read_gninatypes_file(gtypes_file, channels)
-        return AtomStruct(xyz, c, channels, **info)
+    def from_gninatypes(cls, gtypes_file, typer, **info):
+        coords, types = read_gninatypes_file(gtypes_file, typer)
+        return AtomStruct(coords, types, typer, **info)
 
     @classmethod
-    def from_rd_mol(cls, rd_mol, c, channels, **info):
-        xyz = rd_mol.GetConformer(0).GetPositions()
-        return cls(xyz, c, channels, **info)
+    def from_rd_mol(cls, rd_mol, types, typer, **info):
+        coords = rd_mol.GetConformer(0).GetPositions()
+        return cls(coords, types, typer, **info)
 
     @classmethod
-    def from_sdf(cls, sdf_file, channels, **info):
+    def from_sdf(cls, sdf_file, typer, **info):
         rd_mol = molecules.read_rd_mols_from_sdf_file(sdf_file)[0]
         channels_file = os.path.splitext(sdf_file)[0] + '.channels'
-        c = read_channels_from_file(channels_file, channels)
-        return cls.from_rd_mol(rd_mol, c, channels)
+        types = read_channels_from_file(channels_file, channels)
+        return cls.from_rd_mol(rd_mol, types, channels)
 
     @property
     def n_atoms(self):
-        return self.xyz.shape[0]
+        return self.coords.shape[0]
 
     @property
     def type_counts(self):
-        return count_types(self.c, len(self.channels))
+        return self.types.sum(dim=0)
 
     @property
     def center(self):
         if self.n_atoms > 0:
-            return self.xyz.mean(dim=0)
+            return self.coords.mean(dim=0)
         else:
             return np.nan
 
     @property
     def radius(self):
         if self.n_atoms > 0:
-            return (self.xyz - self.center[None,:]).norm(dim=1).max().item()
+            return (self.coords - self.center).norm(dim=1).max().item()
         else:
             return np.nan
 
     def to(self, device):
         return AtomStruct(
-            self.xyz, self.c, self.channels, self.bonds, device=device
+            self.coords, self.types, self.typer, self.bonds, device=device
         )
     
     def to_ob_mol(self):
-        mol = molecules.make_ob_mol(
-            self.xyz.cpu().numpy(),
-            self.c.cpu().numpy(),
-            self.bonds.cpu().numpy(),
-            self.channels
+        return molecules.make_ob_mol(
+            self.coords.cpu().numpy(),
+            self.types.cpu().numpy(),
+            None if self.bonds is None else self.bonds.cpu().numpy(),
+            self.typer
         )
-        return mol
 
     def to_rd_mol(self):
-        mol = molecules.make_rd_mol(
-            self.xyz.cpu().numpy().astype(float),
-            self.c.cpu().numpy(),
+        return molecules.make_rd_mol(
+            self.coords.cpu().numpy().astype(float),
+            self.types.cpu().numpy(),
             None if self.bonds is None else self.bonds.cpu().numpy(),
-            self.channels
+            self.typer
         )
-        return mol
 
     def to_sdf(self, sdf_file):
         if sdf_file.endswith('.gz'):
@@ -127,12 +125,13 @@ class AtomStruct(object):
 
     def add_bonds(self, tol=0.0):
 
+        # TODO get atomic radii from types and typer
         atomic_radii = torch.tensor(
-            [c.atomic_radius for c in self.channels],
+            [ob.GetCovalentRad(t) for t in self.types],
             device=self.c.device
         )
         atom_dist2 = (
-            (self.xyz[None,:,:] - self.xyz[:,None,:])**2
+            (self.coords[None,:,:] - self.coords[:,None,:])**2
         ).sum(axis=2)
 
         max_bond_dist2 = (
@@ -158,8 +157,9 @@ class AtomStruct(object):
         )
 
 
-def read_gninatypes_file(gtypes_file, channels):
-    channel_names = [c.name for c in channels]
+def read_gninatypes_file(gtypes_file, typer):
+    # TODO allow vector typed gninatypes files?
+    channel_names = typer.get_type_names()
     channel_name_idx = {n: i for i, n in enumerate(channel_names)}
     xyz, c = [], []
     with open(gtypes_file, 'rb') as f:
@@ -178,19 +178,20 @@ def read_gninatypes_file(gtypes_file, channels):
 
 
 def read_channels_from_file(channels_file):
+    # TODO allow vector typed channels files
     with open(channels_file, 'r') as f:
         return np.array([
             int(c) for c in f.read().rstrip().split(' ')
         ])
 
 
-def count_types(c, n_types, dtype=None):
+def count_index_types(types, n_types, dtype=None):
     '''
-    Provided a vector of type indices c, return a
+    Provided a vector of index types, return a
     vector of type counts where type_counts[i] is
     the number of occurences of type index i in c.
     '''
-    count = torch.zeros(n_types, dtype=dtype, device=c.device)
-    for i in c:
-        count[i] += 1
-    return count
+    type_counts = torch.zeros(n_types, dtype=dtype, device=c.device)
+    for i in types:
+        type_counts[i] += 1
+    return type_counts
