@@ -259,7 +259,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_type_names(self):
         for func, range_ in zip(self.type_funcs, self.type_ranges):
             for value in range_:
-                yield '{}={}'.format(func.__name__, value)
+                yield '{}_{}'.format(func.__name__, value)
 
     def get_type_vector(self, ob_atom):
         type_vec = []
