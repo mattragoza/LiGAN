@@ -80,7 +80,7 @@ class TestAtomTyper(object):
     def test_typer_names(self, typer):
         print(list(typer.get_type_names()))
 
-    def test_typer_benzene_type_vec(self, typer, benzene):
+    def test_typer_type_vec(self, typer, benzene):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
             if i < 6: # aromatic carbon
                 assert typer.get_type_vector(atom) == [
@@ -88,6 +88,18 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]
+
+    def test_typer_struct(self, typer, benzene):
+        struct = typer.make_struct(benzene)
+        for i, type_vec in enumerate(struct.types):
+            if i < 6: # aromatic carbon
+                assert list(type_vec) == [
+                    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+                ]
+            else: # non-polar hydrogen
+                assert list(type_vec) == [
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 

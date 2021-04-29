@@ -5,6 +5,7 @@ import torch
 import molgrid
 
 from .common import catch_exception
+from .atom_structs import AtomStruct
 
 try:
     from openbabel import openbabel as ob
@@ -279,6 +280,28 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     def get_radius(self, ob_atom):
         return self.radius_func(ob_atom)
+
+    def set_atom_props(self, ob_atom, type_vec):
+        i = 0
+        for prop, range_ in zip(self.type_props, self.type_ranges):
+            value = np.argmax(type_vec[i:i+len(range_)])
+            getattr(Atom, prop).fset(ob_atom, value)
+            i += len(range_)
+
+    def make_struct(self, ob_mol, device=None, **info):
+
+        coords, types = [], []
+        for ob_atom in ob.OBMolAtomIter(ob_mol):
+            coords.append([ob_atom.x(), ob_atom.y(), ob_atom.z()])
+            types.append(self.get_type_vector(ob_atom))
+
+        return AtomStruct(
+            coords=np.array(coords),
+            types=np.array(types),
+            typer=self,
+            device=device,
+            **info
+        )
 
     @classmethod
     def get_typer(cls, type_props, radius_func):
