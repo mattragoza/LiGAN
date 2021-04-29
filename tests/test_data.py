@@ -15,8 +15,8 @@ class TestAtomGridData(object):
         return AtomGridData(
             data_root='data/molport',
             batch_size=10,
-            rec_typer=AtomTyper.get_typer(atom_props='oad', radius_type='v'),
-            lig_typer=AtomTyper.get_typer(atom_props='oad', radius_type='v'),
+            rec_typer=AtomTyper.get_typer(prop_funcs='oad', radius_func='v'),
+            lig_typer=AtomTyper.get_typer(prop_funcs='oad', radius_func='v'),
             resolution=0.5,
             dimension=23.5,
             shuffle=False,
