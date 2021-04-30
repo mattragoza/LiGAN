@@ -123,6 +123,9 @@ class AtomStruct(object):
         molecules.write_rd_mol_to_sdf_file(outfile, self.to_rd_mol())
         outfile.close()
 
+    def get_atom_types(self):
+        return [self.typer.get_atom_type(t) for t in self.types]
+
     def add_bonds(self, tol=0.0):
 
         # TODO get atomic radii from types and typer

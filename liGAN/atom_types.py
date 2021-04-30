@@ -302,9 +302,13 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         )
 
     def get_atom_type(self, type_vec):
+        '''
+        Return a named tuple that has the properties
+        and values defined that are represented by the
+        given type_vec.
+        '''
         i = 0
         values = []
-        print(type_vec)
         for prop, range_ in zip(self.prop_funcs, self.prop_ranges):
             prop_vec = type_vec[i:i+len(range_)]
             if len(range_) > 1: # argmax
