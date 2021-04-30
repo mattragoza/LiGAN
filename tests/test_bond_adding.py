@@ -2,14 +2,27 @@ import sys, os, pytest
 from numpy import isclose
 
 sys.path.insert(0, '.')
-from liGAN.molecules import ob, read_ob_mols_from_file
+import liGAN.molecules as mols
+from liGAN.molecules import ob
 from liGAN.atom_types import Atom, AtomTyper
 from liGAN.bond_adding import BondAdder
 
+test_sdf_files = [
+    'data/O_0_0_0.sdf',
+    'data/N_0_0_0.sdf',
+    'data/C_0_0_0.sdf',
+    'data/benzene.sdf',
+    'data/neopentane.sdf',
+]
 
 class TestBondAdding(object):
 
-    @pytest.fixture
+    @pytest.fixture(params=[
+        [Atom.h_acceptor, Atom.h_donor],
+        [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
+        [Atom.h_degree],
+        [],
+    ])
     def typer(self):
         return AtomTyper(
             prop_funcs=[
@@ -26,64 +39,76 @@ class TestBondAdding(object):
 
     @pytest.fixture
     def adder(self):
-        return BondAdder()
+        return BondAdder(
+            min_bond_len=0.01
+        )
 
-    @pytest.fixture
-    def water(self):
-        mol = read_ob_mols_from_file('data/O_0_0_0.sdf', 'sdf')[0]
+    @pytest.fixture(params=test_sdf_files)
+    def ob_mol(self, request):
+        sdf_file = request.param
+        mol = mols.read_ob_mols_from_file(sdf_file, 'sdf')[0]
         mol.AddHydrogens()
-        return mol
-
-    @pytest.fixture
-    def ammonia(self):
-        mol = read_ob_mols_from_file('data/N_0_0_0.sdf', 'sdf')[0]
-        mol.AddHydrogens()
-        return mol
-
-    @pytest.fixture
-    def methane(self):
-        mol = read_ob_mols_from_file('data/C_0_0_0.sdf', 'sdf')[0]
-        mol.AddHydrogens()
-        return mol
-
-    @pytest.fixture
-    def benzene(self):
-        mol = read_ob_mols_from_file('data/benzene.sdf', 'sdf')[0]
-        mol.AddHydrogens()
+        mol.name = os.path.splitext(os.path.basename(sdf_file))[0]
         return mol
 
     def test_init(self, adder):
         pass
 
-    def test_water_implicit_h(self, water):
+    def test_make_ob_mol(self, adder, typer, ob_mol):
+        struct = typer.make_struct(ob_mol)
+        out_mol = adder.make_ob_mol(struct)[0]
+        for in_atom, out_atom in zip(
+            ob.OBMolAtomIter(ob_mol), ob.OBMolAtomIter(out_mol)
+        ):
+            assert out_atom.GetAtomicNum() == in_atom.GetAtomicNum()
+            assert out_atom.GetVector() == in_atom.GetVector()
 
-        water.DeleteHydrogens()
-        atoms = list(ob.OBMolAtomIter(water))
-        for atom in atoms:
-            assert atom.GetImplicitHCount() == 2
-            assert ob.GetMaxBonds(atom.GetAtomicNum()) == 2
+    def test_set_atom_props(self, adder, typer, ob_mol):
+        struct = typer.make_struct(ob_mol)
+        out_mol, atoms = adder.make_ob_mol(struct)
+        adder.set_atom_properties(out_mol, atoms, struct)
+        ob_mol.DeleteHydrogens()
+        for in_atom, out_atom in zip(
+            ob.OBMolAtomIter(ob_mol), ob.OBMolAtomIter(out_mol)
+        ):
+            assert out_atom.IsAromatic() == in_atom.IsAromatic()
+            assert out_atom.GetImplicitHCount() >= in_atom.IsHbondDonor()
+            assert out_atom.GetImplicitHCount() > ~in_atom.IsHbondAcceptor()
 
-        water.AddHydrogens()
-        for atom in atoms:
-            assert atom.GetImplicitHCount() == 0
-            assert ob.GetMaxBonds(atom.GetAtomicNum()) == 2
+        assert out_mol.HasAromaticPerceived()
+        assert out_mol.NumBonds() == 0
 
-    def test_water_make_mol(self, adder, typer, water):
-        assert water.NumAtoms() == 3
-        struct = typer.make_struct(water)
-        mol = adder.make_ob_mol(struct)
+    def test_add_within_dist(self, adder, typer, ob_mol):
+        struct = typer.make_struct(ob_mol)
+        out_mol, atoms = adder.make_ob_mol(struct)
+        adder.add_within_distance(out_mol, atoms, struct)
+        in_mol = ob_mol
+        mols.write_ob_mols_to_sdf_file(
+            'tests/TEST_{}.sdf'.format(ob_mol.name),
+            [in_mol, out_mol]
+        )
+        assert in_mol.NumAtoms() == out_mol.NumAtoms()
+        for i, (in_a, out_a) in enumerate(
+            zip(ob.OBMolAtomIter(in_mol), ob.OBMolAtomIter(out_mol))
+        ):
+            for j, (in_b, out_b) in enumerate(
+                zip(ob.OBMolAtomIter(in_mol), ob.OBMolAtomIter(out_mol))
+            ):
+                if j <= i:
+                    continue
+                in_bonded = bool(in_mol.GetBond(in_a, in_b))
+                out_bonded = bool(out_mol.GetBond(out_a, out_b))
+                bstr = '{}-{}'.format(
+                    ob.GetSymbol(in_a.GetAtomicNum()),
+                    ob.GetSymbol(in_b.GetAtomicNum())
+                )
+                if in_bonded: assert out_bonded, 'missing ' + bstr + ' bond'
 
-    def test_ammonia_make_mol(self, adder, typer, ammonia):
-        assert ammonia.NumAtoms() == 4
-        struct = typer.make_struct(ammonia)
-        mol = adder.make_ob_mol(struct)
-
-    def test_methane_make_mol(self, adder, typer, methane):
-        assert methane.NumAtoms() == 5
-        struct = typer.make_struct(methane)
-        mol = adder.make_ob_mol(struct)
-
-    def test_benzene_make_mol(self, adder, typer, benzene):
-        assert benzene.NumAtoms() == 12
-        struct = typer.make_struct(benzene)
-        mol = adder.make_ob_mol(struct)
+    if False:
+        try:
+            assert out_mol.NumAtoms() == in_mol.NumAtoms(), 'different num atoms'
+            in_smi = mols.ob_mol_to_smi(in_mol)
+            out_smi = mols.ob_mol_to_smi(out_mol)
+            assert out_smi == in_smi, 'different smiles strings'
+        except AssertionError:
+            raise

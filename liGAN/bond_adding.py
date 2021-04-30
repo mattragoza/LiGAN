@@ -4,6 +4,7 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 
 from .atom_types import Atom
+from .molecules import Molecule
 
 
 class BondAdder(object):
@@ -109,18 +110,21 @@ class BondAdder(object):
         # remove bonds whose lengths or angles are excessively distorted
         self.remove_bad_geometry(ob_mol)
 
-        ob_mol.EndModify()
+        ob_mol.EndModify() # mtr22- this causes a seg fault if omitted
 
     def add_within_distance(self, ob_mol, atoms, struct):
 
         # just do n^2 comparisons, worry about efficiency later
         coords = np.array([(a.GetX(), a.GetY(), a.GetZ()) for a in atoms])
         dists = squareform(pdist(coords))
+        print(dists)
         atom_types = struct.get_atom_types()
 
         # add bonds between every atom pair within a certain distance
         for i, atom_a in enumerate(atoms):
-            for j, atom_b in enumerate(atoms[i+1:]):
+            for j, atom_b in enumerate(atoms):
+                if i >= j:
+                    continue
 
                 # if distance is between min and max bond length
                 if self.min_bond_len < dists[i,j] < self.max_bond_len:
@@ -209,7 +213,6 @@ class BondAdder(object):
         '''
         ob_mol = ob.OBMol()
         ob_mol.BeginModify()
-        visited_mols = []
 
         # need to maintain a list of original atoms since
         # this function can add hydrogens to the molecule
@@ -225,16 +228,18 @@ class BondAdder(object):
             ob_atom.SetAtomicNum(atom_type.atomic_num)
             atoms.append(ob_atom)
 
-        self.set_atom_properties(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
+        #self.set_atom_properties(ob_mol, atoms, struct)
+        ob_mol.EndModify()
+        return ob_mol, atoms
+
+    def add_bonds(self, ob_mol, atoms, struct):
 
         self.connect_the_dots(ob_mol, atoms, struct, visited_mols)
         self.set_atom_properties(ob_mol, atoms, struct)
         visited_mols.append(ob.OBMol(ob_mol))
 
-        ob_mol.EndModify()
 
-        ob_mol.AddPolarHydrogens() #make implicits explicit
+        ob_mol.AddPolarHydrogens() # make implicits explicit
         visited_mols.append(ob.OBMol(ob_mol))
 
         ob_mol.PerceiveBondOrders()
@@ -279,6 +284,152 @@ class BondAdder(object):
 
         # check if the atom types of the molecule are the same
         return ob_mol, struct.typer.make_struct(ob_mol), visited_mols
+
+    def make_mol(struct):
+        '''
+        Create a Molecule from an AtomStruct with added bonds,
+        trying to maintain the same atom types.
+
+        TODO- separation of concerns
+            should move as much of the "fixing up/validifying"
+            code into separate methods, completely separate
+            from the initial conversion of struct on ob_mol
+            and the later conversion of ob_mol to rd_mol
+
+            how best to do this given the OB and RDkit have
+            different aromaticity models/other functions?
+        '''
+        ob_mol, add_struct, visited_mols = self.make_ob_mol(struct)
+        return Molecule(convert_ob_mol_to_rd_mol(ob_mol)), add_struct, [
+            Molecule(convert_ob_mol_to_rd_mol(m)) for m in visited_mols
+        ]
+
+
+def calc_valence(rd_atom):
+    '''
+    Can call GetExplicitValence before sanitize,
+    but need to know this to fix up the molecule
+    to prevent sanitization failures.
+    '''
+    val = 0
+    for bond in rd_atom.GetBonds():
+        val += bond.GetBondTypeAsDouble()
+    return val
+
+
+def convert_ob_mol_to_rd_mol(ob_mol, struct=None):
+    '''
+    Convert OBMol to RDKit mol, fixing up issues.
+    '''
+    ob_mol.DeleteHydrogens() # mtr22- don't we want to keep these?
+
+    n_atoms = ob_mol.NumAtoms()
+    rd_mol = Chem.RWMol()
+    rd_conf = Chem.Conformer(n_atoms)
+
+    for ob_atom in ob.OBMolAtomIter(ob_mol):
+        rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        #TODO copy formal charge
+        if ob_atom.IsAromatic() and ob_atom.IsInRing() and ob_atom.MemberOfRingSize() <= 6:
+            #don't commit to being aromatic unless rdkit will be okay with the ring status
+            #(this can happen if the atoms aren't fit well enough)
+            rd_atom.SetIsAromatic(True)
+        i = rd_mol.AddAtom(rd_atom)
+        ob_coords = ob_atom.GetVector()
+        x = ob_coords.GetX()
+        y = ob_coords.GetY()
+        z = ob_coords.GetZ()
+        rd_coords = Geometry.Point3D(x, y, z)
+        rd_conf.SetAtomPosition(i, rd_coords)
+
+    rd_mol.AddConformer(rd_conf)
+
+    for ob_bond in ob.OBMolBondIter(ob_mol):
+        i = ob_bond.GetBeginAtomIdx()-1
+        j = ob_bond.GetEndAtomIdx()-1
+        bond_order = ob_bond.GetBondOrder()
+        if bond_order == 1:
+            rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
+        elif bond_order == 2:
+            rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
+        elif bond_order == 3:
+            rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
+        else:
+            raise Exception('unknown bond order {}'.format(bond_order))
+
+        if ob_bond.IsAromatic():
+            bond = rd_mol.GetBondBetweenAtoms (i,j)
+            bond.SetIsAromatic(True)
+
+    rd_mol = Chem.RemoveHs(rd_mol, sanitize=False)
+
+    pt = Chem.GetPeriodicTable()
+    #if double/triple bonds are connected to hypervalent atoms, decrement the order
+
+    positions = rd_mol.GetConformer().GetPositions()
+    nonsingles = []
+    for bond in rd_mol.GetBonds():
+        if bond.GetBondType() == Chem.BondType.DOUBLE or bond.GetBondType() == Chem.BondType.TRIPLE:
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+            dist = np.linalg.norm(positions[i]-positions[j])
+            nonsingles.append((dist,bond))
+    nonsingles.sort(reverse=True, key=lambda t: t[0])
+
+    for (d,bond) in nonsingles:
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+
+        if calc_valence(a1) > pt.GetDefaultValence(a1.GetAtomicNum()) or \
+           calc_valence(a2) > pt.GetDefaultValence(a2.GetAtomicNum()):
+            btype = Chem.BondType.SINGLE
+            if bond.GetBondType() == Chem.BondType.TRIPLE:
+                btype = Chem.BondType.DOUBLE
+            bond.SetBondType(btype)
+
+    for atom in rd_mol.GetAtoms():
+        #set nitrogens with 4 neighbors to have a charge
+        if atom.GetAtomicNum() == 7 and atom.GetDegree() == 4:
+            atom.SetFormalCharge(1)
+
+    rd_mol = Chem.AddHs(rd_mol,addCoords=True)
+
+    positions = rd_mol.GetConformer().GetPositions()
+    center = np.mean(positions[np.all(np.isfinite(positions),axis=1)],axis=0)
+    for atom in rd_mol.GetAtoms():
+        i = atom.GetIdx()
+        pos = positions[i]
+        if not np.all(np.isfinite(pos)):
+            #hydrogens on C fragment get set to nan (shouldn't, but they do)
+            rd_mol.GetConformer().SetAtomPosition(i,center)
+
+    try:
+        Chem.SanitizeMol(rd_mol,Chem.SANITIZE_ALL^Chem.SANITIZE_KEKULIZE)
+    except: # mtr22 - don't assume mols will pass this
+        pass
+        # dkoes - but we want to make failures as rare as possible and should debug them
+        m = pybel.Molecule(ob_mol)
+        if not os.path.isdir('badmols'):
+            os.mkdir('badmols')
+        i = np.random.randint(1000000)
+        outname = 'badmols/badmol%d.sdf'%i
+        print("WRITING",outname)
+        m.write('sdf',outname,overwrite=True)
+        pickle.dump(struct,open('badmols/badmol%d.pkl'%i,'wb'))
+
+    #but at some point stop trying to enforce our aromaticity -
+    #openbabel and rdkit have different aromaticity models so they
+    #won't always agree.  Remove any aromatic bonds to non-aromatic atoms
+    for bond in rd_mol.GetBonds():
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if bond.GetIsAromatic():
+            if not a1.GetIsAromatic() or not a2.GetIsAromatic():
+                bond.SetIsAromatic(False)
+        elif a1.GetIsAromatic() and a2.GetIsAromatic():
+            bond.SetIsAromatic(True)
+
+    return rd_mol
 
 
 def reachable_r(atom_a, atom_b, visited_bonds):

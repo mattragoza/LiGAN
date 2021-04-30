@@ -1,5 +1,6 @@
 import sys, gzip, traceback, time
 from functools import lru_cache
+from collections import Counter
 import numpy as np
 
 from openbabel import openbabel as ob
@@ -200,18 +201,42 @@ def read_ob_mols_from_file(mol_file, in_format):
     return ob_mols
 
 
-def write_ob_mols_to_sdf_file(sdf_file, ob_mols):
+def set_ob_conv_opts(ob_conv, options):
+    for o in options:
+        ob_conv.AddOption(o, ob_conv.OUTOPTIONS)
+
+
+def write_ob_mols_to_sdf_file(sdf_file, ob_mols, options='h'):
     ob_conv = ob.OBConversion()
     if sdf_file.endswith('.gz'):
         ob_conv.SetOutFormat('sdf.gz')
     else:
         ob_conv.SetOutFormat('sdf')
+    set_ob_conv_opts(ob_conv, options)
     for i, ob_mol in enumerate(ob_mols):
         if i == 0:
             ob_conv.WriteFile(ob_mol, sdf_file)
         else:
             ob_conv.Write(ob_mol)
     ob_conv.CloseOutFile()
+
+
+def ob_mol_count_elems(ob_mol):
+    return Counter(a.GetAtomicNum() for a in ob.OBMolAtomIter(ob_mol))
+
+
+def ob_mol_to_smi(ob_mol, options='cnh'):
+    ob_conv = ob.OBConversion()
+    ob_conv.SetOutFormat('smi')
+    set_ob_conv_opts(ob_conv, options)
+    return ob_conv.WriteString(ob_mol).rstrip()
+
+
+def ob_mol_delete_bonds(ob_mol):
+    ob_mol = ob.OBMol(ob_mol)
+    for bond in ob.OBMolBondIter(ob_mol):
+        ob_mol.DeleteBond(bond)
+    return ob_mol
 
 
 def rd_mol_to_ob_mol(rd_mol):
