@@ -8,9 +8,9 @@ from liGAN.atom_types import Atom, AtomTyper
 from liGAN.bond_adding import BondAdder
 
 test_sdf_files = [
-    'data/O_0_0_0.sdf',
-    'data/N_0_0_0.sdf',
-    'data/C_0_0_0.sdf',
+    'data/O_2_0_0.sdf',
+    'data/N_2_0_0.sdf',
+    'data/C_2_0_0.sdf',
     'data/benzene.sdf',
     'data/neopentane.sdf',
 ]
@@ -21,7 +21,6 @@ class TestBondAdding(object):
         [Atom.h_acceptor, Atom.h_donor],
         [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
         [Atom.h_degree],
-        [],
     ])
     def typer(self):
         return AtomTyper(
