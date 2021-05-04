@@ -57,6 +57,9 @@ class Molecule(Chem.RWMol):
     def to_smi(self):
         return get_smiles_string(self)
 
+    def to_ob_mol(self):
+        return rd_mol_to_ob_mol(self)
+
     @property
     def n_atoms(self):
         return self.GetNumAtoms()

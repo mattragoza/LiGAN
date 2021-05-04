@@ -18,8 +18,8 @@ class AtomStruct(object):
         self, coords, types, typer, bonds=None, device=None, **info
     ):
         self.check_shapes(coords, types, typer, bonds)
-        self.coords = torch.as_tensor(coords, device=device)
-        self.types = torch.as_tensor(types, device=device)
+        self.coords = torch.as_tensor(coords, dtype=float, device=device)
+        self.types = torch.as_tensor(types, dtype=float, device=device)
         self.typer = typer
 
         if bonds is not None:

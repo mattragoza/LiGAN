@@ -1,4 +1,6 @@
+import sys, os, pickle
 from openbabel import openbabel as ob
+from openbabel import pybel
 from rdkit import Chem, Geometry
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
@@ -238,7 +240,7 @@ class BondAdder(object):
 
     def add_bonds(self, ob_mol, atoms, struct):
 
-        visited_mols = [ob_mol]
+        visited_mols = [ob.OBMol(ob_mol)]
         self.connect_the_dots(ob_mol, atoms, struct, visited_mols)
 
         self.set_atom_properties(ob_mol, atoms, struct)
@@ -383,9 +385,10 @@ class BondAdder(object):
                 os.mkdir('badmols')
             i = np.random.randint(1000000)
             outname = 'badmols/badmol%d.sdf'%i
-            print("WRITING",outname)
+            print("WRITING", outname, file=sys.stderr)
             m.write('sdf',outname,overwrite=True)
-            pickle.dump(struct,open('badmols/badmol%d.pkl'%i,'wb'))
+            if struct:
+                pickle.dump(struct,open('badmols/badmol%d.pkl'%i,'wb'))
 
         #but at some point stop trying to enforce our aromaticity -
         #openbabel and rdkit have different aromaticity models so they
@@ -417,10 +420,12 @@ class BondAdder(object):
         '''
         ob_mol, atoms = self.make_ob_mol(struct)
         ob_mol, visited_mols = self.add_bonds(ob_mol, atoms, struct)
-        add_struct = struct.typer.make_struct(ob_mol)
-        return Molecule(self.convert_ob_mol_to_rd_mol(ob_mol)), add_struct, [
+        rd_mol = Molecule(self.convert_ob_mol_to_rd_mol(ob_mol))
+        add_struct = struct.typer.make_struct(rd_mol.to_ob_mol())
+        visited_mols = [
             Molecule(ob_mol_to_rd_mol(m)) for m in visited_mols
-        ]
+        ] + [rd_mol]
+        return rd_mol, add_struct, visited_mols
 
 
 def calc_valence(rd_atom):

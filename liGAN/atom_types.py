@@ -356,7 +356,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
         if 'n' in pf:
             prop_funcs += [Atom.h_degree]
-            prop_ranges += [[0, 1, 2, UNK]]
+            prop_ranges += [[0, 1, 2, 3, 4]]
 
         if rf == 'v': # van der Waals
             radius_func = Atom.vdw_radius

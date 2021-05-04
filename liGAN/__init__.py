@@ -1,5 +1,6 @@
 from . import (
 	common,
+	molecules,
 	atom_types,
 	atom_structs,
 	atom_grids,
@@ -7,7 +8,7 @@ from . import (
 	models,
 	training,
 	atom_fitting,
-	molecules,
+	bond_adding,
 	metrics
 )
 from .common import set_random_seed
