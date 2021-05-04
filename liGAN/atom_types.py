@@ -209,11 +209,12 @@ class Unknown(object):
     it is considered equal to everthing.
 
     This can be used as the last element
-    in a type range to catch any values
-    not explicitly specified before it.
+    in a property range provided to an
+    AtomTyper in order to catch any values
+    not explicitly specified.
 
     Note that the original value will not
-    be recoverable through atom fitting.
+    be recoverable.
     '''
     def __eq__(self, other):
         '''
@@ -230,7 +231,7 @@ UNK = Unknown()
 
 class AtomTyper(molgrid.PythonCallbackVectorTyper):
     '''
-    An class for converting OBAtoms to atom type vectors.
+    A class for converting OBAtoms to atom type vectors.
 
     An AtomTyper is defined by a list of typing properties
     and ranges of valid output values for each property.
@@ -298,20 +299,22 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             types=np.array(types),
             typer=self,
             device=device,
+            src_mol=ob_mol, # caution: src_mol is an rd_mol elsewhere
             **info
         )
 
     def get_atom_type(self, type_vec):
         '''
-        Return a named tuple that has the properties
-        and values defined that are represented by the
-        given type_vec.
+        Return a named tuple that has atomic properties
+        and values defined as represented by the given
+        type_vec.
         '''
         i = 0
         values = []
         for prop, range_ in zip(self.prop_funcs, self.prop_ranges):
             prop_vec = type_vec[i:i+len(range_)]
             if len(range_) > 1: # argmax
+                # TODO what if it's all zeros?
                 value = range_[prop_vec.argmax().item()]
             else: # boolean
                 value = (prop_vec > 0).item()

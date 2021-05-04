@@ -54,6 +54,9 @@ class Molecule(Chem.RWMol):
     def to_sdf(self, sdf_file, name='', kekulize=True):
         write_rd_mol_to_sdf_file(sdf_file, self, name, kekulize)
 
+    def to_smi(self):
+        return get_smiles_string(self)
+
     @property
     def n_atoms(self):
         return self.GetNumAtoms()

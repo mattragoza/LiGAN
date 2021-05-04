@@ -64,7 +64,7 @@ class TestAtomTyper(object):
                 Atom.h_donor,
             ],
             prop_ranges=[
-                [6, 7, 8, UNK], [1], [1], [1],
+                [1, 6, 7, 8, UNK], [1], [1], [1],
             ],
             radius_func=lambda x: 1
         )
@@ -81,7 +81,7 @@ class TestAtomTyper(object):
     def test_typer_init(self, typer):
         assert len(typer.prop_funcs) == 4
         assert len(typer.prop_ranges) == 4
-        assert typer.n_types == 7
+        assert typer.n_types == 8
 
     def test_get_typer(self):
         AtomTyper.get_typer(prop_funcs='oad', radius_func='v')
@@ -93,11 +93,11 @@ class TestAtomTyper(object):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
             if i < 6: # aromatic carbon
                 assert typer.get_type_vector(atom) == [
-                    1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 0, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
-                    0, 0, 0, 1, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_atom_type(self, typer, benzene):
@@ -114,11 +114,11 @@ class TestAtomTyper(object):
         for i, type_vec in enumerate(struct.types):
             if i < 6: # aromatic carbon
                 assert list(type_vec) == [
-                    1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 0, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 1, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_ex_provider(self, typer):
@@ -136,10 +136,10 @@ class TestAtomTyper(object):
         for i, type_vec in enumerate(type_vecs):
             if i < 6: # aromatic carbon
                 assert list(type_vec) == [
-                    1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 0, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 1, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0, 0, 0,
                 ]
 

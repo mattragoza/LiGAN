@@ -3,7 +3,7 @@ from numpy import isclose
 
 sys.path.insert(0, '.')
 import liGAN.molecules as mols
-from liGAN.molecules import ob
+from liGAN.molecules import ob, Molecule
 from liGAN.atom_types import Atom, AtomTyper
 from liGAN.bond_adding import BondAdder
 
@@ -46,7 +46,7 @@ class TestBondAdding(object):
     def ob_mol(self, request):
         sdf_file = request.param
         mol = mols.read_ob_mols_from_file(sdf_file, 'sdf')[0]
-        mol.AddHydrogens()
+        mol.DeleteHydrogens()
         mol.name = os.path.splitext(os.path.basename(sdf_file))[0]
         return mol
 
@@ -56,6 +56,7 @@ class TestBondAdding(object):
     def test_make_ob_mol(self, adder, typer, ob_mol):
         struct = typer.make_struct(ob_mol)
         out_mol = adder.make_ob_mol(struct)[0]
+        assert out_mol.NumAtoms() == ob_mol.NumAtoms()
         for in_atom, out_atom in zip(
             ob.OBMolAtomIter(ob_mol), ob.OBMolAtomIter(out_mol)
         ):
@@ -66,13 +67,14 @@ class TestBondAdding(object):
         struct = typer.make_struct(ob_mol)
         out_mol, atoms = adder.make_ob_mol(struct)
         adder.set_atom_properties(out_mol, atoms, struct)
-        ob_mol.DeleteHydrogens()
         for in_atom, out_atom in zip(
             ob.OBMolAtomIter(ob_mol), ob.OBMolAtomIter(out_mol)
         ):
             assert out_atom.IsAromatic() == in_atom.IsAromatic()
             assert out_atom.GetImplicitHCount() >= in_atom.IsHbondDonor()
-            assert out_atom.GetImplicitHCount() > ~in_atom.IsHbondAcceptor()
+            assert (
+                out_atom.GetImplicitHCount() + in_atom.IsHbondAcceptor()
+            ) <= ob.GetMaxBonds(out_atom.GetAtomicNum())
 
         assert out_mol.HasAromaticPerceived()
         assert out_mol.NumBonds() == 0
@@ -103,11 +105,49 @@ class TestBondAdding(object):
                 )
                 if in_bonded: assert out_bonded, 'missing ' + bstr + ' bond'
 
-    if False:
-        try:
-            assert out_mol.NumAtoms() == in_mol.NumAtoms(), 'different num atoms'
-            in_smi = mols.ob_mol_to_smi(in_mol)
-            out_smi = mols.ob_mol_to_smi(out_mol)
-            assert out_smi == in_smi, 'different smiles strings'
-        except AssertionError:
-            raise
+    def test_add_bonds(self, adder, typer, ob_mol):
+        struct = typer.make_struct(ob_mol)
+
+        out_mol, atoms = adder.make_ob_mol(struct)
+        out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
+
+        ob_mol.AddHydrogens()
+        in_mol = ob_mol
+
+        mols.write_ob_mols_to_sdf_file(
+            'tests/TEST_{}.sdf'.format(ob_mol.name),
+            [in_mol, out_mol]
+        )
+        assert in_mol.NumAtoms() == out_mol.NumAtoms(), 'different num atoms'
+
+        for i, (in_a, out_a) in enumerate(
+            zip(ob.OBMolAtomIter(in_mol), ob.OBMolAtomIter(out_mol))
+        ):
+            for j, (in_b, out_b) in enumerate(
+                zip(ob.OBMolAtomIter(in_mol), ob.OBMolAtomIter(out_mol))
+            ):
+                if j <= i:
+                    continue
+                in_bonded = bool(in_mol.GetBond(in_a, in_b))
+                out_bonded = bool(out_mol.GetBond(out_a, out_b))
+                bstr = '{}-{}'.format(
+                    ob.GetSymbol(in_a.GetAtomicNum()),
+                    ob.GetSymbol(in_b.GetAtomicNum())
+                )
+                assert in_bonded == out_bonded, 'different bonds'
+
+    def test_make_mol(self, adder, typer, ob_mol):
+        struct = typer.make_struct(ob_mol)
+
+        out_mol, _, _ = adder.make_mol(struct)
+
+        ob_mol.AddHydrogens()
+        in_mol = Molecule(adder.convert_ob_mol_to_rd_mol(ob_mol))
+
+        mols.write_rd_mols_to_sdf_file(
+            'tests/TEST_{}.sdf'.format(ob_mol.name),
+            [in_mol, out_mol]
+        )
+        assert in_mol.n_atoms == out_mol.n_atoms, 'different num atoms'
+        assert in_mol.to_smi() == out_mol.to_smi(), 'different molecules'
+        assert in_mol.aligned_rmsd(out_mol) < 1e-5, 'RMSD too high'
