@@ -532,6 +532,14 @@ def sort_bonds_by_stretch(bonds):
     return bond_info
 
 
+def count_nbrs_of_elem(atom, atomic_num):
+    count = 0
+    for nbr in ob.OBAtomAtomIter(atom):
+        if nbr.GetAtomicNum() == atomic_num:
+            count += 1
+    return count
+
+
 def get_max_valences(atoms, struct):
 
     # determine max allowed valences
@@ -547,6 +555,10 @@ def get_max_valences(atoms, struct):
             Chem.GetPeriodicTable().GetDefaultValence(atomic_num)
         )
         atom_type = struct.typer.get_atom_type(struct.types[i])
+
+        if atom_type.atomic_num == 16: # sulfone check
+            if count_nbrs_of_elem(ob_atom, 8) >= 2:
+                max_val = 6
 
         if Atom.formal_charge in struct.typer:
             max_val += atom_type.formal_charge #mtr22- is this correct?
