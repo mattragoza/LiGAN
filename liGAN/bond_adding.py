@@ -34,56 +34,70 @@ class BondAdder(object):
         self.max_bond_stretch = max_bond_stretch
         self.min_bond_angle = min_bond_angle
 
-    def set_atom_properties(self, ob_mol, atoms, struct):
+    def make_ob_mol(self, struct):
         '''
-        Set atom properties to match the atom types.
-        Keep doing this to beat openbabel over the
-        head with what we want to happen. (fixup)
+        Create an OBMol from AtomStruct that has the
+        same elements and coordinates. No other atomic
+        properties are set and bonds are not added.
+
+        Also returns a list of the created atoms in
+        the same order as struct, which is needed for
+        other methods that add hydrogens and change
+        the indexing of atoms in the molecule.
         '''
-        types = struct.types
-        typer = struct.typer
-        aromatic_perceived = False
+        ob_mol = ob.OBMol()
+        ob_mol.BeginModify()
 
-        for ob_atom, type_vec in zip(atoms, types):
+        atoms = []
+        for coord, type_vec in zip(struct.coords, struct.types):         
+            ob_atom = ob_mol.NewAtom()
 
-            atom_type = typer.get_atom_type(type_vec)
+            x, y, z = [float(c) for c in coord]
+            ob_atom.SetVector(x, y, z)
 
-            if Atom.aromatic in typer:
-                aromatic_perceived = True
+            atom_type = struct.typer.get_atom_type(type_vec)
+            ob_atom.SetAtomicNum(atom_type.atomic_num)
+            atoms.append(ob_atom)
+
+        #self.set_atom_properties(ob_mol, atoms, struct)
+        ob_mol.EndModify()
+        return ob_mol, atoms
+
+    def set_aromaticity(self, ob_mol, atoms, struct):
+        '''
+        Set aromaticiy of atoms based on their atom
+        types. Aromatic atoms are also marked as
+        sp2 hybridization.
+        '''
+        for ob_atom, atom_type in zip(atoms, struct.atom_types):
+
+            if 'aromatic' in atom_type._fields:
                 if atom_type.aromatic:
                     ob_atom.SetAromatic(True)
                     ob_atom.SetHyb(2)
                 else:
                     ob_atom.SetAromatic(False)
 
-            h_degree = None
+        if 'aromatic' in atom_type._fields:
+            ob_mol.SetAromaticPerceived(True)
 
-            if Atom.h_degree in typer: # explicit number of h bonds
-                h_degree = atom_type.h_degree
+    def set_min_h_counts(self, ob_mol, atoms, struct):
+        '''
+        Set atoms to have at least one H if they are
+        hydrogen bond donors, and the exact number
+        of Hs specified by their atom type, if it is
+        available.
+        '''
+        assert not ob_mol.HasHydrogensAdded()
 
-            elif Atom.h_donor in typer and Atom.h_acceptor in typer:
+        for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
-                if atom_type.h_donor: # at least one h bond, maybe more
+            if 'h_degree' in atom_type._fields:
+                ob_atom.SetImplicitHCount(atom_type.h_degree)
 
-                    # if there are no explicit h bonds,
-                    if ob_atom.GetExplicitDegree() == ob_atom.GetHvyDegree():
-
-                        # if it's nitrogen with one heavy atom bond,
-                        if (
-                            ob_atom.GetHvyDegree() == 1 and
-                            ob_atom.GetAtomicNum() == 7
-                        ):
-                            h_degree = 2
-                        else:
-                            h_degree = 1
-
-                elif atom_type.h_acceptor: # note the else, i.e. not a donor
-                    h_degree = 0
-
-            if h_degree is not None:
-                ob_atom.SetImplicitHCount(h_degree)
-
-        ob_mol.SetAromaticPerceived(aromatic_perceived)
+            elif 'h_donor' in atom_type._fields:
+                if atom_type.h_donor and ob_atom.GetImplicitHCount() == 0:
+                    ob_atom.SetImplicitHCount(1)
 
     def connect_the_dots(self, ob_mol, atoms, struct, visited_mols):
         '''
@@ -120,7 +134,6 @@ class BondAdder(object):
         # just do n^2 comparisons, worry about efficiency later
         coords = np.array([(a.GetX(), a.GetY(), a.GetZ()) for a in atoms])
         dists = squareform(pdist(coords))
-        atom_types = struct.get_atom_types()
 
         # add bonds between every atom pair within a certain distance
         for i, atom_a in enumerate(atoms):
@@ -133,9 +146,10 @@ class BondAdder(object):
 
                     # add bond, checking whether it should be aromatic
                     flag = 0
-                    if (Atom.aromatic in struct.typer
-                        and atom_types[i].aromatic
-                        and atom_types[j].aromatic
+                    if (
+                        'aromatic' in struct.atom_types[i]
+                        and struct.atom_types[i].aromatic
+                        and struct.atom_types[j].aromatic
                     ):
                         flag = ob.OB_AROMATIC_BOND
 
@@ -145,7 +159,7 @@ class BondAdder(object):
 
     def remove_bad_valences(self, ob_mol, atoms, struct):
 
-        # get max valence of the atom types, leaving room for hydrogens
+        # get max valence of the atom types
         max_vals = get_max_valences(atoms, struct)
 
         # remove any impossible bonds between halogens (mtr22- and hydrogens)
@@ -209,45 +223,55 @@ class BondAdder(object):
                 if reachable(atom1, atom2): # don't fragment the molecule
                     ob_mol.DeleteBond(bond)
 
-    def make_ob_mol(self, struct):
-        '''
-        Create an OBMol from AtomStruct that has the
-        same elements and coordinates. No other atomic
-        properties are set and bonds are not added.
-
-        Also returns a list of the created atoms in
-        the same order as struct, which is needed for
-        other methods that add hydrogens and change
-        the indexing of atoms in the molecule.
-        '''
-        ob_mol = ob.OBMol()
-        ob_mol.BeginModify()
-
-        atoms = []
-        for coord, type_vec in zip(struct.coords, struct.types):         
-            ob_atom = ob_mol.NewAtom()
-
-            x, y, z = [float(c) for c in coord]
-            ob_atom.SetVector(x, y, z)
-
-            atom_type = struct.typer.get_atom_type(type_vec)
-            ob_atom.SetAtomicNum(atom_type.atomic_num)
-            atoms.append(ob_atom)
-
-        #self.set_atom_properties(ob_mol, atoms, struct)
-        ob_mol.EndModify()
-        return ob_mol, atoms
-
     def add_bonds(self, ob_mol, atoms, struct):
 
         visited_mols = [ob.OBMol(ob_mol)]
-        self.connect_the_dots(ob_mol, atoms, struct, visited_mols)
 
-        self.set_atom_properties(ob_mol, atoms, struct)
-        ob_mol.AddHydrogens() # make implicit Hs explicit
+        if len(atoms) == 0:
+            return ob_mol, visited_mols
+
+        ob_mol.BeginModify()
+
+        # add all bonds between atom pairs within a distance range
+        self.add_within_distance(ob_mol, atoms, struct)
         visited_mols.append(ob.OBMol(ob_mol))
 
+        # set minimum H counts to determine hyper valency
+        #   but don't make them explicit yet to avoid issues
+        #   with bond adding/removal (i.e. ignore H bonds)
+        self.set_min_h_counts(ob_mol, atoms, struct)
+        visited_mols.append(ob.OBMol(ob_mol))
+
+        # remove bonds to atoms that are above their allowed valence
+        #   with priority towards removing highly stretched bonds
+        self.remove_bad_valences(ob_mol, atoms, struct)
+        visited_mols.append(ob.OBMol(ob_mol))
+
+        # remove bonds whose lengths/angles are excessively distorted
+        self.remove_bad_geometry(ob_mol)
+        visited_mols.append(ob.OBMol(ob_mol))
+
+        # segfault if EndModify() not before PerceiveBondOrders()
+        #   but it also resets H coords, so AddHydrogens() after
+        #   and it clears most flags, except AromaticPerceived()
+        ob_mol.EndModify()
+
+        # need to make implicit Hs explicit before PerceiveBondOrders()
+        #   since it fills in the remaining valence with multiple bonds
+        # AND need to set aromatic before making implicit Hs explicit
+        #   because it uses the hybridization to create H coords
+        self.set_aromaticity(ob_mol, atoms, struct)
+        visited_mols.append(ob.OBMol(ob_mol))
+        ob_mol.AddHydrogens()
+
+        # use geometry to fill empty valences with double/triple bonds
         ob_mol.PerceiveBondOrders()
+        visited_mols.append(ob.OBMol(ob_mol))
+
+        return ob_mol, visited_mols
+
+    if False: # TODO integrate from here
+
         self.set_atom_properties(ob_mol, atoms, struct)
         visited_mols.append(ob.OBMol(ob_mol))
 

@@ -243,12 +243,13 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     A function giving the atomic radius is also needed.
     '''
-    def __init__(self, prop_funcs, prop_ranges, radius_func):
+    def __init__(self, prop_funcs, prop_ranges, radius_func, omit_h=True):
         assert len(prop_funcs) == len(prop_ranges)
         assert prop_funcs[0] == Atom.atomic_num
         self.prop_funcs = prop_funcs
         self.prop_ranges = prop_ranges
         self.radius_func = radius_func
+        self.omit_h = omit_h
         super().__init__(
             lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
@@ -280,8 +281,11 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_type_vector(self, ob_atom):
         type_vec = []
         for func, range_ in zip(self.prop_funcs, self.prop_ranges):
-            value = func(ob_atom)
-            type_vec += make_one_hot(value, range_)
+            if self.omit_h and ob_atom.GetAtomicNum() == 1:
+                type_vec += [0] * len(range_)
+            else:
+                value = func(ob_atom)
+                type_vec += make_one_hot(value, range_)
         return type_vec
 
     def get_radius(self, ob_atom):
@@ -314,7 +318,8 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         for prop, range_ in zip(self.prop_funcs, self.prop_ranges):
             prop_vec = type_vec[i:i+len(range_)]
             if len(range_) > 1: # argmax
-                # TODO what if it's all zeros?
+                assert any(prop_vec > 0), \
+                    'missing value for {}'.format(prop.__name__)
                 value = range_[prop_vec.argmax().item()]
             else: # boolean
                 value = (prop_vec > 0).item()

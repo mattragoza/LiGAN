@@ -18,6 +18,12 @@ class AtomStruct(object):
         self, coords, types, typer, bonds=None, device=None, **info
     ):
         self.check_shapes(coords, types, typer, bonds)
+
+        # omit atoms with zero type vectors
+        nonzero = (types > 0).any(axis=1)
+        coords = coords[nonzero]
+        types = types[nonzero]
+
         self.coords = torch.as_tensor(coords, dtype=float, device=device)
         self.types = torch.as_tensor(types, dtype=float, device=device)
         self.typer = typer
@@ -28,6 +34,10 @@ class AtomStruct(object):
             self.bonds = None
 
         self.info = info
+
+        self.atom_types = [
+            self.typer.get_atom_type(t) for t in self.types
+        ]
 
     @staticmethod
     def check_shapes(coords, types, typer, bonds):
@@ -122,9 +132,6 @@ class AtomStruct(object):
             outfile = open(sdf_file, 'wt')
         molecules.write_rd_mol_to_sdf_file(outfile, self.to_rd_mol())
         outfile.close()
-
-    def get_atom_types(self):
-        return [self.typer.get_atom_type(t) for t in self.types]
 
     def add_bonds(self, tol=0.0):
 

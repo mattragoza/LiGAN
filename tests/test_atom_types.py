@@ -66,7 +66,8 @@ class TestAtomTyper(object):
             prop_ranges=[
                 [1, 6, 7, 8, UNK], [1], [1], [1],
             ],
-            radius_func=lambda x: 1
+            radius_func=lambda x: 1,
+            omit_h=True,
         )
 
     @pytest.fixture
@@ -75,7 +76,7 @@ class TestAtomTyper(object):
             os.environ['LIGAN_ROOT'], 'data', 'benzene.sdf'
         )
         mol = read_ob_mols_from_file(sdf_file, 'sdf')[0]
-        #mol.DeleteHydrogens()
+        mol.AddHydrogens() # NOTE needed to determine donor acceptor
         return mol
 
     def test_typer_init(self, typer):
@@ -97,17 +98,18 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
-                    1, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_atom_type(self, typer, benzene):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
             type_vec = torch.as_tensor(typer.get_type_vector(atom))
-            atom_type = typer.get_atom_type(type_vec)
-            assert atom_type.atomic_num == atom.GetAtomicNum()
-            assert atom_type.aromatic == atom.IsAromatic()
-            assert atom_type.h_acceptor == atom.IsHbondAcceptor()
-            assert atom_type.h_donor == atom.IsHbondDonor()
+            if type_vec.bool().any():
+                atom_type = typer.get_atom_type(type_vec)
+                assert atom_type.atomic_num == atom.GetAtomicNum()
+                assert atom_type.aromatic == atom.IsAromatic()
+                assert atom_type.h_acceptor == atom.IsHbondAcceptor()
+                assert atom_type.h_donor == atom.IsHbondDonor()
 
     def test_typer_struct(self, typer, benzene):
         struct = typer.make_struct(benzene)
@@ -118,7 +120,7 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    1, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_ex_provider(self, typer):
@@ -140,6 +142,6 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    1, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
                 ]
 
