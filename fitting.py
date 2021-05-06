@@ -386,6 +386,11 @@ def connect_the_dots(mol, atoms, struct, maxbond=4):
         #since we want the molecule to be valid for both (rdkit is usually lower)
         maxb = ob.GetMaxBonds(a.GetAtomicNum())
         maxb = min(maxb,pt.GetDefaultValence(a.GetAtomicNum())) 
+
+        if a.GetAtomicNum() == 16: # sulfone check
+            if count_nbrs_of_elem(a, 8) >= 2:
+                maxb = 6
+
         if 'Donor' in types[i]:
             maxb -= 1 #leave room for hydrogen
         atom_maxb[a.GetIdx()] = maxb
@@ -671,3 +676,14 @@ def make_rdmol(struct,verbose=False):
         convert_ob_mol_to_rd_mol(mol) for mol in visited_mols
     ]
 
+
+def count_nbrs_of_elem(atom, atomic_num):
+    '''
+    Count the number of neighbors atoms
+    of atom with the given atomic_num.
+    '''
+    count = 0
+    for nbr in ob.OBAtomAtomIter(atom):
+        if nbr.GetAtomicNum() == atomic_num:
+            count += 1
+    return count
