@@ -2,9 +2,9 @@
 
 liGAN is a research codebase for training and evaluating deep generative models for *de novo* drug design based on 3D atomic density grids. It is based on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe).
 
-[VAE paper]() - [2 minute talk](https://youtu.be/Pyc6xwtGaUM)
+[VAE paper](https://arxiv.org/abs/2010.08687) - [2 minute talk](https://youtu.be/Pyc6xwtGaUM)
 
-[CVAE paper]() - [15 minute talk](https://youtu.be/zru1FqCd8Ks)
+[CVAE paper](https://arxiv.org/abs/2010.14442) - [15 minute talk](https://youtu.be/zru1FqCd8Ks)
 
 ## Dependencies
 
