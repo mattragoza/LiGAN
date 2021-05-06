@@ -36,7 +36,6 @@ import molecules
 from atom_structs import AtomStruct
 from atom_grids import AtomGrid
 import fitting as dkoes_fitting
-from results import get_terminal_size
 
 
 def remove_tensors(obj, visited=None):
@@ -1777,8 +1776,6 @@ def generate_from_model(gen_net, data_param, n_examples, args):
         rec_map,
         lig_map,
         data_root=args.data_root,
-        recmolcache=data_param.recmolcache,
-        ligmolcache=data_param.ligmolcache,
     )
 
     print('Populating example provider')
@@ -2332,10 +2329,7 @@ def main(argv):
 
     pd.set_option('display.max_columns', 100)
     pd.set_option('display.max_colwidth', 100)
-    try:
-        display_width = get_terminal_size()[1]
-    except:
-        display_width = 185
+    display_width = 185
     pd.set_option('display.width', display_width)
 
     if not args.blob_name:
