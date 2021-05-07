@@ -20,6 +20,9 @@ liGAN is a research codebase for training and evaluating deep generative models 
 
 ## Usage
 
+You can use the scripts `download_data.sh` and `download_weights.sh` to download the test data
+and weights that were evaluated in the above papers.
+
 The script `generate.py` is used to generate atomic density grids and molecular structures from
 a trained generative model.
 
