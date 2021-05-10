@@ -68,10 +68,7 @@ def make_mols(
             print(e, file=sys.stderr)
             pass
 
-        if 'h' in typer_fns:
-            lig_ob_mol.AddHydrogens()
-        # else: lig_ob_mol.DeleteHydrogens() ???
-
+        lig_ob_mol.AddHydrogens()
         lig_struct = atom_typer.make_struct(lig_ob_mol)
         lig_add_mol, lig_add_struct, visited_mols = bond_adder.make_mol(
             lig_struct

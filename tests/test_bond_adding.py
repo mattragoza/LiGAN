@@ -17,6 +17,7 @@ test_sdf_files = [
     'data/sulfone.sdf',
 ]
 
+
 prop_ranges = {
     Atom.atomic_num: [6, 7, 8, 16],
     Atom.aromatic: [1],
@@ -28,6 +29,10 @@ prop_ranges = {
 
 
 def iter_atoms(ob_mol, omit_h=False):
+    '''
+    Iterate over atoms in ob_mol,
+    optionally omitting hydrogens.
+    '''
     for atom in ob.OBMolAtomIter(ob_mol):
         if omit_h and atom.GetAtomicNum() == 1:
             continue
@@ -35,12 +40,23 @@ def iter_atoms(ob_mol, omit_h=False):
 
 
 def iter_atom_pairs(in_mol, out_mol, omit_h=False):
+    '''
+    Iterate over pairs of atoms in in_mol and
+    out_mol, optionally omitting hydrogens.
+    '''
     if omit_h:
-        assert in_mol.NumHvyAtoms() == out_mol.NumHvyAtoms(), \
-            'different num heavy atoms'
+        n_in = in_mol.NumHvyAtoms()
+        n_out = out_mol.NumHvyAtoms()
+        assert n_out == n_in, 'different num heavy atoms ({} vs {})'.format(
+            n_out, n_in
+        )
     else:
-        assert in_mol.NumAtoms() == out_mol.NumAtoms(), \
-            'different num atoms'
+        n_in = in_mol.NumAtoms()
+        n_out = out_mol.NumAtoms()
+        assert n_out == n_in, 'different num atoms ({} vs {})'.format(
+            n_out, n_in
+        )
+
     return zip(
         iter_atoms(in_mol, omit_h),
         iter_atoms(out_mol, omit_h),
@@ -50,8 +66,8 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
 class TestBondAdding(object):
 
     @pytest.fixture(params=[
-        [Atom.h_acceptor, Atom.h_donor],
-        #[Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
+        #[Atom.h_acceptor, Atom.h_donor],
+        [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
         #[Atom.h_degree],
     ])
     def typer(self, request):
@@ -141,8 +157,11 @@ class TestBondAdding(object):
                 assert in_bonded == out_bonded, 'different bonds'   
 
         # check whether correct num hydrogens were added
-        assert out_mol.NumAtoms() == in_mol.NumAtoms(), 'different num atoms'
-        assert False, 'OK'
+        n_in = in_mol.NumAtoms()
+        n_out = out_mol.NumAtoms()
+        assert n_out == n_in, 'different num atoms ({} vs {})'.format(
+            n_out, n_in
+        )
 
 if False:
     def test_make_mol(self, adder, typer, in_mol):

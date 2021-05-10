@@ -67,7 +67,7 @@ class BondAdder(object):
         '''
         Set aromaticiy of atoms based on their atom
         types. Aromatic atoms are also marked as
-        sp2 hybridization.
+        having sp2 hybridization.
         '''
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
@@ -84,13 +84,14 @@ class BondAdder(object):
     def set_min_h_counts(self, ob_mol, atoms, struct):
         '''
         Set atoms to have at least one H if they are
-        hydrogen bond donors, and the exact number
-        of Hs specified by their atom type, if it is
+        hydrogen bond donors, or the exact number of
+        Hs specified by their atom type, if it is
         available.
         '''
         assert not ob_mol.HasHydrogensAdded()
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
+            assert ob_atom.GetExplicitDegree() == ob_atom.GetHvyDegree()
 
             if 'h_degree' in atom_type._fields:
                 ob_atom.SetImplicitHCount(atom_type.h_degree)
@@ -98,6 +99,37 @@ class BondAdder(object):
             elif 'h_donor' in atom_type._fields:
                 if atom_type.h_donor and ob_atom.GetImplicitHCount() == 0:
                     ob_atom.SetImplicitHCount(1)
+
+    def set_rem_h_counts(self, ob_mol, atoms, struct):
+        '''
+        Set atoms with empty valences to have up to
+        the maximum number of hydrogens allowed by
+        their atom type- or set the exact number of
+        Hs, if it is avalable.
+        '''
+        assert ob_mol.HasHydrogensAdded() # no implicit Hs
+        ob_mol.SetHydrogensAdded(False)
+
+        for ob_atom, atom_type in zip(atoms, struct.atom_types):
+            assert ob_atom.GetImplicitHCount() == 0
+            h_count = ob_atom.GetImplicitHCount()
+
+            if 'h_degree' in atom_type._fields:
+                pass # assume these have been set previously
+
+            else:
+                # need to set charge before AssignTypicalImplicitHs
+                if 'formal_charge' in atom_type._fields:
+                    ob_atom.SetFormalCharge(atom_type.formal_charge)
+
+                # this uses explicit valence and formal charge
+                ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
+                typical_h_count = ob_atom.GetImplicitHCount()
+
+                if typical_h_count > h_count: # only ever increase
+                    h_count = typical_h_count
+
+                ob_atom.SetImplicitHCount(h_count)
 
     def connect_the_dots(self, ob_mol, atoms, struct, visited_mols):
         '''
@@ -266,6 +298,12 @@ class BondAdder(object):
 
         # use geometry to fill empty valences with double/triple bonds
         ob_mol.PerceiveBondOrders()
+        visited_mols.append(ob.OBMol(ob_mol))
+
+        # fill remaining valences with h bonds,
+        #   up to max num allowed by the atom types
+        self.set_rem_h_counts(ob_mol, atoms, struct)
+        ob_mol.AddHydrogens()
         visited_mols.append(ob.OBMol(ob_mol))
 
         return ob_mol, visited_mols

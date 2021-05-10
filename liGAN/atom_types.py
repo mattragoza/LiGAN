@@ -335,10 +335,6 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         prop_ranges = [
             [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, UNK]
         ]
-        # TODO when to call AddHydrogens, and what if
-        # hydrogens count as UNK when not explicit?
-        # won't hydrogen properties like formal charge
-        # also contribute density when H is not explicit?
 
         if 'h' in pf: # explicit hydrogens
             prop_ranges[0].insert(0, 1)
