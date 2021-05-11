@@ -66,9 +66,9 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
 class TestBondAdding(object):
 
     @pytest.fixture(params=[
-        #[Atom.h_acceptor, Atom.h_donor],
+        [Atom.h_acceptor, Atom.h_donor],
         [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
-        #[Atom.h_degree],
+        [Atom.h_degree],
     ])
     def typer(self, request):
         prop_funcs = [Atom.atomic_num, Atom.aromatic] + request.param
@@ -96,14 +96,14 @@ class TestBondAdding(object):
 
     def test_make_ob_mol(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, _ = adder.make_ob_mol(struct)
+        out_mol, _ = struct.to_ob_mol()
         for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             assert out_atom.GetAtomicNum() == in_atom.GetAtomicNum()
             assert out_atom.GetVector() == in_atom.GetVector()
 
     def test_set_aromaticity(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = adder.make_ob_mol(struct)
+        out_mol, atoms = struct.to_ob_mol()
         adder.set_aromaticity(out_mol, atoms, struct)
         for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             assert out_atom.IsAromatic() == in_atom.IsAromatic()
@@ -111,14 +111,14 @@ class TestBondAdding(object):
 
     def test_set_min_h_counts(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = adder.make_ob_mol(struct)
+        out_mol, atoms = struct.to_ob_mol()
         adder.set_min_h_counts(out_mol, atoms, struct)
         for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             assert out_atom.GetImplicitHCount() >= in_atom.IsHbondDonor()
 
     def test_add_within_dist(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = adder.make_ob_mol(struct)
+        out_mol, atoms = struct.to_ob_mol()
         adder.add_within_distance(out_mol, atoms, struct)
 
         for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
@@ -134,7 +134,7 @@ class TestBondAdding(object):
 
     def test_add_bonds(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = adder.make_ob_mol(struct)
+        out_mol, atoms = struct.to_ob_mol()
         out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
 
         for t in struct.atom_types: print(t)
@@ -148,13 +148,26 @@ class TestBondAdding(object):
         for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
 
-                in_bonded = bool(in_mol.GetBond(in_a, in_b))
-                out_bonded = bool(out_mol.GetBond(out_a, out_b))
+                in_bond = in_mol.GetBond(in_a, in_b)
+                out_bond = out_mol.GetBond(out_a, out_b)
+                in_bonded = bool(in_bond)
+                out_bonded = bool(out_bond)
                 bstr = '{}-{}'.format(
                     ob.GetSymbol(in_a.GetAtomicNum()),
                     ob.GetSymbol(in_b.GetAtomicNum())
                 )
-                assert in_bonded == out_bonded, 'different bonds'   
+                assert (
+                    out_bonded == in_bonded
+                ), 'different {} bonding'.format(bstr)
+                if in_bonded:
+                    if in_bond.IsAromatic():
+                        assert (
+                            in_bond.IsAromatic() == out_bond.IsAromatic()
+                        ), 'different {} bond aromaticity'.format(bstr)
+                    else: # allow different kekule structures
+                        assert (
+                            in_bond.GetBondOrder() == out_bond.GetBondOrder()
+                        ), 'different {} bond orders'.format(bstr)
 
         # check whether correct num hydrogens were added
         n_in = in_mol.NumAtoms()

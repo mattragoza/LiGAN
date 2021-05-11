@@ -106,19 +106,25 @@ class Molecule(Chem.RWMol):
         )
 
 
-def make_rd_mol(xyz, c, bonds, channels):
-
+def make_rd_mol(coords, types, bonds, typer):
+    '''
+    Create an RWMol from numpy arrays of coords
+    and types, optional bonds, and an AtomTyper.
+    No atomic properties other than the elements
+    and coordinates are set.
+    '''
     rd_mol = Chem.RWMol()
 
-    for c_ in c:
-        atomic_num = channels[c_].atomic_num
-        rd_atom = Chem.Atom(atomic_num)
+    for type_vec in types:
+        atom_type = typer.get_atom_type(type_vec)
+        rd_atom = Chem.Atom(atom_type.atomic_num)
         rd_mol.AddAtom(rd_atom)
 
     n_atoms = rd_mol.GetNumAtoms()
     rd_conf = Chem.Conformer(n_atoms)
 
-    for i, (x, y, z) in enumerate(xyz):
+    for i, coord in enumerate(coords):
+        x, y, z = [float(c) for c in coord]
         rd_conf.SetAtomPosition(i, (x, y, z)) # must be float64
 
     rd_mol.AddConformer(rd_conf)
@@ -165,23 +171,35 @@ def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
     writer.close()
 
 
-def make_ob_mol(xyz, c, bonds, channels):
+def make_ob_mol(coords, types, bonds, typer):
     '''
-    Return an OpenBabel molecule from an array of
-    xyz atom positions, channel indices, a bond matrix,
-    and a list of atom type channels.
+    Create an OBMol from numpy arrays of coords
+    and types, optional bonds, and an AtomTyper.
+    No atomic properties other than the elements
+    and coordinates are set.
+
+    Also returns a list of the created atoms in
+    the same order as struct, which is needed for
+    other methods that add hydrogens and change
+    the indexing of atoms in the molecule.
     '''
     ob_mol = ob.OBMol()
+    ob_mol.BeginModify()
 
-    n_atoms = 0
-    for (x, y, z), c_ in zip(xyz, c):
-        atomic_num = channels[c_].atomic_num
+    atoms = []
+    for coord, type_vec in zip(coords, types):
         atom = ob_mol.NewAtom()
-        atom.SetAtomicNum(atomic_num)
-        atom.SetVector(x, y, z)
-        n_atoms += 1
 
-    if np.any(bonds):
+        x, y, z = [float(c) for c in coord]
+        atom.SetVector(x, y, z)
+
+        atom_type = typer.get_atom_type(type_vec)
+        atom.SetAtomicNum(atom_type.atomic_num)
+        atoms.append(atom)
+
+    n_atoms = len(atoms)
+
+    if bonds is not None and np.any(bonds):
         n_bonds = 0
         for i in range(n_atoms):
             atom_i = ob_mol.GetAtom(i)
@@ -191,7 +209,9 @@ def make_ob_mol(xyz, c, bonds, channels):
                     bond = ob_mol.NewBond()
                     bond.Set(n_bonds, atom_i, atom_j, 1, 0)
                     n_bonds += 1
-    return ob_mol
+
+    ob_mol.EndModify()
+    return ob_mol, atoms
 
 
 def read_ob_mols_from_file(mol_file, in_format):
@@ -281,7 +301,11 @@ def rd_mol_to_ob_mol(rd_mol):
 
 
 def ob_mol_to_rd_mol(ob_mol):
-
+    '''
+    Convert an OBMol to and RWMol, copying
+    over the elements, coordinates, formal
+    charges, bonds and aromaticity.
+    '''
     n_atoms = ob_mol.NumAtoms()
     rd_mol = Chem.RWMol()
     rd_conf = Chem.Conformer(n_atoms)

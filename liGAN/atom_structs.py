@@ -111,18 +111,18 @@ class AtomStruct(object):
     
     def to_ob_mol(self):
         return molecules.make_ob_mol(
-            self.coords.cpu().numpy(),
-            self.types.cpu().numpy(),
-            None if self.bonds is None else self.bonds.cpu().numpy(),
-            self.typer
+            coords=self.coords.cpu().numpy(),
+            types=self.types.cpu().numpy(),
+            bonds=None if self.bonds is None else self.bonds.cpu().numpy(),
+            typer=self.typer,
         )
 
     def to_rd_mol(self):
         return molecules.make_rd_mol(
-            self.coords.cpu().numpy().astype(float),
-            self.types.cpu().numpy(),
-            None if self.bonds is None else self.bonds.cpu().numpy(),
-            self.typer
+            coords=self.coords.cpu().numpy().astype(float),
+            typers=self.types.cpu().numpy(),
+            bonds=None if self.bonds is None else self.bonds.cpu().numpy(),
+            typer=self.typer,
         )
 
     def to_sdf(self, sdf_file):

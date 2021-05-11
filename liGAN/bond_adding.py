@@ -34,35 +34,6 @@ class BondAdder(object):
         self.max_bond_stretch = max_bond_stretch
         self.min_bond_angle = min_bond_angle
 
-    def make_ob_mol(self, struct):
-        '''
-        Create an OBMol from AtomStruct that has the
-        same elements and coordinates. No other atomic
-        properties are set and bonds are not added.
-
-        Also returns a list of the created atoms in
-        the same order as struct, which is needed for
-        other methods that add hydrogens and change
-        the indexing of atoms in the molecule.
-        '''
-        ob_mol = ob.OBMol()
-        ob_mol.BeginModify()
-
-        atoms = []
-        for coord, type_vec in zip(struct.coords, struct.types):         
-            ob_atom = ob_mol.NewAtom()
-
-            x, y, z = [float(c) for c in coord]
-            ob_atom.SetVector(x, y, z)
-
-            atom_type = struct.typer.get_atom_type(type_vec)
-            ob_atom.SetAtomicNum(atom_type.atomic_num)
-            atoms.append(ob_atom)
-
-        #self.set_atom_properties(ob_mol, atoms, struct)
-        ob_mol.EndModify()
-        return ob_mol, atoms
-
     def set_aromaticity(self, ob_mol, atoms, struct):
         '''
         Set aromaticiy of atoms based on their atom
@@ -130,36 +101,6 @@ class BondAdder(object):
                     h_count = typical_h_count
 
                 ob_atom.SetImplicitHCount(h_count)
-
-    def connect_the_dots(self, ob_mol, atoms, struct, visited_mols):
-        '''
-        Custom implementation of ConnectTheDots. This is similar to
-        OpenBabel's version, but is more willing to make long bonds 
-        to keep the molecule connected.
-
-        It also attempts to respect atom type information from struct.
-        Note that atoms and struct need to correspond in their order.
-
-        Assumes no hydrogens or existing bonds.
-        '''
-        if len(atoms) == 0:
-            return
-
-        ob_mol.BeginModify()
-
-        # add all bonds between all atom pairs in a certain distance range
-        self.add_within_distance(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        # remove bonds to atoms that are above their allowed valence
-        self.remove_bad_valences(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        # remove bonds whose lengths or angles are excessively distorted
-        self.remove_bad_geometry(ob_mol)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        ob_mol.EndModify() # mtr22- this causes a seg fault if omitted
 
     def add_within_distance(self, ob_mol, atoms, struct):
 
@@ -310,15 +251,6 @@ class BondAdder(object):
 
     if False: # TODO integrate from here
 
-        self.set_atom_properties(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        for ob_atom in ob.OBMolAtomIter(ob_mol):
-            ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
-        self.set_atom_properties(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        ob_mol.AddHydrogens()
         self.set_atom_properties(ob_mol, atoms, struct)
         visited_mols.append(ob.OBMol(ob_mol))
 
