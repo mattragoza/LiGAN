@@ -15,11 +15,12 @@ test_sdf_files = [
     'data/benzene.sdf',
     'data/neopentane.sdf',
     'data/sulfone.sdf',
+    'data/ATP.sdf',
 ]
 
 
 prop_ranges = {
-    Atom.atomic_num: [6, 7, 8, 16],
+    Atom.atomic_num: [6, 7, 8, 15, 16],
     Atom.aromatic: [1],
     Atom.h_acceptor: [1],
     Atom.h_donor: [1],
@@ -47,15 +48,13 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
     if omit_h:
         n_in = in_mol.NumHvyAtoms()
         n_out = out_mol.NumHvyAtoms()
-        assert n_out == n_in, 'different num heavy atoms ({} vs {})'.format(
-            n_out, n_in
-        )
+        assert n_out == n_in, \
+            'different num heavy atoms ({} vs {})'.format(n_out, n_in)
     else:
         n_in = in_mol.NumAtoms()
         n_out = out_mol.NumAtoms()
-        assert n_out == n_in, 'different num atoms ({} vs {})'.format(
-            n_out, n_in
-        )
+        assert n_out == n_in, \
+            'different num atoms ({} vs {})'.format(n_out, n_in)
 
     return zip(
         iter_atoms(in_mol, omit_h),
@@ -87,7 +86,7 @@ class TestBondAdding(object):
     def in_mol(self, request):
         sdf_file = request.param
         mol = mols.read_ob_mols_from_file(sdf_file, 'sdf')[0]
-        mol.AddHydrogens() # NOTE needed to determine donor/acceptor
+        mol.AddHydrogens() # this is needed to determine donor/acceptor
         mol.name = os.path.splitext(os.path.basename(sdf_file))[0]
         return mol
 
@@ -97,48 +96,54 @@ class TestBondAdding(object):
     def test_make_ob_mol(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, _ = struct.to_ob_mol()
-        for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            assert out_atom.GetAtomicNum() == in_atom.GetAtomicNum()
-            assert out_atom.GetVector() == in_atom.GetVector()
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            assert o.GetAtomicNum() == i.GetAtomicNum(), 'different elements'
+            assert o.GetVector() == i.GetVector(), 'different coordinates'
 
     def test_set_aromaticity(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         adder.set_aromaticity(out_mol, atoms, struct)
-        for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            assert out_atom.IsAromatic() == in_atom.IsAromatic()
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            assert o.IsAromatic() == i.IsAromatic(), 'different aromaticity'
         assert out_mol.HasAromaticPerceived()
 
     def test_set_min_h_counts(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         adder.set_min_h_counts(out_mol, atoms, struct)
-        for in_atom, out_atom in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            assert out_atom.GetImplicitHCount() >= in_atom.IsHbondDonor()
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            assert o.GetImplicitHCount() >= i.IsHbondDonor(), 'bad H donor'
 
     def test_add_within_dist(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         adder.add_within_distance(out_mol, atoms, struct)
 
-        for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for a_i, a_o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            for b_i, b_o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
 
-                in_bonded = bool(in_mol.GetBond(in_a, in_b))
-                out_bonded = bool(out_mol.GetBond(out_a, out_b))
-                bstr = '{}-{}'.format(
-                    ob.GetSymbol(in_a.GetAtomicNum()),
-                    ob.GetSymbol(in_b.GetAtomicNum())
+                in_bonded = bool(in_mol.GetBond(a_i, b_i))
+                out_bonded = bool(out_mol.GetBond(a_o, b_o))
+                bond_str = '{}-{}'.format(
+                    ob.GetSymbol(a_i.GetAtomicNum()),
+                    ob.GetSymbol(b_i.GetAtomicNum())
                 )
-                if in_bonded: assert out_bonded, 'missing ' + bstr + ' bond'
+                if in_bonded:
+                    assert out_bonded, 'missing ' + bond_str + ' bond'
 
     def test_add_bonds(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
 
-        for t in struct.atom_types: print(t)
-        for m in visited_mols: m.AddHydrogens()
+        for t in struct.atom_types:
+            print(t)
+        for m in visited_mols:
+            m.AddHydrogens()
         mols.write_ob_mols_to_sdf_file(
             'tests/TEST_{}.sdf'.format(in_mol.name),
             visited_mols + [in_mol],
@@ -158,7 +163,7 @@ class TestBondAdding(object):
                 )
                 assert (
                     out_bonded == in_bonded
-                ), 'different {} bonding'.format(bstr)
+                ), 'different {} bond presence'.format(bstr)
                 if in_bonded:
                     if in_bond.IsAromatic():
                         assert (
@@ -176,15 +181,16 @@ class TestBondAdding(object):
             n_out, n_in
         )
 
-if False:
+    def test_convert_mol(self, in_mol):
+        mol = Molecule.from_ob_mol(in_mol)
+        #mol.UpdatePropertyCache() # need to calcExplicitValence
+        out_mol = mol.to_ob_mol()
+
     def test_make_mol(self, adder, typer, in_mol):
-        struct = typer.make_struct(in_mol)
+        add_struct = typer.make_struct(in_mol)
+        out_mol, _, _ = adder.make_mol(add_struct)
+        in_mol = Molecule.from_ob_mol(in_mol)
 
-        out_mol, _, _ = adder.make_mol(struct)
-
-        in_mol.AddHydrogens()
-        in_mol = Molecule(adder.convert_ob_mol_to_rd_mol(in_mol))
-
-        assert in_mol.n_atoms == out_mol.n_atoms, 'different num atoms'
-        assert in_mol.to_smi() == out_mol.to_smi(), 'different molecules'
-        assert in_mol.aligned_rmsd(out_mol) < 1e-5, 'RMSD too high'
+        assert out_mol.n_atoms == in_mol.n_atoms, 'different num atoms'
+        assert out_mol.to_smi() == in_mol.to_smi(), 'different SMILES strings'
+        assert out_mol.aligned_rmsd(in_mol) < 1.0, 'RMSD too high'

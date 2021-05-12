@@ -38,19 +38,40 @@ class BondAdder(object):
         '''
         Set aromaticiy of atoms based on their atom
         types. Aromatic atoms are also marked as
-        having sp2 hybridization.
+        having sp2 hybridization. Bonds are set as
+        aromatic iff both atoms are aromatic.
         '''
+        if Atom.aromatic not in struct.typer:
+            return False
+
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
-            if 'aromatic' in atom_type._fields:
-                if atom_type.aromatic:
-                    ob_atom.SetAromatic(True)
-                    ob_atom.SetHyb(2)
-                else:
-                    ob_atom.SetAromatic(False)
+            if atom_type.aromatic:
+                ob_atom.SetAromatic(True)
+                ob_atom.SetHyb(2)
+            else:
+                ob_atom.SetAromatic(False)
 
-        if 'aromatic' in atom_type._fields:
-            ob_mol.SetAromaticPerceived(True)
+        for bond in ob.OBMolBondIter(ob_mol):
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            bond.SetAromatic(a1.IsAromatic() and a2.IsAromatic())
+
+        ob_mol.SetAromaticPerceived(True)
+        return True
+
+    def set_formal_charges(self, ob_mol, atoms, struct):
+        '''
+        Set formal charge on atoms based on their
+        atom type, if it is available.
+        '''
+        if Atom.formal_charge not in struct.typer:
+            return False
+
+        for ob_atom, atom_type in zip(atoms, struct.atom_types):
+            ob_atom.SetFormalCharge(atom_type.formal_charge)
+
+        return True
 
     def set_min_h_counts(self, ob_mol, atoms, struct):
         '''
@@ -114,21 +135,11 @@ class BondAdder(object):
                 if i >= j: # avoid redundant checks
                     continue
 
-                # if distance is between min and max bond length
+                # if distance is between min and max bond length,
                 if self.min_bond_len < dists[i,j] < self.max_bond_len:
 
-                    # add bond, checking whether it should be aromatic
-                    flag = 0
-                    if (
-                        'aromatic' in struct.atom_types[i]
-                        and struct.atom_types[i].aromatic
-                        and struct.atom_types[j].aromatic
-                    ):
-                        flag = ob.OB_AROMATIC_BOND
-
-                    ob_mol.AddBond(
-                        atom_a.GetIdx(), atom_b.GetIdx(), 1, flag
-                    )
+                    # add single bond
+                    ob_mol.AddBond(atom_a.GetIdx(), atom_b.GetIdx(), 1)
 
     def remove_bad_valences(self, ob_mol, atoms, struct):
 
@@ -198,9 +209,10 @@ class BondAdder(object):
 
     def add_bonds(self, ob_mol, atoms, struct):
 
+        # track each step of bond adding
         visited_mols = [ob.OBMol(ob_mol)]
 
-        if len(atoms) == 0:
+        if len(atoms) == 0: # nothing to do
             return ob_mol, visited_mols
 
         ob_mol.BeginModify()
@@ -226,7 +238,7 @@ class BondAdder(object):
 
         # segfault if EndModify() not before PerceiveBondOrders()
         #   but it also resets H coords, so AddHydrogens() after
-        #   and it clears most flags, except AromaticPerceived()
+        #   it also clears most flags, except AromaticPerceived()
         ob_mol.EndModify()
 
         # need to make implicit Hs explicit before PerceiveBondOrders()
@@ -243,92 +255,18 @@ class BondAdder(object):
 
         # fill remaining valences with h bonds,
         #   up to max num allowed by the atom types
+        #   also set formal charge, if available
+        self.set_formal_charges(ob_mol, atoms, struct)
         self.set_rem_h_counts(ob_mol, atoms, struct)
         ob_mol.AddHydrogens()
         visited_mols.append(ob.OBMol(ob_mol))
 
         return ob_mol, visited_mols
 
-    if False: # TODO integrate from here
-
-        self.set_atom_properties(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
-
-        # make rings all aromatic if majority of carbons are aromatic
-        for ring in ob.OBMolRingIter(ob_mol):
-            if 5 <= ring.Size() <= 6:
-                carbon_cnt = 0
-                aromatic_c_cnt = 0
-                for ai in ring._path:
-                    a = ob_mol.GetAtom(ai)
-                    if a.GetAtomicNum() == 6:
-                        carbon_cnt += 1
-                        if a.IsAromatic():
-                            aromatic_c_cnt += 1
-                if aromatic_c_cnt >= carbon_cnt/2 and aromatic_c_cnt != ring.Size():
-                    #set all ring atoms to be aromatic
-                    for ai in ring._path:
-                        a = ob_mol.GetAtom(ai)
-                        a.SetAromatic(True)
-
-        # bonds must be marked aromatic for smiles to match
-        for bond in ob.OBMolBondIter(ob_mol):
-            a1 = bond.GetBeginAtom()
-            a2 = bond.GetEndAtom()
-            if a1.IsAromatic() and a2.IsAromatic():
-                bond.SetAromatic(True)
-
-        visited_mols.append(ob.OBMol(ob_mol))
-        return ob_mol, visited_mols
-
-    def convert_ob_mol_to_rd_mol(self, ob_mol, struct=None):
+    def post_process_rd_mol(self, rd_mol, struct=None):
         '''
         Convert OBMol to RDKit mol, fixing up issues.
         '''
-        ob_mol.DeleteHydrogens() # mtr22- don't we want to keep these?
-
-        n_atoms = ob_mol.NumAtoms()
-        rd_mol = Chem.RWMol()
-        rd_conf = Chem.Conformer(n_atoms)
-
-        for ob_atom in ob.OBMolAtomIter(ob_mol):
-            rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
-            #TODO copy formal charge
-            if ob_atom.IsAromatic() and ob_atom.IsInRing() and ob_atom.MemberOfRingSize() <= 6:
-                # don't commit to being aromatic unless rdkit will be okay
-                # with the ring status
-                # (this can happen if the atoms aren't fit well enough)
-                rd_atom.SetIsAromatic(True)
-            i = rd_mol.AddAtom(rd_atom)
-            ob_coords = ob_atom.GetVector()
-            x = ob_coords.GetX()
-            y = ob_coords.GetY()
-            z = ob_coords.GetZ()
-            rd_coords = Geometry.Point3D(x, y, z)
-            rd_conf.SetAtomPosition(i, rd_coords)
-
-        rd_mol.AddConformer(rd_conf)
-
-        for ob_bond in ob.OBMolBondIter(ob_mol):
-            i = ob_bond.GetBeginAtomIdx()-1
-            j = ob_bond.GetEndAtomIdx()-1
-            bond_order = ob_bond.GetBondOrder()
-            if bond_order == 1:
-                rd_mol.AddBond(i, j, Chem.BondType.SINGLE)
-            elif bond_order == 2:
-                rd_mol.AddBond(i, j, Chem.BondType.DOUBLE)
-            elif bond_order == 3:
-                rd_mol.AddBond(i, j, Chem.BondType.TRIPLE)
-            else:
-                raise Exception('unknown bond order {}'.format(bond_order))
-
-            if ob_bond.IsAromatic():
-                bond = rd_mol.GetBondBetweenAtoms (i,j)
-                bond.SetIsAromatic(True)
-
-        rd_mol = Chem.RemoveHs(rd_mol, sanitize=False)
-        #mtr22- didn't we just previously delete hydrogens in OB?
-
         pt = Chem.GetPeriodicTable()
         #if double/triple bonds are connected to hypervalent atoms, decrement the order
 
@@ -400,26 +338,17 @@ class BondAdder(object):
 
     def make_mol(self, struct):
         '''
-        Create a Molecule from an AtomStruct with added bonds,
-        trying to maintain the same atom types.
-
-        TODO- separation of concerns
-            should move as much of the "fixing up/validifying"
-            code into separate methods, completely separate
-            from the initial conversion of struct on ob_mol
-            and the later conversion of ob_mol to rd_mol
-
-            how best to do this given the OB and RDkit have
-            different aromaticity models/other functions?
+        Create a Molecule from an AtomStruct with added
+        bonds, trying to maintain the same atom types.
         '''
-        ob_mol, atoms = self.make_ob_mol(struct)
+        ob_mol, atoms = struct.to_ob_mol()
         ob_mol, visited_mols = self.add_bonds(ob_mol, atoms, struct)
-        rd_mol = Molecule(self.convert_ob_mol_to_rd_mol(ob_mol))
-        add_struct = struct.typer.make_struct(rd_mol.to_ob_mol())
+        add_mol = Molecule.from_ob_mol(ob_mol)
+        add_struct = struct.typer.make_struct(add_mol.to_ob_mol())
         visited_mols = [
-            Molecule(ob_mol_to_rd_mol(m)) for m in visited_mols
-        ] + [rd_mol]
-        return rd_mol, add_struct, visited_mols
+            Molecule.from_ob_mol(m) for m in visited_mols
+        ] + [add_mol]
+        return add_mol, add_struct, visited_mols
 
 
 def calc_valence(rd_atom):

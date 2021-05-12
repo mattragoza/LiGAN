@@ -40,6 +40,10 @@ class Molecule(Chem.RWMol):
         )
 
     @classmethod
+    def from_ob_mol(cls, ob_mol):
+        return cls(ob_mol_to_rd_mol(ob_mol))
+
+    @classmethod
     def from_sdf(cls, sdf_file, sanitize=True, idx=0):
         return cls(
             read_rd_mols_from_sdf_file(sdf_file, sanitize=sanitize)[idx]
@@ -63,6 +67,10 @@ class Molecule(Chem.RWMol):
     @property
     def n_atoms(self):
         return self.GetNumAtoms()
+
+    @property
+    def n_hydros(self):
+        return self.GetNumAtoms() - self.GetNumHeavyAtoms()
 
     @property
     def n_frags(self):
@@ -265,44 +273,9 @@ def ob_mol_delete_bonds(ob_mol):
     return ob_mol
 
 
-def rd_mol_to_ob_mol(rd_mol):
-
-    ob_mol = ob.OBMol()
-    rd_conf = rd_mol.GetConformer(0)
-
-    for i, rd_atom in enumerate(rd_mol.GetAtoms()):
-        atomic_num = rd_atom.GetAtomicNum()
-        rd_coords = rd_conf.GetAtomPosition(i)
-        x = rd_coords.x
-        y = rd_coords.y
-        z = rd_coords.z
-        ob_atom = ob_mol.NewAtom()
-        ob_atom.SetAtomicNum(atomic_num)
-        ob_atom.SetAromatic(rd_atom.GetIsAromatic())
-        ob_atom.SetVector(x, y, z)
-
-    for k, rd_bond in enumerate(rd_mol.GetBonds()):
-        i = rd_bond.GetBeginAtomIdx()+1
-        j = rd_bond.GetEndAtomIdx()+1
-        bond_type = rd_bond.GetBondType()
-        bond_flags = 0
-        if bond_type == Chem.BondType.AROMATIC:
-            bond_order = 1
-            bond_flags |= ob.OB_AROMATIC_BOND
-        elif bond_type == Chem.BondType.SINGLE:
-            bond_order = 1
-        elif bond_type == Chem.BondType.DOUBLE:
-            bond_order = 2
-        elif bond_type == Chem.BondType.TRIPLE:
-            bond_order = 3
-        ob_mol.AddBond(i, j, bond_order, bond_flags)
-
-    return ob_mol
-
-
 def ob_mol_to_rd_mol(ob_mol):
     '''
-    Convert an OBMol to and RWMol, copying
+    Convert an OBMol to an RWMol, copying
     over the elements, coordinates, formal
     charges, bonds and aromaticity.
     '''
@@ -311,26 +284,29 @@ def ob_mol_to_rd_mol(ob_mol):
     rd_conf = Chem.Conformer(n_atoms)
 
     for ob_atom in ob.OBMolAtomIter(ob_mol):
+
         rd_atom = Chem.Atom(ob_atom.GetAtomicNum())
+        rd_atom.SetFormalCharge(ob_atom.GetFormalCharge())
         rd_atom.SetIsAromatic(ob_atom.IsAromatic())
-        #TODO copy format charge
-        i = rd_mol.AddAtom(rd_atom)
-        ob_coords = ob_atom.GetVector()
-        x = ob_coords.GetX()
-        y = ob_coords.GetY()
-        z = ob_coords.GetZ()
-        rd_coords = Geometry.Point3D(x, y, z)
-        rd_conf.SetAtomPosition(i, rd_coords)
+        rd_atom.SetNumExplicitHs(ob_atom.GetImplicitHCount())
+        rd_atom.SetNoImplicit(True) # don't use rdkit valence model
+        idx = rd_mol.AddAtom(rd_atom)
+
+        rd_coords = Geometry.Point3D(
+            ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+        )
+        rd_conf.SetAtomPosition(idx, rd_coords)
 
     rd_mol.AddConformer(rd_conf)
 
     for ob_bond in ob.OBMolBondIter(ob_mol):
-        i = ob_bond.GetBeginAtomIdx()-1
-        j = ob_bond.GetEndAtomIdx()-1
+
+        # OB uses 1-indexing, rdkit uses 0
+        i = ob_bond.GetBeginAtomIdx() - 1
+        j = ob_bond.GetEndAtomIdx() - 1
+
         bond_order = ob_bond.GetBondOrder()
-        if ob_bond.IsAromatic():
-            bond_type = Chem.BondType.AROMATIC
-        elif bond_order == 1:
+        if bond_order == 1:
             bond_type = Chem.BondType.SINGLE
         elif bond_order == 2:
             bond_type = Chem.BondType.DOUBLE
@@ -338,9 +314,57 @@ def ob_mol_to_rd_mol(ob_mol):
             bond_type = Chem.BondType.TRIPLE
         else:
             raise Exception('unknown bond order {}'.format(bond_order))
+
         rd_mol.AddBond(i, j, bond_type)
+        rd_bond = rd_mol.GetBondBetweenAtoms(i, j)
+        rd_bond.SetIsAromatic(ob_bond.IsAromatic())
 
     return rd_mol
+
+
+def rd_mol_to_ob_mol(rd_mol):
+    '''
+    Convert an RWMol to an OBMol, copying
+    over the elements, coordinates, formal
+    charges, bonds and aromaticity.
+    '''
+    ob_mol = ob.OBMol()
+    ob_mol.BeginModify()
+    rd_conf = rd_mol.GetConformer(0)
+
+    for idx, rd_atom in enumerate(rd_mol.GetAtoms()):
+
+        ob_atom = ob_mol.NewAtom()
+        ob_atom.SetAtomicNum(rd_atom.GetAtomicNum())
+        ob_atom.SetFormalCharge(rd_atom.GetFormalCharge())
+        ob_atom.SetAromatic(rd_atom.GetIsAromatic())
+        ob_atom.SetImplicitHCount(rd_atom.GetNumExplicitHs())
+
+        rd_coords = rd_conf.GetAtomPosition(idx)
+        ob_atom.SetVector(rd_coords.x, rd_coords.y, rd_coords.z)
+
+    for rd_bond in rd_mol.GetBonds():
+
+        # OB uses 1-indexing, rdkit uses 0
+        i = rd_bond.GetBeginAtomIdx() + 1
+        j = rd_bond.GetEndAtomIdx() + 1
+
+        bond_type = rd_bond.GetBondType()
+        if bond_type == Chem.BondType.SINGLE:
+            bond_order = 1
+        elif bond_type == Chem.BondType.DOUBLE:
+            bond_order = 2
+        elif bond_type == Chem.BondType.TRIPLE:
+            bond_order = 3
+        else:
+            raise Exception('unknown bond type {}'.format(bond_type))
+
+        ob_mol.AddBond(i, j, bond_order)
+        ob_bond = ob_mol.GetBond(i, j)
+        ob_bond.SetAromatic(rd_bond.GetIsAromatic())
+
+    ob_mol.EndModify()
+    return ob_mol
 
 
 def get_rd_mol_validity(rd_mol):
@@ -400,7 +424,7 @@ def get_smiles_string(rd_mol):
     return Chem.MolToSmiles(rd_mol, canonical=True, isomericSmiles=False)
 
 
-@catch_exception(exc_type=RuntimeError)
+#@catch_exception(exc_type=RuntimeError)
 def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
 
     if fingerprint == 'morgan':
@@ -478,77 +502,3 @@ def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
     rd_mol = Chem.AddHs(rd_mol, addCoords=True)
     uff = AllChem.UFFGetMoleculeForceField(rd_mol, confId=0)
     return uff.CalcEnergy()
-
-
-def set_rd_mol_aromatic(rd_mol, c, channels):
-
-    # get aromatic carbon channels
-    aroma_c_channels = set()
-    for i, channel in enumerate(channels):
-        if 'AromaticCarbon' in channel.name:
-            aroma_c_channels.add(i)
-
-    # get aromatic carbon atoms
-    aroma_c_atoms = set()
-    for i, c_ in enumerate(c):
-        if c_ in aroma_c_channels:
-            aroma_c_atoms.add(i)
-
-    # make aromatic rings using channel info
-    rings = Chem.GetSymmSSSR(rd_mol)
-    for ring_atoms in rings:
-        ring_atoms = set(ring_atoms)
-        if len(ring_atoms & aroma_c_atoms) == 0: #TODO test < 3 instead, and handle heteroatoms
-            continue
-        if (len(ring_atoms) - 2)%4 != 0:
-            continue
-        for bond in rd_mol.GetBonds():
-            atom1 = bond.GetBeginAtom()
-            atom2 = bond.GetEndAtom()
-            if atom1.GetIdx() in ring_atoms and atom2.GetIdx() in ring_atoms:
-                atom1.SetIsAromatic(True)
-                atom2.SetIsAromatic(True)
-                bond.SetBondType(Chem.BondType.AROMATIC)
-
-
-def connect_rd_mol_frags(rd_mol):
-
-    # try to connect fragments by adding min distance bonds
-    frags = Chem.GetMolFrags(rd_mol)
-    n_frags = len(frags)
-    if n_frags > 1:
-
-        nax = np.newaxis
-        xyz = rd_mol.GetConformer(0).GetPositions()
-        dist2 = ((xyz[nax,:,:] - xyz[:,nax,:])**2).sum(axis=2)
-
-        pt = Chem.GetPeriodicTable()
-        while n_frags > 1:
-
-            frag_map = {ai: fi for fi, f in enumerate(frags) for ai in f}
-            frag_idx = np.array([frag_map[i] for i in range(rd_mol.GetNumAtoms())])
-            diff_frags = frag_idx[nax,:] != frag_idx[:,nax]
-
-            can_bond = []
-            for a in rd_mol.GetAtoms():
-                n_bonds = sum(b.GetBondTypeAsDouble() for b in a.GetBonds())
-                max_bonds = pt.GetDefaultValence(a.GetAtomicNum())
-                can_bond.append(n_bonds < max_bonds)
-
-            can_bond = np.array(can_bond)
-            can_bond = can_bond[nax,:] & can_bond[:,nax]
-
-            cond_dist2 = np.where(diff_frags & can_bond & (dist2<25), dist2, np.inf)
-
-            if not np.any(np.isfinite(cond_dist2)):
-                break # no possible bond meets the conditions
-
-            a1, a2 = np.unravel_index(cond_dist2.argmin(), dist2.shape)
-            rd_mol.AddBond(int(a1), int(a2), Chem.BondType.SINGLE)
-            try:
-                rd_mol.UpdatePropertyCache() # update explicit valences
-            except:
-                pass
-
-            frags = Chem.GetMolFrags(rd_mol)
-            n_frags = len(frags)
