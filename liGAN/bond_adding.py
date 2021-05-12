@@ -62,7 +62,7 @@ class BondAdder(object):
         assert not ob_mol.HasHydrogensAdded()
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
-            assert ob_atom.GetExplicitDegree() == ob_atom.GetHvyDegree()
+            #assert ob_atom.GetExplicitDegree() == ob_atom.GetHvyDegree()
 
             if 'h_degree' in atom_type._fields:
                 ob_atom.SetImplicitHCount(atom_type.h_degree)

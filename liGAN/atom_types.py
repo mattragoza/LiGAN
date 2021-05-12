@@ -338,6 +338,9 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
         if 'h' in pf: # explicit hydrogens
             prop_ranges[0].insert(0, 1)
+            omit_h = False
+        else:
+            omit_h = True
 
         if 'o' in pf:
             prop_funcs += [Atom.aromatic]
@@ -365,7 +368,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         elif rf == 'c': # covalent
             radius_func = Atom.cov_radius
 
-        return cls(prop_funcs, prop_ranges, radius_func)
+        return cls(prop_funcs, prop_ranges, radius_func, omit_h)
 
 
 def make_one_hot(value, range_):
