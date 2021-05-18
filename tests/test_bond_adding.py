@@ -14,7 +14,7 @@ test_sdf_files = [
     'data/C_2_0_0.sdf',
     'data/benzene.sdf',
     'data/neopentane.sdf',
-    'data/sulfone.sdf',
+    'data/sulfone.sdf', #TODO reassign guanidine double bond
     'data/ATP.sdf',
 ]
 
@@ -116,7 +116,9 @@ class TestBondAdding(object):
         adder.set_min_h_counts(out_mol, atoms, struct)
 
         for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            assert o.GetImplicitHCount() >= i.IsHbondDonor(), 'bad H donor'
+            # all H donors should have at least one hydrogen
+            assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
+                'H donor has no hydrogen(s)'
 
     def test_add_within_dist(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
@@ -132,7 +134,7 @@ class TestBondAdding(object):
                     ob.GetSymbol(a_i.GetAtomicNum()),
                     ob.GetSymbol(b_i.GetAtomicNum())
                 )
-                if in_bonded:
+                if in_bonded: # all input bonds should be present in output
                     assert out_bonded, 'missing ' + bond_str + ' bond'
 
     def test_add_bonds(self, adder, typer, in_mol):
@@ -140,36 +142,48 @@ class TestBondAdding(object):
         out_mol, atoms = struct.to_ob_mol()
         out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
 
+
+        # write out each bond adding step and input mol
+        if True:
+            write_mols = visited_mols + [in_mol]
+            write_mols = [ob.OBMol(m) for m in write_mols]
+            if False: # show bond aromaticity as bond order
+                for m in write_mols:
+                    for a in ob.OBMolAtomIter(m):
+                        a.SetAtomicNum(1 + 5*a.IsAromatic())
+                for m in write_mols:
+                    for b in ob.OBMolBondIter(m):
+                        b.SetBondOrder(1 + b.IsAromatic())
+            for m in write_mols:
+                m.AddHydrogens()
+            mols.write_ob_mols_to_sdf_file(
+                'tests/TEST_{}.sdf'.format(in_mol.name), write_mols,
+            )
+
         for t in struct.atom_types:
             print(t)
-        for m in visited_mols:
-            m.AddHydrogens()
-        mols.write_ob_mols_to_sdf_file(
-            'tests/TEST_{}.sdf'.format(in_mol.name),
-            visited_mols + [in_mol],
-        )
- 
+
+        in_mol.AddHydrogens()
+        out_mol.AddHydrogens()
+
         # check bonds between atoms in typed structure
         for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
 
                 in_bond = in_mol.GetBond(in_a, in_b)
                 out_bond = out_mol.GetBond(out_a, out_b)
-                in_bonded = bool(in_bond)
-                out_bonded = bool(out_bond)
                 bstr = '{}-{}'.format(
                     ob.GetSymbol(in_a.GetAtomicNum()),
                     ob.GetSymbol(in_b.GetAtomicNum())
                 )
                 assert (
-                    out_bonded == in_bonded
+                    bool(out_bond) == bool(in_bond)
                 ), 'different {} bond presence'.format(bstr)
-                if in_bonded:
-                    if in_bond.IsAromatic():
-                        assert (
-                            in_bond.IsAromatic() == out_bond.IsAromatic()
-                        ), 'different {} bond aromaticity'.format(bstr)
-                    else: # allow different kekule structures
+                if in_bond and out_bond:
+                    if in_bond.IsAromatic(): # allow diff kekule structures
+                        assert out_bond.IsAromatic(), \
+                            'different {} bond aromaticity'.format(bstr)
+                    else: # mols should have same bond orders
                         assert (
                             in_bond.GetBondOrder() == out_bond.GetBondOrder()
                         ), 'different {} bond orders'.format(bstr)
@@ -183,7 +197,6 @@ class TestBondAdding(object):
 
     def test_convert_mol(self, in_mol):
         mol = Molecule.from_ob_mol(in_mol)
-        #mol.UpdatePropertyCache() # need to calcExplicitValence
         out_mol = mol.to_ob_mol()
 
     def test_make_mol(self, adder, typer, in_mol):

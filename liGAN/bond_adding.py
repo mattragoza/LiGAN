@@ -236,20 +236,25 @@ class BondAdder(object):
         self.remove_bad_geometry(ob_mol)
         visited_mols.append(ob.OBMol(ob_mol))
 
-        # segfault if EndModify() not before PerceiveBondOrders()
-        #   but it also resets H coords, so AddHydrogens() after
-        #   it also clears most flags, except AromaticPerceived()
-        ob_mol.EndModify()
+        # NOTE the next section is important, but not intuitive,
+        #   and the order of operations deserves explanation:
+        # need to AddHydrogens() before PerceiveBondOrders()
+        #   bc it fills remaining EXPLICIT valence with bonds
+        # need to EndModify() before PerceiveBondOrders()
+        #   otherwise you get a segmentation fault
+        # need to AddHydrogens() after EndModify()
+        #   because EndModify() resets hydrogen coords
+        # need to set_aromaticity() before AddHydrogens()
+        #   bc it uses hybridization to create H coords
+        # need to set_aromaticity() before AND after EndModify()
+        #   otherwise aromatic atom types are missing
 
-        # need to make implicit Hs explicit before PerceiveBondOrders()
-        #   since it fills in the remaining valence with multiple bonds
-        # AND need to set aromatic before making implicit Hs explicit
-        #   because it uses the hybridization to create H coords
+        self.set_aromaticity(ob_mol, atoms, struct)
+        ob_mol.EndModify()
         self.set_aromaticity(ob_mol, atoms, struct)
         visited_mols.append(ob.OBMol(ob_mol))
-        ob_mol.AddHydrogens()
 
-        # use geometry to fill empty valences with double/triple bonds
+        ob_mol.AddHydrogens()
         ob_mol.PerceiveBondOrders()
         visited_mols.append(ob.OBMol(ob_mol))
 
