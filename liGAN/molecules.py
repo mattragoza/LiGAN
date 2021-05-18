@@ -319,6 +319,9 @@ def ob_mol_to_rd_mol(ob_mol):
         rd_bond = rd_mol.GetBondBetweenAtoms(i, j)
         rd_bond.SetIsAromatic(ob_bond.IsAromatic())
 
+    Chem.GetSSSR(rd_mol) # initialize ring info
+    rd_mol.UpdatePropertyCache(strict=False) # compute valence
+
     return rd_mol
 
 
