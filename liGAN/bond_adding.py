@@ -447,32 +447,43 @@ def count_nbrs_of_elem(atom, atomic_num):
 def get_max_valences(atoms, struct):
 
     # determine max allowed valences
+    pt = Chem.GetPeriodicTable()
     max_vals = {}
     for i, ob_atom in enumerate(atoms):
 
         # set max valance to the smallest allowed by either openbabel
         # or rdkit, since we want the molecule to be valid for both
         # (rdkit is usually lower, mtr22- specifically for N, 3 vs 4)
+
+        # mtr22- since we are assessing validity with rdkit,
+        # we should try to use the rdkit valence model here
+        # which allows multiple valences for certain elements
+        # refer to rdkit.Chem.Atom.calcExplicitValence
+
         atomic_num = ob_atom.GetAtomicNum()
-        max_val = min(
-            ob.GetMaxBonds(atomic_num),
-            Chem.GetPeriodicTable().GetDefaultValence(atomic_num)
-        )
         atom_type = struct.typer.get_atom_type(struct.types[i])
 
-        if atom_type.atomic_num == 16: # sulfone check
+        # get default valence of isoelectronic element
+        if Atom.formal_charge in struct.typer:
+            atomic_num -= atom_type.formal_charge
+        max_val = pt.GetDefaultValence(atomic_num)
+
+        # check for common functional groups
+        if atom_type.atomic_num == 15: # phosphate
+            if count_nbrs_of_elem(ob_atom, 8) >= 4:
+                max_val = 5
+
+        elif atom_type.atomic_num == 16: # sulfone
             if count_nbrs_of_elem(ob_atom, 8) >= 2:
                 max_val = 6
 
-        if Atom.formal_charge in struct.typer:
-            max_val += atom_type.formal_charge #mtr22- is this correct?
-
+        # leave room for minimum # of hydrogens
         if Atom.h_degree in struct.typer:
-            max_val -= atom_type.h_degree # leave room for hydrogen
+            max_val -= atom_type.h_degree
 
         elif Atom.h_donor in struct.typer:
             if atom_type.h_donor:
-                max_val -= 1  # leave room for hydrogen (mtr22- how many?)
+                max_val -= 1
 
         max_vals[ob_atom.GetIdx()] = max_val
 
