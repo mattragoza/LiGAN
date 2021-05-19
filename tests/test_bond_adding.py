@@ -5,7 +5,7 @@ sys.path.insert(0, '.')
 import liGAN.molecules as mols
 from liGAN.molecules import ob, Molecule
 from liGAN.atom_types import Atom, AtomTyper
-from liGAN.bond_adding import BondAdder
+from liGAN.bond_adding import BondAdder, get_max_valences
 
 
 test_sdf_files = [
@@ -62,11 +62,44 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
     )
 
 
+def write_mols(visited_mols, in_mol, mode=None):
+    write_mols = visited_mols + [in_mol]
+    write_mols = [mols.copy_ob_mol(m) for m in write_mols]
+
+    if mode == 'aromatic': # show bond aromaticity as bond order
+        for m in write_mols:
+            for a in ob.OBMolAtomIter(m):
+                a.SetAtomicNum(1 + 5*a.IsAromatic())
+        for m in write_mols:
+            for b in ob.OBMolBondIter(m):
+                b.SetBondOrder(1 + b.IsAromatic())
+    
+    elif mode == 'hybrid': # show hybridization as element
+        hyb_map = {1:6, 2:7, 3:8}
+        for m in write_mols:
+            for a in ob.OBMolAtomIter(m):
+                a.SetAtomicNum(hyb_map.get(a.GetHyb(), 1))
+
+    elif mode is not None:
+        raise ValueError(mode)
+
+    for m in write_mols:
+        m.AddHydrogens()
+
+    mol_name = in_mol.name
+    if mode:
+        mol_name += '_' + mode
+
+    mols.write_ob_mols_to_sdf_file(
+        'tests/TEST_{}.sdf'.format(mol_name), write_mols,
+    )
+
+
 class TestBondAdding(object):
 
     @pytest.fixture(params=[
-        [Atom.h_acceptor, Atom.h_donor],
-        [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
+        #[Atom.h_acceptor, Atom.h_donor],
+        #[Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
         [Atom.h_degree],
     ])
     def typer(self, request):
@@ -101,26 +134,7 @@ class TestBondAdding(object):
             assert o.GetAtomicNum() == i.GetAtomicNum(), 'different elements'
             assert o.GetVector() == i.GetVector(), 'different coordinates'
 
-    def test_set_aromaticity(self, adder, typer, in_mol):
-        struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.set_aromaticity(out_mol, atoms, struct)
-
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            assert o.IsAromatic() == i.IsAromatic(), 'different aromaticity'
-        assert out_mol.HasAromaticPerceived()
-
-    def test_set_min_h_counts(self, adder, typer, in_mol):
-        struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.set_min_h_counts(out_mol, atoms, struct)
-
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            # all H donors should have at least one hydrogen
-            assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
-                'H donor has no hydrogen(s)'
-
-    def test_add_within_dist(self, adder, typer, in_mol):
+    def test_add_within_distance(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         adder.add_within_distance(out_mol, atoms, struct)
@@ -137,34 +151,73 @@ class TestBondAdding(object):
                 if in_bonded: # all input bonds should be present in output
                     assert out_bonded, 'missing ' + bond_str + ' bond'
 
+    def test_set_min_h_counts(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(out_mol, atoms, struct)
+        adder.set_min_h_counts(out_mol, atoms, struct)
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            # all H donors should have at least one hydrogen
+            assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
+                'H donor has no hydrogen(s)'
+
+    def test_set_formal_charges(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(out_mol, atoms, struct)
+        adder.set_min_h_counts(out_mol, atoms, struct)
+        adder.set_formal_charges(out_mol, atoms, struct)
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            assert o.GetFormalCharge() == i.GetFormalCharge(), \
+                'incorrect formal charge'
+
+    def test_remove_bad_valences(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(out_mol, atoms, struct)
+        adder.set_min_h_counts(out_mol, atoms, struct)
+        adder.set_formal_charges(out_mol, atoms, struct)
+        adder.remove_bad_valences(out_mol, atoms, struct)
+        max_vals = get_max_valences(atoms)
+
+        for o in iter_atoms(out_mol, typer.omit_h):
+            assert o.GetExplicitValence() <= max_vals.get(o.GetIdx(), 1), \
+                'invalid valence'
+
+    def test_remove_bad_geometry(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(out_mol, atoms, struct)
+        adder.set_min_h_counts(out_mol, atoms, struct)
+        adder.set_formal_charges(out_mol, atoms, struct)
+        adder.remove_bad_valences(out_mol, atoms, struct)
+        adder.remove_bad_geometry(out_mol)
+
+    def test_set_aromaticity(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(out_mol, atoms, struct)
+        adder.set_min_h_counts(out_mol, atoms, struct)
+        adder.set_formal_charges(out_mol, atoms, struct)
+        adder.remove_bad_valences(out_mol, atoms, struct)
+        adder.remove_bad_geometry(out_mol)
+        adder.set_aromaticity(out_mol, atoms, struct)
+
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+            assert o.IsAromatic() == i.IsAromatic(), 'different aromaticity'
+
     def test_add_bonds(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, atoms = struct.to_ob_mol()
         out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
 
-
-        # write out each bond adding step and input mol
-        if True:
-            write_mols = visited_mols + [in_mol]
-            write_mols = [ob.OBMol(m) for m in write_mols]
-            if False: # show bond aromaticity as bond order
-                for m in write_mols:
-                    for a in ob.OBMolAtomIter(m):
-                        a.SetAtomicNum(1 + 5*a.IsAromatic())
-                for m in write_mols:
-                    for b in ob.OBMolBondIter(m):
-                        b.SetBondOrder(1 + b.IsAromatic())
-            for m in write_mols:
-                m.AddHydrogens()
-            mols.write_ob_mols_to_sdf_file(
-                'tests/TEST_{}.sdf'.format(in_mol.name), write_mols,
-            )
-
+        write_mols(visited_mols, in_mol)
+        write_mols(visited_mols, in_mol, 'aromatic')
+        write_mols(visited_mols, in_mol, 'hybrid')
         for t in struct.atom_types:
             print(t)
-
-        in_mol.AddHydrogens()
-        out_mol.AddHydrogens()
 
         # check bonds between atoms in typed structure
         for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
@@ -204,6 +257,16 @@ class TestBondAdding(object):
         out_mol, _, _ = adder.make_mol(add_struct)
         in_mol = Molecule.from_ob_mol(in_mol)
 
-        assert out_mol.n_atoms == in_mol.n_atoms, 'different num atoms'
-        assert out_mol.to_smi() == in_mol.to_smi(), 'different SMILES strings'
-        assert out_mol.aligned_rmsd(in_mol) < 1.0, 'RMSD too high'
+        n_in = in_mol.n_atoms
+        n_out = out_mol.n_atoms
+        assert n_out == n_in, \
+            'different num atoms ({} vs {})'.format(n_out, n_in)
+
+        mols.Chem.SanitizeMol(in_mol)
+        mols.Chem.SanitizeMol(out_mol)
+        morgan_sim = mols.get_rd_mol_similarity(out_mol, in_mol, 'morgan')
+        assert out_mol.to_smi() == in_mol.to_smi(), \
+            'different SMILES strings ({:.3f})'.format(morgan_sim)
+
+        rmsd = out_mol.aligned_rmsd(in_mol)
+        assert rmsd < 1.0, 'RMSD too high ({})'.format(rmsd)
