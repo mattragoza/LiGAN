@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 
 from .atom_types import Atom
-from .molecules import ob_mol_to_rd_mol, Molecule
+from .molecules import ob_mol_to_rd_mol, Molecule, copy_ob_mol
 
 
 class BondAdder(object):
@@ -143,16 +143,16 @@ class BondAdder(object):
 
     def remove_bad_valences(self, ob_mol, atoms, struct):
 
-        # get max valence of the atom types
-        max_vals = get_max_valences(atoms, struct)
+        # get max valence of the atoms
+        max_vals = get_max_valences(atoms)
 
         # remove any impossible bonds between halogens (mtr22- and hydrogens)
         for bond in ob.OBMolBondIter(ob_mol):
             atom_a = bond.GetBeginAtom()
             atom_b = bond.GetEndAtom()
             if (
-                max_vals[atom_a.GetIdx()] == 1 and
-                max_vals[atom_b.GetIdx()] == 1
+                max_vals.get(atom_a.GetIdx(), 1) == 1 and
+                max_vals.get(atom_b.GetIdx(), 1) == 1
             ):
                 ob_mol.DeleteBond(bond)
 
@@ -166,19 +166,27 @@ class BondAdder(object):
             if atom.GetExplicitValence() <= max_val:
                 continue
             # else, the atom could have an invalid valence
-            # so check whether we can remove a bond
+            # so check whether we can modify a bond
 
             bond_info = sort_bonds_by_stretch(ob.OBAtomBondIter(atom))
             for bond_stretch, bond_len, bond in bond_info:
-                atom1 = bond.GetBeginAtom()
-                atom2 = bond.GetEndAtom()
 
-                # check whether valences are not permitted (this could
-                # have changed since the call to sort_atoms_by_valence)
-                if atom1.GetExplicitValence() > max_vals[atom1.GetIdx()] or \
-                    atom2.GetExplicitValence() > max_vals[atom2.GetIdx()]:
-            
-                    if reachable(atom1, atom2): # don't fragment the molecule
+                # do the atoms involved in this bond have bad valences?
+                #   since we are modifying the valences in the loop, this
+                #   could have changed since calling sort_atoms_by_valence
+
+                a1, a2 = bond.GetBeginAtom(), bond.GetEndAtom()
+                max_val_diff = max( # by how much are the valences over?
+                    a1.GetExplicitValence() - max_vals.get(a1.GetIdx(), 1),
+                    a2.GetExplicitValence() - max_vals.get(a2.GetIdx(), 1)
+                )
+                if max_val_diff > 0:
+
+                    bond_order = bond.GetBondOrder()
+                    if bond_order > max_val_diff: # decrease bond order
+                        bond.SetBondOrder(bond_order - max_val_diff)
+
+                    elif reachable(a1, a2): # don't fragment the molecule
                         ob_mol.DeleteBond(bond)
 
                     # if the current atom now has a permitted valence,
@@ -210,31 +218,33 @@ class BondAdder(object):
     def add_bonds(self, ob_mol, atoms, struct):
 
         # track each step of bond adding
-        visited_mols = [ob.OBMol(ob_mol)]
+        visited_mols = [copy_ob_mol(ob_mol)]
 
         if len(atoms) == 0: # nothing to do
             return ob_mol, visited_mols
 
-        ob_mol.BeginModify()
+        ob_mol.BeginModify() # why do we even need this?
 
         # add all bonds between atom pairs within a distance range
         self.add_within_distance(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
+        visited_mols.append(copy_ob_mol(ob_mol))
 
         # set minimum H counts to determine hyper valency
         #   but don't make them explicit yet to avoid issues
         #   with bond adding/removal (i.e. ignore H bonds)
         self.set_min_h_counts(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
+        visited_mols.append(copy_ob_mol(ob_mol))
 
+        # set formal charge to correctly determine valences
         # remove bonds to atoms that are above their allowed valence
         #   with priority towards removing highly stretched bonds
+        self.set_formal_charges(ob_mol, atoms, struct)
         self.remove_bad_valences(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
+        visited_mols.append(copy_ob_mol(ob_mol))
 
         # remove bonds whose lengths/angles are excessively distorted
         self.remove_bad_geometry(ob_mol)
-        visited_mols.append(ob.OBMol(ob_mol))
+        visited_mols.append(copy_ob_mol(ob_mol))
 
         # NOTE the next section is important, but not intuitive,
         #   and the order of operations deserves explanation:
@@ -249,22 +259,31 @@ class BondAdder(object):
         # need to set_aromaticity() before AND after EndModify()
         #   otherwise aromatic atom types are missing
 
+        # hybridization is perceived in PerceiveBondOrders()
+        #   but the flag is not set automatically, and when
+        #   the flag is false, then any call to GetHyb()
+        #   triggers hybridization perception which can
+        #   result in different outcomes b/c we modify valence
         self.set_aromaticity(ob_mol, atoms, struct)
+        visited_mols.append(copy_ob_mol(ob_mol))
         ob_mol.EndModify()
-        self.set_aromaticity(ob_mol, atoms, struct)
-        visited_mols.append(ob.OBMol(ob_mol))
 
         ob_mol.AddHydrogens()
         ob_mol.PerceiveBondOrders()
-        visited_mols.append(ob.OBMol(ob_mol))
+        self.set_aromaticity(ob_mol, atoms, struct)
+        visited_mols.append(copy_ob_mol(ob_mol))
+
+        # try to fix higher bond orders that cause bad valences
+        #   if hybrid flag is not set, then can alter hybridization
+        self.remove_bad_valences(ob_mol, atoms, struct)
+        visited_mols.append(copy_ob_mol(ob_mol))
 
         # fill remaining valences with h bonds,
-        #   up to max num allowed by the atom types
-        #   also set formal charge, if available
-        self.set_formal_charges(ob_mol, atoms, struct)
+        #   up to typical num allowed by the atom types
+        #   and the rest with increased bond orders
         self.set_rem_h_counts(ob_mol, atoms, struct)
         ob_mol.AddHydrogens()
-        visited_mols.append(ob.OBMol(ob_mol))
+        visited_mols.append(copy_ob_mol(ob_mol))
 
         return ob_mol, visited_mols
 
@@ -444,7 +463,7 @@ def count_nbrs_of_elem(atom, atomic_num):
     return count
 
 
-def get_max_valences(atoms, struct):
+def get_max_valences(atoms):
 
     # determine max allowed valences
     pt = Chem.GetPeriodicTable()
@@ -461,29 +480,21 @@ def get_max_valences(atoms, struct):
         # refer to rdkit.Chem.Atom.calcExplicitValence
 
         atomic_num = ob_atom.GetAtomicNum()
-        atom_type = struct.typer.get_atom_type(struct.types[i])
 
         # get default valence of isoelectronic element
-        if Atom.formal_charge in struct.typer:
-            atomic_num -= atom_type.formal_charge
-        max_val = pt.GetDefaultValence(atomic_num)
+        iso_atomic_num = atomic_num - ob_atom.GetFormalCharge()
+        max_val = pt.GetDefaultValence(iso_atomic_num)
 
         # check for common functional groups
-        if atom_type.atomic_num == 15: # phosphate
+        if atomic_num == 15: # phosphate
             if count_nbrs_of_elem(ob_atom, 8) >= 4:
                 max_val = 5
 
-        elif atom_type.atomic_num == 16: # sulfone
+        elif atomic_num == 16: # sulfone
             if count_nbrs_of_elem(ob_atom, 8) >= 2:
                 max_val = 6
 
-        # leave room for minimum # of hydrogens
-        if Atom.h_degree in struct.typer:
-            max_val -= atom_type.h_degree
-
-        elif Atom.h_donor in struct.typer:
-            if atom_type.h_donor:
-                max_val -= 1
+        max_val -= ob_atom.GetImplicitHCount()
 
         max_vals[ob_atom.GetIdx()] = max_val
 

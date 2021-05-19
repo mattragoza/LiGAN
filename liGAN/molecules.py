@@ -222,6 +222,15 @@ def make_ob_mol(coords, types, bonds, typer):
     return ob_mol, atoms
 
 
+def copy_ob_mol(ob_mol):
+    copy_mol = ob.OBMol(ob_mol)
+    copy_mol.SetHydrogensAdded(ob_mol.HasHydrogensAdded())
+    assert copy_mol.HasHydrogensAdded() == ob_mol.HasHydrogensAdded()
+    assert copy_mol.HasAromaticPerceived() == ob_mol.HasAromaticPerceived()
+    assert copy_mol.HasHybridizationPerceived() == ob_mol.HasHybridizationPerceived()
+    return copy_mol
+
+
 def read_ob_mols_from_file(mol_file, in_format):
     ob_conv = ob.OBConversion()
     ob_conv.SetInFormat(in_format)
