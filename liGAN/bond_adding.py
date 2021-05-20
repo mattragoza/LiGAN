@@ -27,12 +27,15 @@ class BondAdder(object):
         max_bond_len=4.0,
         max_bond_stretch=0.45,
         min_bond_angle=45,
+        debug=False,
     ):
         self.min_bond_len = min_bond_len
         self.max_bond_len = max_bond_len
 
         self.max_bond_stretch = max_bond_stretch
         self.min_bond_angle = min_bond_angle
+
+        self.debug = debug
 
     def set_aromaticity(self, ob_mol, atoms, struct):
         '''
@@ -218,7 +221,14 @@ class BondAdder(object):
     def add_bonds(self, ob_mol, atoms, struct):
 
         # track each step of bond adding
-        visited_mols = [copy_ob_mol(ob_mol)]
+        visited_mols = []
+
+        def visit_mol(mol, msg):
+            visited_mols.append(copy_ob_mol(mol))
+            if self.debug:
+                print(len(visited_mols), msg)
+
+        visit_mol(ob_mol, 'initial struct')
 
         if len(atoms) == 0: # nothing to do
             return ob_mol, visited_mols
@@ -227,24 +237,24 @@ class BondAdder(object):
 
         # add all bonds between atom pairs within a distance range
         self.add_within_distance(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'add_within_distance')
 
         # set minimum H counts to determine hyper valency
         #   but don't make them explicit yet to avoid issues
         #   with bond adding/removal (i.e. ignore H bonds)
         self.set_min_h_counts(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'set_min_h_counts')
 
-        # set formal charge to correctly determine valences
+        # set formal charge to correctly determine allowed valences
         # remove bonds to atoms that are above their allowed valence
         #   with priority towards removing highly stretched bonds
         self.set_formal_charges(ob_mol, atoms, struct)
         self.remove_bad_valences(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'remove_bad_valences')
 
         # remove bonds whose lengths/angles are excessively distorted
         self.remove_bad_geometry(ob_mol)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'remove_bad_geometry')
 
         # NOTE the next section is important, but not intuitive,
         #   and the order of operations deserves explanation:
@@ -254,36 +264,40 @@ class BondAdder(object):
         #   otherwise you get a segmentation fault
         # need to AddHydrogens() after EndModify()
         #   because EndModify() resets hydrogen coords
+
         # need to set_aromaticity() before AddHydrogens()
         #   bc it uses hybridization to create H coords
+        #   actually, without setting the hybrid flag,
+        #   it just perceives the hybridization
+
         # need to set_aromaticity() before AND after EndModify()
         #   otherwise aromatic atom types are missing
 
-        # hybridization is perceived in PerceiveBondOrders()
-        #   but the flag is not set automatically, and when
-        #   the flag is false, then any call to GetHyb()
-        #   triggers hybridization perception which can
-        #   result in different outcomes b/c we modify valence
-        self.set_aromaticity(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
-        ob_mol.EndModify()
+        # hybridization and aromaticity are perceived in PBO()
+        #   but the flags are both are turned off at the end
+        #   which causes perception to be triggered again when
+        #   calls to GetHyb() or IsAromatic() are made
 
+        self.set_aromaticity(ob_mol, atoms, struct)
+        visit_mol(ob_mol, 'set_aromaticity')
+
+        ob_mol.EndModify()
         ob_mol.AddHydrogens()
         ob_mol.PerceiveBondOrders()
         self.set_aromaticity(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'perceive_bond_orders')
 
         # try to fix higher bond orders that cause bad valences
         #   if hybrid flag is not set, then can alter hybridization
         self.remove_bad_valences(ob_mol, atoms, struct)
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'remove_bad_valences')
 
         # fill remaining valences with h bonds,
         #   up to typical num allowed by the atom types
         #   and the rest with increased bond orders
         self.set_rem_h_counts(ob_mol, atoms, struct)
         ob_mol.AddHydrogens()
-        visited_mols.append(copy_ob_mol(ob_mol))
+        visit_mol(ob_mol, 'set_rem_h_counts')
 
         return ob_mol, visited_mols
 

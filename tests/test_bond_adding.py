@@ -131,7 +131,7 @@ class TestBondAdding(object):
 
     @pytest.fixture
     def adder(self):
-        return BondAdder()
+        return BondAdder(debug=True)
 
     @pytest.fixture(params=test_sdf_files)
     def in_mol(self, request):
