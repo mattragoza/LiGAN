@@ -19,23 +19,23 @@ test_sdf_files = [
 ]
 
 
-def iter_atoms(ob_mol, omit_h=False):
+def iter_atoms(ob_mol, explicit_h=True):
     '''
     Iterate over atoms in ob_mol,
     optionally omitting hydrogens.
     '''
     for atom in ob.OBMolAtomIter(ob_mol):
-        if omit_h and atom.GetAtomicNum() == 1:
+        if not explicit_h and atom.GetAtomicNum() == 1:
             continue
         yield atom
 
 
-def iter_atom_pairs(in_mol, out_mol, omit_h=False):
+def iter_atom_pairs(in_mol, out_mol, explicit_h=False):
     '''
     Iterate over pairs of atoms in in_mol and
     out_mol, optionally omitting hydrogens.
     '''
-    if omit_h:
+    if not explicit_h:
         n_in = in_mol.NumHvyAtoms()
         n_out = out_mol.NumHvyAtoms()
         assert n_out == n_in, \
@@ -47,8 +47,8 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
             'different num atoms ({} vs {})'.format(n_out, n_in)
 
     return zip(
-        iter_atoms(in_mol, omit_h),
-        iter_atoms(out_mol, omit_h),
+        iter_atoms(in_mol, explicit_h),
+        iter_atoms(out_mol, explicit_h),
     )
 
 
@@ -130,7 +130,7 @@ class TestBondAdding(object):
         struct = typer.make_struct(in_mol)
         out_mol, _ = struct.to_ob_mol()
 
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
             assert o.GetAtomicNum() == i.GetAtomicNum(), 'different elements'
             assert o.GetVector() == i.GetVector(), 'different coordinates'
 
@@ -139,8 +139,8 @@ class TestBondAdding(object):
         out_mol, atoms = struct.to_ob_mol()
         adder.add_within_distance(out_mol, atoms, struct)
 
-        for a_i, a_o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            for b_i, b_o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for a_i, a_o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
+            for b_i, b_o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
 
                 in_bonded = bool(in_mol.GetBond(a_i, b_i))
                 out_bonded = bool(out_mol.GetBond(a_o, b_o))
@@ -157,14 +157,14 @@ class TestBondAdding(object):
         adder.add_within_distance(out_mol, atoms, struct)
         adder.set_min_h_counts(out_mol, atoms, struct)
 
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
             # all H donors should have at least one hydrogen
-            if typer.omit_h:
-                assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
-                    'implicit H donor has no implicit H(s)'
-            else:
+            if typer.explicit_h:
                 assert o.GetImplicitHCount() == 0, \
                     'explicit H donor has implicit H(s)'
+            else:
+                assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
+                    'implicit H donor has no implicit H(s)'
 
     def test_set_formal_charges(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
@@ -173,7 +173,7 @@ class TestBondAdding(object):
         adder.set_min_h_counts(out_mol, atoms, struct)
         adder.set_formal_charges(out_mol, atoms, struct)
 
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
             assert o.GetFormalCharge() == i.GetFormalCharge(), \
                 'incorrect formal charge'
 
@@ -186,7 +186,7 @@ class TestBondAdding(object):
         adder.remove_bad_valences(out_mol, atoms, struct)
         max_vals = get_max_valences(atoms)
 
-        for o in iter_atoms(out_mol, typer.omit_h):
+        for o in iter_atoms(out_mol, typer.explicit_h):
             assert o.GetExplicitValence() <= max_vals.get(o.GetIdx(), 1), \
                 'invalid valence'
 
@@ -209,7 +209,7 @@ class TestBondAdding(object):
         adder.remove_bad_geometry(out_mol)
         adder.set_aromaticity(out_mol, atoms, struct)
 
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
             assert o.IsAromatic() == i.IsAromatic(), 'different aromaticity'
 
     def test_add_bonds(self, adder, typer, in_mol):
@@ -222,8 +222,8 @@ class TestBondAdding(object):
             print(t)
 
         # check bonds between atoms in typed structure
-        for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
-            for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
+        for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
+            for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
 
                 in_bond = in_mol.GetBond(in_a, in_b)
                 out_bond = out_mol.GetBond(out_a, out_b)

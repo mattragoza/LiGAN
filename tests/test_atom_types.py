@@ -47,7 +47,7 @@ class TestAtomTyper(object):
                 [1, 6, 8], [1], [1], [1],
             ],
             radius_func=lambda x: 1,
-            omit_h=True,
+            explicit_h=False,
         )
 
     @pytest.fixture

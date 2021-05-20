@@ -93,7 +93,7 @@ class BondAdder(object):
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
-            if not struct.typer.omit_h: # explicit Hs
+            if struct.typer.explicit_h:
                 continue
 
             if 'h_degree' in atom_type._fields:
@@ -210,7 +210,7 @@ class BondAdder(object):
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
             assert ob_atom.GetImplicitHCount() == 0
             
-            if not struct.typer.omit_h: # explicit Hs
+            if struct.typer.explicit_h:
                 continue
 
             max_val = max_vals.get(ob_atom.GetIdx(), 1)

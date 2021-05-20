@@ -217,13 +217,13 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     A function giving the atomic radius is also needed.
     '''
-    def __init__(self, prop_funcs, prop_ranges, radius_func, omit_h=True):
+    def __init__(self, prop_funcs, prop_ranges, radius_func, explicit_h=False):
         assert len(prop_funcs) == len(prop_ranges)
         assert prop_funcs[0] == Atom.atomic_num
         self.prop_funcs = prop_funcs
         self.prop_ranges = prop_ranges
         self.radius_func = radius_func
-        self.omit_h = omit_h
+        self.explicit_h = explicit_h
         super().__init__(
             lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
@@ -254,7 +254,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     def get_type_vector(self, ob_atom):
 
-        if self.omit_h and ob_atom.GetAtomicNum() == 1:
+        if not self.explicit_h and ob_atom.GetAtomicNum() == 1:
             return [0] * self.n_types
 
         type_vec = []
@@ -313,11 +313,9 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
         ]
 
-        if 'h' in pf: # explicit hydrogens
+        explicit_h = ('h' in pf)
+        if explicit_h: # explicit hydrogens
             prop_ranges[0].insert(0, 1)
-            omit_h = False
-        else:
-            omit_h = True
 
         if 'o' in pf:
             prop_funcs += [Atom.aromatic]
@@ -345,7 +343,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         elif rf == 'c': # covalent
             radius_func = Atom.cov_radius
 
-        return cls(prop_funcs, prop_ranges, radius_func, omit_h)
+        return cls(prop_funcs, prop_ranges, radius_func, explicit_h)
 
 
 def make_one_hot(value, range_):
