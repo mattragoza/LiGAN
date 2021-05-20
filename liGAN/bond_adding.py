@@ -47,6 +47,11 @@ class BondAdder(object):
         if Atom.aromatic not in struct.typer:
             return False
 
+        # set this flag to ensure that openbabel doesn't
+        # reassign aromaticity when accessing IsAromatic()
+        # and also copies aromaticity when copying mol
+        ob_mol.SetAromaticPerceived(True)
+
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
             if atom_type.aromatic:
@@ -60,7 +65,6 @@ class BondAdder(object):
             a2 = bond.GetEndAtom()
             bond.SetAromatic(a1.IsAromatic() and a2.IsAromatic())
 
-        ob_mol.SetAromaticPerceived(True)
         return True
 
     def set_formal_charges(self, ob_mol, atoms, struct):
@@ -83,10 +87,11 @@ class BondAdder(object):
         Hs specified by their atom type, if it is
         available.
         '''
-        assert not ob_mol.HasHydrogensAdded()
+        # this ensures that explicit coords are created for the
+        # implicit Hs we add here when AddHydrogens() is called
+        ob_mol.SetHydrogensAdded(False)
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
-            #assert ob_atom.GetExplicitDegree() == ob_atom.GetHvyDegree()
 
             if 'h_degree' in atom_type._fields:
                 ob_atom.SetImplicitHCount(atom_type.h_degree)
@@ -94,37 +99,6 @@ class BondAdder(object):
             elif 'h_donor' in atom_type._fields:
                 if atom_type.h_donor and ob_atom.GetImplicitHCount() == 0:
                     ob_atom.SetImplicitHCount(1)
-
-    def set_rem_h_counts(self, ob_mol, atoms, struct):
-        '''
-        Set atoms with empty valences to have up to
-        the maximum number of hydrogens allowed by
-        their atom type- or set the exact number of
-        Hs, if it is avalable.
-        '''
-        assert ob_mol.HasHydrogensAdded() # no implicit Hs
-        ob_mol.SetHydrogensAdded(False)
-
-        for ob_atom, atom_type in zip(atoms, struct.atom_types):
-            assert ob_atom.GetImplicitHCount() == 0
-            h_count = ob_atom.GetImplicitHCount()
-
-            if 'h_degree' in atom_type._fields:
-                pass # assume these have been set previously
-
-            else:
-                # need to set charge before AssignTypicalImplicitHs
-                if 'formal_charge' in atom_type._fields:
-                    ob_atom.SetFormalCharge(atom_type.formal_charge)
-
-                # this uses explicit valence and formal charge
-                ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
-                typical_h_count = ob_atom.GetImplicitHCount()
-
-                if typical_h_count > h_count: # only ever increase
-                    h_count = typical_h_count
-
-                ob_atom.SetImplicitHCount(h_count)
 
     def add_within_distance(self, ob_mol, atoms, struct):
 
@@ -218,6 +192,62 @@ class BondAdder(object):
                 if reachable(atom1, atom2): # don't fragment the molecule
                     ob_mol.DeleteBond(bond)
 
+    def fill_rem_valences(self, ob_mol, atoms, struct):
+        '''
+        Fill empty valences with hydrogens up to the
+        typical amount allowed by their atom type, and
+        remaining valences with higher bond orders.
+        '''
+        # if this flag is present, then new hydrogens are not added
+        ob_mol.SetHydrogensAdded(False)
+
+        for ob_atom, atom_type in zip(atoms, struct.atom_types):
+            assert ob_atom.GetImplicitHCount() == 0
+
+            if 'h_degree' in atom_type._fields:
+                # this should have already been set by set_min_h_counts
+                h_degree = ob_atom.GetTotalDegree() - ob_atom.GetHvyDegree()
+                assert h_degree == atom_type.h_degree
+            else:
+                # this uses explicit valence and formal charge
+                # and it only ever INCREASES hydrogens, since it
+                # never sets implicit H to a negative value
+                ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
+
+        # get max valence of the atoms
+        max_vals = get_max_valences(atoms)
+
+        atom_info = sort_atoms_by_valence(atoms, max_vals)
+        for max_val, rem_val, atom in reversed(atom_info):
+
+            if atom.GetExplicitValence() >= max_val:
+                continue
+            # else, the atom could have an empty valence
+            # so check whether we can augment a bond,
+            # prioritizing bonds that are too short
+
+            bond_info = sort_bonds_by_stretch(ob.OBAtomBondIter(atom))
+            for bond_stretch, bond_len, bond in reversed(bond_info):
+
+                # do the atoms involved in this bond have empty valences?
+                #   since we are modifying the valences in the loop, this
+                #   could have changed since calling sort_atoms_by_valence
+
+                a1, a2 = bond.GetBeginAtom(), bond.GetEndAtom()
+                min_val_diff = min( # by how much are the valences under?
+                    max_vals.get(a1.GetIdx(), 1) - a1.GetExplicitValence(),
+                    max_vals.get(a2.GetIdx(), 1) - a2.GetExplicitValence()
+                )
+                if min_val_diff > 0: # increase bond order
+
+                    bond_order = bond.GetBondOrder()
+                    bond.SetBondOrder(bond_order + min_val_diff)
+
+                    # if the current atom now has its preferred valence,
+                    # break and let other atoms choose next bonds to augment
+                    if atom.GetExplicitValence() == max_vals[atom.GetIdx()]:
+                        break
+
     def add_bonds(self, ob_mol, atoms, struct):
 
         # track each step of bond adding
@@ -265,11 +295,6 @@ class BondAdder(object):
         # need to AddHydrogens() after EndModify()
         #   because EndModify() resets hydrogen coords
 
-        # need to set_aromaticity() before AddHydrogens()
-        #   bc it uses hybridization to create H coords
-        #   actually, without setting the hybrid flag,
-        #   it just perceives the hybridization
-
         # need to set_aromaticity() before AND after EndModify()
         #   otherwise aromatic atom types are missing
 
@@ -295,9 +320,9 @@ class BondAdder(object):
         # fill remaining valences with h bonds,
         #   up to typical num allowed by the atom types
         #   and the rest with increased bond orders
-        self.set_rem_h_counts(ob_mol, atoms, struct)
+        self.fill_rem_valences(ob_mol, atoms, struct)
         ob_mol.AddHydrogens()
-        visit_mol(ob_mol, 'set_rem_h_counts')
+        visit_mol(ob_mol, 'fill_rem_valences')
 
         return ob_mol, visited_mols
 
@@ -445,10 +470,12 @@ def forms_small_angle(atom_a, atom_b, cutoff=45):
     return False
 
 
-def sort_bonds_by_stretch(bonds):
+def sort_bonds_by_stretch(bonds, absolute=True):
     '''
     Return bonds sorted by their distance
-    from the optimal covalent bond length.
+    from the optimal covalent bond length,
+    and their actual bond length, with the
+    most stretched and longest bonds first.
     '''
     bond_info = []
     for bond in bonds:
@@ -461,7 +488,9 @@ def sort_bonds_by_stretch(bonds):
             ob.GetCovalentRad(atomic_num2)
         )
         bond_len = bond.GetLength()
-        stretch = np.abs(bond_len - ideal_bond_len) # mtr22- take abs
+        stretch = bond_len - ideal_bond_len
+        if absolute:
+            stretch = np.abs(stretch)
         bond_info.append((stretch, bond_len, bond))
 
     # sort bonds from most to least stretched
@@ -517,21 +546,16 @@ def get_max_valences(atoms):
 
 def sort_atoms_by_valence(atoms, max_vals):
     '''
-    Return atoms sorted by their explicit 
-    valence and difference from maximum
-    allowed valence.
+    Return atoms sorted by their maximum
+    allowed valence and remaining valence,
+    with the most valence-constrained and
+    hyper-valent atoms sorted first.
     '''
     atom_info = []
     for atom in atoms:
         max_val = max_vals[atom.GetIdx()]
         rem_val = max_val - atom.GetExplicitValence()
         atom_info.append((max_val, rem_val, atom))
-
-        # mtr22- should we sort by rem_val first instead?
-        # doesn't this mean that we will always choose to
-        # remove a bond to a low max-valence atom, even if it
-        # has remaining valence, and even if there are higher
-        # max-valence atom that have less remaining valence?
 
     # sort atoms from least to most remaining valence
     atom_info.sort(key=lambda t: (t[0], t[1]))

@@ -117,8 +117,8 @@ class TestBondAdding(object):
 
     @pytest.fixture(params=[
         #[Atom.h_acceptor, Atom.h_donor],
-        #[Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
-        [Atom.h_degree],
+        [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
+        #[Atom.h_degree],
     ])
     def typer(self, request):
         prop_funcs = [Atom.atomic_num, Atom.aromatic] + request.param
