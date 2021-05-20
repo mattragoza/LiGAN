@@ -116,9 +116,9 @@ def write_mols(visited_mols, in_mol, mode=None):
 class TestBondAdding(object):
 
     @pytest.fixture(params=[
-        #[Atom.h_acceptor, Atom.h_donor],
+        [Atom.h_acceptor, Atom.h_donor],
         [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
-        #[Atom.h_degree],
+        [Atom.h_degree],
     ])
     def typer(self, request):
         prop_funcs = [Atom.atomic_num, Atom.aromatic] + request.param
@@ -280,9 +280,12 @@ class TestBondAdding(object):
 
         mols.Chem.SanitizeMol(in_mol)
         mols.Chem.SanitizeMol(out_mol)
-        morgan_sim = mols.get_rd_mol_similarity(out_mol, in_mol, 'morgan')
-        assert out_mol.to_smi() == in_mol.to_smi(), \
-            'different SMILES strings ({:.3f})'.format(morgan_sim)
+        in_smi = in_mol.to_smi()
+        out_smi = out_mol.to_smi()
+        rd_sim = mols.get_rd_mol_similarity(out_mol, in_mol, 'rdkit')
+        ob_sim = mols.get_ob_smi_similarity(out_smi, in_smi)
+        assert out_smi == in_smi, \
+            'different SMILES strings ({:.3f} {:.3f})'.format(ob_sim, rd_sim)
 
         rmsd = out_mol.aligned_rmsd(in_mol)
         assert rmsd < 1.0, 'RMSD too high ({})'.format(rmsd)
