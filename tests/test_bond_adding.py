@@ -19,16 +19,6 @@ test_sdf_files = [
 ]
 
 
-prop_ranges = {
-    Atom.atomic_num: [6, 7, 8, 15, 16],
-    Atom.aromatic: [1],
-    Atom.h_acceptor: [1],
-    Atom.h_donor: [1],
-    Atom.formal_charge: [-1, 0, 1],
-    Atom.h_degree: [0, 1, 2, 3, 4],
-}
-
-
 def iter_atoms(ob_mol, omit_h=False):
     '''
     Iterate over atoms in ob_mol,
@@ -115,19 +105,11 @@ def write_mols(visited_mols, in_mol, mode=None):
 
 class TestBondAdding(object):
 
-    @pytest.fixture(params=[
-        [Atom.h_acceptor, Atom.h_donor],
-        [Atom.h_acceptor, Atom.h_donor, Atom.formal_charge],
-        [Atom.h_degree],
-    ])
+    @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
     def typer(self, request):
-        prop_funcs = [Atom.atomic_num, Atom.aromatic] + request.param
-        return AtomTyper(
-            prop_funcs=prop_funcs,
-            prop_ranges=[prop_ranges[f] for f in prop_funcs],
-            radius_func=lambda x: 1,
-            omit_h=True,
-        )
+        prop_funcs = request.param
+        radius_func = lambda x: 1
+        return AtomTyper.get_typer(prop_funcs, radius_func)
 
     @pytest.fixture
     def adder(self):
@@ -177,8 +159,12 @@ class TestBondAdding(object):
 
         for i, o in iter_atom_pairs(in_mol, out_mol, typer.omit_h):
             # all H donors should have at least one hydrogen
-            assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
-                'H donor has no hydrogen(s)'
+            if typer.omit_h:
+                assert o.GetImplicitHCount() >= i.IsHbondDonor(), \
+                    'implicit H donor has no implicit H(s)'
+            else:
+                assert o.GetImplicitHCount() == 0, \
+                    'explicit H donor has implicit H(s)'
 
     def test_set_formal_charges(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)

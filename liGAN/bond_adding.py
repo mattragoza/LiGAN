@@ -93,6 +93,9 @@ class BondAdder(object):
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
+            if not struct.typer.omit_h: # explicit Hs
+                continue
+
             if 'h_degree' in atom_type._fields:
                 ob_atom.SetImplicitHCount(atom_type.h_degree)
 
@@ -201,20 +204,29 @@ class BondAdder(object):
         # if this flag is present, then new hydrogens are not added
         ob_mol.SetHydrogensAdded(False)
 
+        # get max valence of the atoms
+        max_vals = get_max_valences(atoms)
+
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
             assert ob_atom.GetImplicitHCount() == 0
+            
+            if not struct.typer.omit_h: # explicit Hs
+                continue
+
+            max_val = max_vals.get(ob_atom.GetIdx(), 1)
 
             if 'h_degree' in atom_type._fields:
                 # this should have already been set by set_min_h_counts
                 h_degree = ob_atom.GetTotalDegree() - ob_atom.GetHvyDegree()
                 assert h_degree == atom_type.h_degree
-            else:
+
+            elif ob_atom.GetExplicitValence() < max_val:
+
                 # this uses explicit valence and formal charge
                 # and it only ever INCREASES hydrogens, since it
                 # never sets implicit H to a negative value
                 ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
 
-        # get max valence of the atoms
         max_vals = get_max_valences(atoms)
 
         atom_info = sort_atoms_by_valence(atoms, max_vals)
