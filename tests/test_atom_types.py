@@ -6,50 +6,30 @@ import molgrid
 sys.path.insert(0, '.')
 from liGAN.molecules import read_ob_mols_from_file
 from liGAN.atom_types import (
-    make_one_hot, UNK, AtomTyper, Atom, ob
+    make_one_hot, AtomTyper, Atom, ob
 )
 
 
 def test_make_one_hot():
 
-    assert make_one_hot(0, []) == []
-    assert make_one_hot(0, [UNK]) == [1]
+    with pytest.raises(AssertionError):
+        assert make_one_hot(0, []) == []
 
+    # binary type
+    assert make_one_hot(0, [0]) == [1]
     assert make_one_hot(0, [1]) == [0]
+    assert make_one_hot(1, [0]) == [0]
     assert make_one_hot(1, [1]) == [1]
-    assert make_one_hot(0, [1, UNK]) == [0, 1]
-    assert make_one_hot(1, [1, UNK]) == [1, 0]
+    assert make_one_hot(2, [0]) == [0]
+    assert make_one_hot(2, [1]) == [0]
 
+    # argmax type, with dummy value
     assert make_one_hot(0, [0, 1]) == [1, 0]
     assert make_one_hot(1, [0, 1]) == [0, 1]
-    assert make_one_hot(2, [0, 1]) == [0, 0]
-    assert make_one_hot(0, [0, 1, UNK]) == [1, 0, 0]
-    assert make_one_hot(1, [0, 1, UNK]) == [0, 1, 0]
-    assert make_one_hot(2, [0, 1, UNK]) == [0, 0, 1]
-
-
-class TestUnknown(object):
-
-    def test_eq(self):
-        assert 0 == UNK
-        assert 1 == UNK
-        assert False == UNK
-        assert True == UNK
-        assert 'a' == UNK
-
-    def test_in(self):
-        assert 0 in [UNK]
-        assert 1 in [UNK]
-        assert False in [UNK]
-        assert True in [UNK]
-        assert 'a' in [UNK]
-
-    def test_idx(self):
-        assert [UNK].index(0) == 0
-        assert [UNK].index(1) == 0
-        assert [UNK].index(False) == 0
-        assert [UNK].index(True) == 0
-        assert [UNK].index('a') == 0
+    assert make_one_hot(2, [0, 1]) == [0, 1]
+    assert make_one_hot(0, [0, 2]) == [1, 0]
+    assert make_one_hot(1, [0, 2]) == [0, 1]
+    assert make_one_hot(2, [0, 2]) == [0, 1]
 
 
 class TestAtomTyper(object):
@@ -64,7 +44,7 @@ class TestAtomTyper(object):
                 Atom.h_donor,
             ],
             prop_ranges=[
-                [1, 6, 7, 8, UNK], [1], [1], [1],
+                [1, 6, 8], [1], [1], [1],
             ],
             radius_func=lambda x: 1,
             omit_h=True,
@@ -79,10 +59,19 @@ class TestAtomTyper(object):
         mol.AddHydrogens() # NOTE needed to determine donor acceptor
         return mol
 
+    @pytest.fixture
+    def ammonia(self):
+        sdf_file = os.path.join(
+            os.environ['LIGAN_ROOT'], 'data', 'N_2_0_0.sdf'
+        )
+        mol = read_ob_mols_from_file(sdf_file, 'sdf')[0]
+        mol.AddHydrogens() # NOTE needed to determine donor acceptor
+        return mol
+
     def test_typer_init(self, typer):
         assert len(typer.prop_funcs) == 4
         assert len(typer.prop_ranges) == 4
-        assert typer.n_types == 8
+        assert typer.n_types == 6
 
     def test_get_typer(self):
         AtomTyper.get_typer(prop_funcs='oad', radius_func='v')
@@ -94,11 +83,11 @@ class TestAtomTyper(object):
         for i, atom in enumerate(ob.OBMolAtomIter(benzene)):
             if i < 6: # aromatic carbon
                 assert typer.get_type_vector(atom) == [
-                    0, 1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
-                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_atom_type(self, typer, benzene):
@@ -116,12 +105,20 @@ class TestAtomTyper(object):
         for i, type_vec in enumerate(struct.types):
             if i < 6: # aromatic carbon
                 assert list(type_vec) == [
-                    0, 1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
                 ]
+
+    def test_typer_unknown(self, typer, ammonia):
+        struct = typer.make_struct(ammonia)
+        for i, atom_type in enumerate(struct.atom_types):
+            if i == 0: # unknown type N gets cast as O
+                assert atom_type.atomic_num == 8
+            else:
+                assert atom_type.atomic_num == 1
 
     def test_typer_ex_provider(self, typer):
         data_root = os.path.join(
@@ -138,10 +135,10 @@ class TestAtomTyper(object):
         for i, type_vec in enumerate(type_vecs):
             if i < 6: # aromatic carbon
                 assert list(type_vec) == [
-                    0, 1, 0, 0, 0, 1, 0, 0,
+                    0, 1, 0, 1, 0, 0,
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
                 ]
 

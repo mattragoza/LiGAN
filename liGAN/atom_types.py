@@ -203,32 +203,6 @@ class Atom(ob.OBAtom):
         return ob.GetCovalentRad(self.GetAtomicNum())
 
 
-class Unknown(object):
-    '''
-    An object whose only property is that
-    it is considered equal to everthing.
-
-    This can be used as the last element
-    in a property range provided to an
-    AtomTyper in order to catch any values
-    not explicitly specified.
-
-    Note that the original value will not
-    be recoverable.
-    '''
-    def __eq__(self, other):
-        '''
-        Returns True.
-        '''
-        return True
-
-    def __repr__(self):
-        return 'UNK'
-
-
-UNK = Unknown()
-
-
 class AtomTyper(molgrid.PythonCallbackVectorTyper):
     '''
     A class for converting OBAtoms to atom type vectors.
@@ -279,13 +253,15 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
                 yield '{}_{}'.format(func.__name__, value)
 
     def get_type_vector(self, ob_atom):
+
+        if self.omit_h and ob_atom.GetAtomicNum() == 1:
+            return [0] * self.n_types
+
         type_vec = []
         for func, range_ in zip(self.prop_funcs, self.prop_ranges):
-            if self.omit_h and ob_atom.GetAtomicNum() == 1:
-                type_vec += [0] * len(range_)
-            else:
-                value = func(ob_atom)
-                type_vec += make_one_hot(value, range_)
+            value = func(ob_atom)
+            type_vec += make_one_hot(value, range_)
+
         return type_vec
 
     def get_radius(self, ob_atom):
@@ -333,7 +309,8 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         pf, rf = prop_funcs, radius_func
         prop_funcs = [Atom.atomic_num]
         prop_ranges = [
-            [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, UNK]
+            #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
+            [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
         ]
 
         if 'h' in pf: # explicit hydrogens
@@ -372,11 +349,13 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
 
 def make_one_hot(value, range_):
+    assert len(range_) > 0
     vec = [0] * len(range_)
     try:
         vec[range_.index(value)] = 1
-    except ValueError: # ignore
-        pass
+    except ValueError:
+        if len(range_) > 1:
+            vec[-1] = 1
     return vec
 
 
