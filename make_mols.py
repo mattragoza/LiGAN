@@ -1,5 +1,6 @@
-import sys, os, re
+import sys, os, re, time
 from functools import lru_cache
+import numpy as np
 from rdkit import Chem
 import molgrid
 import liGAN
@@ -35,6 +36,7 @@ def make_mols(
     data_file,
     n_examples,
     typer_fns,
+    use_ob_mol,
 ):
     atom_typer = liGAN.atom_types.AtomTyper.get_typer(typer_fns, 'c')
     bond_adder = liGAN.bond_adding.BondAdder()
@@ -44,7 +46,7 @@ def make_mols(
 
     print(
         'example_idx lig_name pose_idx n_atoms_diff '
-        'type_count_diff morgan_sim smi_match',
+        'type_count_diff morgan_sim smi_match add_time',
         flush=True
     )
 
@@ -60,41 +62,63 @@ def make_mols(
         lig_ob_mol, lig_rd_mol = find_real_lig_in_data_root(
             lig_src_no_ext, data_root
         )
+        if use_ob_mol: # use real mol from OB instead of RDkit
+            lig_rd_mol = mols.Molecule.from_ob_mol(lig_ob_mol)
+
         try:
             Chem.SanitizeMol(lig_rd_mol)
-            lig_rd_mol = mols.Molecule(Chem.AddHs(lig_rd_mol, addCoords=True))
-        except Exception as e:
-            print('SANITIZE {} {}'.format(lig_name, pose_idx), file=sys.stderr)
+            lig_rd_mol = mols.Molecule(
+                Chem.AddHs(lig_rd_mol, addCoords=True)
+            )
+            lig_valid = (lig_rd_mol.n_frags == 1)
+        except Chem.MolSanitizeException as e: # real mol is invalid
+            lig_valid = False
+            print(
+                'SANITIZE {} {}'.format(lig_name, pose_idx),
+                file=sys.stderr
+            )
             print(e, file=sys.stderr)
             pass
 
         lig_ob_mol.AddHydrogens()
         lig_struct = atom_typer.make_struct(lig_ob_mol)
-        lig_add_mol, lig_add_struct, visited_mols = bond_adder.make_mol(
-            lig_struct
-        )
+        t_start = time.time()
+        lig_add_mol, lig_add_struct, visited_mols = \
+            bond_adder.make_mol(lig_struct)
+        add_time = time.time() - t_start
 
         # difference in num atoms
-        n_atoms_diff = lig_add_mol.n_atoms - lig_rd_mol.n_atoms
+        n_atoms_diff = (
+            lig_add_mol.n_atoms - lig_rd_mol.n_atoms
+        )
 
-        # difference in type counts
-        lig_type_counts = lig_struct.type_counts
-        lig_add_type_counts = lig_add_struct.type_counts
+        # difference in type counts 
         type_count_diff = (
-            lig_type_counts - lig_add_type_counts
+            lig_struct.type_counts - lig_add_struct.type_counts
         ).norm(p=1).item()
 
-        # fingerprint similarity
-        morgan_sim = mols.get_rd_mol_similarity(
-            lig_rd_mol, lig_add_mol, 'morgan'
-        )
+        try:
+            Chem.SanitizeMol(lig_add_mol)
+            lig_add_valid = (lig_add_mol.n_frags == 1)
+
+            # fingerprint similarity
+            if lig_valid and lig_add_valid:
+                morgan_sim = mols.get_rd_mol_similarity(
+                    lig_rd_mol, lig_add_mol, 'morgan'
+                )
+            else:
+                morgan_sim = np.nan
+
+        except Chem.MolSanitizeException:
+            lig_add_valid = False
+            morgan_sim = np.nan
 
         # smiles string comparison
         lig_smi = lig_rd_mol.to_smi()
         lig_add_smi = lig_add_mol.to_smi()
         smi_match = (lig_smi == lig_add_smi)
 
-        print('{} {} {} {} {} {:.4f} {}'.format(
+        print('{} {} {} {} {} {:.4f} {} {:.4f}'.format(
             i,
             lig_name,
             pose_idx,
@@ -102,9 +126,11 @@ def make_mols(
             type_count_diff,
             morgan_sim,
             smi_match,
+            add_time,
         ), flush=True)
 
         if not smi_match: # write out the mismatched molecules
+
             mols.write_rd_mols_to_sdf_file(
                 'mols/{}_{}_add.sdf'.format(lig_name, pose_idx),
                 visited_mols + [lig_rd_mol],
@@ -113,6 +139,5 @@ def make_mols(
 
 
 if __name__ == '__main__':
-    data_root, data_file, n_examples, typer_fns = sys.argv[1:]
-    n_examples = int(n_examples)
-    make_mols(data_root, data_file, n_examples, typer_fns)
+    data_root, data_file, n_examples, typer_fns, use_ob_mol = sys.argv[1:]
+    make_mols(data_root, data_file, int(n_examples), typer_fns, use_ob_mol)
