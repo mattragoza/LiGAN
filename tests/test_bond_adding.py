@@ -62,37 +62,55 @@ def iter_atom_pairs(in_mol, out_mol, omit_h=False):
     )
 
 
+def write_pymol(visited_mols, in_mol):
+    pymol_file = 'tests/TEST_' + in_mol.name + '.pymol'
+    with open(pymol_file, 'w') as f:
+        f.write('load {}\n'.format(write_mols(visited_mols, in_mol)))
+        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'a')))
+        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'e')))
+        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'h')))
+        f.write('show_as nb_spheres\n')
+        f.write('show sticks\n')
+        f.write('util.cbam\n')
+
+
 def write_mols(visited_mols, in_mol, mode=None):
     write_mols = visited_mols + [in_mol]
     write_mols = [mols.copy_ob_mol(m) for m in write_mols]
+    hyb_map = {1:6, 2:7, 3:8}
+    hyd_map = {0:1, 1:6, 2:7, 3:8, 4:9}
 
-    if mode == 'aromatic': # show bond aromaticity as bond order
+    for m in write_mols: # make sure we don't reassign these
+        m.SetAromaticPerceived(True)
+        m.SetHybridizationPerceived(True)
+
+    if mode == 'a': # show bond aromaticity as bond order
         for m in write_mols:
             for a in ob.OBMolAtomIter(m):
                 a.SetAtomicNum(1 + 5*a.IsAromatic())
-        for m in write_mols:
             for b in ob.OBMolBondIter(m):
                 b.SetBondOrder(1 + b.IsAromatic())
     
-    elif mode == 'hybrid': # show hybridization as element
-        hyb_map = {1:6, 2:7, 3:8}
+    elif mode == 'e': # show hybridization as element
         for m in write_mols:
             for a in ob.OBMolAtomIter(m):
                 a.SetAtomicNum(hyb_map.get(a.GetHyb(), 1))
 
+    elif mode == 'h': # show implicit H count as element
+        for m in write_mols:
+            for a in ob.OBMolAtomIter(m):
+                a.SetAtomicNum(hyd_map[a.GetImplicitHCount()])
+
     elif mode is not None:
         raise ValueError(mode)
-
-    for m in write_mols:
-        m.AddHydrogens()
 
     mol_name = in_mol.name
     if mode:
         mol_name += '_' + mode
 
-    mols.write_ob_mols_to_sdf_file(
-        'tests/TEST_{}.sdf'.format(mol_name), write_mols,
-    )
+    mol_file = 'tests/TEST_{}.sdf'.format(mol_name)
+    mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
+    return mol_file
 
 
 class TestBondAdding(object):
@@ -213,9 +231,7 @@ class TestBondAdding(object):
         out_mol, atoms = struct.to_ob_mol()
         out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
 
-        write_mols(visited_mols, in_mol)
-        write_mols(visited_mols, in_mol, 'aromatic')
-        write_mols(visited_mols, in_mol, 'hybrid')
+        write_pymol(visited_mols, in_mol)
         for t in struct.atom_types:
             print(t)
 
