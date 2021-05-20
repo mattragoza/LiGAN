@@ -10,56 +10,62 @@ class AtomStruct(object):
     A structure of 3D atom coordinates and type
     vectors, stored as torch tensors along with
     a reference to the source atom typer.
-
-    An optional bond matrix can be provided, but
-    this is not currently used for anything.
     '''
     def __init__(
-        self, coords, types, typer, bonds=None, device=None, **info
+        self,
+        coords,
+        types,
+        typer,
+        dtype=None,
+        device=None,
+        **info
     ):
-        self.check_shapes(coords, types, typer, bonds)
+        self.check_shapes(coords, types, typer)
 
         # omit atoms with zero type vectors
         nonzero = (types > 0).any(axis=1)
         coords = coords[nonzero]
         types = types[nonzero]
 
-        self.coords = torch.as_tensor(coords, dtype=float, device=device)
-        self.types = torch.as_tensor(types, dtype=float, device=device)
+        self.coords = torch.as_tensor(coords, dtype=dtype, device=device)
+        self.types = torch.as_tensor(types, dtype=dtype, device=device)
         self.typer = typer
-
-        if bonds is not None:
-            self.bonds = torch.as_tensor(bonds, device=device)
-        else:
-            self.bonds = None
 
         self.info = info
 
         self.atom_types = [
             self.typer.get_atom_type(t) for t in self.types
         ]
+        self.atomic_radii = torch.as_tensor([
+            typer.radius_func(a.atomic_num) for a in self.atom_types
+        ], dtype=dtype, device=device)
 
     @staticmethod
-    def check_shapes(coords, types, typer, bonds):
-        assert len(coords.shape) == 2
-        assert len(types.shape) == 2
-        assert coords.shape[0] == types.shape[0]
-        assert coords.shape[1] == 3
-        assert types.shape[1] == typer.n_types
-        assert ((types == 0) | (types == 1)).all()
-        if bonds is not None:
-            assert bonds.shape == (coords.shape[0], coords.shape[0])
+    def check_shapes(coords, types, typer):
+        assert len(coords.shape) == 2, coords.shape
+        assert len(types.shape) == 2, types.shape
+        assert coords.shape[0] == types.shape[0], (coords.shape[0], types.shape[0])
+        assert coords.shape[1] == 3, coords.shape[1]
+        assert types.shape[1] == typer.n_types, (types.shape[1], typer.n_types)
+        assert ((types == 0) | (types == 1)).all(), set(types)
 
     @classmethod
-    def from_coord_set(cls, coord_set, typer, device, **info):
-
+    def from_coord_set(
+        cls,
+        coord_set,
+        typer,
+        dtype=None,
+        device=None,
+        **info
+    ):
         if not coord_set.has_vector_types():
             coord_set.make_vector_types()
 
         return cls(
             coords=coord_set.coords.tonumpy(),
-            types=coord_set.type_vector.tonumpy().astype(float),
+            types=coord_set.type_vector.tonumpy(), # should be float
             typer=typer,
+            dtype=dtype,
             device=device,
             src_file=coord_set.src,
             **info
@@ -104,16 +110,29 @@ class AtomStruct(object):
         else:
             return np.nan
 
-    def to(self, device):
+    @property
+    def dtype(self):
+        return self.coords.dtype
+
+    @property
+    def device(self):
+        return self.coords.device
+
+    def to(self, dtype, device):
         return AtomStruct(
-            self.coords, self.types, self.typer, self.bonds, device=device
+            coords=self.coords,
+            types=self.types,
+            typer=self.typer,
+            dtype=dtype,
+            device=device,
+            **self.info
         )
     
     def to_ob_mol(self):
         return molecules.make_ob_mol(
             coords=self.coords.cpu().numpy(),
             types=self.types.cpu().numpy(),
-            bonds=None if self.bonds is None else self.bonds.cpu().numpy(),
+            bonds=None,
             typer=self.typer,
         )
 
@@ -121,7 +140,7 @@ class AtomStruct(object):
         return molecules.make_rd_mol(
             coords=self.coords.cpu().numpy().astype(float),
             typers=self.types.cpu().numpy(),
-            bonds=None if self.bonds is None else self.bonds.cpu().numpy(),
+            bonds=None,
             typer=self.typer,
         )
 
@@ -132,22 +151,6 @@ class AtomStruct(object):
             outfile = open(sdf_file, 'wt')
         molecules.write_rd_mol_to_sdf_file(outfile, self.to_rd_mol())
         outfile.close()
-
-    def add_bonds(self, tol=0.0):
-
-        # TODO get atomic radii from types and typer
-        atomic_radii = torch.tensor(
-            [ob.GetCovalentRad(t) for t in self.types],
-            device=self.c.device
-        )
-        atom_dist2 = (
-            (self.coords[None,:,:] - self.coords[:,None,:])**2
-        ).sum(axis=2)
-
-        max_bond_dist2 = (
-            atomic_radii[self.c][None,:] + atomic_radii[self.c][:,None]
-        )
-        self.bonds = (atom_dist2 < max_bond_dist2 + tol**2)
 
     def make_mol(self, verbose=False):
         '''

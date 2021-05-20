@@ -267,7 +267,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_radius(self, ob_atom):
         return self.radius_func(ob_atom)
 
-    def make_struct(self, ob_mol, device=None, **info):
+    def make_struct(self, ob_mol, dtype=None, device=None, **info):
 
         coords, types = [], []
         for ob_atom in ob.OBMolAtomIter(ob_mol):
@@ -278,6 +278,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             coords=np.array(coords),
             types=np.array(types),
             typer=self,
+            dtype=dtype,
             device=device,
             src_mol=ob_mol, # caution: src_mol is an rd_mol elsewhere
             **info

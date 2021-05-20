@@ -1,10 +1,11 @@
 import sys, os, pytest
-from numpy import isclose
+from numpy import isclose, allclose
 import torch
 import molgrid
 
 sys.path.insert(0, '.')
 from liGAN.molecules import read_ob_mols_from_file
+from liGAN.atom_structs import AtomStruct
 from liGAN.atom_types import (
     make_one_hot, AtomTyper, Atom, ob
 )
@@ -111,6 +112,16 @@ class TestAtomTyper(object):
                 assert list(type_vec) == [
                     0, 0, 0, 0, 0, 0,
                 ]
+
+    def test_typer_coord_set(self, typer, benzene):
+        struct1 = typer.make_struct(benzene)
+        coord_set = molgrid.CoordinateSet(benzene, typer)
+        struct2 = AtomStruct.from_coord_set(coord_set, typer)
+        assert allclose(struct1.coords, struct2.coords)
+        assert allclose(struct1.types, struct2.types)
+        assert struct1.typer == struct2.typer
+        assert struct1.atom_types == struct2.atom_types
+        assert allclose(struct1.atomic_radii, struct2.atomic_radii)
 
     def test_typer_unknown(self, typer, ammonia):
         struct = typer.make_struct(ammonia)
