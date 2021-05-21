@@ -197,10 +197,10 @@ class Atom(ob.OBAtom):
         return self.GetTotalDegree() - self.GetHvyDegree()
 
     def vdw_radius(self):
-        return ob.GetVdwRad(self.GetAtomicNum())
+        return ob.GetVdwRad(self)
 
     def cov_radius(self):
-        return ob.GetCovalentRad(self.GetAtomicNum())
+        return ob.GetCovalentRad(self)
 
 
 class AtomTyper(molgrid.PythonCallbackVectorTyper):
@@ -217,9 +217,10 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     A function giving the atomic radius is also needed.
     '''
-    def __init__(self, prop_funcs, prop_ranges, radius_func, explicit_h=False):
-        assert len(prop_funcs) == len(prop_ranges)
-        assert prop_funcs[0] == Atom.atomic_num
+    def __init__(
+        self, prop_funcs, prop_ranges, radius_func, explicit_h=False
+    ):
+        self.check_args(prop_funcs, prop_ranges, radius_func, explicit_h)
         self.prop_funcs = prop_funcs
         self.prop_ranges = prop_ranges
         self.radius_func = radius_func
@@ -240,9 +241,26 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             'atom_type', [f.__name__ for f in prop_funcs]
         )
 
+    @staticmethod
+    def check_args(prop_funcs, prop_ranges, radius_func, explicit_h):
+        assert len(prop_funcs) == len(prop_ranges)
+        assert all(f.__call__ for f in prop_funcs)
+        assert all(r.__len__ for r in prop_ranges)
+        assert radius_func.__call__
+        assert prop_funcs[0] == Atom.atomic_num
+        assert bool(explicit_h) == (1 in prop_ranges[0])
+
     @property
     def n_types(self):
         return sum(len(r) for r in self.prop_ranges)
+
+    @property
+    def n_elem_types(self):
+        return len(self.elem_range)
+
+    @property
+    def elem_range(self):
+        return self.prop_ranges[0]
 
     def __contains__(self, prop):
         return prop in self.prop_idx

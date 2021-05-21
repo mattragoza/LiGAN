@@ -48,7 +48,7 @@ class TestAtomTyper(object):
                 [1, 6, 8], [1], [1], [1],
             ],
             radius_func=lambda x: 1,
-            explicit_h=False,
+            explicit_h=True,
         )
 
     @pytest.fixture
@@ -73,6 +73,8 @@ class TestAtomTyper(object):
         assert len(typer.prop_funcs) == 4
         assert len(typer.prop_ranges) == 4
         assert typer.n_types == 6
+        assert typer.n_elem_types == 3
+        assert typer.elem_range == [1, 6, 8]
 
     def test_get_typer(self):
         AtomTyper.get_typer(prop_funcs='oad', radius_func='v')
@@ -88,7 +90,7 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert typer.get_type_vector(atom) == [
-                    0, 0, 0, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_atom_type(self, typer, benzene):
@@ -110,7 +112,7 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0,
                 ]
 
     def test_typer_coord_set(self, typer, benzene):
@@ -150,6 +152,6 @@ class TestAtomTyper(object):
                 ]
             else: # non-polar hydrogen
                 assert list(type_vec) == [
-                    0, 0, 0, 0, 0, 0,
+                    1, 0, 0, 0, 0, 0,
                 ]
 

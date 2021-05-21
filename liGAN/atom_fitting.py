@@ -90,62 +90,73 @@ class AtomFitter(object):
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
         self.kernel = None
 
-    def init_kernel(self, channels, resolution, deconv=False):
+    def init_kernel(self, typer, resolution, deconv=False):
         '''
         Initialize an atomic density kernel that can
         can be used to detect atoms in density grids.
+        The kernel has a different channel for each
+        element in the typer's element range.
         '''
-        n_channels = len(channels)
+        n_channels = typer.n_elem_types
 
         # kernel is created by computing a molgrid from a
-        # struct with one atom of each type at the center
-        xyz = torch.zeros((n_channels, 3), device=self.device)
-        c = torch.eye(n_channels, device=self.device) # one-hot vector types
-        r = torch.tensor(
-            [ch.atomic_radius for ch in channels], 
+        # struct with one atom of each element at the center
+        coords = torch.zeros(
+            (n_channels, 3),
+            dtype=torch.float32,
             device=self.device
         )
-        self.grid_maker.set_radii_type_indexed(True)
+        types = torch.eye(
+            n_channels,
+            dtype=torch.float32,
+            device=self.device
+        )
+        radii = torch.tensor(
+            [typer.radius_func(n) for n in typer.elem_range], 
+            dtype=torch.float32,
+            device=self.device
+        )
+
+        # now set the grid settings
+        self.c2grid.center = (0, 0, 0)
         self.grid_maker.set_resolution(resolution)
 
-        # kernel must fit atom with largest radius
-        kernel_radius = 1.5*max(r).item()
-        self.grid_maker.set_dimension(2*kernel_radius)
+        # this flag indicates that each atom has its own radius
+        #   which may or may not be needed here...
+        self.grid_maker.set_radii_type_indexed(False)
+
+        # kernel must be large enough for atom with largest radius
+        kernel_radius = 1.5 * max(radii).item()
+        self.grid_maker.set_dimension(2 * kernel_radius)
 
         # kernel must also have odd spatial dimension
-        if self.grid_maker.spatial_grid_dimensions()[0]%2 == 0:
+        #   so that convolution produces same size output grid
+        if self.grid_maker.spatial_grid_dimensions()[0] % 2 == 0:
             self.grid_maker.set_dimension(
                 self.grid_maker.get_dimension() + resolution
             )
 
-        self.c2grid.center = (0.,0.,0.)
-        values = self.c2grid(xyz, c, r)
+        # create the kernel
+        self.kernel = self.c2grid(coords, types, radii)
 
-        if deconv:
-            values = torch.tensor(
-                weiner_invert_kernel(values.cpu(), noise_ratio=1),
-                dtype=values.dtype,
+        if deconv: # invert the kernel
+            self.kernel = torch.tensor(
+                weiner_invert_kernel(self.kernel.cpu(), noise_ratio=1),
+                dtype=self.kernel.dtype,
                 device=self.device,
             )
 
-        self.kernel = AtomGrid(
-            values=values,
-            channels=channels,
-            center=torch.zeros(3, device=self.device),
-            resolution=resolution,
-        )
-
-        if self.output_kernel:
+        if self.output_kernel: # write out the kernel
             dx_prefix = 'deconv_kernel' if deconv else 'conv_kernel'
             if self.verbose:
-                kernel_norm = values.norm().item()
+                kernel_norm = self.kernel.norm().item()
                 print(
                     'writing out {} (norm={})'.format(dx_prefix, kernel_norm)
                 )
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
-    def convolve(self, grid, channels, resolution):
+    def convolve(self, grid):
         '''
         Compute a convolution between the provided
         density grid and the atomic density kernel.

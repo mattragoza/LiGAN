@@ -11,11 +11,18 @@ class AtomGrid(object):
     these densities in separate channels per atom type.
     '''
     def __init__(
-        self, values, center, resolution, typer, device=None, **info
+        self,
+        values,
+        center,
+        resolution,
+        typer,
+        dtype=None,
+        device=None,
+        **info
     ):
         self.check_shapes(values, center, typer)
-        self.values = torch.as_tensor(values, device=device)
-        self.center = torch.as_tensor(center, device=device)
+        self.values = torch.as_tensor(values, dtype=dtype, device=device)
+        self.center = torch.as_tensor(center, dtype=dtype, device=device)
         self.resolution = float(resolution)
         self.typer = typer
         self.info = info
@@ -28,13 +35,23 @@ class AtomGrid(object):
         assert center.shape == (3,)
 
     @classmethod
-    def from_dx(cls, dx_prefix, typer, device=None, **info):
+    def from_dx(cls, dx_prefix, typer, dtype=None, device=None, **info):
         values, center, resolution = read_grid_from_dx_files(dx_prefix, typer)
-        return cls(values, center, resolution, typer, device, **info)
+        return cls(
+            values, center, resolution, typer, dtype, device, **info
+        )
 
+    @property
+    def shape(self):
+        return self.values.shape
+    
     @property
     def n_channels(self):
         return self.values.shape[0]
+
+    @property
+    def n_elem_channels(self):
+        return self.typer.n_elem_types
 
     @property
     def size(self):
@@ -45,8 +62,19 @@ class AtomGrid(object):
         return size_to_dimension(self.size, self.resolution)
 
     @property
+    def elem_values(self):
+        return self.values[:self.n_elem_channels]
+
+    @property
+    def dtype(self):
+        return self.values.dtype
+
+    @property
     def device(self):
         return self.values.device
+
+    def to(self, dtype, device):
+        return self.new_like(values=self.values, dtype=dtype, device=device)
 
     def to_dx(self, dx_prefix, center=None):
         return write_grid_to_dx_files(
@@ -57,7 +85,7 @@ class AtomGrid(object):
             typer=self.typer,
         )
 
-    def new_like(self, values, device=None, **info):
+    def new_like(self, values, dtype=None, device=None, **info):
         '''
         Return an AtomGrid with the same grid settings but new values.
         '''
@@ -66,12 +94,10 @@ class AtomGrid(object):
             center=self.center,
             resolution=self.resolution,
             typer=self.typer,
+            dtype=self.dtype if dtype is None else dtype,
             device=self.device if device is None else device,
             **info
         )
-
-    def to(self, device):
-        return self.new_like(values=self.values, device=device)
 
 
 def size_to_dimension(size, resolution):
