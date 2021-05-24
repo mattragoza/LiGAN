@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import molgrid
 
-from .atom_grids import AtomGrid
+from .atom_grids import AtomGrid, spatial_index_to_coords
 from .atom_structs import AtomStruct
 
 
@@ -90,7 +90,7 @@ class AtomFitter(object):
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
         self.kernel = None
 
-    def init_kernel(self, typer, resolution, deconv=False):
+    def init_kernel(self, resolution, typer, deconv=False):
         '''
         Initialize an atomic density kernel that can
         can be used to detect atoms in density grids.
@@ -156,7 +156,7 @@ class AtomFitter(object):
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
-    def convolve(self, grid):
+    def convolve(self, elem_values, resolution, typer):
         '''
         Compute a convolution between the provided
         density grid and the atomic density kernel.
@@ -166,134 +166,153 @@ class AtomFitter(object):
         where placing an atom would decrease L2 loss.
         '''
         if self.kernel is None:
-            self.init_kernel(channels, resolution)
+            self.init_kernel(resolution, typer)
 
         # normalize convolved grid channels by kernel norm
-        kernel_norm2 = (self.kernel.values**2).sum(dim=(1,2,3), keepdim=True)
+        kernel_norm2 = (self.kernel**2).sum(dim=(1,2,3), keepdim=True)
 
         return F.conv3d(
-            input=grid.unsqueeze(0),
-            weight=self.kernel.values.unsqueeze(1),
-            padding=self.kernel.values.shape[-1]//2,
-            groups=len(channels),
+            input=elem_values.unsqueeze(0),
+            weight=self.kernel.unsqueeze(1),
+            padding=self.kernel.shape[-1]//2,
+            groups=typer.n_elem_types,
         )[0] / kernel_norm2
 
-    def detect_atoms(self, grid, channels, center, resolution, types=None):
+    def apply_peak_value(self, elem_values):
+        return self.peak_value - (self.peak_value - elem_values).abs()
+
+    def sort_grid_points(self, grid_values):
+        n_c, n_x, n_y, n_z  = grid_values.shape
+
+        # get flattened grid values and index, sorted by value
+        values, idx = torch.sort(grid_values.flatten(), descending=True)
+
+        # convert flattened grid index to channel and spatial index
+        idx_z, idx = idx % n_z, idx // n_z
+        idx_y, idx = idx % n_y, idx // n_y
+        idx_x, idx = idx % n_x, idx // n_x
+        idx_c, idx = idx % n_c, idx // n_c
+        idx_xyz = torch.stack((idx_x, idx_y, idx_z), dim=1)
+
+        return values, idx_xyz, idx_c
+
+    def apply_threshold(self, values, idx_xyz, idx_c):
+        above_thresh = values > self.threshold
+        values = values[above_thresh]
+        idx_xyz = idx_xyz[above_thresh]
+        idx_c = idx_c[above_thresh]
+        return values, idx_xyz, idx_c
+
+    def apply_type_constraint(self, values, idx_xyz, idx_c, type_counts):
+
+        #TODO this does not constrain the atoms types correctly
+        # when doing multi_atom fitting, because it only omits
+        # atom types that have 0 atoms left- i.e. we could still
+        # return 2 atoms of a type that only has 1 atom left.
+        # Need to exclude all atoms of type t beyond rank n_t
+        # where n_t is the number of atoms left of type t
+        has_atoms_left = type_counts[idx_c] > 0
+        values = values[has_atoms_left]
+        idx_xyz = idx_xyz[has_atoms_left]
+        idx_c = idx_c[has_atoms_left]
+        return values, idx_xyz, idx_c
+
+    def suppress_non_max(self, values, coords, idx_c, grid, matrix=None):
+
+        r = torch.tensor( # atomic radii
+            [grid.typer.radius_func(v) for v in grid.typer.elem_range],
+            device=self.device,
+        )
+        if matrix or (matrix is None and len(coords) < 1000): # use NxN matrices
+
+            same_type = (idx_c.unsqueeze(1) == idx_c.unsqueeze(0))
+            bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
+            min_dist2 = (self.min_dist * bond_radius)**2
+            dist2 = ((coords.unsqueeze(1)-coords.unsqueeze(0))**2).sum(dim=2)
+
+            # the lower triangular part of a matrix under diagonal -1
+            #   gives those indices i,j such that i > j
+            # since atoms are sorted by decreasing density value,
+            #   i > j implies that atom i has lower value than atom j
+            # we use this to check a condition on each atom
+            #   only with respect to atoms of higher value 
+            too_close = torch.tril(
+                (dist2 < min_dist2) & same_type, diagonal=-1
+            ).any(dim=1)
+            
+            return coords[~too_close], idx_c[~too_close]
+
+        else: # use a for-loop
+
+            coords_max = coords[0].unsqueeze(0)
+            idx_c_max = idx_c[0].unsqueeze(0)
+
+            for i in range(1, len(idx_c)):
+                same_type = (idx_c[i] == idx_c_max)
+                bond_radius = r[idx_c[i]] + r[idx_c_max]
+                min_dist2 = (self.min_dist * bond_radius)**2
+                dist2 = ((coords[i].unsqueeze(0) - coords_max)**2).sum(dim=1)
+                if not ((dist2 < min_dist2) & same_type).any():
+                    coords_max = torch.cat([coords_max,coords[i].unsqueeze(0)])
+                    idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
+
+            return coords_max, idx_c_max
+
+    def detect_atoms(self, grid, type_counts=None):
         '''
-        Detect a set of atoms in a density grid by convolving
+        Detect a set of typed atoms in an AtomGrid by convolving
         with a kernel, applying a threshold, and then returning
-        atom types and coordinates ordered by grid value.
+        atom coordinates and type vectors ordered by grid value.
         '''
-        assert len(grid.shape) == 4
-        assert len(set(grid.shape[1:])) == 1
+        not_none = lambda x: x is not None
 
-        n_channels = grid.shape[0]
-        grid_dim = grid.shape[1]
-
-        apply_peak_value = self.peak_value is not None and self.peak_value < np.inf
-        apply_threshold = self.threshold is not None and self.threshold > -np.inf
-        suppress_non_max = self.min_dist is not None and self.min_dist > 0.0
-
-        if apply_peak_value:
-            peak_value = torch.full((n_channels,), self.peak_value, device=self.device)
-
-        if apply_threshold:
-            threshold = torch.full((n_channels,), self.threshold, device=self.device)
+        # detect atoms in the element channels
+        values = grid.elem_values
 
         # convolve grid with atomic density kernel
         if self.apply_conv:
-            grid = self.convolve(grid, channels, resolution)
+            values = self.convolve(values, grid.resolution, grid.typer)
 
         # reflect grid values above peak value
-        if apply_peak_value:
-            peak_value = peak_value.view(n_channels, 1, 1, 1)
-            grid = peak_value - (peak_value - grid).abs()
+        if not_none(self.peak_value) and self.peak_value < np.inf:
+            values = self.apply_peak_value(values)
 
         # sort grid points by value
-        values, idx = torch.sort(grid.flatten(), descending=True)
+        values, idx_xyz, idx_c = self.sort_grid_points(values)
 
-        # convert flattened grid index to channel and spatial index
-        idx_z, idx = idx % grid_dim, idx // grid_dim
-        idx_y, idx = idx % grid_dim, idx // grid_dim
-        idx_x, idx = idx % grid_dim, idx // grid_dim
-        idx_c, idx = idx % n_channels, idx // n_channels
-        idx_xyz = torch.stack((idx_x, idx_y, idx_z), dim=1)
-
-        # apply threshold to grid values
-        if apply_threshold:
-            above_thresh = values > threshold[idx_c]
-            values = values[above_thresh]
-            idx_xyz = idx_xyz[above_thresh]
-            idx_c = idx_c[above_thresh]
+        # apply threshold to grid points and values
+        if not_none(self.threshold) and self.threshold > -np.inf:
+            values, idx_xyz, idx_c = self.apply_threshold(
+                values, idx_xyz, idx_c
+            )
 
         # exclude grid channels with no atoms left
         if self.constrain_types:
-            has_atoms_left = types[idx_c] > 0
-            values = values[has_atoms_left]
-            idx_xyz = idx_xyz[has_atoms_left]
-            idx_c = idx_c[has_atoms_left]
+            values, idx_xyz, idx_c = self.apply_type_constraint(
+                values, idx_xyz, idx_c, type_counts
+            )
 
-            #TODO this does not constrain the atoms types correctly
-            # when doing multi_atom fitting, because it only omits
-            # atom types that have 0 atoms left- i.e. we could still
-            # return 2 atoms of a type that only has 1 atom left.
-            # Need to exclude all atoms of type t beyond rank n_t
-            # where n_t is the number of atoms left of type t
-
-        # convert spatial index to atom coordinates
-        origin = center - resolution * (float(grid_dim) - 1) / 2.0
-        xyz = origin + resolution * idx_xyz.float()
+        # convert spatial index to atomic coordinates
+        coords = grid.get_coords(idx_xyz)
 
         # suppress atoms too close to a higher-value atom of same type
-        if suppress_non_max and self.n_atoms_detect > 1:
-
-            r = torch.tensor(
-                [ch.atomic_radius for ch in channels],
-                device=self.device,
-            )
-            if len(idx_c) < 1000: # use NxN matrices
-                same_type = (idx_c.unsqueeze(1) == idx_c.unsqueeze(0))
-                bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
-                min_dist2 = (self.min_dist * bond_radius)**2
-                dist2 = ((xyz.unsqueeze(1) - xyz.unsqueeze(0))**2).sum(dim=2)
-                # the lower triangular part of a matrix under diagonal -1
-                #   gives those indices i,j such that i > j
-                # since atoms are sorted by decreasing density value,
-                #   i > j implies that atom i has lower value than atom j
-                # we use this to check a condition on each atom
-                #   only with respect to atoms of higher value 
-                too_close = torch.tril(
-                    (dist2 < min_dist2) & same_type, diagonal=-1
-                ).any(dim=1)
-                xyz = xyz[~too_close]
-                idx_c = idx_c[~too_close]
-
-            else: # use a for loop
-                xyz_max = xyz[0].unsqueeze(0)
-                idx_c_max = idx_c[0].unsqueeze(0)
-
-                for i in range(1, len(idx_c)):
-                    same_type = (idx_c[i] == idx_c_max)
-                    bond_radius = r[idx_c[i]] + r[idx_c_max]
-                    min_dist2 = (self.min_dist * bond_radius)**2
-                    dist2 = ((xyz[i].unsqueeze(0) - xyz_max)**2).sum(dim=1)
-                    if not ((dist2 < min_dist2) & same_type).any():
-                        xyz_max = torch.cat([xyz_max, xyz[i].unsqueeze(0)])
-                        idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
-
-                xyz = xyz_max
-                idx_c = idx_c_max
+        if (
+            not_none(self.min_dist)
+            and self.min_dist > 0.0
+            and self.n_atoms_detect > 1
+        ):
+            coords, idx_c = self.suppress_non_max(values, coords, idx_c)
 
         # limit total number of detected atoms
         if self.n_atoms_detect >= 0:
-            xyz = xyz[:self.n_atoms_detect]
+            coords = coords[:self.n_atoms_detect]
             idx_c = idx_c[:self.n_atoms_detect]
 
         # convert atom type channel index to one-hot type vector
-        c = F.one_hot(idx_c, n_channels).to(
-            dtype=torch.float32, device=self.device
+        types = F.one_hot(idx_c, grid.n_elem_channels).to(
+            dtype=grid.dtype, device=self.device
         )
-        return xyz.detach(), c.detach()
+        return coords.detach(), types.detach()
 
     def fit_gd(self, grid, xyz, c, n_iters):
 

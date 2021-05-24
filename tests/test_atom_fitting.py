@@ -1,5 +1,5 @@
 import sys, os, pytest
-from numpy import isclose
+from numpy import isclose, allclose
 import torch
 
 sys.path.insert(0, '.')
@@ -75,10 +75,56 @@ class TestAtomFitter(object):
 
     def test_init_kernel(self, typer, fitter):
         assert fitter.kernel is None
-        fitter.init_kernel(typer, resolution=0.5)
+        fitter.init_kernel(0.5, typer)
         assert fitter.kernel.shape[0] == typer.n_elem_types
         assert fitter.kernel.shape[1] % 2 == 1
         assert all(fitter.kernel.sum(dim=(1,2,3)) > 0)
 
-    def test_convolve(self, typer, fitter, grid):
-        fitter.convolve(grid)
+    def test_convolve(self, fitter, grid):
+        conv_values = fitter.convolve(
+            grid.elem_values, grid.resolution, grid.typer
+        )
+        dims = (1, 2, 3)
+        assert all(
+            conv_values.sum(dim=dims) >= grid.elem_values.sum(dim=dims)
+        )
+
+    def test_apply_peak_value(self, fitter, grid):
+        peak_values = fitter.apply_peak_value(grid.elem_values)
+        assert (peak_values <= fitter.peak_value).all()
+
+    def test_sort_grid_points(self, fitter, grid):
+        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+        idx_x, idx_y, idx_z = idx_xyz[:,0], idx_xyz[:,1], idx_xyz[:,2]
+        assert (grid.elem_values[idx_c, idx_x, idx_y, idx_z] == values).all()
+
+    def test_apply_threshold(self, fitter, grid):
+        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+        values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
+        assert (values > fitter.threshold).all()
+
+    def test_suppress_non_max(self, fitter, grid):
+        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+        values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
+        coords = grid.get_coords(idx_xyz)
+        coords_mat, idx_c_mat = fitter.suppress_non_max(
+            values, coords, idx_c, grid, matrix=True
+        )
+        coords_for, idx_c_for = fitter.suppress_non_max(
+            values, coords, idx_c, grid, matrix=False
+        )
+        assert len(coords_mat) == len(idx_c_mat)
+        assert len(coords_for) == len(idx_c_for)
+        assert len(coords_mat) == len(coords_for)
+        assert len(coords_mat) <= len(coords)
+        assert coords_mat.shape[1] == 3
+        assert coords_for.shape[1] == 3
+        assert (coords_mat == coords_for).all()
+        assert (idx_c_mat == idx_c_for).all()
+
+    def test_detect_atoms(self, fitter, grid):
+        coords, types = fitter.detect_atoms(grid)
+        assert coords.shape == (fitter.n_atoms_detect, 3)
+        assert types.shape == (fitter.n_atoms_detect, grid.n_elem_channels)
+        assert coords.dtype == types.dtype == grid.dtype
+        assert coords.device == types.device == grid.device

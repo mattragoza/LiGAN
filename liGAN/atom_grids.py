@@ -62,6 +62,10 @@ class AtomGrid(object):
         return size_to_dimension(self.size, self.resolution)
 
     @property
+    def origin(self):
+        return self.center_to_origin(self.center, self.size, self.resolution)
+
+    @property
     def elem_values(self):
         return self.values[:self.n_elem_channels]
 
@@ -98,6 +102,31 @@ class AtomGrid(object):
             device=self.device if device is None else device,
             **info
         )
+
+    def get_coords(self, idx_xyz):
+        return spatial_index_to_coords(
+            idx_xyz,
+            self.center,
+            self.size,
+            self.resolution
+        )
+
+
+def center_to_origin(center, size, resolution):
+    return center - resolution * (size - 1) / 2.0
+
+
+def unravel_index(idx, shape):
+    ret = []
+    for dim in shape:
+        ret.append(idx % dim)
+        idx = idx // dim
+    return ret
+
+
+def spatial_index_to_coords(idx_xyz, center, size, resolution):
+    origin = center_to_origin(center, size, resolution)
+    return origin + resolution * idx_xyz.float()
 
 
 def size_to_dimension(size, resolution):
