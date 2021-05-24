@@ -218,7 +218,12 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     A function giving the atomic radius is also needed.
     '''
     def __init__(
-        self, prop_funcs, prop_ranges, radius_func, explicit_h=False
+        self,
+        prop_funcs,
+        prop_ranges,
+        radius_func,
+        explicit_h=False,
+        device='cuda',
     ):
         self.check_args(prop_funcs, prop_ranges, radius_func, explicit_h)
         self.prop_funcs = prop_funcs
@@ -229,6 +234,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
         )
+
         # inverted indexes
         self.prop_idx = {p: i for i, p in enumerate(self.prop_funcs)}
         self.type_vec_idx = dict()
@@ -236,6 +242,12 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         for prop, range_ in zip(self.prop_funcs, self.prop_ranges):
             self.type_vec_idx[prop] = slice(i, i+len(range_))
             i += len(range_)
+
+        # precomputed atomic radii
+        self.elem_radii = torch.tensor(
+            [radius_func(v) for v in self.elem_range],
+            device=device
+        )
 
         self.atom_type = namedtuple(
             'atom_type', [f.__name__ for f in prop_funcs]

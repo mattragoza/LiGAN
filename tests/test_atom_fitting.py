@@ -128,3 +128,6 @@ class TestAtomFitter(object):
         assert types.shape == (fitter.n_atoms_detect, grid.n_elem_channels)
         assert coords.dtype == types.dtype == grid.dtype
         assert coords.device == types.device == grid.device
+
+    def test_fit_struct(self, fitter, grid):
+        struct = fitter.fit_struct(grid)

@@ -29,10 +29,10 @@ class AtomGrid(object):
 
     @staticmethod
     def check_shapes(values, center, typer):
-        assert len(values.shape) == 4
-        assert values.shape[0] == typer.n_types
-        assert values.shape[1] == values.shape[2] == values.shape[3]
-        assert center.shape == (3,)
+        assert len(values.shape) == 4, values.shape
+        assert values.shape[0] == typer.n_types, (values.shape, typer.n_types)
+        assert values.shape[1] == values.shape[2] == values.shape[3], values.shape
+        assert center.shape == (3,), center.shape
 
     @classmethod
     def from_dx(cls, dx_prefix, typer, dtype=None, device=None, **info):
@@ -77,7 +77,7 @@ class AtomGrid(object):
     def device(self):
         return self.values.device
 
-    def to(self, dtype, device):
+    def to(self, device, dtype=None):
         return self.new_like(values=self.values, dtype=dtype, device=device)
 
     def to_dx(self, dx_prefix, center=None):
@@ -121,7 +121,7 @@ def unravel_index(idx, shape):
     for dim in shape:
         ret.append(idx % dim)
         idx = idx // dim
-    return ret
+    return torch.stack(ret, dim=1)
 
 
 def spatial_index_to_coords(idx_xyz, center, size, resolution):
