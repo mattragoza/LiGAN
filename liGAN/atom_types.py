@@ -295,7 +295,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return type_vec
 
     def get_radius(self, ob_atom):
-        return self.radius_func(ob_atom)
+        return self.radius_func(ob_atom.GetAtomicNum())
 
     def make_struct(self, ob_mol, dtype=None, device=None, **info):
 
@@ -329,7 +329,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
                     'missing value for {}'.format(prop.__name__)
                 value = range_[prop_vec.argmax().item()]
             else: # boolean
-                value = (prop_vec > 0).item()
+                value = (prop_vec > 0.5).item()
             values.append(value)
             i += len(range_)
         return self.atom_type(*values)
