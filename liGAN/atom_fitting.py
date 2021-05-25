@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import molgrid
 
-from .atom_grids import AtomGrid, spatial_index_to_coords
+from .atom_grids import AtomGrid, spatial_index_to_coords, size_to_dimension
 from .atom_structs import AtomStruct
 
 
@@ -116,7 +116,6 @@ class AtomFitter(object):
         radii = typer.elem_radii
 
         # now set the grid settings
-        self.c2grid.center = (0, 0, 0)
         self.grid_maker.set_resolution(resolution)
 
         # this flag indicates that each atom has its own radius
@@ -129,13 +128,21 @@ class AtomFitter(object):
 
         # kernel must also have odd spatial dimension
         #   so that convolution produces same size output grid
-        if self.grid_maker.spatial_grid_dimensions()[0] % 2 == 0:
-            self.grid_maker.set_dimension(
-                self.grid_maker.get_dimension() + resolution
-            )
+        kernel_size = self.grid_maker.spatial_grid_dimensions()[0]
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+
+        # but even if we don't need to change the kernel size,
+        #   still use size_to_dimension to set dimension to a
+        #   value that is a multiple of resolution, otherwise
+        #   there are issues with grid centering
+        self.grid_maker.set_dimension(
+            size_to_dimension(kernel_size, resolution)
+        )
 
         # create the kernel
-        self.kernel = self.c2grid(coords, types, radii)
+        self.c2grid.center = (0, 0, 0)
+        self.kernel = self.c2grid.forward(coords, types, radii)
 
         if deconv: # invert the kernel
             self.kernel = torch.tensor(
@@ -153,6 +160,8 @@ class AtomFitter(object):
                 )
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
+
+        return self.kernel
 
     def get_types_estimate(self, grid):
         '''
@@ -231,7 +240,6 @@ class AtomFitter(object):
     def suppress_non_max(
         self, values, coords, idx_xyz, idx_c, grid, matrix=None
     ):
-
         r = grid.typer.elem_radii
         if matrix or (matrix is None and len(coords) < 1000):
 
@@ -311,16 +319,15 @@ class AtomFitter(object):
 
         # suppress atoms too close to a higher-value atom of same type
         if (
-            not_none(self.min_dist)
-            and self.min_dist > 0.0
-            and self.n_atoms_detect > 1
+            not_none(self.min_dist) and self.min_dist > 0.0
+            and not_none(self.n_atoms_detect) and self.n_atoms_detect > 1
         ):
             coords, idx_xyz, idx_c = self.suppress_non_max(
                 values, coords, idx_xyz, idx_c
             )
 
         # limit total number of detected atoms
-        if self.n_atoms_detect >= 0:
+        if not_none(self.n_atoms_detect) and self.n_atoms_detect >= 0:
             coords = coords[:self.n_atoms_detect]
             idx_xyz = idx_xyz[:self.n_atoms_detect]
             idx_c = idx_c[:self.n_atoms_detect]

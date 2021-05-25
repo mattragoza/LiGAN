@@ -30,8 +30,8 @@ class AtomGrid(object):
     @staticmethod
     def check_shapes(values, center, typer):
         assert len(values.shape) == 4, values.shape
-        assert values.shape[0] == typer.n_types, (values.shape, typer.n_types)
-        assert values.shape[1] == values.shape[2] == values.shape[3], values.shape
+        assert values.shape[0] == typer.n_types, (values.shape[0], typer.n_types)
+        assert values.shape[1] == values.shape[2] == values.shape[3], values.shape[1:]
         assert center.shape == (3,), center.shape
 
     @classmethod
