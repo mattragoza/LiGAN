@@ -47,7 +47,7 @@ class AtomStruct(object):
         assert coords.shape[0] == types.shape[0], (coords.shape[0], types.shape[0])
         assert coords.shape[1] == 3, coords.shape[1]
         assert types.shape[1] == typer.n_types, (types.shape[1], typer.n_types)
-        assert ((types == 0) | (types == 1)).all(), set(types)
+        assert ((0 <= types) & (types <= 1)).all(), set(types)
 
     @classmethod
     def from_coord_set(

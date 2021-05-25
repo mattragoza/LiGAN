@@ -50,10 +50,6 @@ class AtomGrid(object):
         return self.values.shape[0]
 
     @property
-    def n_elem_channels(self):
-        return self.typer.n_elem_types
-
-    @property
     def size(self):
         return self.values.shape[1]
 
@@ -63,11 +59,22 @@ class AtomGrid(object):
 
     @property
     def origin(self):
-        return self.center_to_origin(self.center, self.size, self.resolution)
+        return center_to_origin(self.center, self.size, self.resolution)
+
+    @property
+    def n_elem_channels(self):
+        return self.typer.n_elem_types
 
     @property
     def elem_values(self):
         return self.values[:self.n_elem_channels]
+
+    @property
+    def prop_values(self):
+        return torch.split(
+            self.values[self.n_elem_channels:],
+            [len(r) for r in self.typer.prop_ranges[1:]]
+        )
 
     @property
     def dtype(self):

@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+import scipy.optimize
 from collections import OrderedDict
 
 
@@ -65,7 +66,7 @@ def compute_mean_type_diff_and_exact_types(structs, ref_structs):
     return np.mean(type_diffs), np.mean(type_diffs == 0)
 
 
-def compute_min_rmsd(xyz1, c1, xyz2, c2):
+def compute_min_rmsd(coords1, types1, coords2, types2):
     '''
     Compute an RMSD between two sets of positions of the same
     atom types with no prior mapping between particular atom
@@ -73,44 +74,50 @@ def compute_min_rmsd(xyz1, c1, xyz2, c2):
     all permutations of this mapping.
     '''
     # check that structs are same size
-    assert len(c1) == len(c2), 'structs must have same num atoms'
-    n_atoms = len(c1)
+    n1, n2 = len(coords1), len(coords2)
+    assert n1 == n2, \
+        'structs must have same num atoms ({} vs. {})'.format(n1, n2)
+    n_atoms = len(coords1)
 
     # copy everything into arrays
-    xyz1 = np.array(xyz1)
-    xyz2 = np.array(xyz2)
-    c1 = np.array(c1)
-    c2 = np.array(c2)
+    coords1 = np.array(coords1)
+    coords2 = np.array(coords2)
+    types1 = np.array(types1)
+    types2 = np.array(types2)
+    print(coords1.shape, types1.shape)
 
     # check that atom types are compatible
-    idx1 = np.argsort(c1)
-    idx2 = np.argsort(c2)
-    xyz1, c1 = xyz1[idx1], c1[idx1]
-    xyz2, c2 = xyz2[idx2], c2[idx2]
-    assert all(c1 == c2), 'structs must have same num atoms of each type'
+    idx1 = np.argsort(types1, axis=0)[:,0]
+    idx2 = np.argsort(types2, axis=0)[:,0]
+    coords1, types1 = coords1[idx1], types1[idx1]
+    coords2, types2 = coords2[idx2], types2[idx2]
+    assert (types1 == types2).all(), \
+        'structs must have same num atoms of each type'
 
     # find min rmsd by solving linear sum assignment
     # problem on squared dist matrix for each type
     ssd = 0.0
     nax = np.newaxis
-    for c in set(c1): 
-        xyz1_c = xyz1[c1 == c]
-        xyz2_c = xyz2[c2 == c]
-        dist2_c = ((xyz1_c[:,nax,:] - xyz2_c[nax,:,:])**2).sum(axis=2)
-        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_c)
-        ssd += dist2_c[idx1, idx2].sum()
+    for t in np.unique(types1, axis=0):
+        print(t)
+        coords1_t = coords1[(types1 == t[nax,:]).all(axis=1)]
+        coords2_t = coords2[(types2 == t[nax,:]).all(axis=1)]
+        dist2_t = ((coords1_t[:,nax,:] - coords2_t[nax,:,:])**2).sum(axis=2)
+        idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_t)
+        ssd += dist2_t[idx1, idx2].sum()
 
     return np.sqrt(ssd/n_atoms)
 
 
-def compute_atom_rmsd(struct1, struct2):
+def compute_struct_rmsd(struct1, struct2):
     try:
         return compute_min_rmsd(
-            struct1.xyz.cpu(), struct1.c.cpu(),
-            struct2.xyz.cpu(), struct2.c.cpu(),
+            struct1.coords.cpu(), struct1.types.cpu(),
+            struct2.coords.cpu(), struct2.types.cpu(),
         )
     except (AssertionError, ZeroDivisionError):
-        return np.nan
+        #return np.nan
+        raise
 
 
 def compute_mean_atom_rmsd(structs, ref_structs):

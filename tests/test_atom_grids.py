@@ -67,3 +67,9 @@ class TestAtomGrid(object):
         assert len(idx_xyz.shape) == 2
         assert idx_xyz.shape[1] == 3
         coords = grid.get_coords(idx_xyz)
+
+    def test_prop_values(self, grid):
+        out_values = torch.cat(
+            [grid.elem_values] + list(grid.prop_values), dim=0
+        )
+        assert (out_values == grid.values).all(), 'different values'

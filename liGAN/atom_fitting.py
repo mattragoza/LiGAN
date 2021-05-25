@@ -154,6 +154,19 @@ class AtomFitter(object):
             self.kernel.to_dx(dx_prefix)
             self.output_kernel = False # only write once
 
+    def get_types_estimate(self, grid):
+        '''
+        Since atom density is additive and non-negative, estimate
+        the atom type counts by dividing the total density in each
+        grid channel by the total density in each kernel channel.
+        '''
+        if self.kernel is None:
+            self.init_kernel(grid.resolution, grid.typer)
+
+        kernel_sum = self.kernel.sum(dim=(1,2,3))
+        grid_sum = grid.elem_values.sum(dim=(1,2,3))
+        return grid_sum / kernel_sum
+
     def convolve(self, elem_values, resolution, typer):
         '''
         Compute a convolution between the provided
@@ -215,11 +228,14 @@ class AtomFitter(object):
         idx_c = idx_c[has_atoms_left]
         return values, idx_xyz, idx_c
 
-    def suppress_non_max(self, values, coords, idx_c, grid, matrix=None):
+    def suppress_non_max(
+        self, values, coords, idx_xyz, idx_c, grid, matrix=None
+    ):
 
         r = grid.typer.elem_radii
-        if matrix or (matrix is None and len(coords) < 1000): # use NxN matrices
+        if matrix or (matrix is None and len(coords) < 1000):
 
+            # use NxN matrix calculations
             same_type = (idx_c.unsqueeze(1) == idx_c.unsqueeze(0))
             bond_radius = r[idx_c].unsqueeze(1) + r[idx_c].unsqueeze(0)
             min_dist2 = (self.min_dist * bond_radius)**2
@@ -235,11 +251,13 @@ class AtomFitter(object):
                 (dist2 < min_dist2) & same_type, diagonal=-1
             ).any(dim=1)
             
-            return coords[~too_close], idx_c[~too_close]
+            return (
+                coords[~too_close], idx_xyz[~too_close], idx_c[~too_close]
+            )
 
         else: # use a for-loop
-
             coords_max = coords[0].unsqueeze(0)
+            idx_xyz_max = idx_xyz[0].unsqueeze(0)
             idx_c_max = idx_c[0].unsqueeze(0)
 
             for i in range(1, len(idx_c)):
@@ -249,9 +267,10 @@ class AtomFitter(object):
                 dist2 = ((coords[i].unsqueeze(0) - coords_max)**2).sum(dim=1)
                 if not ((dist2 < min_dist2) & same_type).any():
                     coords_max = torch.cat([coords_max,coords[i].unsqueeze(0)])
+                    idx_xyz_max = torch.cat([idx_xyz_max, idx_xyz[i].unsqueeze(0)])
                     idx_c_max = torch.cat([idx_c_max, idx_c[i].unsqueeze(0)])
 
-            return coords_max, idx_c_max
+            return coords_max, idx_xyz_max, idx_c_max
 
     def detect_atoms(self, grid, type_counts=None):
         '''
@@ -296,31 +315,41 @@ class AtomFitter(object):
             and self.min_dist > 0.0
             and self.n_atoms_detect > 1
         ):
-            coords, idx_c = self.suppress_non_max(values, coords, idx_c)
+            coords, idx_xyz, idx_c = self.suppress_non_max(
+                values, coords, idx_xyz, idx_c
+            )
 
         # limit total number of detected atoms
         if self.n_atoms_detect >= 0:
             coords = coords[:self.n_atoms_detect]
+            idx_xyz = idx_xyz[:self.n_atoms_detect]
             idx_c = idx_c[:self.n_atoms_detect]
 
-        # convert atom type channel index to one-hot type vector
-        types = F.one_hot(idx_c, grid.n_elem_channels).to(
+        # convert element channel index to one-hot type vector
+        #   and put it in a list to accrue other property vecs
+        types = [F.one_hot(idx_c, grid.n_elem_channels).to(
             dtype=grid.dtype, device=self.device
-        )
+        )]
+
+        # adjust spatial index so we can actually use it
+        #   to index into grid and get property vectors
+        idx_xyz = idx_xyz.long().split(1, dim=1)
+
+        # extend type vector with detected properties
+        for i, prop_values in enumerate(grid.prop_values):
+
+            # rearrange so property channels are the last index
+            #   and then use spatial index to get property vectors
+            prop_values = prop_values.permute(1,2,3,0)
+            prop_vecs = prop_values[idx_xyz] 
+            assert len(prop_vecs.shape) == 3 # why extra 1 dim?
+            assert prop_vecs.shape[1] == 1
+            types.append(prop_vecs.sum(dim=1))
+
+        # concat all property vectors into full type vector
+        types = torch.cat(types, dim=1)
+
         return coords.detach(), types.detach()
-
-    def get_types_estimate(self, grid):
-        '''
-        Since atom density is additive and non-negative, estimate
-        the atom type counts by dividing the total density in each
-        grid channel by the total density in each kernel channel.
-        '''
-        if self.kernel is None:
-            self.init_kernel(grid.resolution, grid.typer)
-
-        kernel_sum = self.kernel.sum(dim=(1,2,3))
-        grid_sum = grid.elem_values.sum(dim=(1,2,3))
-        return grid_sum / kernel_sum
 
     def descend_gradient(self, grid, coords, types, n_iters):
         '''
@@ -330,8 +359,11 @@ class AtomFitter(object):
         grid produced by the fit coords and types.
         '''
         coords = coords.clone().detach().to(self.device)
-        types = types.clone().detach().to(self.device)
-        radii = grid.typer.elem_radii[types.argmax(dim=1)]
+        elem_types = types[:,:grid.n_elem_channels]
+        if len(coords) > 0:
+            radii = grid.typer.elem_radii[elem_types.argmax(dim=1)]
+        else:
+            radii = grid.typer.elem_radii[:0]
         coords.requires_grad = True
 
         optim = torch.optim.Adam((coords,), **self.gd_kwargs)
@@ -345,7 +377,7 @@ class AtomFitter(object):
             optim.zero_grad()
 
             values_fit = self.c2grid(coords, types, radii)
-            values_diff = grid.elem_values - values_fit
+            values_diff = grid.values - values_fit
             if self.fit_L1_loss:
                 loss = values_diff.abs().sum()
             else:
@@ -365,7 +397,9 @@ class AtomFitter(object):
         )
 
     def expand_struct(self, grid, coords, types, coords_next, types_next):
-
+        '''
+        TODO please document me
+        '''
         if self.multi_atom:
 
             # expand to all next atoms simultaneously
@@ -443,7 +477,7 @@ class AtomFitter(object):
             device=self.device
         )
         types = torch.zeros(
-            (0, grid.n_elem_channels),
+            (0, grid.n_channels),
             dtype=torch.float32,
             device=self.device
         )
@@ -491,7 +525,7 @@ class AtomFitter(object):
 
             # try to expand each current best structure
             for (
-                objective, struct_id, coords, types, coords_next, types_next,
+                objective, struct_id, coords, types, coords_next, types_next
             ) in best_structs:
 
                 if struct_id in expanded_ids:
@@ -509,9 +543,10 @@ class AtomFitter(object):
                         found_new_best_struct = True
                         self.print('Found new best struct {}'.format(struct_count))
 
+                        # detect possible next atoms to expand the new struct
                         coords_new_next, types_new_next = self.detect_atoms(
                             grid_true.new_like(values=values_diff),
-                            type_diff,
+                            types_diff,
                         )
                         new_best_structs.append((
                             obj_new,
@@ -557,7 +592,7 @@ class AtomFitter(object):
                         )
                     )
 
-                if len(best_n_atoms) >= 50:
+                if best_n_atoms >= 50:
                     found_new_best_struct = False #dkoes: limit molecular size
 
             ms.append(torch.cuda.max_memory_allocated())
