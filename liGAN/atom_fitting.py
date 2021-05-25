@@ -340,11 +340,13 @@ class AtomFitter(object):
 
             # rearrange so property channels are the last index
             #   and then use spatial index to get property vectors
-            prop_values = prop_values.permute(1,2,3,0)
-            prop_vecs = prop_values[idx_xyz] 
-            assert len(prop_vecs.shape) == 3 # why extra 1 dim?
-            assert prop_vecs.shape[1] == 1
-            types.append(prop_vecs.sum(dim=1))
+            #   there's an extra dimension added for some reason
+            prop_vecs = prop_values.permute(1,2,3,0)[idx_xyz].sum(dim=1)
+            if prop_vecs.shape[1] > 1:
+                prop_vecs = torch.nn.functional.softmax(prop_vecs, dim=1)
+            else:
+                prop_vecs = torch.clamp(prop_vecs, min=0, max=1)
+            types.append(prop_vecs)
 
         # concat all property vectors into full type vector
         types = torch.cat(types, dim=1)
@@ -657,7 +659,7 @@ class AtomFitter(object):
             MB = int(1024 ** 2)
             print('GPU', mi//MB, [m//MB for m in ms], mf//MB)
 
-        return struct_best, grid_fit
+        return struct_best, grid_fit, visited_structs
 
     def fit_batch(self, grids, channels, center, resolution):
 

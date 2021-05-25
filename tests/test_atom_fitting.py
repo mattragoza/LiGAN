@@ -15,39 +15,52 @@ test_sdf_files = [
     'data/O_2_0_0.sdf',
     'data/N_2_0_0.sdf',
     'data/C_2_0_0.sdf',
-    #'data/benzene.sdf', #TODO only fitting 1 atom
-    #'data/neopentane.sdf',
-    #'data/sulfone.sdf',
-    #'data/ATP.sdf',
+    'data/benzene.sdf', #TODO only fitting 1 atom
+    'data/neopentane.sdf',
+    'data/sulfone.sdf',
+    'data/ATP.sdf',
 ]
 
 
-def test_indexing():
+def write_pymol(visited_structs, grid, in_mol):
+    pymol_file = 'tests/TEST_' + in_mol.name + '_fit.pymol'
+    with open(pymol_file, 'w') as f:
+        f.write('load {}\n'.format(write_structs(visited_structs, in_mol)))
+        f.write('load_group {}, {}\n'.format(*write_grid(grid, in_mol)))
+        f.write('show_as nb_spheres\n')
+        f.write('show sticks\n')
+        f.write('util.cbam\n')
+        f.write('set_atom_level 0.5, job_name=TEST')
 
-    t = torch.zeros(3, 3, 3)
-    i = torch.cat([
-        torch.arange(3).unsqueeze(1),
-        torch.randint(3, (3, 2))
-    ], dim=1)
-    t[i.split(1, dim=1)] = 1
+
+def write_grid(grid, in_mol):
+    dx_prefix = 'tests/TEST_' + in_mol.name + '_lig_fit_0'
+    dx_files = grid.to_dx(dx_prefix)
+    return dx_prefix + '*.dx', dx_prefix
 
 
+def write_structs(visited_structs, in_mol):
+    visited_mols = [m.to_ob_mol()[0] for m in visited_structs]
+    write_mols = visited_mols + [in_mol]
+    mol_file = 'tests/TEST_{}_fit.sdf'.format(in_mol.name)
+    mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
+    return mol_file
 
 
 class TestAtomFitter(object):
 
-    @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
+    @pytest.fixture(params=['oad'] )#, 'oadc', 'on', 'oh'])
     def typer(self, request):
         return AtomTyper.get_typer(
             prop_funcs=request.param,
-            radius_func=Atom.cov_radius,
+            radius_func=Atom.vdw_radius,
         )
 
     @pytest.fixture
     def gridder(self):
         return Coords2Grid(GridMaker(
             resolution=0.5,
-            dimension=20.0
+            dimension=10,
         ))
 
     @pytest.fixture
@@ -148,6 +161,7 @@ class TestAtomFitter(object):
 
     def test_fit_struct(self, fitter, grid):
         struct = grid.info['src_struct']
-        fit_struct, _ = fitter.fit_struct(grid)
+        fit_struct, fit_grid, visited_structs = fitter.fit_struct(grid)
+        write_pymol(visited_structs, grid, struct.info['src_mol'])
         rmsd = compute_struct_rmsd(struct, fit_struct)
         assert rmsd < 0.5, 'RMSD too high ({:.2f})'.format(rmsd)
