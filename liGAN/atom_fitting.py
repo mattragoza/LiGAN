@@ -238,9 +238,9 @@ class AtomFitter(object):
         return values, idx_xyz, idx_c
 
     def suppress_non_max(
-        self, values, coords, idx_xyz, idx_c, grid, matrix=None
+        self, values, coords, idx_xyz, idx_c, typer, matrix=None
     ):
-        r = grid.typer.elem_radii
+        r = typer.elem_radii
         if matrix or (matrix is None and len(coords) < 1000):
 
             # use NxN matrix calculations
@@ -323,7 +323,7 @@ class AtomFitter(object):
             and not_none(self.n_atoms_detect) and self.n_atoms_detect > 1
         ):
             coords, idx_xyz, idx_c = self.suppress_non_max(
-                values, coords, idx_xyz, idx_c
+                values, coords, idx_xyz, idx_c, grid.typer
             )
 
         # limit total number of detected atoms
@@ -465,7 +465,6 @@ class AtomFitter(object):
 
         # get true grid on appropriate device
         grid_true = grid.to(self.device, dtype=torch.float32)
-        elem_values = grid_true.elem_values
 
         # get true atom type counts on appropriate device
         if type_counts is not None:
@@ -492,9 +491,9 @@ class AtomFitter(object):
 
         # compute initial search objective
         if self.fit_L1_loss:
-            fit_loss = elem_values.abs().sum()
+            fit_loss = grid.values.abs().sum()
         else:
-            fit_loss = (elem_values**2).sum() / 2.0
+            fit_loss = (grid.values**2).sum() / 2.0
         objective = [fit_loss.item()]
 
         # function for printing objective nicely
@@ -534,10 +533,10 @@ class AtomFitter(object):
 
         # search until we can't find a better structure
         while found_new_best_struct:
-            torch.cuda.reset_max_memory_allocated()
 
-            new_best_structs = []
+            torch.cuda.reset_max_memory_allocated()
             found_new_best_struct = False
+            new_best_structs = []
 
             # try to expand each current best structure
             for (
@@ -576,7 +575,10 @@ class AtomFitter(object):
                         ))
                         struct_count += 1
                         
-                        if len(coords_next) > 1: # skip single atom expand
+                        n_atoms_added = len(coords_new) - len(coords)
+                        assert n_atoms_added > 0
+
+                        if n_atoms_added > 1: # skip single atom expand
                             break
 
                     visited_structs.append((
@@ -597,14 +599,14 @@ class AtomFitter(object):
                 )[:self.beam_size]
                 best_objective = best_structs[0][0]
                 best_id = best_structs[0][1]
-                best_n_atoms = best_structs[0][2].shape[0]
+                best_n_atoms = len(best_structs[0][2])
 
                 self.print('Best struct {} (objective={}, n_atoms={})'.format(
                     best_id, fmt_obj(best_objective), best_n_atoms
                 ))
 
-                if best_n_atoms >= 50:
-                    found_new_best_struct = False #dkoes: limit molecule size
+                if best_n_atoms >= 50: # limit molecule size
+                    found_new_best_struct = False
 
             ms.append(torch.cuda.max_memory_allocated())
 
