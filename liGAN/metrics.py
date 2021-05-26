@@ -91,8 +91,9 @@ def compute_min_rmsd(coords1, types1, coords2, types2):
     idx2 = np.argsort(types2, axis=0)[:,0]
     coords1, types1 = coords1[idx1], types1[idx1]
     coords2, types2 = coords2[idx2], types2[idx2]
+    type_diff = np.abs(types1 - types2).sum()
     assert (types1 == types2).all(), \
-        'structs must have same num atoms of each type'
+        'structs must have same atom types ({:.2f})'.format(type_diff)
 
     # find min rmsd by solving linear sum assignment
     # problem on squared dist matrix for each type

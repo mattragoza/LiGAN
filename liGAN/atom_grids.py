@@ -66,6 +66,10 @@ class AtomGrid(object):
         return self.typer.n_elem_types
 
     @property
+    def n_prop_channels(self):
+        return self.n_channels - self.n_elem_channels
+
+    @property
     def elem_values(self):
         return self.values[:self.n_elem_channels]
 

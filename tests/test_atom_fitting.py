@@ -16,51 +16,97 @@ test_sdf_files = [
     'data/O_2_0_0.sdf',
     'data/N_2_0_0.sdf',
     'data/C_2_0_0.sdf',
-    'data/benzene.sdf', #TODO only fitting 1 atom
+    'data/benzene.sdf',
     'data/neopentane.sdf',
     'data/sulfone.sdf',
     'data/ATP.sdf',
 ]
 
 
-def write_pymol(visited_structs, grid, in_mol, kern_grid=None, conv_grid=None):
-    pymol_file = 'tests/TEST_' + in_mol.name + '_fit.pymol'
+def write_pymol(
+    visited_structs, grid, in_struct,
+    fit_grid=None,
+    kern_grid=None,
+    conv_grid=None
+):
+    mol_name = in_struct.info['name']
+    pymol_file = 'tests/TEST_' + mol_name + '_fit.pymol'
     with open(pymol_file, 'w') as f:
+
         if visited_structs:
-            f.write('load {}\n'.format(write_structs(visited_structs, in_mol)))
-        f.write('load_group {}, {}\n'.format(*write_grid(grid, in_mol, 'lig')))
+            f.write('load {}\n'.format(
+                write_structs(
+                    visited_structs, in_struct.info['src_mol'], mol_name
+                )
+            ))
+
+        f.write('load_group {}, {}\n'.format(
+            *write_grid(grid, mol_name, 'lig')
+        ))
+
+        if fit_grid is not None:
+            f.write('load_group {}, {}\n'.format(
+                *write_grid(fit_grid, mol_name, 'lig_fit')
+            ))
+
         if kern_grid is not None:
-            f.write('load_group {}, {}\n'.format(*write_grid(kern_grid, in_mol, 'lig_kern')))
+            f.write('load_group {}, {}\n'.format(
+                *write_grid(kern_grid, mol_name, 'lig_kern')
+            ))
+
         if conv_grid is not None:
-            f.write('load_group {}, {}\n'.format(*write_grid(conv_grid, in_mol, 'lig_conv')))
+            f.write('load_group {}, {}\n'.format(
+                *write_grid(conv_grid, mol_name, 'lig_conv')
+            ))
+
         f.write('show_as nb_spheres\n')
         f.write('show sticks\n')
         f.write('util.cbam\n')
         f.write('set_atom_level 0.5, job_name=TEST')
 
 
-def write_grid(grid, in_mol, grid_type):
-    dx_prefix = 'tests/TEST_{}_{}_0'.format(in_mol.name, grid_type)
+def write_grid(grid, mol_name, grid_type):
+    dx_prefix = 'tests/TEST_{}_{}_0'.format(mol_name, grid_type)
     dx_files = grid.to_dx(dx_prefix)
     return dx_prefix + '*.dx', dx_prefix
 
 
-def write_structs(visited_structs, in_mol):
+def make_grid(grid, elem_values):
+    nc, sz = grid.n_prop_channels, elem_values.shape[1]
+    prop_values = torch.zeros(nc, sz, sz, sz, device=elem_values.device)
+    return grid.new_like(
+        values=torch.cat([elem_values, prop_values], dim=0)
+    )
+
+
+def write_structs(visited_structs, in_mol, mol_name):
     visited_mols = [m.to_ob_mol()[0] for m in visited_structs]
     write_mols = visited_mols + [in_mol]
-    mol_file = 'tests/TEST_{}_fit.sdf'.format(in_mol.name)
+    mol_file = 'tests/TEST_{}_fit.sdf'.format(mol_name)
     mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
     return mol_file
 
 
+@pytest.fixture(params=range(10))
+def idx(request):
+    return request.param
+
+
 class TestAtomFitter(object):
 
-    @pytest.fixture(params=['oad'] )#, 'oadc', 'on', 'oh'])
+    @pytest.fixture(params=[
+        '-c', '-v',
+        #'oad-c', 'oadc-c', 'on-c', 'oh-c',
+        #'oad-v', 'oadc-v', 'on-v', 'oh-v',
+    ])
     def typer(self, request):
-        return AtomTyper.get_typer(
-            prop_funcs=request.param,
-            radius_func=Atom.cov_radius,
+        prop_funcs, radius_func = request.param.split('-')
+        typer = AtomTyper.get_typer(
+            prop_funcs=prop_funcs,
+            radius_func=radius_func,
         )
+        typer.name = request.param
+        return typer
 
     @pytest.fixture
     def gridder(self):
@@ -68,7 +114,7 @@ class TestAtomFitter(object):
         return Coords2Grid(GridMaker(
             resolution=resolution,
             dimension=size_to_dimension(
-                size=9,
+                size=24,
                 resolution=resolution
             ),
         ))
@@ -79,25 +125,32 @@ class TestAtomFitter(object):
             multi_atom=False,
             n_atoms_detect=1,
             apply_conv=False,
-            threshold=0,
-            peak_value=1000,
+            threshold=0.1,
+            peak_value=1.5,
             min_dist=0,
-            interm_gd_iters=0,
-            final_gd_iters=0,
+            interm_gd_iters=10,
+            final_gd_iters=100,
+            gd_kwargs=dict(lr=0.1),
+            verbose=True,
             device='cuda'
         )
 
     @pytest.fixture(params=test_sdf_files)
     def mol(self, request):
         sdf_file = request.param
-        mol = mols.read_ob_mols_from_file(sdf_file, 'sdf')[0]
+        mol, atoms = mols.read_ob_mols_from_file(sdf_file, 'sdf')
         mol.AddHydrogens() # this is needed to determine donor/acceptor
         mol.name = os.path.splitext(os.path.basename(sdf_file))[0]
         return mol
 
     @pytest.fixture
     def struct(self, mol, typer):
-        return typer.make_struct(mol, dtype=torch.float32, device='cuda')
+        return typer.make_struct(
+            mol,
+            name='{}_{}'.format(mol.name, typer.name),
+            dtype=torch.float32,
+            device='cuda'
+        )
 
     @pytest.fixture
     def grid(self, struct, gridder):
@@ -153,30 +206,21 @@ class TestAtomFitter(object):
         assert (kernel[:,m,m,m] == 1.0).all(), 'kernel not centered'
 
     def test_convolve(self, fitter, grid):
-
         grid_values = grid.elem_values
         conv_values = fitter.convolve(
             grid_values, grid.resolution, grid.typer
         )
-
-        prop_values = grid.values[grid.n_elem_channels:]
-        kern_grid = grid.new_like(values=torch.cat([fitter.kernel, torch.zeros_like(prop_values)], dim=0))
-        conv_grid = grid.new_like(values=torch.cat([conv_values, torch.zeros_like(prop_values)], dim=0))
-        mol = grid.info['src_struct'].info['src_mol']
-        write_pymol([], grid, mol, kern_grid=kern_grid, conv_grid=conv_grid)
+        #kern_grid = make_grid(grid, fitter.kernel)
+        #conv_grid = make_grid(grid, conv_values)
+        #mol = grid.info['src_struct'].info['src_mol']
+        #write_pymol([], grid, mol, kern_grid=kern_grid, conv_grid=conv_grid)
 
         dims = (1,2,3) # compute channel norms
-        grid_norm2 = (grid_values**2).sum(dim=dims)
-        conv_norm2 = (conv_values**2).sum(dim=dims)
-        kern_norm2 = (fitter.kernel**2).sum(dim=dims)
+        grid_norm2 = (grid_values**2).sum(dim=dims)**0.5
+        conv_norm2 = (conv_values**2).sum(dim=dims)**0.5
+        kern_norm2 = (fitter.kernel**2).sum(dim=dims)**0.5
         assert (conv_norm2 >= grid_norm2).all(), 'channel norm decreased'
-
-        print(fitter.kernel.shape, grid_values.shape)
-        print(grid_norm2[:grid.n_elem_channels])
-        print(kern_norm2[:grid.n_elem_channels])
-        print((grid_norm2*kern_norm2)[:grid.n_elem_channels])
-        print(conv_norm2[:grid.n_elem_channels])
-        assert (conv_norm2 == grid_norm2*kern_norm2).all(), 'conv identity failed'
+        assert (conv_values > 0.5).any(), 'failed to detect atoms'
 
     def test_apply_peak_value(self, fitter, grid):
         peak_values = fitter.apply_peak_value(grid.elem_values)
@@ -220,7 +264,7 @@ class TestAtomFitter(object):
             coords, types, grid.typer,
             src_mol=grid.info['src_struct'].info['src_mol']
         )
-        #write_pymol([struct], grid, struct.info['src_mol'])
+        #write_pymol([struct], grid, struct)
         if fitter.n_atoms_detect is not None:
             assert coords.shape == (fitter.n_atoms_detect, 3)
             assert types.shape == (fitter.n_atoms_detect, grid.n_channels)
@@ -230,6 +274,14 @@ class TestAtomFitter(object):
     def test_fit_struct(self, fitter, grid):
         struct = grid.info['src_struct']
         fit_struct, fit_grid, visited_structs = fitter.fit_struct(grid)
-        #write_pymol(visited_structs, grid, struct.info['src_mol'])
+        write_pymol(visited_structs, grid, struct, fit_grid=fit_grid)
+
+        assert fit_struct == visited_structs[-1], 'final struct is not last visited'
+        final_loss = fit_struct.info['L2_loss']
+        for i, struct_i in enumerate(visited_structs):
+            loss_i = struct_i.info['L2_loss']
+            assert final_loss <= loss_i, \
+                'final struct is not best ({:.2f} > {:.2f})'.format(final_loss, loss_i)
+
         rmsd = compute_struct_rmsd(struct, fit_struct)
         assert rmsd < 0.5, 'RMSD too high ({:.2f})'.format(rmsd)

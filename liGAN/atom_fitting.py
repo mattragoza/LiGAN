@@ -479,7 +479,6 @@ class AtomFitter(object):
             est_type_loss = np.nan
 
         # initialize empty struct
-        self.print('Initializing empty struct 0')
         coords = torch.zeros(
             (0, 3),
             dtype=torch.float32,
@@ -498,13 +497,21 @@ class AtomFitter(object):
             fit_loss = (elem_values**2).sum() / 2.0
         objective = [fit_loss.item()]
 
+        # function for printing objective nicely
+        fmt_obj = lambda obj: '[{}]'.format(
+            ', '.join('{:.2f}'.format(v) for v in obj)
+        )
+
         # to constrain types, order structs first by type diff, then fit loss
         if self.constrain_types:
             type_loss = type_counts.abs().sum()
             objective.insert(0, type_loss.item())
 
+        self.print('Initial struct 0 (objective={}, n_atoms={})'.format(
+            fmt_obj(objective), len(coords)
+        ))
+        
         # detect initial atom locations and types
-        self.print('Detecting atoms for struct 0')
         coords_next, types_next = self.detect_atoms(grid_true, type_counts)
 
         # keep track of best structures so far
@@ -540,17 +547,19 @@ class AtomFitter(object):
                 if struct_id in expanded_ids:
                     continue # already tried this struct
 
+                self.print('Expand struct {} to {} detected atom(s)'.format(struct_id, len(coords_next)))
+
                 # expand structure to possible next atoms
                 for (
                     obj_new, coords_new, types_new, values_diff, types_diff
                 ) in self.expand_struct(
                     grid_true, coords, types, coords_next, types_next
                 ):
+                    self.print('Found new struct (objective={}, n_atoms={})'.format(fmt_obj(obj_new), len(coords_new)))
+
                     # check if new structure is one of the best yet
                     if any(obj_new < t[0] for t in best_structs):
-
                         found_new_best_struct = True
-                        self.print('Found new best struct {}'.format(struct_count))
 
                         # detect possible next atoms to expand the new struct
                         coords_new_next, types_new_next = self.detect_atoms(
@@ -590,19 +599,12 @@ class AtomFitter(object):
                 best_id = best_structs[0][1]
                 best_n_atoms = best_structs[0][2].shape[0]
 
-                if self.verbose:
-                    try:
-                        gpu_usage = getGPUs()[0].memoryUtil
-                    except:
-                        gpu_usage = np.nan
-                    print(
-                        'Best struct {} (objective={}, n_atoms={}, GPU={})'.format(
-                            best_id, best_objective, best_n_atoms, gpu_usage
-                        )
-                    )
+                self.print('Best struct {} (objective={}, n_atoms={})'.format(
+                    best_id, fmt_obj(best_objective), best_n_atoms
+                ))
 
                 if best_n_atoms >= 50:
-                    found_new_best_struct = False #dkoes: limit molecular size
+                    found_new_best_struct = False #dkoes: limit molecule size
 
             ms.append(torch.cuda.max_memory_allocated())
 
@@ -611,10 +613,15 @@ class AtomFitter(object):
         # done searching for atomic structures
         best_obj, best_id, coords_best, types_best = best_structs[0][:4]
 
+        self.print('Finalize struct {} as struct {}'.format(
+            best_id, struct_count
+        ))
+
         # perform final gradient descent
         coords_best, values_fit, values_diff, fit_loss = self.descend_gradient(
             grid_true, coords_best, types_best, self.final_gd_iters
         )
+        best_id = struct_count # count this as a new struct
 
         # compute the final L2 and L1 loss
         L2_loss = (values_diff**2).sum() / 2
@@ -627,17 +634,20 @@ class AtomFitter(object):
         else:
             type_loss = np.nan
 
-        # make sure best struct is the last visited struct
-        if best_id != visited_structs[-1][1]:
-            visited_structs.append((
-                best_obj,
-                best_id+1,
-                time.time()-t_start,
-                coords_best,
-                types_best
-            ))
+        self.print('Final struct {} (objective={}, n_atoms={})'.format(
+            best_id, fmt_obj(best_obj), len(coords_best)
+        ))
 
-        # finalize the visited atomic structures
+        # make sure final struct is the last visited struct
+        visited_structs.append((
+            best_obj,
+            best_id,
+            time.time()-t_start,
+            coords_best,
+            types_best
+        ))
+
+        # finalize visited structs as AtomStructs
         iter_visited = iter(visited_structs)
         visited_structs = []
         for objective, struct_id, fit_time, coords, types in iter_visited:
