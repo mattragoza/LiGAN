@@ -97,6 +97,14 @@ class AtomStruct(object):
         return self.types.sum(dim=0)
 
     @property
+    def elem_counts(self):
+        return self.types[:,:self.typer.n_elem_types].sum(dim=0)
+
+    @property
+    def prop_counts(self):
+        return self.types[:,self.typer.n_elem_types:].sum(dim=0)
+
+    @property
     def center(self):
         if self.n_atoms > 0:
             return self.coords.mean(dim=0)

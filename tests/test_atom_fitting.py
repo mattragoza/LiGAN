@@ -13,13 +13,9 @@ from liGAN.metrics import compute_struct_rmsd
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf',
-    'data/N_2_0_0.sdf',
-    'data/C_2_0_0.sdf',
-    'data/benzene.sdf',
-    'data/neopentane.sdf',
-    'data/sulfone.sdf',
-    'data/ATP.sdf',
+    'data/O_2_0_0.sdf', 'data/N_2_0_0.sdf', 'data/C_2_0_0.sdf',
+    'data/benzene.sdf', 'data/neopentane.sdf',
+    #'data/sulfone.sdf', 'data/ATP.sdf',
 ]
 
 
@@ -95,9 +91,12 @@ def idx(request):
 class TestAtomFitter(object):
 
     @pytest.fixture(params=[
-        '-c', '-v',
-        #'oad-c', 'oadc-c', 'on-c', 'oh-c',
-        #'oad-v', 'oadc-v', 'on-v', 'oh-v',
+        '-c',     '-v',
+        'oad-c',  'oad-v',
+        'oadc-c', 'oadc-v',
+        'on-c',   'on-v',
+        #'oh-c', # different num atoms (missing Hs on all tests)
+        'oh-v', # different property counts (not all carbons aromatic, or aromatic Hs if using convolution)
     ])
     def typer(self, request):
         prop_funcs, radius_func = request.param.split('-')
@@ -127,11 +126,12 @@ class TestAtomFitter(object):
             apply_conv=False,
             threshold=0.1,
             peak_value=1.5,
-            min_dist=0,
+            min_dist=None,
+            apply_prop_conv=True,
             interm_gd_iters=10,
             final_gd_iters=100,
             gd_kwargs=dict(lr=0.1),
-            verbose=True,
+            verbose=2,
             device='cuda'
         )
 
@@ -154,11 +154,13 @@ class TestAtomFitter(object):
 
     @pytest.fixture
     def grid(self, struct, gridder):
+
         # set the grid settings based on the size/location of structure
         gridder.center = tuple(float(v) for v in struct.center)
         gridder.gmaker.set_dimension(round_dimension(
-            2*(struct.radius+2), gridder.gmaker.get_resolution()
+            2*(struct.radius + 2), gridder.gmaker.get_resolution()
         ))
+
         return AtomGrid(
             values=gridder.forward(
                 coords=struct.coords,
@@ -171,114 +173,118 @@ class TestAtomFitter(object):
             src_struct=struct
         )
 
-    def test_init(self, fitter):
-        pass
+    if False:
 
-    def test_gridder1(self, grid):
-        assert grid.values.norm() > 0, 'empty grid'
-        for type_vec in grid.info['src_struct'].types:
-            assert (grid.values[type_vec>0].sum(dim=(1,2,3)) > 0).all(), \
-                'empty grid channel'
+        def test_init(self, fitter):
+            pass
 
-    def test_gridder2(self, struct, grid, fitter):
-        # NOTE if dimensions are slightly different, even if it's
-        #   less than resolution so that the grid shapes are same,
-        #   the grid values will be different due to centering
-        fitter.grid_maker.set_dimension(grid.dimension)
-        fitter.grid_maker.set_resolution(grid.resolution)
-        fitter.c2grid.center = tuple(float(v) for v in struct.center)
-        values = fitter.c2grid.forward(
-            coords=struct.coords,
-            types=struct.types,
-            radii=struct.atomic_radii
-        )
-        assert values.shape == grid.values.shape, 'different grid shapes'
-        assert (values == grid.values).all(), 'different grid values'
+        def test_gridder1(self, grid):
+            assert grid.values.norm() > 0, 'empty grid'
+            for type_vec in grid.info['src_struct'].types:
+                assert (grid.values[type_vec>0].sum(dim=(1,2,3)) > 0).all(), \
+                    'empty grid channel'
 
-    def test_init_kernel(self, typer, fitter):
-        assert fitter.kernel is None, 'kernel already initialized'
-        kernel = fitter.init_kernel(resolution=0.5, typer=typer)
-        assert kernel.shape[0] == typer.n_elem_types, 'wrong num channels'
-        assert kernel.shape[1] % 2 == 1, 'kernel size is even'
-        assert kernel.norm() > 0, 'empty kernel'
-        assert ((kernel**2).sum(dim=(1,2,3)) > 0).all(), 'empty kernel channel'
+        def test_gridder2(self, struct, grid, fitter):
+            # NOTE if dimensions are slightly different, even if it's
+            #   less than resolution so that the grid shapes are same,
+            #   the grid values will be different due to centering
+            fitter.grid_maker.set_dimension(grid.dimension)
+            fitter.grid_maker.set_resolution(grid.resolution)
+            fitter.c2grid.center = tuple(float(v) for v in struct.center)
+            values = fitter.c2grid.forward(
+                coords=struct.coords,
+                types=struct.types,
+                radii=struct.atomic_radii
+            )
+            assert values.shape == grid.values.shape, 'different grid shapes'
+            assert (values == grid.values).all(), 'different grid values'
 
-        m = kernel.shape[1]//2 # midpoint index
-        assert (kernel[:,m-1,m,m] == kernel[:,m+1,m,m]).all(), 'kernel not symmetric'
-        assert (kernel[:,m,m-1,m] == kernel[:,m,m+1,m]).all(), 'kernel not symmetric'
-        assert (kernel[:,m,m,m-1] == kernel[:,m,m,m+1]).all(), 'kernel not symmetric'
-        assert (kernel[:,m,m,m] == 1.0).all(), 'kernel not centered'
+        def test_init_kernel(self, typer, fitter):
+            assert fitter.kernel is None, 'kernel already initialized'
+            kernel = fitter.init_kernel(resolution=0.5, typer=typer)
+            assert kernel.shape[0] == typer.n_elem_types, 'wrong num channels'
+            assert kernel.shape[1] % 2 == 1, 'kernel size is even'
+            assert kernel.norm() > 0, 'empty kernel'
+            assert ((kernel**2).sum(dim=(1,2,3)) > 0).all(), 'empty kernel channel'
 
-    def test_convolve(self, fitter, grid):
-        grid_values = grid.elem_values
-        conv_values = fitter.convolve(
-            grid_values, grid.resolution, grid.typer
-        )
-        #kern_grid = make_grid(grid, fitter.kernel)
-        #conv_grid = make_grid(grid, conv_values)
-        #mol = grid.info['src_struct'].info['src_mol']
-        #write_pymol([], grid, mol, kern_grid=kern_grid, conv_grid=conv_grid)
+            m = kernel.shape[1]//2 # midpoint index
+            assert (kernel[:,m-1,m,m] == kernel[:,m+1,m,m]).all(), 'kernel not symmetric'
+            assert (kernel[:,m,m-1,m] == kernel[:,m,m+1,m]).all(), 'kernel not symmetric'
+            assert (kernel[:,m,m,m-1] == kernel[:,m,m,m+1]).all(), 'kernel not symmetric'
+            assert (kernel[:,m,m,m] == 1.0).all(), 'kernel not centered'
 
-        dims = (1,2,3) # compute channel norms
-        grid_norm2 = (grid_values**2).sum(dim=dims)**0.5
-        conv_norm2 = (conv_values**2).sum(dim=dims)**0.5
-        kern_norm2 = (fitter.kernel**2).sum(dim=dims)**0.5
-        assert (conv_norm2 >= grid_norm2).all(), 'channel norm decreased'
-        assert (conv_values > 0.5).any(), 'failed to detect atoms'
+        def test_convolve(self, fitter, grid):
+            grid_values = grid.elem_values
+            conv_values = fitter.convolve(
+                grid_values, grid.resolution, grid.typer
+            )
+            #kern_grid = make_grid(grid, fitter.kernel)
+            #conv_grid = make_grid(grid, conv_values)
+            #mol = grid.info['src_struct'].info['src_mol']
+            #write_pymol([], grid, mol, kern_grid=kern_grid, conv_grid=conv_grid)
 
-    def test_apply_peak_value(self, fitter, grid):
-        peak_values = fitter.apply_peak_value(grid.elem_values)
-        assert (peak_values <= fitter.peak_value).all(), 'values above peak'
+            dims = (1,2,3) # compute channel norms
+            grid_norm2 = (grid_values**2).sum(dim=dims)**0.5
+            conv_norm2 = (conv_values**2).sum(dim=dims)**0.5
+            kern_norm2 = (fitter.kernel**2).sum(dim=dims)**0.5
+            assert (conv_norm2 >= grid_norm2).all(), 'channel norm decreased'
+            assert (conv_values > 0.5).any(), 'failed to detect atoms'
 
-    def test_sort_grid_points(self, fitter, grid):
-        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
-        idx_x, idx_y, idx_z = idx_xyz[:,0], idx_xyz[:,1], idx_xyz[:,2]
-        assert (values[:-1] >= values[1:]).all(), 'values not sorted'
-        assert (grid.elem_values[idx_c, idx_x, idx_y, idx_z] == values).all(), \
-            'values not unsorted'
+        def test_apply_peak_value(self, fitter, grid):
+            peak_values = fitter.apply_peak_value(grid.elem_values)
+            assert (peak_values <= fitter.peak_value).all(), 'values above peak'
 
-    def test_apply_threshold(self, fitter, grid):
-        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
-        values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
-        assert (values > fitter.threshold).all(), 'values below threshold'
+        def test_sort_grid_points(self, fitter, grid):
+            values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+            idx_x, idx_y, idx_z = idx_xyz[:,0], idx_xyz[:,1], idx_xyz[:,2]
+            assert (values[:-1] >= values[1:]).all(), 'values not sorted'
+            assert (grid.elem_values[idx_c, idx_x, idx_y, idx_z] == values).all(), \
+                'values not unsorted'
 
-    def test_suppress_non_max(self, fitter, grid):
-        values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
-        values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
-        coords = grid.get_coords(idx_xyz)
-        coords_mat, idx_xyz_mat, idx_c_mat = fitter.suppress_non_max(
-            values, coords, idx_xyz, idx_c, grid, matrix=True
-        )
-        coords_for, idx_xyz_for, idx_c_for = fitter.suppress_non_max(
-            values, coords, idx_xyz, idx_c, grid, matrix=False
-        )
-        assert len(coords_mat) == len(idx_c_mat)
-        assert len(coords_for) == len(idx_c_for)
-        assert len(coords_mat) == len(coords_for)
-        assert len(coords_mat) <= len(coords)
-        assert coords_mat.shape[1] == 3
-        assert coords_for.shape[1] == 3
-        assert (coords_mat == coords_for).all()
-        assert (idx_c_mat == idx_c_for).all()
+        def test_apply_threshold(self, fitter, grid):
+            values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+            values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
+            assert (values > fitter.threshold).all(), 'values below threshold'
 
-    def test_detect_atoms(self, fitter, grid):
-        fitter.n_atoms_detect = None
-        coords, types = fitter.detect_atoms(grid)
-        struct = AtomStruct(
-            coords, types, grid.typer,
-            src_mol=grid.info['src_struct'].info['src_mol']
-        )
-        #write_pymol([struct], grid, struct)
-        if fitter.n_atoms_detect is not None:
-            assert coords.shape == (fitter.n_atoms_detect, 3)
-            assert types.shape == (fitter.n_atoms_detect, grid.n_channels)
-        assert coords.dtype == types.dtype == grid.dtype
-        assert coords.device == types.device == grid.device
+        def test_suppress_non_max(self, fitter, grid):
+            values, idx_xyz, idx_c = fitter.sort_grid_points(grid.elem_values)
+            values, idx_xyz, idx_c = fitter.apply_threshold(values, idx_xyz, idx_c)
+            coords = grid.get_coords(idx_xyz)
+            coords_mat, idx_xyz_mat, idx_c_mat = fitter.suppress_non_max(
+                values, coords, idx_xyz, idx_c, grid.typer, matrix=True
+            )
+            coords_for, idx_xyz_for, idx_c_for = fitter.suppress_non_max(
+                values, coords, idx_xyz, idx_c, grid.typer, matrix=False
+            )
+            assert len(coords_mat) == len(idx_c_mat)
+            assert len(coords_for) == len(idx_c_for)
+            assert len(coords_mat) == len(coords_for)
+            assert len(coords_mat) <= len(coords)
+            assert coords_mat.shape[1] == 3
+            assert coords_for.shape[1] == 3
+            assert (coords_mat == coords_for).all()
+            assert (idx_c_mat == idx_c_for).all()
+
+        def test_detect_atoms(self, fitter, grid):
+            fitter.n_atoms_detect = None
+            coords, types = fitter.detect_atoms(grid)
+            struct = AtomStruct(
+                coords, types, grid.typer,
+                src_mol=grid.info['src_struct'].info['src_mol']
+            )
+            #write_pymol([struct], grid, struct)
+            if fitter.n_atoms_detect is not None:
+                assert coords.shape == (fitter.n_atoms_detect, 3)
+                assert types.shape == (fitter.n_atoms_detect, grid.n_channels)
+            assert coords.dtype == types.dtype == grid.dtype
+            assert coords.device == types.device == grid.device
+
+    # end if
 
     def test_fit_struct(self, fitter, grid):
+
         struct = grid.info['src_struct']
         fit_struct, fit_grid, visited_structs = fitter.fit_struct(grid)
-        
         write_pymol(visited_structs, grid, struct, fit_grid=fit_grid)
 
         assert fit_struct == visited_structs[-1], \
@@ -292,13 +298,25 @@ class TestAtomFitter(object):
                     final_loss, loss_i
                 )
 
-        print(grid.shape)
-        print(struct.type_counts)
-        print(fit_struct.type_counts)
+        print('true struct', struct.type_counts)
+        print(' fit struct', fit_struct.type_counts)
 
-        assert fit_struct.n_atoms == struct.n_atoms, 'different num atoms'
-        assert (fit_struct.type_counts == struct.type_counts).all(), \
-            'different atom type counts'
+        n_atoms_diff = (struct.n_atoms - fit_struct.n_atoms)
+        elem_diff = (struct.elem_counts - fit_struct.elem_counts).abs().sum()
+        prop_diff = (struct.prop_counts - fit_struct.prop_counts).abs().sum()
+
+        assert n_atoms_diff == 0, \
+            'different num atoms ({})'.format(n_atoms_diff)
+
+        for t1, t2 in zip(
+            sorted(struct.atom_types), sorted(fit_struct.atom_types)
+        ):
+            print(t1, t2)
+
+        assert elem_diff == 0, \
+            'different element counts ({})'.format(elem_diff)
+        assert prop_diff == 0, \
+            'different property counts ({})'.format(prop_diff)
 
         rmsd = compute_struct_rmsd(struct, fit_struct)
         assert rmsd < 0.5, 'RMSD too high ({:.2f})'.format(rmsd)

@@ -75,10 +75,7 @@ class AtomGrid(object):
 
     @property
     def prop_values(self):
-        return torch.split(
-            self.values[self.n_elem_channels:],
-            [len(r) for r in self.typer.prop_ranges[1:]]
-        )
+        return self.values[self.n_elem_channels:]
 
     @property
     def dtype(self):

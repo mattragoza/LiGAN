@@ -271,6 +271,10 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return len(self.elem_range)
 
     @property
+    def n_prop_types(self):
+        return self.n_types - self.n_elem_types
+
+    @property
     def elem_range(self):
         return self.prop_ranges[0]
 

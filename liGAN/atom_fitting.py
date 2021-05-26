@@ -37,6 +37,7 @@ class AtomFitter(object):
         threshold=0.1,
         peak_value=1.5,
         min_dist=0.0,
+        apply_prop_conv=False,
         constrain_types=False,
         constrain_frags=False,
         estimate_types=False,
@@ -64,11 +65,14 @@ class AtomFitter(object):
         # try placing all detected atoms at once, then try individually
         self.multi_atom = multi_atom
 
-        # other settings for detecting atoms in remaining density
+        # settings for detecting atoms in element channels
         self.apply_conv = apply_conv
         self.threshold = threshold
         self.peak_value = peak_value
         self.min_dist = min_dist
+
+        # setting for detecting properties in property channels
+        self.apply_prop_conv = apply_prop_conv
 
         # can constrain to find exact atom type counts or single fragment
         self.constrain_types = constrain_types
@@ -88,11 +92,13 @@ class AtomFitter(object):
 
         self.grid_maker = molgrid.GridMaker()
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
+
+        # lazily initialize atom density kernel
         self.kernel = None
 
-    def print(self, msg):
-        if self.verbose:
-            print(msg)
+    def print(self, *msg, level=1):
+        if self.verbose >= level:
+            print(*msg)
 
     def init_kernel(self, resolution, typer, deconv=False):
         '''
@@ -140,7 +146,10 @@ class AtomFitter(object):
             size_to_dimension(kernel_size, resolution)
         )
 
-        # create the kernel
+        # create the element kernel
+        #   used for group convolution with the element channels
+        #   where each element density is only convolved with the
+        #   corresponding element channel to detect new atoms
         self.c2grid.center = (0, 0, 0)
         self.kernel = self.c2grid.forward(coords, types, radii)
 
@@ -192,11 +201,11 @@ class AtomFitter(object):
         kernel_norm2 = (self.kernel**2).sum(dim=(1,2,3), keepdim=True)
 
         return F.conv3d(
-            input=elem_values.unsqueeze(0),
-            weight=self.kernel.unsqueeze(1),
+            input=elem_values.unsqueeze(0),  # add batch dim
+            weight=self.kernel.unsqueeze(1), # add inputs/group dim
             padding=self.kernel.shape[-1]//2,
             groups=typer.n_elem_types,
-        )[0] / kernel_norm2
+        )[0] / kernel_norm2 # index into batch
 
     def apply_peak_value(self, elem_values):
         return self.peak_value - (self.peak_value - elem_values).abs()
@@ -333,32 +342,81 @@ class AtomFitter(object):
             idx_c = idx_c[:self.n_atoms_detect]
 
         # convert element channel index to one-hot type vector
-        #   and put it in a list to accrue other property vecs
-        types = [F.one_hot(idx_c, grid.n_elem_channels).to(
+        types = F.one_hot(idx_c, grid.n_elem_channels).to(
             dtype=grid.dtype, device=self.device
-        )]
+        )
+
+        if grid.typer.n_prop_types > 0: # detect atom properties
+
+            # accrue additional property vecs in types list
+            types = [types]
+            types.extend(self.detect_properties(grid, idx_xyz, idx_c))
+
+            # concat all property vectors into full type vector
+            types = torch.cat(types, dim=1)
+
+        return coords.detach(), types.detach()
+
+    def detect_properties(self, grid, idx_xyz, idx_c):
+
+        # detect atom properties in property channels
+        prop_values = grid.prop_values
 
         # adjust spatial index so we can actually use it
         #   to index into grid and get property vectors
-        idx_xyz = idx_xyz.long().split(1, dim=1)
+        idx = idx_xyz.long().split(1, dim=1)
 
-        # extend type vector with detected properties
-        for i, prop_values in enumerate(grid.prop_values):
+        # convolve property channels with atom density kernel
+        if self.apply_prop_conv:
+
+            if self.kernel is None:
+                self.init_kernel(grid.resolution, grid.typer)
+
+            kernel_norm2 = (
+                self.kernel**2
+            ).sum(dim=(1,2,3), keepdim=True).unsqueeze(0)
+
+
+            # apply each element kernel to each property channel
+            #   by setting the properties as the batch dimension
+            #   instead of the inputs dimension, and no groups
+            prop_values = F.conv3d(
+                input=prop_values.unsqueeze(1),  # add inputs dim
+                weight=self.kernel.unsqueeze(1), # add inputs/group dim
+                padding=self.kernel.shape[-1]//2,
+                # no groups
+            ) / kernel_norm2 # normalize, not working?
+            # prop_values[prop_channel, elem_channel, x, y, z]
+
+            # need to include elem channel index now
+            idx = (idx_c,) + idx
+
+        # split into separate grids for each property
+        #   and extend type vector with detected properties
+        prop_ranges = [len(r) for r in grid.typer.prop_ranges[1:]]
+        for prop_values in torch.split(prop_values, prop_ranges):
+
+            if len(idx_xyz) == 0: # no atoms detected
+                yield torch.zeros(0, len(prop_values), device=self.device)
+                continue
 
             # rearrange so property channels are the last index
             #   and then use spatial index to get property vectors
             #   there's an extra dimension added for some reason
-            prop_vecs = prop_values.permute(1,2,3,0)[idx_xyz].sum(dim=1)
-            if prop_vecs.shape[1] > 1:
-                prop_vecs = torch.nn.functional.softmax(prop_vecs, dim=1)
-            else:
-                prop_vecs = torch.clamp(prop_vecs, min=0, max=1)
-            types.append(prop_vecs)
+            dims = torch.roll(torch.arange(prop_values.ndim), shifts=-1)
+            assert dims[-1] == 0
+            prop_vecs = prop_values.permute(*dims)[idx].sum(dim=1)
 
-        # concat all property vectors into full type vector
-        types = torch.cat(types, dim=1)
+            self.print(idx_c, prop_vecs, level=2)
 
-        return coords.detach(), types.detach()
+            if prop_vecs.shape[1] > 1: # argmax -> one-hot
+                prop_vals = prop_vecs.argmax(dim=1)
+                prop_vecs = torch.zeros_like(prop_vecs)
+                prop_vecs[:,prop_vals] = 1.0
+            else: # boolean
+                prop_vecs = (prop_vecs > 0.5)
+            
+            yield prop_vecs
 
     def descend_gradient(self, grid, coords, types, n_iters):
         '''
