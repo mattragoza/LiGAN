@@ -158,6 +158,18 @@ def dimension_to_size(dimension, resolution):
     return int(np.ceil(dimension / resolution + 1))
 
 
+def round_dimension(dimension, resolution):
+    '''
+    Return the actual dimension of a grid
+    with the provided resolution that fits
+    the provided dimension within it.
+    '''
+    return size_to_dimension(
+        dimension_to_size(dimension, resolution),
+        resolution
+    )
+
+
 def write_grid_to_dx_file(dx_file, values, center, resolution):
     '''
     Write a grid with the provided values,

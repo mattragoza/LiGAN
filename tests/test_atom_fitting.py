@@ -6,7 +6,7 @@ sys.path.insert(0, '.')
 from molgrid import GridMaker, Coords2Grid
 from liGAN import molecules as mols
 from liGAN.atom_types import Atom, AtomTyper
-from liGAN.atom_grids import AtomGrid, size_to_dimension
+from liGAN.atom_grids import AtomGrid, size_to_dimension, round_dimension
 from liGAN.atom_structs import AtomStruct
 from liGAN.atom_fitting import AtomFitter
 from liGAN.metrics import compute_struct_rmsd
@@ -114,7 +114,7 @@ class TestAtomFitter(object):
         return Coords2Grid(GridMaker(
             resolution=resolution,
             dimension=size_to_dimension(
-                size=24,
+                size=32,
                 resolution=resolution
             ),
         ))
@@ -154,7 +154,11 @@ class TestAtomFitter(object):
 
     @pytest.fixture
     def grid(self, struct, gridder):
+        # set the grid settings based on the size/location of structure
         gridder.center = tuple(float(v) for v in struct.center)
+        gridder.gmaker.set_dimension(round_dimension(
+            2*(struct.radius+2), gridder.gmaker.get_resolution()
+        ))
         return AtomGrid(
             values=gridder.forward(
                 coords=struct.coords,
@@ -274,14 +278,27 @@ class TestAtomFitter(object):
     def test_fit_struct(self, fitter, grid):
         struct = grid.info['src_struct']
         fit_struct, fit_grid, visited_structs = fitter.fit_struct(grid)
+        
         write_pymol(visited_structs, grid, struct, fit_grid=fit_grid)
 
-        assert fit_struct == visited_structs[-1], 'final struct is not last visited'
+        assert fit_struct == visited_structs[-1], \
+            'final struct is not last visited'
+
         final_loss = fit_struct.info['L2_loss']
         for i, struct_i in enumerate(visited_structs):
             loss_i = struct_i.info['L2_loss']
             assert final_loss <= loss_i, \
-                'final struct is not best ({:.2f} > {:.2f})'.format(final_loss, loss_i)
+                'final struct is not best ({:.2f} > {:.2f})'.format(
+                    final_loss, loss_i
+                )
+
+        print(grid.shape)
+        print(struct.type_counts)
+        print(fit_struct.type_counts)
+
+        assert fit_struct.n_atoms == struct.n_atoms, 'different num atoms'
+        assert (fit_struct.type_counts == struct.type_counts).all(), \
+            'different atom type counts'
 
         rmsd = compute_struct_rmsd(struct, fit_struct)
         assert rmsd < 0.5, 'RMSD too high ({:.2f})'.format(rmsd)
