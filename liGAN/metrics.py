@@ -87,22 +87,25 @@ def compute_min_rmsd(coords1, types1, coords2, types2):
     print(coords1.shape, types1.shape)
 
     # check that atom types are compatible
-    idx1 = np.argsort(types1, axis=0)[:,0]
-    idx2 = np.argsort(types2, axis=0)[:,0]
-    coords1, types1 = coords1[idx1], types1[idx1]
-    coords2, types2 = coords2[idx2], types2[idx2]
-    type_diff = np.abs(types1 - types2).sum()
-    assert (types1 == types2).all(), \
-        'structs must have same atom types ({:.2f})'.format(type_diff)
+    # CAUTION this may not be sufficient for vector types
+    #   we could have two structs with the same element
+    #   counts and property counts, but the properties
+    #   could be on different atoms/elements- do we care?
+    type_counts1 = types1.sum(axis=0)
+    type_counts2 = types2.sum(axis=0)
+    type_diff = np.abs(type_counts1 - type_counts2).sum()
+    assert (type_counts1 == type_counts2).all(), \
+        'structs must have same type counts ({:.2f})'.format(type_diff)
 
     # find min rmsd by solving linear sum assignment
     # problem on squared dist matrix for each type
     ssd = 0.0
     nax = np.newaxis
     for t in np.unique(types1, axis=0):
-        print(t)
         coords1_t = coords1[(types1 == t[nax,:]).all(axis=1)]
         coords2_t = coords2[(types2 == t[nax,:]).all(axis=1)]
+        assert len(coords1_t) == len(coords2_t), \
+            'structs must have same num atoms of each type'
         dist2_t = ((coords1_t[:,nax,:] - coords2_t[nax,:,:])**2).sum(axis=2)
         idx1, idx2 = sp.optimize.linear_sum_assignment(dist2_t)
         ssd += dist2_t[idx1, idx2].sum()
@@ -111,10 +114,12 @@ def compute_min_rmsd(coords1, types1, coords2, types2):
 
 
 def compute_struct_rmsd(struct1, struct2):
+    assert struct1.typer == struct2.typer, 'structs have different typers'
+    n_elem_types = struct1.typer.n_elem_types
     try:
-        return compute_min_rmsd(
-            struct1.coords.cpu(), struct1.types.cpu(),
-            struct2.coords.cpu(), struct2.types.cpu(),
+        return compute_min_rmsd( # ignore property channels
+            struct1.coords.cpu(), struct1.types[:,:n_elem_types].cpu(),
+            struct2.coords.cpu(), struct2.types[:,:n_elem_types].cpu(),
         )
     except (AssertionError, ZeroDivisionError):
         #return np.nan
