@@ -26,6 +26,7 @@ import rdkit
 from rdkit import Chem, Geometry, DataStructs
 from rdkit.Chem import AllChem, Descriptors, QED, Crippen
 from rdkit.Chem.Fingerprints import FingerprintMols
+sys.path.append(Chem.RDConfig.RDContribDir)
 from SA_Score import sascorer
 from NP_Score import npscorer
 nps_model = npscorer.readNPModel()
