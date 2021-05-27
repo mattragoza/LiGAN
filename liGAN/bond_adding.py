@@ -218,7 +218,7 @@ class BondAdder(object):
             if 'h_degree' in atom_type._fields:
                 # this should have already been set by set_min_h_counts
                 h_degree = ob_atom.GetTotalDegree() - ob_atom.GetHvyDegree()
-                assert h_degree == atom_type.h_degree
+                assert h_degree == atom_type.h_degree, 'wrong h_degree ({} vs. {})'.format(h_degree, atom_type.h_degree)
 
             elif ob_atom.GetExplicitValence() < max_val:
 
@@ -416,14 +416,33 @@ class BondAdder(object):
         Create a Molecule from an AtomStruct with added
         bonds, trying to maintain the same atom types.
         '''
+        # convert struct to ob_mol with minimal processing
         ob_mol, atoms = struct.to_ob_mol()
+
+        # add bonds and hydrogens, maintaining atomic properties
         ob_mol, visited_mols = self.add_bonds(ob_mol, atoms, struct)
+
+        # convert ob_mol to rd_mol with minimal processing
         add_mol = Molecule.from_ob_mol(ob_mol)
+
+        # convert output mol back to struct, to see if types match
         add_struct = struct.typer.make_struct(add_mol.to_ob_mol())
+
         visited_mols = [
             Molecule.from_ob_mol(m) for m in visited_mols
         ] + [add_mol]
+
         return add_mol, add_struct, visited_mols
+
+    def make_batch(self, structs):
+
+        add_mols, add_structs = [], []
+        for struct in structs:
+            add_mol, add_struct, _ = self.make_mol(struct)
+            add_mols.append(add_mol)
+            add_structs.append(add_struct)
+
+        return add_mols, add_structs
 
 
 def calc_valence(rd_atom):

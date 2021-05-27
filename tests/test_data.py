@@ -10,45 +10,45 @@ from liGAN.atom_types import AtomTyper
 
 class TestAtomGridData(object):
 
-    @pytest.fixture
-    def data(self):
+    @pytest.fixture(params=[])
+    def data(self, request):
         return AtomGridData(
             data_root='data/molport',
             batch_size=10,
-            rec_typer=AtomTyper.get_typer(prop_funcs='oad', radius_func='v'),
-            lig_typer=AtomTyper.get_typer(prop_funcs='oad', radius_func='v'),
+            rec_typer='on-c',
+            lig_typer='on-c',
             resolution=0.5,
             dimension=23.5,
             shuffle=False,
         )
 
-    @pytest.fixture
-    def param(self):
+    @pytest.fixture(params=[])
+    def data_param(self, request):
         param = caffe_pb2.MolGridDataParameter()
         param.root_folder = 'data/molport'
         param.batch_size = 10
-        param.recmap = 'data/my_rec_map'
-        param.ligmap = 'data/my_lig_map'
+        param.recmap = 'on-c'
+        param.ligmap = 'on-c'
         param.resolution = 0.5
         param.dimension = 23.5
         return param
 
     def test_data_init(self, data):
-        assert data.n_rec_channels == 14
-        assert data.n_lig_channels == 14
+        assert data.n_rec_channels == (data.rec_typer.n_types if data.rec_typer else 0)
+        assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
         assert data.grid_maker
-        assert data.grids.shape == (10, 14+14, 48, 48, 48)
+        assert data.grids.shape == (10, data.n_channels) + (data.grid_size,)*3
         assert isclose(0, data.grids.norm().cpu())
         assert len(data) == 0
 
-    def test_data_from_param(self, param):
-        data = AtomGridData.from_param(param)
-        assert data.n_rec_channels == 16
-        assert data.n_lig_channels == 19
+    def test_data_from_param(self, data_param):
+        data = AtomGridData.from_param(data_param)
+        assert data.n_rec_channels == (data.rec_typer.n_types if data.rec_typer else 0)
+        assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
         assert data.grid_maker
-        assert data.grids.shape == (10, 16+19, 48, 48, 48)
+        assert data.grids.shape == (10, data.n_channels) + (data.grid_size,)*3
         assert isclose(0, data.grids.norm().cpu())
         assert len(data) == 0
 

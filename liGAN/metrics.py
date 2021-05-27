@@ -113,7 +113,7 @@ def compute_min_rmsd(coords1, types1, coords2, types2):
     return np.sqrt(ssd/n_atoms)
 
 
-def compute_struct_rmsd(struct1, struct2):
+def compute_struct_rmsd(struct1, struct2, catch_exc=True):
     assert struct1.typer == struct2.typer, 'structs have different typers'
     n_elem_types = struct1.typer.n_elem_types
     try:
@@ -122,13 +122,14 @@ def compute_struct_rmsd(struct1, struct2):
             struct2.coords.cpu(), struct2.types[:,:n_elem_types].cpu(),
         )
     except (AssertionError, ZeroDivisionError):
-        #return np.nan
+        if catch_exc:
+            return np.nan
         raise
 
 
 def compute_mean_atom_rmsd(structs, ref_structs):
     atom_rmsds = [
-        compute_atom_rmsd(s, r) for s,r in zip(
+        compute_struct_rmsd(s, r) for s, r in zip(
             structs, ref_structs
         )
     ]

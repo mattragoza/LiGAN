@@ -8,7 +8,7 @@ from torch import nn, optim
 torch.backends.cudnn.benchmark = True
 
 import molgrid
-from . import data, models, atom_types, atom_fitting, molecules
+from . import data, models, atom_types, atom_fitting, bond_adding, molecules
 from .common import set_random_seed
 from .metrics import (
     compute_scalar_metrics,
@@ -100,6 +100,7 @@ class Solver(nn.Module):
         gen_optim_kws,
         disc_optim_kws,
         atom_fitting_kws,
+        bond_adding_kws,
         out_prefix,
         caffe_init=False,
         balance=False,
@@ -174,6 +175,11 @@ class Solver(nn.Module):
             print('Initializing atom fitter')
             self.atom_fitter = atom_fitting.AtomFitter(
                 device=device, debug=debug, **atom_fitting_kws
+            )
+
+            print('Initializing bond adder')
+            self.bond_adder = bond_adding.BondAdder(
+                debug=debug, **bond_adding_kws
             )
 
         # set up a data frame of training metrics
@@ -519,12 +525,14 @@ class AESolver(GenerativeSolver):
         
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
 
@@ -580,12 +588,14 @@ class VAESolver(AESolver):
         
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
         
@@ -629,12 +639,14 @@ class CESolver(AESolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type='prior')
         t3 = time.time()
 
@@ -685,12 +697,14 @@ class CVAESolver(VAESolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type='poster')
         t3 = time.time()
 
@@ -806,12 +820,14 @@ class GANSolver(GenerativeSolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type)
         t3 = time.time()
 
@@ -1148,12 +1164,14 @@ class CGANSolver(GANSolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 
@@ -1301,12 +1319,14 @@ class VAEGANSolver(GANSolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 
@@ -1433,12 +1453,14 @@ class CVAEGANSolver(VAEGANSolver):
 
         if fit_atoms:
             lig_gen_fit_structs, _ = self.atom_fitter.fit_batch(
-                lig_gen_grids,
-                data.lig_channels,
-                torch.zeros(3),
-                data.resolution
+                batch_values=lig_gen_grids,
+                center=torch.zeros(3),
+                resolution=data.resolution,
+                typer=data.lig_typer,
             )
-            lig_gen_fit_mols = [s.make_mol() for s in lig_gen_fit_structs]
+            lig_gen_fit_mols, _ = self.bond_adder.make_batch(
+                lig_gen_fit_structs
+            )
             self.save_mols(lig_gen_fit_mols, grid_type)
         t4 = time.time()
 

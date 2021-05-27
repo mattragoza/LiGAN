@@ -3,6 +3,7 @@ from torch import nn
 
 import molgrid
 from . import atom_types, atom_structs, atom_grids
+from .atom_types import AtomTyper
 
 
 class AtomGridData(nn.Module):
@@ -32,8 +33,8 @@ class AtomGridData(nn.Module):
             dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
-        self.rec_typer = rec_typer
-        self.lig_typer = lig_typer
+        self.lig_typer = AtomTyper.get_typer(*lig_typer.split('-'))
+        self.rec_typer = AtomTyper.get_typer(*rec_typer.split('-'))
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
@@ -70,8 +71,8 @@ class AtomGridData(nn.Module):
         return cls(
             data_root=param.root_folder,
             batch_size=param.batch_size,
-            rec_typer=molgrid.FileMappedGninaTyper(param.recmap),
-            lig_typer=molgrid.FileMappedGninaTyper(param.ligmap),
+            rec_typer=param.recmap,
+            lig_typer=param.ligmap,
             resolution=param.resolution,
             grid_size=atom_grids.dimension_to_size(
                 param.dimension, param.resolution

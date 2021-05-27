@@ -307,7 +307,7 @@ class TestAtomFitter(object):
         assert elem_diff == 0, \
             'different element counts ({})'.format(elem_diff)
 
-        rmsd = compute_struct_rmsd(struct, fit_struct)
+        rmsd = compute_struct_rmsd(struct, fit_struct, catch_exc=False)
         assert rmsd < 0.5, 'RMSD too high ({:.2f})'.format(rmsd)
 
         assert prop_diff == 0, \

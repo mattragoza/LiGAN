@@ -759,14 +759,17 @@ class AtomFitter(object):
 
         return struct_best, grid_fit, visited_structs
 
-    def fit_batch(self, grids, channels, center, resolution):
+    def fit_batch(self, batch_values, center, resolution, typer):
 
         fit_structs, fit_grids = [], []
-        for grid in grids:
+        for values in batch_values:
             grid = AtomGrid(
-                grid.detach(), channels, center, resolution
+                values=values.detach(),
+                center=center,
+                resolution=resolution,
+                typer=typer
             )
-            fit_struct, fit_grid = self.fit(grid)
+            fit_struct, fit_grid, _ = self.fit_struct(grid)
             fit_structs.append(fit_struct)
             fit_grids.append(fit_grid)
 
