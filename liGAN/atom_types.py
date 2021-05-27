@@ -354,7 +354,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
         if 'o' in pf:
             prop_funcs += [Atom.aromatic]
-            prop_ranges += [[1]]
+            prop_ranges += [[0, 1]]
 
         if 'a' in pf:
             prop_funcs += [Atom.h_acceptor]

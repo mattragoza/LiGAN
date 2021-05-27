@@ -126,12 +126,12 @@ class TestAtomFitter(object):
             apply_conv=False,
             threshold=0.1,
             peak_value=1.5,
-            min_dist=None,
+            min_dist=0,
             apply_prop_conv=True,
             interm_gd_iters=10,
             final_gd_iters=100,
             gd_kwargs=dict(lr=0.1),
-            verbose=2,
+            verbose=True,
             device='cuda'
         )
 

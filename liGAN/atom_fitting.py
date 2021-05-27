@@ -407,8 +407,6 @@ class AtomFitter(object):
             assert dims[-1] == 0
             prop_vecs = prop_values.permute(*dims)[idx].sum(dim=1)
 
-            self.print(idx_c, prop_vecs, level=2)
-
             if prop_vecs.shape[1] > 1: # argmax -> one-hot
                 prop_vals = prop_vecs.argmax(dim=1)
                 prop_vecs = torch.zeros_like(prop_vecs)
@@ -418,7 +416,7 @@ class AtomFitter(object):
             
             yield prop_vecs
 
-    def descend_gradient(self, grid, coords, types, n_iters):
+    def gd(self, grid, coords, types, n_iters):
         '''
         Performing n_iters steps of gradient descent
         on the provided atomic coordinates, minimizing
@@ -463,54 +461,25 @@ class AtomFitter(object):
             loss.detach()
         )
 
-    def expand_struct(self, grid, coords, types, coords_next, types_next):
+    def expand_struct(self, coords, types, coords_next, types_next):
         '''
-        TODO please document me
+        TODO please document me!!!
         '''
-        if self.multi_atom:
+        if self.multi_atom and len(coords_next) > 0:
 
             # expand to all next atoms simultaneously
             coords_new = torch.cat([coords, coords_next])
             types_new = torch.cat([types, types_next])
 
-            # perform gradient descent on coordinates
-            coords_new, values_fit, values_diff, fit_loss = self.descend_gradient(
-                grid, coords_new, types_new, self.interm_gd_iters
-            )
+            yield coords_new, types_new
 
-            # compute new search objective
-            objective_new = [fit_loss.item()]
-            if self.constrain_types:
-                types_diff = types_true - types_new.sum(dim=0)
-                type_loss = types_diff.abs().sum()
-                objective_new.insert(0, type_loss.item())
-            else:
-                types_diff = None
-
-            yield objective_new, coords_new, types_new, values_diff, types_diff
-
-        # evaluate each possible next atom individually
         for i in range(len(coords_next)):
 
-            # add next atom to structure
+            # expand to each next atom individually
             coords_new = torch.cat([coords, coords_next[i].unsqueeze(0)])
             types_new = torch.cat([types, types_next[i].unsqueeze(0)])
 
-            # compute diff and loss after gradient descent
-            coords_new, values_fit, values_diff, fit_loss = self.descend_gradient(
-                grid, coords_new, types_new, self.interm_gd_iters
-            )
-
-            # compute new search objective
-            objective_new = [fit_loss.item()]
-            if self.constrain_types:
-                types_diff = types_true - types_new.sum(dim=0)
-                type_loss = types_diff.abs().sum()
-                objective_new.insert(0, type_loss.item())
-            else:
-                types_diff = None
-
-            yield objective_new, coords_new, types_new, values_diff, types_diff
+            yield coords_new, types_new
 
     def fit_struct(self, grid, type_counts=None):
         '''
@@ -521,10 +490,8 @@ class AtomFitter(object):
         t_start = time.time()
         torch.cuda.reset_max_memory_allocated()
 
-        # get true grid on appropriate device
+        # get true grid and type counts on appropriate device
         grid_true = grid.to(self.device, dtype=torch.float32)
-
-        # get true atom type counts on appropriate device
         if type_counts is not None:
             type_counts = type_counts.to(self.device, dtype=torch.float32)
 
@@ -554,16 +521,15 @@ class AtomFitter(object):
             fit_loss = (grid.values**2).sum() / 2.0
         objective = [fit_loss.item()]
 
-        # function for printing objective nicely
-        fmt_obj = lambda obj: '[{}]'.format(
-            ', '.join('{:.2f}'.format(v) for v in obj)
-        )
-
         # to constrain types, order structs first by type diff, then fit loss
         if self.constrain_types:
             type_loss = type_counts.abs().sum()
             objective.insert(0, type_loss.item())
 
+        # function for printing objective nicely
+        fmt_obj = lambda obj: '[{}]'.format(
+            ', '.join('{:.2f}'.format(v) for v in obj)
+        )
         self.print('Initial struct 0 (objective={}, n_atoms={})'.format(
             fmt_obj(objective), len(coords)
         ))
@@ -579,10 +545,14 @@ class AtomFitter(object):
         found_new_best_struct = True
 
         # keep track of visited and expanded structures
-        expanded_ids = set()
+        #   visit = perform gradient descent and compute loss
+        #     if it's a current best struct, also detect atoms
+        #   expand = visit structs derived from this one by
+        #     adding the detected atoms to current stuct
         visited_structs = [
             (objective, struct_id, time.time()-t_start, coords, types)
         ]
+        expanded_ids = set()
         struct_count = 1
 
         # track GPU memory usage throughout search
@@ -596,26 +566,44 @@ class AtomFitter(object):
             found_new_best_struct = False
             new_best_structs = []
 
-            # try to expand each current best structure
-            for (
-                objective, struct_id, coords, types, coords_next, types_next
-            ) in best_structs:
+            # try to expand each current-best structure
+            for bs in best_structs:
+                obj, struct_id, coords, types, coords_next, types_next = bs
 
                 if struct_id in expanded_ids:
-                    continue # already tried this struct
+                    continue # don't expand again
 
-                self.print('Expand struct {} to {} detected atom(s)'.format(struct_id, len(coords_next)))
+                self.print('Expand struct {} to {} detected atom(s)'.format(
+                    struct_id, len(coords_next)
+                ))
 
-                # expand structure to possible next atoms
-                for (
-                    obj_new, coords_new, types_new, values_diff, types_diff
-                ) in self.expand_struct(
-                    grid_true, coords, types, coords_next, types_next
+                # expand structure to possible next atom(s)
+                for coords_new, types_new in self.expand_struct(
+                    coords, types, coords_next, types_next
                 ):
-                    self.print('Found new struct (objective={}, n_atoms={})'.format(fmt_obj(obj_new), len(coords_new)))
+
+                    # compute diff and loss after gradient descent
+                    coords_new, values_fit, values_diff, fit_loss = self.gd(
+                        grid, coords_new, types_new, self.interm_gd_iters
+                    )
+
+                    # compute new search objective
+                    obj_new = [fit_loss.item()]
+                    if self.constrain_types:
+                        types_diff = types_true - types_new.sum(dim=0)
+                        type_loss = types_diff.abs().sum()
+                        objective_new.insert(0, type_loss.item())
+                    else:
+                        types_diff = None
+
+                    self.print(
+                        'Found new struct (objective={}, n_atoms={})'.format(
+                            fmt_obj(obj_new), len(coords_new)
+                        )
+                    )
 
                     # check if new structure is one of the best yet
-                    if any(obj_new < t[0] for t in best_structs):
+                    if any(obj_new < s[0] for s in best_structs):
                         found_new_best_struct = True
 
                         # detect possible next atoms to expand the new struct
@@ -634,11 +622,12 @@ class AtomFitter(object):
                         struct_count += 1
                         
                         n_atoms_added = len(coords_new) - len(coords)
-                        assert n_atoms_added > 0
+                        assert n_atoms_added > 0, 'no atoms added'
 
                         if n_atoms_added > 1: # skip single atom expand
                             break
 
+                    # regardless, store the visited struct
                     visited_structs.append((
                         obj_new,
                         struct_id,
@@ -678,7 +667,7 @@ class AtomFitter(object):
         ))
 
         # perform final gradient descent
-        coords_best, values_fit, values_diff, fit_loss = self.descend_gradient(
+        coords_best, values_fit, values_diff, fit_loss = self.gd(
             grid_true, coords_best, types_best, self.final_gd_iters
         )
         best_id = struct_count # count this as a new struct
@@ -689,7 +678,9 @@ class AtomFitter(object):
 
         best_obj = [fit_loss.item()]
         if self.constrain_types:
-            type_loss = (type_counts - types_best.sum(dim=0)).abs().sum().item()
+            type_loss = (
+                type_counts - types_best.sum(dim=0)
+            ).abs().sum().item()
             best_obj.insert(0, type_loss.item())
         else:
             type_loss = np.nan
