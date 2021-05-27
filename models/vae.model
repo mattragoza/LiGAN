@@ -1,3 +1,19 @@
+# encode_type = '_vl-l'
+# batch_size = 10
+# rec_map = 'data/my_rec_map'
+# lig_map = 'data/my_lig_map'
+# data_dim = 48
+# resolution = 0.5
+# data_options = ''
+# n_levels = 4
+# conv_per_level = 3
+# arch_options = 'l'
+# n_filters = 32
+# width_factor = 2
+# n_latent = 1024
+# loss_types = 'e'
+# loss_weight_KL = 0.1
+# loss_weight_L2 = 1
 layer {
   name: "rec"
   type: "Input"
@@ -56,7 +72,7 @@ layer {
   bottom: "lig_enc_level0_conv0"
   top: "lig_enc_level0_conv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -79,7 +95,7 @@ layer {
   bottom: "lig_enc_level0_conv1"
   top: "lig_enc_level0_conv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -102,7 +118,7 @@ layer {
   bottom: "lig_enc_level0_conv2"
   top: "lig_enc_level0_conv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -136,7 +152,7 @@ layer {
   bottom: "lig_enc_level1_conv0"
   top: "lig_enc_level1_conv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -159,7 +175,7 @@ layer {
   bottom: "lig_enc_level1_conv1"
   top: "lig_enc_level1_conv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -182,7 +198,7 @@ layer {
   bottom: "lig_enc_level1_conv2"
   top: "lig_enc_level1_conv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -216,7 +232,7 @@ layer {
   bottom: "lig_enc_level2_conv0"
   top: "lig_enc_level2_conv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -239,7 +255,7 @@ layer {
   bottom: "lig_enc_level2_conv1"
   top: "lig_enc_level2_conv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -262,7 +278,7 @@ layer {
   bottom: "lig_enc_level2_conv2"
   top: "lig_enc_level2_conv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -296,7 +312,7 @@ layer {
   bottom: "lig_enc_level3_conv0"
   top: "lig_enc_level3_conv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -319,7 +335,7 @@ layer {
   bottom: "lig_enc_level3_conv1"
   top: "lig_enc_level3_conv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -342,14 +358,14 @@ layer {
   bottom: "lig_enc_level3_conv2"
   top: "lig_enc_level3_conv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
-  name: "lig_latent_defc"
+  name: "lig_latent_mean"
   type: "InnerProduct"
   bottom: "lig_enc_level3_conv2"
-  top: "lig_latent_defc"
+  top: "lig_latent_mean"
   inner_product_param {
     num_output: 1024
     weight_filler {
@@ -358,9 +374,131 @@ layer {
   }
 }
 layer {
+  name: "lig_latent_log_std"
+  type: "InnerProduct"
+  bottom: "lig_enc_level3_conv2"
+  top: "lig_latent_log_std"
+  inner_product_param {
+    num_output: 1024
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "lig_latent_std"
+  type: "Exp"
+  bottom: "lig_latent_log_std"
+  top: "lig_latent_std"
+}
+layer {
+  name: "lig_latent_noise"
+  type: "DummyData"
+  top: "lig_latent_noise"
+  dummy_data_param {
+    data_filler {
+      type: "gaussian"
+    }
+    shape {
+      dim: 10
+      dim: 1024
+    }
+  }
+}
+layer {
+  name: "lig_latent_std_noise"
+  type: "Eltwise"
+  bottom: "lig_latent_noise"
+  bottom: "lig_latent_std"
+  top: "lig_latent_std_noise"
+  eltwise_param {
+    operation: PROD
+  }
+}
+layer {
+  name: "lig_latent_sample"
+  type: "Eltwise"
+  bottom: "lig_latent_std_noise"
+  bottom: "lig_latent_mean"
+  top: "lig_latent_sample"
+  eltwise_param {
+    operation: SUM
+  }
+}
+layer {
+  name: "lig_latent_mean2"
+  type: "Eltwise"
+  bottom: "lig_latent_mean"
+  bottom: "lig_latent_mean"
+  top: "lig_latent_mean2"
+  eltwise_param {
+    operation: PROD
+  }
+}
+layer {
+  name: "lig_latent_var"
+  type: "Eltwise"
+  bottom: "lig_latent_std"
+  bottom: "lig_latent_std"
+  top: "lig_latent_var"
+  eltwise_param {
+    operation: PROD
+  }
+}
+layer {
+  name: "lig_latent_one"
+  type: "DummyData"
+  top: "lig_latent_one"
+  dummy_data_param {
+    data_filler {
+      type: "constant"
+      value: 1.0
+    }
+    shape {
+      dim: 10
+      dim: 1024
+    }
+  }
+}
+layer {
+  name: "lig_latent_kldiv_term_sum"
+  type: "Eltwise"
+  bottom: "lig_latent_one"
+  bottom: "lig_latent_log_std"
+  bottom: "lig_latent_mean2"
+  bottom: "lig_latent_var"
+  top: "lig_latent_kldiv_term_sum"
+  eltwise_param {
+    operation: SUM
+    coeff: -0.5
+    coeff: -1.0
+    coeff: 0.5
+    coeff: 0.5
+  }
+}
+layer {
+  name: "{}_latent_kldiv_batch_sum"
+  type: "Reduction"
+  bottom: "lig_latent_kldiv_term_sum"
+  top: "{}_latent_kldiv_batch_sum"
+  reduction_param {
+    operation: SUM
+  }
+}
+layer {
+  name: "kldiv_loss"
+  type: "Power"
+  bottom: "{}_latent_kldiv_batch_sum"
+  top: "kldiv_loss"
+  loss_weight: 0.10000000149011612
+  power_param {
+    scale: 0.125
+  }
+}
+layer {
   name: "lig_dec_fc"
   type: "InnerProduct"
-  bottom: "lig_latent_defc"
+  bottom: "lig_latent_sample"
   top: "lig_dec_fc"
   inner_product_param {
     num_output: 55296
@@ -375,7 +513,7 @@ layer {
   bottom: "lig_dec_fc"
   top: "lig_dec_fc"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -385,7 +523,7 @@ layer {
   top: "lig_dec_fc_reshape"
   reshape_param {
     shape {
-      dim: 16
+      dim: 10
       dim: 256
       dim: 6
       dim: 6
@@ -413,7 +551,7 @@ layer {
   bottom: "lig_dec_level3_deconv0"
   top: "lig_dec_level3_deconv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -436,7 +574,7 @@ layer {
   bottom: "lig_dec_level3_deconv1"
   top: "lig_dec_level3_deconv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -459,7 +597,7 @@ layer {
   bottom: "lig_dec_level3_deconv2"
   top: "lig_dec_level3_deconv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -504,7 +642,7 @@ layer {
   bottom: "lig_dec_level2_deconv0"
   top: "lig_dec_level2_deconv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -527,7 +665,7 @@ layer {
   bottom: "lig_dec_level2_deconv1"
   top: "lig_dec_level2_deconv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -550,7 +688,7 @@ layer {
   bottom: "lig_dec_level2_deconv2"
   top: "lig_dec_level2_deconv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -595,7 +733,7 @@ layer {
   bottom: "lig_dec_level1_deconv0"
   top: "lig_dec_level1_deconv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -618,7 +756,7 @@ layer {
   bottom: "lig_dec_level1_deconv1"
   top: "lig_dec_level1_deconv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -641,7 +779,7 @@ layer {
   bottom: "lig_dec_level1_deconv2"
   top: "lig_dec_level1_deconv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -686,7 +824,7 @@ layer {
   bottom: "lig_dec_level0_deconv0"
   top: "lig_dec_level0_deconv0"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -709,7 +847,7 @@ layer {
   bottom: "lig_dec_level0_deconv1"
   top: "lig_dec_level0_deconv1"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {
@@ -732,7 +870,7 @@ layer {
   bottom: "lig_dec_level0_deconv2"
   top: "lig_dec_level0_deconv2"
   relu_param {
-    negative_slope: 0.10000000149
+    negative_slope: 0.10000000149011612
   }
 }
 layer {

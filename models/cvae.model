@@ -1,26 +1,10 @@
-# encode_type = '_vl-l'
-# batch_size = 8
-# rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
-# lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
-# data_dim = 48
-# resolution = 0.5
-# data_options = ''
-# n_levels = 4
-# conv_per_level = 3
-# arch_options = 'l'
-# n_filters = 32
-# width_factor = 2
-# n_latent = 1024
-# loss_types = 'e'
-# loss_weight_KL = 0.1
-# loss_weight_L2 = 1
 layer {
   name: "rec"
   type: "Input"
   top: "rec"
   input_param {
     shape {
-      dim: 8
+      dim: 10
       dim: 16
       dim: 48
       dim: 48
@@ -34,7 +18,7 @@ layer {
   top: "lig"
   input_param {
     shape {
-      dim: 8
+      dim: 10
       dim: 19
       dim: 48
       dim: 48
@@ -72,7 +56,7 @@ layer {
   bottom: "lig_enc_level0_conv0"
   top: "lig_enc_level0_conv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -95,7 +79,7 @@ layer {
   bottom: "lig_enc_level0_conv1"
   top: "lig_enc_level0_conv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -118,7 +102,7 @@ layer {
   bottom: "lig_enc_level0_conv2"
   top: "lig_enc_level0_conv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -152,7 +136,7 @@ layer {
   bottom: "lig_enc_level1_conv0"
   top: "lig_enc_level1_conv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -175,7 +159,7 @@ layer {
   bottom: "lig_enc_level1_conv1"
   top: "lig_enc_level1_conv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -198,7 +182,7 @@ layer {
   bottom: "lig_enc_level1_conv2"
   top: "lig_enc_level1_conv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -232,7 +216,7 @@ layer {
   bottom: "lig_enc_level2_conv0"
   top: "lig_enc_level2_conv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -255,7 +239,7 @@ layer {
   bottom: "lig_enc_level2_conv1"
   top: "lig_enc_level2_conv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -278,7 +262,7 @@ layer {
   bottom: "lig_enc_level2_conv2"
   top: "lig_enc_level2_conv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -312,7 +296,7 @@ layer {
   bottom: "lig_enc_level3_conv0"
   top: "lig_enc_level3_conv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -335,7 +319,7 @@ layer {
   bottom: "lig_enc_level3_conv1"
   top: "lig_enc_level3_conv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -358,7 +342,7 @@ layer {
   bottom: "lig_enc_level3_conv2"
   top: "lig_enc_level3_conv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -367,7 +351,7 @@ layer {
   bottom: "lig_enc_level3_conv2"
   top: "lig_latent_mean"
   inner_product_param {
-    num_output: 1024
+    num_output: 512
     weight_filler {
       type: "xavier"
     }
@@ -379,7 +363,7 @@ layer {
   bottom: "lig_enc_level3_conv2"
   top: "lig_latent_log_std"
   inner_product_param {
-    num_output: 1024
+    num_output: 512
     weight_filler {
       type: "xavier"
     }
@@ -400,8 +384,8 @@ layer {
       type: "gaussian"
     }
     shape {
-      dim: 8
-      dim: 1024
+      dim: 10
+      dim: 512
     }
   }
 }
@@ -415,10 +399,37 @@ layer {
     operation: PROD
   }
 }
+
+layer {
+  name: "lig_latent_sigma_times"
+  type: "DummyData"
+  top: "lig_latent_sigma_times"
+  dummy_data_param {
+    data_filler {
+      type: "constant"
+      value: 1.0
+    }
+    shape {
+      dim: 10
+      dim: 512
+    }
+  }
+}
+layer {
+  name: "lig_latent_std_noise_10"
+  type: "Eltwise"
+  bottom: "lig_latent_sigma_times"
+  bottom: "lig_latent_std_noise"
+  top: "lig_latent_std_noise_10"
+  eltwise_param {
+    operation: PROD
+  }
+}
+
 layer {
   name: "lig_latent_sample"
   type: "Eltwise"
-  bottom: "lig_latent_std_noise"
+  bottom: "lig_latent_std_noise_10"
   bottom: "lig_latent_mean"
   top: "lig_latent_sample"
   eltwise_param {
@@ -455,8 +466,8 @@ layer {
       value: 1.0
     }
     shape {
-      dim: 8
-      dim: 1024
+      dim: 10
+      dim: 512
     }
   }
 }
@@ -490,15 +501,347 @@ layer {
   type: "Power"
   bottom: "{}_latent_kldiv_batch_sum"
   top: "kldiv_loss"
-  loss_weight: 0.10000000149011612
+  loss_weight: 1.0
   power_param {
-    scale: 0.125
+    scale: 0.1
+  }
+}
+
+layer {
+  name: "rec_enc_level0_conv0"
+  type: "Convolution"
+  bottom: "rec"
+  top: "rec_enc_level0_conv0"
+  convolution_param {
+    num_output: 32
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level0_conv0_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level0_conv0"
+  top: "rec_enc_level0_conv0"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level0_conv1"
+  type: "Convolution"
+  bottom: "rec_enc_level0_conv0"
+  top: "rec_enc_level0_conv1"
+  convolution_param {
+    num_output: 32
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level0_conv1_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level0_conv1"
+  top: "rec_enc_level0_conv1"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level0_conv2"
+  type: "Convolution"
+  bottom: "rec_enc_level0_conv1"
+  top: "rec_enc_level0_conv2"
+  convolution_param {
+    num_output: 32
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level0_conv2_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level0_conv2"
+  top: "rec_enc_level0_conv2"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level1_pool"
+  type: "Pooling"
+  bottom: "rec_enc_level0_conv2"
+  top: "rec_enc_level1_pool"
+  pooling_param {
+    pool: AVE
+    kernel_size: 2
+    stride: 2
+  }
+}
+layer {
+  name: "rec_enc_level1_conv0"
+  type: "Convolution"
+  bottom: "rec_enc_level1_pool"
+  top: "rec_enc_level1_conv0"
+  convolution_param {
+    num_output: 64
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level1_conv0_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level1_conv0"
+  top: "rec_enc_level1_conv0"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level1_conv1"
+  type: "Convolution"
+  bottom: "rec_enc_level1_conv0"
+  top: "rec_enc_level1_conv1"
+  convolution_param {
+    num_output: 64
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level1_conv1_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level1_conv1"
+  top: "rec_enc_level1_conv1"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level1_conv2"
+  type: "Convolution"
+  bottom: "rec_enc_level1_conv1"
+  top: "rec_enc_level1_conv2"
+  convolution_param {
+    num_output: 64
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level1_conv2_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level1_conv2"
+  top: "rec_enc_level1_conv2"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level2_pool"
+  type: "Pooling"
+  bottom: "rec_enc_level1_conv2"
+  top: "rec_enc_level2_pool"
+  pooling_param {
+    pool: AVE
+    kernel_size: 2
+    stride: 2
+  }
+}
+layer {
+  name: "rec_enc_level2_conv0"
+  type: "Convolution"
+  bottom: "rec_enc_level2_pool"
+  top: "rec_enc_level2_conv0"
+  convolution_param {
+    num_output: 128
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level2_conv0_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level2_conv0"
+  top: "rec_enc_level2_conv0"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level2_conv1"
+  type: "Convolution"
+  bottom: "rec_enc_level2_conv0"
+  top: "rec_enc_level2_conv1"
+  convolution_param {
+    num_output: 128
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level2_conv1_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level2_conv1"
+  top: "rec_enc_level2_conv1"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level2_conv2"
+  type: "Convolution"
+  bottom: "rec_enc_level2_conv1"
+  top: "rec_enc_level2_conv2"
+  convolution_param {
+    num_output: 128
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level2_conv2_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level2_conv2"
+  top: "rec_enc_level2_conv2"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level3_pool"
+  type: "Pooling"
+  bottom: "rec_enc_level2_conv2"
+  top: "rec_enc_level3_pool"
+  pooling_param {
+    pool: AVE
+    kernel_size: 2
+    stride: 2
+  }
+}
+layer {
+  name: "rec_enc_level3_conv0"
+  type: "Convolution"
+  bottom: "rec_enc_level3_pool"
+  top: "rec_enc_level3_conv0"
+  convolution_param {
+    num_output: 256
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level3_conv0_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level3_conv0"
+  top: "rec_enc_level3_conv0"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level3_conv1"
+  type: "Convolution"
+  bottom: "rec_enc_level3_conv0"
+  top: "rec_enc_level3_conv1"
+  convolution_param {
+    num_output: 256
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level3_conv1_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level3_conv1"
+  top: "rec_enc_level3_conv1"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_enc_level3_conv2"
+  type: "Convolution"
+  bottom: "rec_enc_level3_conv1"
+  top: "rec_enc_level3_conv2"
+  convolution_param {
+    num_output: 256
+    pad: 1
+    kernel_size: 3
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "rec_enc_level3_conv2_relu"
+  type: "ReLU"
+  bottom: "rec_enc_level3_conv2"
+  top: "rec_enc_level3_conv2"
+  relu_param {
+    negative_slope: 0.10000000149
+  }
+}
+layer {
+  name: "rec_latent_fc"
+  type: "InnerProduct"
+  bottom: "rec_enc_level3_conv2"
+  top: "rec_latent_fc"
+  inner_product_param {
+    num_output: 512
+    weight_filler {
+      type: "xavier"
+    }
+  }
+}
+layer {
+  name: "latent_concat"
+  type: "Concat"
+  bottom: "lig_latent_sample"
+  bottom: "rec_latent_fc"
+  top: "latent_concat"
+  concat_param {
+    axis: 1
   }
 }
 layer {
   name: "lig_dec_fc"
   type: "InnerProduct"
-  bottom: "lig_latent_sample"
+  bottom: "latent_concat"
   top: "lig_dec_fc"
   inner_product_param {
     num_output: 55296
@@ -513,7 +856,7 @@ layer {
   bottom: "lig_dec_fc"
   top: "lig_dec_fc"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -523,7 +866,7 @@ layer {
   top: "lig_dec_fc_reshape"
   reshape_param {
     shape {
-      dim: 8
+      dim: 10
       dim: 256
       dim: 6
       dim: 6
@@ -551,7 +894,7 @@ layer {
   bottom: "lig_dec_level3_deconv0"
   top: "lig_dec_level3_deconv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -574,7 +917,7 @@ layer {
   bottom: "lig_dec_level3_deconv1"
   top: "lig_dec_level3_deconv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -597,7 +940,7 @@ layer {
   bottom: "lig_dec_level3_deconv2"
   top: "lig_dec_level3_deconv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -642,7 +985,7 @@ layer {
   bottom: "lig_dec_level2_deconv0"
   top: "lig_dec_level2_deconv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -665,7 +1008,7 @@ layer {
   bottom: "lig_dec_level2_deconv1"
   top: "lig_dec_level2_deconv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -688,7 +1031,7 @@ layer {
   bottom: "lig_dec_level2_deconv2"
   top: "lig_dec_level2_deconv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -714,9 +1057,19 @@ layer {
   }
 }
 layer {
+  name: "1_skip_concat"
+  type: "Concat"
+  bottom: "lig_dec_level1_unpool"
+  bottom: "rec_enc_level1_conv2"
+  top: "1_skip_concat"
+  concat_param {
+    axis: 1
+  }
+}
+layer {
   name: "lig_dec_level1_deconv0"
   type: "Deconvolution"
-  bottom: "lig_dec_level1_unpool"
+  bottom: "1_skip_concat"
   top: "lig_dec_level1_deconv0"
   convolution_param {
     num_output: 64
@@ -733,7 +1086,7 @@ layer {
   bottom: "lig_dec_level1_deconv0"
   top: "lig_dec_level1_deconv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -756,7 +1109,7 @@ layer {
   bottom: "lig_dec_level1_deconv1"
   top: "lig_dec_level1_deconv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -779,7 +1132,7 @@ layer {
   bottom: "lig_dec_level1_deconv2"
   top: "lig_dec_level1_deconv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -805,9 +1158,19 @@ layer {
   }
 }
 layer {
+  name: "0_skip_concat"
+  type: "Concat"
+  bottom: "lig_dec_level0_unpool"
+  bottom: "rec_enc_level0_conv2"
+  top: "0_skip_concat"
+  concat_param {
+    axis: 1
+  }
+}
+layer {
   name: "lig_dec_level0_deconv0"
   type: "Deconvolution"
-  bottom: "lig_dec_level0_unpool"
+  bottom: "0_skip_concat"
   top: "lig_dec_level0_deconv0"
   convolution_param {
     num_output: 32
@@ -824,7 +1187,7 @@ layer {
   bottom: "lig_dec_level0_deconv0"
   top: "lig_dec_level0_deconv0"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -847,7 +1210,7 @@ layer {
   bottom: "lig_dec_level0_deconv1"
   top: "lig_dec_level0_deconv1"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {
@@ -870,7 +1233,7 @@ layer {
   bottom: "lig_dec_level0_deconv2"
   top: "lig_dec_level0_deconv2"
   relu_param {
-    negative_slope: 0.10000000149011612
+    negative_slope: 0.10000000149
   }
 }
 layer {

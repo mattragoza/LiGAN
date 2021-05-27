@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from rdkit import Chem
 
 import liGAN
 from liGAN import molecules, metrics
@@ -61,7 +60,7 @@ class OutputWriter(object):
         self.sdf_files = []
 
         self.verbose = verbose
-        
+
         # keep sdf files open so that all samples of a given
         # struct or molecule can be written to one file
         self.open_files = dict()
@@ -916,10 +915,7 @@ def main(argv):
 
     pd.set_option('display.max_columns', 100)
     pd.set_option('display.max_colwidth', 100)
-    try:
-        display_width = get_terminal_size()[1]
-    except:
-        display_width = 185
+    display_width = 185
     pd.set_option('display.width', display_width)
 
     device = 'cuda'

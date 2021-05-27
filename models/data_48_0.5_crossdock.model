@@ -9,7 +9,7 @@ layer {
   }
   molgrid_data_param {
     source: "TRAINFILE"
-    batch_size: 8
+    batch_size: 10
     dimension: 23.5
     resolution: 0.5
     shuffle: true
@@ -20,11 +20,10 @@ layer {
     radius_multiple: 1.5
     has_affinity: true
     use_covalent_radius: false
-    recmap: "/net/pulsar/home/koes/mtr22/gan/my_rec_map"
-    ligmap: "/net/pulsar/home/koes/mtr22/gan/my_lig_map"
-    cache_structs: false
-    recmolcache: "molportFULL_rec.molcache2"
-    ligmolcache: "molportFULL_lig.molcache2"
+    recmap: "data/my_rec_map"
+    ligmap: "data/my_lig_map"
+    recmolcache: "paper_it2_tt_rec.molcache2"
+    ligmolcache: "paper_it2_tt_lig.molcache2"
   }
 }
 layer {
@@ -38,7 +37,7 @@ layer {
   }
   molgrid_data_param {
     source: "TESTFILE"
-    batch_size: 8
+    batch_size: 10
     dimension: 23.5
     resolution: 0.5
     shuffle: false
@@ -49,11 +48,10 @@ layer {
     radius_multiple: 1.5
     has_affinity: true
     use_covalent_radius: false
-    recmap: "/net/pulsar/home/koes/mtr22/gan/my_rec_map"
-    ligmap: "/net/pulsar/home/koes/mtr22/gan/my_lig_map"
-    cache_structs: false
-    recmolcache: "molportFULL_rec.molcache2"
-    ligmolcache: "molportFULL_lig.molcache2"
+    recmap: "data/my_rec_map"
+    ligmap: "data/my_lig_map"
+    recmolcache: "data/paper_it2_tt_rec.molcache2"
+    ligmolcache: "data/paper_it2_tt_lig.molcache2"
   }
 }
 layer {

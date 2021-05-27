@@ -1,6 +1,10 @@
 # What is liGAN?
 
-liGAN is a research codebase for training and evaluating deep generative models for *de novo* drug design based on 3D atomic density grids. It is based on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe). It includes scripts for creating model architectures and job scripts from parameter files, as well as for submitting and managing experiments on Slurm or Torque-based computing clusters.
+liGAN is a research codebase for training and evaluating deep generative models for *de novo* drug design based on 3D atomic density grids. It is based on [libmolgrid](https://github.com/gnina/libmolgrid) and the [gnina](https://github.com/gnina/gnina) fork of [caffe](https://github.com/BVLC/caffe).
+
+[VAE paper](https://arxiv.org/abs/2010.08687) - [2 minute talk](https://youtu.be/Pyc6xwtGaUM)
+
+[CVAE paper](https://arxiv.org/abs/2010.14442) - [15 minute talk](https://youtu.be/zru1FqCd8Ks)
 
 ## Dependencies
 
@@ -14,180 +18,55 @@ liGAN is a research codebase for training and evaluating deep generative models 
 - protobuf
 - [gnina](https://github.com/gnina/gnina) version of caffe
 
-## Tutorial
+## Usage
 
-Here is basic walkthrough on how to use the liGAN scripts to launch a training experiment. All paths in the following commands are relative to the `tutorial` directory, so run this first:
+You can use the scripts `download_data.sh` and `download_weights.sh` to download the test data
+and weights that were evaluated in the above papers.
 
-`cd <LIGAN_DIR>/tutorial`
+The script `generate.py` is used to generate atomic density grids and molecular structures from
+a trained generative model.
 
-### Specifying parameters
-
-A few scripts in this project take a "params file" as an argument. These are simple text files where each line assigns a value to a parameter in Python-like syntax. The values must be Python literals, and the meaning of the parameters depends on which script the params file is created for.
-
-Here is an example params file that creates some model architectures when provided to the models.py script:
-```
-encode_type = ['_l-l', '_vl-l']
-rec_map = '/net/pulsar/home/koes/mtr22/gan/my_rec_map'
-lig_map = '/net/pulsar/home/koes/mtr22/gan/my_lig_map'
-data_dim = 48
-resolution = 0.5
-data_options = ''
-n_levels = 4
-conv_per_level = 3
-arch_options = 'l'
-n_filters = 32
-width_factor = 2
-n_latent = 1024
-loss_types = 'e'
-loss_weight_KL = 0.1
-loss_weight_L2 = 1.0
-```
-Any parameter can be assigned a list of values instead of a single value. In that case, the params file represents every possible combination of parameter assignments.
-
-For example, in the above file, the `encode_type` parameter is assigned two values, so two model architectures can be created from the file- a standard autoencoder and a variational autoencoder.
-
-The `encode_type` syntax allows the following architectures to be created, and more:
+Its basic usage can be seen in the scripts `generate_vae.sh`:
 
 ```
-_l-l   -> ligand autoencoder (AE)
-_vl-l  -> ligand variational autoencoder (VAE)
-_r-l   -> receptor-to-ligand context encoder (CE)
-_rvl-l -> receptor-conditional VAE (CVAE)
-```
+LIG_FILE=$1 # e.g. data/molport/0/102906000_8.sdf
 
-### Creating models
-
-The models.py script is used to create a model architecture file for each parameter assignment in the provided params file.
-
-```
-usage: models.py [-h] -o OUT_DIR [-n MODEL_NAME] [-m MODEL_TYPE] [-v VERSION]
-                 [--scaffold] [--benchmark BENCHMARK] [--verbose] [--gpu]
-                 params_file
-
-Create model prototxt files from model params
-
-positional arguments:
-  params_file           file defining model params or dimensions of param
-                        space
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -o OUT_DIR, --out_dir OUT_DIR
-                        common output directory for model files
-  -n MODEL_NAME, --model_name MODEL_NAME
-                        custom model name format
-  -m MODEL_TYPE, --model_type MODEL_TYPE
-                        model type, for default model name format (e.g. data,
-                        gen, or disc)
-  -v VERSION, --version VERSION
-                        version, for default model name format (e.g. 13,
-                        default most recent)
-  --scaffold            attempt to scaffold models in Caffe and estimate
-                        memory usage
-  --benchmark BENCHMARK
-                        benchmark N forward-backward pass times and actual
-                        memory usage
-  --verbose             print out more info for debugging prototxt creation
-  --gpu                 if benchmarking, use the GPU
-```
-
-The created files are named according to the `--model_name` format string that by passing the model params to `str.format` in python.
-
-Be careful not to underspecify the parameters in the model name format- otherwise multiple models with the same name might be created, overwriting each other.
-
-The following command will create the two generative models described by the params file in the previous section:
-
-`python3 ../models.py gen_model.params -o models -n gen_{encode_type}`
-
-For training a GAN, you will also need a data-producing model and a discriminative model:
-
-`python3 ../models.py data_model.params -o models -n data`
-
-`python3 ../models.py disc_model.params -o models -n disc`
-
-### Creating solvers
-
-To train a model with Caffe, training hyperparameters must be listed in a solver file. These can be created with solvers.py.
+python3 generate.py \
+  --data_model_file models/data_48_0.5_molport.model \
+  --gen_model_file models/vae.model \
+  --gen_weights_file weights/gen_e_0.1_1_disc_x_10_0.molportFULL_rand_.0.0_gen_iter_100000.caffemodel \
+  --rec_file data/molport/10gs_rec.pdb \
+  --lig_file $LIG_FILE \
+  --out_prefix VAE \
+  --n_samples 10 \
+  --fit_atoms \
+  --dkoes_make_mol \
+  --output_sdf \
+  --output_dx \
+  --gpu
 
 ```
-usage: solvers.py [-h] -o OUT_DIR -n SOLVER_NAME params_file
 
-Create solver prototxt files from solver params
-
-positional arguments:
-  params_file           file defining solver params or dimensions of param
-                        space
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -o OUT_DIR, --out_dir OUT_DIR
-                        common output directory for solver files
-  -n SOLVER_NAME, --solver_name SOLVER_NAME
-                        solver name format
-```
-Similar to models.py, this script creates a solver file for each parameter assignment in the params file, and again the files are named according to a name format.
-
-Run this command to create a solver file for training with the Adam optimizer:
-
-`python3 ../solvers.py solver.params -o solvers -n adam0`
-
-### Creating training job scripts
-
-For executing training jobs on a computer cluster using Slurm or Torque, you can use job_scripts.py to create a collection of job scripts ready to submit.
+And `generate_cvae.sh`:
 
 ```
-usage: job_scripts.py [-h] -t TEMPLATE [-o OUT_DIR] -n JOB_NAME params_file
+REC_FILE=$1 # e.g. data/crossdock2020/PARP1_HUMAN_775_1012_0/2rd6_A_rec.pdb
+LIG_FILE=$2 # e.g. data/crossdock2020/PARP1_HUMAN_775_1012_0/2rd6_A_rec_2rd6_78p_lig_tt_min.sdf
 
-Create job scripts from a template and job params
+python3 generate.py \
+  --data_model_file models/data_48_0.5_crossdock.model \
+  --gen_model_file models/cvae.model \
+  --gen_weights_file weights/lessskip_crossdocked_increased_1.lowrmsd.0_gen_iter_1500000.caffemodel \
+  --rec_file $REC_FILE \
+  --lig_file $LIG_FILE \
+  --out_prefix CVAE \
+  --n_samples 10 \
+  --fit_atoms \
+  --dkoes_make_mol \
+  --output_sdf \
+  --output_dx \
+  --gpu
 
-positional arguments:
-  params_file           file defining job params or dimensions of param space
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -t TEMPLATE, --template TEMPLATE
-                        job script template file
-  -o OUT_DIR, --out_dir OUT_DIR
-                        common directory for job working directories
-  -n JOB_NAME, --job_name JOB_NAME
-                        job name format
 ```
-This fills in placeholder values in the template job script with each set of parameter assignments. Just as in the models and solvers scripts, the parameter ranges are provided as a params file.
 
-The result is that a working directory is created for each job, named according to the `--job_name` format string. The created directories each contain a job script based on the template script where the placeholder values have been replaced with a parameter assignment from the job params file.
-
-This command creates a job script to train each of the two generative models we've created so far and writes their files name in `trial0_job_scripts`:
-
-`python3 ../job_scripts.py job.params -t csb_train_cmd.sh -n train_{gen_model_name} | tee trial0_job_scripts`
-
-The created scripts can be run directly as training commands, but it's often more useful to submit many training jobs together as an experiment.
-
-To handle this, simply run the following command:
-
-`python3 ../job_scripts.py expt.params -t csb_train_expt.sh -n trial{trial_num}`
-
-This will create a single script `trial0/csb_train_expt.sh` that can be submitted to run the entire training experiment in a single array job, in this case with 5 different seeds each.
-
-NOTE: For convenience, all of the above commands that use parameter files to setup a training experiment are contained in a single bash script, `setup.sh`.
-
-### Submitting jobs
-
-Once you've created the required models, solvers and job scripts, you can easily submit them to the CSB department cluster:
-
-`python3 ../submit_job.py trial0/csb_train_expt.sh --array 1-10`
-
-This will submit an experiment that trains each of the two models with 5 seeds each, as laid out in the expt.params.
-
-This command is also contained in `submit.sh`.
-
-### Checking job errors
-
-`python3 ../job_errors.py trial0/csb_train_expt.sh --print_errors`
-
-This command is also contained in `errors.sh`.
-
-### Collecting job output
-
-`python3 ../job_errors.py */csb_train_cmd.sh --output_file tutorial.training_output`
-
-This command is also contained in `output.sh`.
+Both scripts can be run from the root directory of the repository. 

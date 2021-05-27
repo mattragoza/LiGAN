@@ -9,6 +9,7 @@
 # width_factor = 2
 # n_latent = 1
 # loss_types = 'x'
+# loss_weight_log = 1.0
 layer {
   name: "rec"
   type: "Input"
