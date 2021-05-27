@@ -4,7 +4,8 @@ import torch
 import torch.nn.functional as F
 import molgrid
 
-from .atom_grids import AtomGrid, spatial_index_to_coords, size_to_dimension
+from . import atom_grids, atom_structs
+from .atom_grids import AtomGrid
 from .atom_structs import AtomStruct
 
 
@@ -129,12 +130,13 @@ class AtomFitter(object):
         self.grid_maker.set_radii_type_indexed(False)
 
         # kernel must be large enough for atom with largest radius
-        kernel_radius = 1.5 * max(radii).item()
-        self.grid_maker.set_dimension(2 * kernel_radius)
+        kernel_radius = 1.5 * radii.max().item()
+        kernel_size = atom_grids.dimension_to_size(
+            2 * kernel_radius, resolution
+        )
 
         # kernel must also have odd spatial dimension
         #   so that convolution produces same size output grid
-        kernel_size = self.grid_maker.spatial_grid_dimensions()[0]
         if kernel_size % 2 == 0:
             kernel_size += 1
 
@@ -143,13 +145,12 @@ class AtomFitter(object):
         #   value that is a multiple of resolution, otherwise
         #   there are issues with grid centering
         self.grid_maker.set_dimension(
-            size_to_dimension(kernel_size, resolution)
+            atom_grids.size_to_dimension(kernel_size, resolution)
         )
+        assert self.grid_maker.get_dimension() % resolution == 0, \
+            'bad kernel dimension'
 
-        # create the element kernel
-        #   used for group convolution with the element channels
-        #   where each element density is only convolved with the
-        #   corresponding element channel to detect new atoms
+        # create the atom density kernel
         self.c2grid.center = (0, 0, 0)
         self.kernel = self.c2grid.forward(coords, types, radii)
 
@@ -207,10 +208,20 @@ class AtomFitter(object):
             groups=typer.n_elem_types,
         )[0] / kernel_norm2 # index into batch
 
-    def apply_peak_value(self, elem_values):
-        return self.peak_value - (self.peak_value - elem_values).abs()
+    def apply_peak_value(self, grid_values):
+        '''
+        Reflect grid_values that are above peak_value,
+        so that the maximum value is peak_value and
+        values over peak_value start to decrease.
+        '''
+        return self.peak_value - (self.peak_value - grid_values).abs()
 
     def sort_grid_points(self, grid_values):
+        '''
+        Sort grid_values from highest to lowest,
+        and also return corresponding spatial and
+        channel indices of the sorted values.
+        '''
         n_c, n_x, n_y, n_z  = grid_values.shape
 
         # get flattened grid values and index, sorted by value
@@ -226,6 +237,11 @@ class AtomFitter(object):
         return values, idx_xyz, idx_c
 
     def apply_threshold(self, values, idx_xyz, idx_c):
+        '''
+        Return only the elements of the provided values
+        and corresponding spatial and channel indices
+        where the value is above threshold.
+        '''
         above_thresh = values > self.threshold
         values = values[above_thresh]
         idx_xyz = idx_xyz[above_thresh]
@@ -233,7 +249,12 @@ class AtomFitter(object):
         return values, idx_xyz, idx_c
 
     def apply_type_constraint(self, values, idx_xyz, idx_c, type_counts):
-
+        '''
+        Return only the elements of the provided values
+        and corresponding spatial and channel indices
+        where type_counts of the channels is greater
+        than zero.
+        '''
         #TODO this does not constrain the atoms types correctly
         # when doing multi_atom fitting, because it only omits
         # atom types that have 0 atoms left- i.e. we could still
@@ -249,6 +270,15 @@ class AtomFitter(object):
     def suppress_non_max(
         self, values, coords, idx_xyz, idx_c, typer, matrix=None
     ):
+        '''
+        Return the coords, spatial and channel indices
+        where there is no other coord with higher value
+        that is within a certain distance of the point
+        in the same channel. The distance is equal to
+        min_dist * (sum of the atom pair's radii), and
+        the method assumes that values/coords/indices 
+        are all sorted by value.
+        '''
         r = typer.elem_radii
         if matrix or (matrix is None and len(coords) < 1000):
 

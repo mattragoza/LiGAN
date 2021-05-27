@@ -106,11 +106,12 @@ class TestAtomTyper(object):
                     assert getattr(atom_type, f.__name__) == f(atom)
 
     def test_typer_coord_set(self, typer, mol):
-        struct1 = typer.make_struct(mol)
+        struct1 = typer.make_struct(mol, dtype=torch.float32)
         coord_set = molgrid.CoordinateSet(mol, typer)
-        struct2 = AtomStruct.from_coord_set(coord_set, typer)
-        assert allclose(struct1.coords, struct2.coords)
-        assert allclose(struct1.types, struct2.types)
-        assert struct1.typer == struct2.typer
-        assert struct1.atom_types == struct2.atom_types
-        assert allclose(struct1.atomic_radii, struct2.atomic_radii)
+        struct2 = AtomStruct.from_coord_set(coord_set, typer, dtype=torch.float32)
+        assert (struct1.coords == struct2.coords).all(), 'different coords'
+        assert (struct1.types == struct2.types).all(), 'different types'
+        assert struct1.typer == struct2.typer, 'different typers'
+        assert struct1.atom_types == struct2.atom_types, 'different atom types'
+        assert (struct1.atomic_radii == struct2.atomic_radii).all(), \
+            'different atomic radii'

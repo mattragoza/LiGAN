@@ -66,7 +66,7 @@ class AtomStruct(object):
             types=coord_set.type_vector.tonumpy(), # should be float
             typer=typer,
             dtype=dtype,
-            device=device,
+            device=typer.device if device is None else device,
             src_file=coord_set.src,
             **info
         )
@@ -159,23 +159,6 @@ class AtomStruct(object):
             outfile = open(sdf_file, 'wt')
         molecules.write_rd_mol_to_sdf_file(outfile, self.to_rd_mol())
         outfile.close()
-
-    def make_mol(self, verbose=False):
-        '''
-        Attempt to construct a valid molecule from an atomic
-        structure by inferring bonds, setting aromaticity
-        and connecting fragments, returning a Molecule.
-        '''
-        from . import dkoes_fitting
-        init_mol = self.to_rd_mol()
-        add_mol, n_misses, visited_mols = dkoes_fitting.make_rdmol(
-            self, verbose
-        )
-        visited_mols = [init_mol] + visited_mols
-        visited_mols = [molecules.Molecule(m) for m in visited_mols]
-        return molecules.Molecule(
-            add_mol, n_misses=n_misses, visited_mols=visited_mols
-        )
 
 
 def read_gninatypes_file(gtypes_file, typer):

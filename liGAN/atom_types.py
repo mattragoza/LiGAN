@@ -230,6 +230,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         self.prop_ranges = prop_ranges
         self.radius_func = radius_func
         self.explicit_h = explicit_h
+
         super().__init__(
             lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
@@ -248,6 +249,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             [radius_func(v) for v in self.elem_range],
             device=device
         )
+        self.device = device
 
         self.atom_type = namedtuple(
             'atom_type', [f.__name__ for f in prop_funcs]
@@ -313,7 +315,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             types=np.array(types),
             typer=self,
             dtype=dtype,
-            device=device,
+            device=self.device if device is None else device,
             src_mol=ob_mol, # caution: src_mol is an rd_mol elsewhere
             **info
         )
