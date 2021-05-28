@@ -255,14 +255,28 @@ class TestBondAdding(object):
         out_mol = mol.to_ob_mol()
 
     def test_make_mol(self, adder, typer, in_mol):
-        add_struct = typer.make_struct(in_mol)
-        out_mol, _, _ = adder.make_mol(add_struct)
+        struct = typer.make_struct(in_mol)
+        out_mol, add_struct, _ = adder.make_mol(struct)
         in_mol = Molecule.from_ob_mol(in_mol)
 
-        n_in = in_mol.n_atoms
-        n_out = out_mol.n_atoms
-        assert n_out == n_in, \
-            'different num atoms ({} vs {})'.format(n_out, n_in)
+        n_atoms_diff = (struct.n_atoms - add_struct.n_atoms)
+        elem_diff = (struct.elem_counts - add_struct.elem_counts).abs().sum()
+        prop_diff = (struct.prop_counts - add_struct.prop_counts).abs().sum()
+
+        assert n_atoms_diff == 0, \
+            'different num atoms ({})'.format(n_atoms_diff)
+
+        for t1, t2 in zip(
+            sorted(struct.atom_types),
+            sorted(add_struct.atom_types)
+        ):
+            print(t1, '\t', t2)
+
+        assert elem_diff == 0, \
+            'different element counts ({})'.format(elem_diff)
+
+        assert prop_diff == 0, \
+            'different property counts ({})'.format(prop_diff)
 
         mols.Chem.SanitizeMol(in_mol)
         mols.Chem.SanitizeMol(out_mol)

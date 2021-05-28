@@ -38,15 +38,15 @@ def make_mols(
     typer_fns,
     use_ob_mol,
 ):
-    atom_typer = liGAN.atom_types.AtomTyper.get_typer(typer_fns, 'c')
+    atom_typer = liGAN.atom_types.AtomTyper.get_typer(typer_fns, 'c', device='cpu')
     bond_adder = liGAN.bond_adding.BondAdder()
 
     if not os.path.isdir('mols'):
         os.mkdir('mols')
 
     print(
-        'example_idx lig_name pose_idx n_atoms_diff '
-        'type_count_diff morgan_sim smi_match add_time',
+        'example_idx lig_name pose_idx n_atoms_diff elem_count_diff '
+        'prop_count_diff rd_sim ob_sim smi_match add_time',
         flush=True
     )
 
@@ -62,71 +62,69 @@ def make_mols(
         lig_ob_mol, lig_rd_mol = find_real_lig_in_data_root(
             lig_src_no_ext, data_root
         )
-        if use_ob_mol: # use real mol from OB instead of RDkit
+        
+        # add hydrogens to ob_mol
+        lig_ob_mol.AddHydrogens()
+
+        if use_ob_mol: # use OB for real mol instead of RDkit
             lig_rd_mol = mols.Molecule.from_ob_mol(lig_ob_mol)
 
-        try:
-            Chem.SanitizeMol(lig_rd_mol)
-            lig_rd_mol = mols.Molecule(
-                Chem.AddHs(lig_rd_mol, addCoords=True)
-            )
-            lig_valid = (lig_rd_mol.n_frags == 1)
-        except Chem.MolSanitizeException as e: # real mol is invalid
-            lig_valid = False
-            print(
-                'SANITIZE {} {}'.format(lig_name, pose_idx),
-                file=sys.stderr
-            )
-            print(e, file=sys.stderr)
-            pass
+        else: # add hydrogens to rd_mol
+            try: # which requires sanitize first
+                lig_rd_mol.sanitize()
+                lig_rd_mol = mols.Molecule(
+                    Chem.AddHs(lig_rd_mol, addCoords=True)
+                )
+            except Chem.MolSanitizeException:
+                pass # ignore, we'll find out why in validate()
 
-        lig_ob_mol.AddHydrogens()
+        # validate real molecule
+        lig_valid, lig_reason = lig_rd_mol.validate()
+
+        # create typed struct from real ob_mol
         lig_struct = atom_typer.make_struct(lig_ob_mol)
+
+        # reconstruct mol from struct by bond adding
         t_start = time.time()
         lig_add_mol, lig_add_struct, visited_mols = \
             bond_adder.make_mol(lig_struct)
         add_time = time.time() - t_start
 
-        # difference in num atoms
-        n_atoms_diff = (
+        ### STRUCT-LEVEL METRICS ###
+
+        n_atoms_diff = ( # difference in num atoms
             lig_add_mol.n_atoms - lig_rd_mol.n_atoms
         )
 
-        # difference in type counts 
-        type_count_diff = (
-            lig_struct.type_counts - lig_add_struct.type_counts
-        ).norm(p=1).item()
+        elem_count_diff = ( # difference in element counts 
+            lig_struct.elem_counts - lig_add_struct.elem_counts
+        ).abs().sum().item()
 
-        try:
-            Chem.SanitizeMol(lig_add_mol)
-            lig_add_valid = (lig_add_mol.n_frags == 1)
+        prop_count_diff = ( # difference in property counts
+            lig_struct.prop_counts - lig_add_struct.prop_counts
+        ).abs().sum().item()
 
-            # fingerprint similarity
-            if lig_valid and lig_add_valid:
-                morgan_sim = mols.get_rd_mol_similarity(
-                    lig_rd_mol, lig_add_mol, 'morgan'
-                )
-            else:
-                morgan_sim = np.nan
+        ### MOLECULE-LEVEL METRICS ###
 
-        except Chem.MolSanitizeException:
-            lig_add_valid = False
-            morgan_sim = np.nan
+        # validate output molecule
+        lig_add_valid, lig_add_reason = lig_add_mol.validate()
 
-        # smiles string comparison
-        lig_smi = lig_rd_mol.to_smi()
-        lig_add_smi = lig_add_mol.to_smi()
-        smi_match = (lig_smi == lig_add_smi)
+        if lig_valid and lig_add_valid:
 
-        print('{} {} {} {} {} {:.4f} {} {:.4f}'.format(
-            i,
-            lig_name,
-            pose_idx,
-            n_atoms_diff,
-            type_count_diff,
-            morgan_sim,
-            smi_match,
-            add_time,
+            # smiles string comparison
+            lig_smi = lig_rd_mol.to_smi()
+            lig_add_smi = lig_add_mol.to_smi()
+
+            rd_sim = mols.get_rd_mol_similarity(lig_add_mol, lig_rd_mol)
+            ob_sim = mols.get_ob_smi_similarity(lig_add_smi, lig_smi)
+
+            smi_match = (lig_smi == lig_add_smi)
+        else:
+            rd_sim = ob_sim = smi_match = np.nan
+
+        print('{} {} {} {} {} {} {:.4f} {:.4f} {} {:.4f}'.format(
+            i, lig_name, pose_idx, n_atoms_diff, elem_count_diff,
+            prop_count_diff, rd_sim, ob_sim, smi_match, add_time,
         ), flush=True)
 
         if not smi_match: # write out the mismatched molecules

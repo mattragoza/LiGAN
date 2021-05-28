@@ -95,6 +95,19 @@ class Molecule(Chem.RWMol):
     def sanitize(self):
         return Chem.SanitizeMol(self)
 
+    def validate(self):
+        if self.n_atoms == 0:
+            return False, 'no atoms'
+        if self.n_frags > 1:
+            return False, 'multiple fragments'
+        try:
+            self.sanitize()
+            return True, 'valid molecule'
+        except Chem.AtomValenceException:
+            return False, 'failed to kekulize'
+        except Chem.AtomKekulizeException:
+            return False, 'invalid valence'
+
     def uff_minimize(self):
         '''
         Minimize molecular geometry using UFF.
@@ -437,7 +450,7 @@ def get_smiles_string(rd_mol):
 
 
 #@catch_exception(exc_type=RuntimeError)
-def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint):
+def get_rd_mol_similarity(rd_mol1, rd_mol2, fingerprint='rdkit'):
 
     if fingerprint == 'morgan':
         # this can raise RingInfo not initialized even when valid??

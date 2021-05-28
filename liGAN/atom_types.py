@@ -348,7 +348,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return self.atom_type(*values)
 
     @classmethod
-    def get_typer(cls, prop_funcs, radius_func):
+    def get_typer(cls, prop_funcs, radius_func, device='cuda'):
 
         pf, rf = prop_funcs, radius_func
         prop_funcs = [Atom.atomic_num]
@@ -387,7 +387,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         elif rf == 'c': # covalent
             radius_func = Atom.cov_radius
 
-        return cls(prop_funcs, prop_ranges, radius_func, explicit_h)
+        return cls(prop_funcs, prop_ranges, radius_func, explicit_h, device)
 
 
 def make_one_hot(value, range_):
