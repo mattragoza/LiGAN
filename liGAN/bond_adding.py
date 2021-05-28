@@ -5,6 +5,7 @@ from rdkit import Chem, Geometry
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 
+from . import molecules as mols
 from .atom_types import Atom
 from .molecules import ob_mol_to_rd_mol, Molecule, copy_ob_mol
 
@@ -82,13 +83,13 @@ class BondAdder(object):
 
     def set_min_h_counts(self, ob_mol, atoms, struct):
         '''
-        Set atoms to have at least one H if they are
-        hydrogen bond donors, or the exact number of
-        Hs specified by their atom type, if it is
-        available.
+        Set atoms to have the minimum number of Hs 
+        required by their atom type, if they do not
+        already. Does not remove Hs, and any added
+        Hs are implicit. Also unsets HydrogensAdded.
         '''
-        # this ensures that explicit coords are created for the
-        # implicit Hs we add here when AddHydrogens() is called
+        # this ensures that any implicit Hs added here
+        #   are made explicit when AddHydrogens() is called
         ob_mol.SetHydrogensAdded(False)
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
@@ -96,12 +97,18 @@ class BondAdder(object):
             if struct.typer.explicit_h:
                 continue
 
-            if 'h_degree' in atom_type._fields:
-                ob_atom.SetImplicitHCount(atom_type.h_degree)
+            # get current hydrogen count
+            h_count = Atom.h_count(ob_atom)
 
-            elif 'h_donor' in atom_type._fields:
-                if atom_type.h_donor and ob_atom.GetImplicitHCount() == 0:
-                    ob_atom.SetImplicitHCount(1)
+            # get count required by atom type
+            if Atom.h_count in struct.typer:
+                min_h_count = atom_type.h_count
+
+            elif Atom.h_donor in struct.typer:
+                min_h_count = 1
+
+            if h_count < min_h_count:
+                ob_atom.SetImplicitHCount(min_h_count - h_count)
 
     def add_within_distance(self, ob_mol, atoms, struct):
 
@@ -215,10 +222,16 @@ class BondAdder(object):
 
             max_val = max_vals.get(ob_atom.GetIdx(), 1)
 
-            if 'h_degree' in atom_type._fields:
+            if Atom.h_count in struct.typer:
+
                 # this should have already been set by set_min_h_counts
-                h_degree = ob_atom.GetTotalDegree() - ob_atom.GetHvyDegree()
-                assert h_degree == atom_type.h_degree, 'wrong h_degree ({} vs. {})'.format(h_degree, atom_type.h_degree)
+                h_count = Atom.h_count(ob_atom)
+                #assert h_count == atom_type.h_count, \
+                #    'wrong h_count ({} vs. {}, {})'.format(
+                #        h_count, atom_type.h_count, atom_type
+                #    )
+                if h_count < atom_type.h_count:
+                    ob_atom.SetImplicitHCount(atom_type.h_count - h_count)
 
             elif ob_atom.GetExplicitValence() < max_val:
 
@@ -241,6 +254,9 @@ class BondAdder(object):
             bond_info = sort_bonds_by_stretch(ob.OBAtomBondIter(atom))
             for bond_stretch, bond_len, bond in reversed(bond_info):
 
+                if bond.GetBondOrder() >= 3:
+                    continue # don't go above triple
+
                 # do the atoms involved in this bond have empty valences?
                 #   since we are modifying the valences in the loop, this
                 #   could have changed since calling sort_atoms_by_valence
@@ -252,13 +268,36 @@ class BondAdder(object):
                 )
                 if min_val_diff > 0: # increase bond order
 
-                    bond_order = bond.GetBondOrder()
-                    bond.SetBondOrder(bond_order + min_val_diff)
+                    bond_order = bond.GetBondOrder() # don't go above triple
+                    bond.SetBondOrder(min(bond_order + min_val_diff, 3))
 
                     # if the current atom now has its preferred valence,
                     # break and let other atoms choose next bonds to augment
                     if atom.GetExplicitValence() == max_vals[atom.GetIdx()]:
                         break
+
+    def make_h_explicit(self, ob_mol, atoms):
+
+        imp_hs_i, exp_hs_i = [], []
+        for a in atoms:
+            imp_hs_i.append(Atom.imp_h_count(a))
+            exp_hs_i.append(Atom.exp_h_count(a))
+
+        ob_mol.SetHydrogensAdded(False) # make sure we actually add them
+        assert ob_mol.AddHydrogens(), 'failed to add hydrogens'
+
+        try:
+            for a, imp_h_i, exp_h_i in zip(atoms, imp_hs_i, exp_hs_i):
+                imp_h_f = Atom.imp_h_count(a)
+                exp_h_f = Atom.exp_h_count(a)
+                assert imp_h_f == 0 and exp_h_f == exp_h_i + imp_h_i, \
+                    'failed to make H(s) explicit (imp={}, exp={} -> imp={}, exp={}, elem={})'.format(
+                        imp_h_i, exp_h_i, imp_h_f, exp_h_f, a.GetAtomicNum()
+                    )
+        except AssertionError:
+            #mols.write_ob_mols_to_sdf_file('tests/bad_explicit_h.sdf', [ob_mol])
+            #raise
+            pass
 
     def add_bonds(self, ob_mol, atoms, struct):
 
@@ -319,9 +358,12 @@ class BondAdder(object):
         visit_mol(ob_mol, 'set_aromaticity')
 
         ob_mol.EndModify()
-        ob_mol.AddHydrogens()
+        self.make_h_explicit(ob_mol, atoms)
+
         ob_mol.PerceiveBondOrders()
         self.set_aromaticity(ob_mol, atoms, struct)
+        self.set_min_h_counts(ob_mol, atoms, struct) # maybe removed by PBO
+        self.make_h_explicit(ob_mol, atoms)
         visit_mol(ob_mol, 'perceive_bond_orders')
 
         # try to fix higher bond orders that cause bad valences
@@ -333,7 +375,7 @@ class BondAdder(object):
         #   up to typical num allowed by the atom types
         #   and the rest with increased bond orders
         self.fill_rem_valences(ob_mol, atoms, struct)
-        ob_mol.AddHydrogens()
+        self.make_h_explicit(ob_mol, atoms)
         visit_mol(ob_mol, 'fill_rem_valences')
 
         return ob_mol, visited_mols
@@ -343,7 +385,8 @@ class BondAdder(object):
         Convert OBMol to RDKit mol, fixing up issues.
         '''
         pt = Chem.GetPeriodicTable()
-        #if double/triple bonds are connected to hypervalent atoms, decrement the order
+        # if double/triple bonds are connected to hypervalent atoms,
+        #   decrement the order
 
         positions = rd_mol.GetConformer().GetPositions()
         nonsingles = []

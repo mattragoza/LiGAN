@@ -172,12 +172,10 @@ class Solver(nn.Module):
 
         if isinstance(self, GenerativeSolver):
 
-            print('Initializing atom fitter')
+            print('Initializing atom fitter and bond adder')
             self.atom_fitter = atom_fitting.AtomFitter(
                 device=device, debug=debug, **atom_fitting_kws
             )
-
-            print('Initializing bond adder')
             self.bond_adder = bond_adding.BondAdder(
                 debug=debug, **bond_adding_kws
             )

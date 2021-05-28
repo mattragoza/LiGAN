@@ -193,8 +193,15 @@ class Atom(ob.OBAtom):
     def formal_charge(self):
         return self.GetFormalCharge()
 
-    def h_degree(self):
+    def h_count(self):
+        # this includes both explicit and implicit Hs
         return self.GetTotalDegree() - self.GetHvyDegree()
+
+    def imp_h_count(self):
+        return self.GetImplicitHCount()
+
+    def exp_h_count(self):
+        return self.GetExplicitDegree() - self.GetHvyDegree()
 
     def vdw_radius(self):
         return ob.GetVdwRad(self)
@@ -311,8 +318,8 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             types.append(self.get_type_vector(ob_atom))
 
         return AtomStruct(
-            coords=np.array(coords),
-            types=np.array(types),
+            coords=np.array(coords).reshape(-1, 3),
+            types=np.array(types).reshape(-1, self.n_types),
             typer=self,
             dtype=dtype,
             device=self.device if device is None else device,
@@ -371,7 +378,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             prop_ranges += [[-1, 0, 1]]
 
         if 'n' in pf:
-            prop_funcs += [Atom.h_degree]
+            prop_funcs += [Atom.h_count]
             prop_ranges += [[0, 1, 2, 3, 4]]
 
         if rf == 'v': # van der Waals

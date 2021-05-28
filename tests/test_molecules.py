@@ -43,6 +43,9 @@ class TestOBMol(object):
             assert atom.GetImplicitHCount() == 2
             assert atom.GetExplicitValence() == 0
             assert atom.GetTotalValence() == 2
+            assert atom.GetExplicitDegree() == 0
+            assert atom.GetHvyDegree() == 0
+            assert atom.GetTotalDegree() == 2
             assert ob.GetMaxBonds(atom.GetAtomicNum()) == 2
             atom.SetImplicitHCount(1)
 
@@ -54,6 +57,9 @@ class TestOBMol(object):
             assert atom.GetImplicitHCount() == 0
             assert atom.GetExplicitValence() == 1
             assert atom.GetTotalValence() == 1
+            assert atom.GetExplicitDegree() == 1
+            assert atom.GetHvyDegree() == 0
+            assert atom.GetTotalDegree() == 1
             assert ob.GetMaxBonds(atom.GetAtomicNum()) == 2
             atom.SetImplicitHCount(1)
         
@@ -65,6 +71,9 @@ class TestOBMol(object):
             assert atom.GetImplicitHCount() == 0
             assert atom.GetExplicitValence() == 2
             assert atom.GetTotalValence() == 2
+            assert atom.GetExplicitDegree() == 2
+            assert atom.GetHvyDegree() == 0
+            assert atom.GetTotalDegree() == 2
             assert ob.GetMaxBonds(atom.GetAtomicNum()) == 2
 
         assert water.HasNonZeroCoords(), 'all zero coords'
