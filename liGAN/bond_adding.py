@@ -95,6 +95,8 @@ class BondAdder(object):
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
             if struct.typer.explicit_h:
+                # all Hs should already be present
+                #   so no need to add implicit Hs
                 continue
 
             # get current hydrogen count
@@ -105,7 +107,7 @@ class BondAdder(object):
                 min_h_count = atom_type.h_count
 
             elif Atom.h_donor in struct.typer:
-                min_h_count = 1
+                min_h_count = 1 if atom_type.h_donor else 0
 
             if h_count < min_h_count:
                 ob_atom.SetImplicitHCount(min_h_count - h_count)
