@@ -147,7 +147,7 @@ class AtomStruct(object):
     def to_rd_mol(self):
         return molecules.make_rd_mol(
             coords=self.coords.cpu().numpy().astype(float),
-            typers=self.types.cpu().numpy(),
+            types=self.types.cpu().numpy(),
             bonds=None,
             typer=self.typer,
         )

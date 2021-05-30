@@ -90,10 +90,14 @@ class Molecule(Chem.RWMol):
             rd_conf.SetAtomPosition(i, (x+dx, y+dy, z+dz)) # must be float64
 
     def aligned_rmsd(self, mol):
+        # aligns self to mol
         return get_rd_mol_rmsd(self, mol)
 
     def sanitize(self):
         return Chem.SanitizeMol(self)
+
+    def add_hs(self):
+        return type(self)(Chem.AddHs(self, addCoords=True))
 
     def validate(self):
         if self.n_atoms == 0:
