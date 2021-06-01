@@ -502,19 +502,18 @@ def calc_valence(rd_atom):
     return val
 
 
-def reachable_r(atom_a, atom_b, visited_bonds):
+def reachable_r(atom_a, atom_b, visited_atoms):
     '''
     Recursive helper for determining whether
     atom_a is reachable from atom_b without
     using the bond between them.
     '''
     for nbr in ob.OBAtomAtomIter(atom_a):
-        bond = atom_a.GetBond(nbr).GetIdx()
-        if bond not in visited_bonds:
-            visited_bonds.add(bond)
+        if nbr.GetIdx() not in visited_atoms:
+            visited_atoms.add(nbr.GetIdx())
             if nbr == atom_b:
                 return True
-            elif reachable_r(nbr, atom_b, visited_bonds):
+            elif reachable_r(nbr, atom_b, visited_atoms):
                 return True
     return False
 
@@ -528,8 +527,7 @@ def reachable(atom_a, atom_b):
         return False # this is the _only_ bond for one atom
 
     # otherwise do recursive traversal
-    visited_bonds = set([atom_a.GetBond(atom_b).GetIdx()])
-    return reachable_r(atom_a, atom_b, visited_bonds)
+    return reachable_r(atom_a, atom_b, {atom_a.GetIdx()})
 
 
 def forms_small_angle(atom_a, atom_b, cutoff=45):
