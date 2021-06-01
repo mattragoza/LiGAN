@@ -224,16 +224,13 @@ def make_ob_mol(coords, types, bonds, typer):
 
     n_atoms = len(atoms)
 
-    if bonds is not None and np.any(bonds):
-        n_bonds = 0
-        for i in range(n_atoms):
-            atom_i = ob_mol.GetAtom(i)
-            for j in range(i+1, n_atoms):
-                atom_j = ob_mol.GetAtom(j)
+    if bonds is not None:
+        for i, atom_i in enumerate(atoms):
+            for j, atom_j in enumerate(atoms):
                 if bonds[i,j]:
-                    bond = ob_mol.NewBond()
-                    bond.Set(n_bonds, atom_i, atom_j, 1, 0)
-                    n_bonds += 1
+                    ob_mol.AddBond(
+                        atom_i.GetIdx(), atom_j.GetIdx(), 1, 0
+                    )
 
     ob_mol.EndModify()
     return ob_mol, atoms

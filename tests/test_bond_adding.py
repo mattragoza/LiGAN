@@ -1,11 +1,12 @@
 import sys, os, pytest
+import numpy as np
 from numpy import isclose
 
 sys.path.insert(0, '.')
 import liGAN.molecules as mols
 from liGAN.molecules import ob, Molecule
 from liGAN.atom_types import Atom, AtomTyper
-from liGAN.bond_adding import BondAdder, get_max_valences
+from liGAN.bond_adding import BondAdder, get_max_valences, reachable
 
 
 test_sdf_files = [
@@ -103,7 +104,71 @@ def write_mols(visited_mols, in_mol, mode=None):
     return mol_file
 
 
-class TestBondAdding(object):
+def test_add_bond():
+
+    mol = ob.OBMol()
+
+    a = mol.NewAtom()
+    b = mol.NewAtom()
+    assert mol.NumAtoms() == 2, mol.NumAtoms()
+    assert mol.NumBonds() == 0, mol.NumBonds()
+
+    # OB atoms use one-based indexing
+    assert a.GetIdx() == 1, a.GetIdx()
+    assert b.GetIdx() == 2, b.GetIdx()
+
+    # OB mol GetAtom uses one-based index
+    assert mol.GetAtom(1) == a
+    assert mol.GetAtom(2) == b
+
+    assert mol.AddBond(1, 2, 1, 0)
+    assert mol.GetBond(1, 2) and mol.GetBond(2, 1)
+    assert mol.GetBond(a, b) and mol.GetBond(b, a)
+
+    assert not mol.AddBond(1, 2, 1, 0), 'double add'
+    assert not mol.AddBond(2, 1, 1, 0), 'double add'
+
+
+@pytest.fixture(params=[10,20,30,40,50])
+def dense(request):
+    n_atoms = request.param
+    mol, atoms = mols.make_ob_mol(
+        coords=np.random.normal(0, 10, (n_atoms, 3)),
+        types=np.ones((n_atoms, 1)),
+        bonds=1-np.eye(n_atoms),
+        typer=AtomTyper(
+            prop_funcs=[Atom.atomic_num],
+            prop_ranges=[[6]],
+            radius_func=Atom.cov_radius,
+            explicit_h=False
+        )
+    )
+    mols.write_ob_mols_to_sdf_file('tests/TEST_dense_{}.sdf'.format(n_atoms), [mol])
+
+    assert mol.NumAtoms() == n_atoms, mol.NumAtoms()
+    assert mol.NumBonds() == n_atoms*(n_atoms-1)/2, mol.NumBonds()
+    for a in ob.OBMolAtomIter(mol):
+        for b in ob.OBMolAtomIter(mol):
+            if a != b:
+                assert mol.GetBond(a, b), 'missing bond'
+    return mol
+
+
+def test_reachable(dense):
+
+    f = lambda n: f(n-1) if n > 0 else True
+    assert f(100)
+    with pytest.raises(RecursionError):
+        f(1000)
+
+    atom_a = dense.GetAtom(1)
+    atom_b = dense.GetAtom(dense.NumAtoms())
+    assert atom_a and atom_b, (atom_a, atom_b)
+    assert dense.GetBond(atom_a, atom_b), 'not bonded'
+    assert reachable(atom_a, atom_b), 'not reachable'
+
+
+class asdfTestBondAdding(object):
 
     @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
     def typer(self, request):
