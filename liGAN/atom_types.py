@@ -348,17 +348,28 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return self.atom_type(*values)
 
     @classmethod
-    def get_typer(cls, prop_funcs, radius_func, device='cuda'):
+    def get_typer(cls, prop_funcs, radius_func, rec=False, device='cuda'):
 
         pf, rf = prop_funcs, radius_func
+
+        # first property is always atomic number
         prop_funcs = [Atom.atomic_num]
-        prop_ranges = [
-            #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
-            [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
-        ]
+
+        # use different ranges for receptors than ligands
+        # these ranges were selected using Crossdock2020
+        if rec:
+            prop_ranges = [
+                #C, N, O, Na, Mg,  P,  S, Cl,  K, Ca, Zn
+                [6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30]
+            ]
+        else: # ligand
+            prop_ranges = [
+                #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
+                [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
+            ]
 
         explicit_h = ('h' in pf)
-        if explicit_h: # explicit hydrogens
+        if explicit_h:
             prop_ranges[0].insert(0, 1)
 
         if 'o' in pf:
