@@ -105,32 +105,42 @@ def write_mols(visited_mols, in_mol, mode=None):
 
 
 def test_add_bond():
-
+    '''
+    Test basic OBMol bond adding methods.
+    '''
+    # create an empty molecule
     mol = ob.OBMol()
+    assert mol.NumAtoms() == 0, mol.NumAtoms()
+    assert mol.NumBonds() == 0, mol.NumBonds()
 
+    # add two atoms to the molecule
     a = mol.NewAtom()
     b = mol.NewAtom()
     assert mol.NumAtoms() == 2, mol.NumAtoms()
     assert mol.NumBonds() == 0, mol.NumBonds()
 
-    # OB atoms use one-based indexing
+    # OB uses 1-based atom indexing
     assert a.GetIdx() == 1, a.GetIdx()
     assert b.GetIdx() == 2, b.GetIdx()
-
-    # OB mol GetAtom uses one-based index
     assert mol.GetAtom(1) == a
     assert mol.GetAtom(2) == b
 
+    # add a bond between the atoms
     assert mol.AddBond(1, 2, 1, 0)
     assert mol.GetBond(1, 2) and mol.GetBond(2, 1)
     assert mol.GetBond(a, b) and mol.GetBond(b, a)
 
-    assert not mol.AddBond(1, 2, 1, 0), 'double add'
-    assert not mol.AddBond(2, 1, 1, 0), 'double add'
+    # try adding the same bond again
+    assert not mol.AddBond(1, 2, 1, 0)
+    assert not mol.AddBond(2, 1, 1, 0)
 
 
-@pytest.fixture(params=[10,20,30,40,50])
+@pytest.fixture(params=[10, 50])
 def dense(request):
+    '''
+    An OBMol where every atom is
+    bonded to every other atom.
+    '''
     n_atoms = request.param
     mol, atoms = mols.make_ob_mol(
         coords=np.random.normal(0, 10, (n_atoms, 3)),
@@ -155,12 +165,18 @@ def dense(request):
 
 
 def test_reachable(dense):
-
+    '''
+    Test the recursive function that decides
+    if two atoms are reachable without using
+    the bond between them.
+    '''
     f = lambda n: f(n-1) if n > 0 else True
     assert f(100)
     with pytest.raises(RecursionError):
         f(1000)
 
+    # the first and last atoms should take a
+    #   a pathologically long time to reach
     atom_a = dense.GetAtom(1)
     atom_b = dense.GetAtom(dense.NumAtoms())
     assert atom_a and atom_b, (atom_a, atom_b)
@@ -168,7 +184,7 @@ def test_reachable(dense):
     assert reachable(atom_a, atom_b), 'not reachable'
 
 
-class asdfTestBondAdding(object):
+class TestBondAdding(object):
 
     @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
     def typer(self, request):
