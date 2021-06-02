@@ -6,7 +6,7 @@ sys.path.insert(0, '.')
 import liGAN.molecules as mols
 from liGAN.molecules import ob, Molecule
 from liGAN.atom_types import Atom, AtomTyper
-from liGAN.bond_adding import BondAdder, get_max_valences, reachable
+from liGAN.bond_adding import BondAdder, get_max_valences, reachable, compare_bonds
 
 
 test_sdf_files = [
@@ -134,6 +134,10 @@ def test_add_bond():
     assert not mol.AddBond(1, 2, 1, 0)
     assert not mol.AddBond(2, 1, 1, 0)
 
+    # check that bond comparison holds
+    assert compare_bonds(mol.GetBond(1, 2), mol.GetBond(2, 1))
+    assert compare_bonds(mol.GetBond(a, b), mol.GetBond(b, a))
+
 
 @pytest.fixture(params=[10, 50])
 def dense(request):
@@ -164,7 +168,69 @@ def dense(request):
     return mol
 
 
-def test_reachable(dense):
+def test_reachable_basic():
+    '''
+    D--E
+    |\/
+    |/\
+    F  A--B
+       | /
+       |/
+       C
+    '''
+    mol = ob.OBMol()
+
+    def new_atom(x, y, z):
+        # caution: i is the *id*, not the idx
+        atom = mol.NewAtom(mol.NumAtoms())
+        atom.SetAtomicNum(6)
+        atom.SetVector(x, y, z)
+        return atom
+
+    def add_bond(a1, a2):
+        mol.AddBond(a1.GetIdx(), a2.GetIdx(), 1, 0)
+
+    a = new_atom(0, 0, 0)
+    b = new_atom(1, 0, 0)
+    with pytest.raises(AssertionError): # not bonded
+        reachable(a, b) or reachable(b, a)
+
+    add_bond(a, b)
+    assert not reachable(a, b) and not reachable(b, a)
+
+    c = new_atom(0, 2, 0)
+    add_bond(b, c)
+    assert not reachable(b, c) and not reachable(c, b)
+    with pytest.raises(AssertionError):
+        reachable(a, c) or reachable(c, a)
+
+    add_bond(a, c) # cycle formed
+    assert reachable(a, b) and reachable(b, a)
+    assert reachable(b, c) and reachable(c, b)
+    assert reachable(a, c) and reachable(c, a)
+
+    d = new_atom(0, 0, 3)
+    add_bond(a, d) # add unreachable group
+    assert not reachable(a, d) and not reachable(d, a)
+
+    e = new_atom(1, 0, 3)
+    f = new_atom(0, 2, 3)
+    add_bond(d, e)
+    add_bond(d, f)
+    add_bond(f, e) # form new cycle
+    assert reachable(d, e) and reachable(e, d)
+    assert reachable(d, f) and reachable(f, d)
+    assert reachable(f, e) and reachable(e, f)
+
+    #a.SetAtomicNum(8)
+    #a.GetBond(d).SetBondOrder(2)
+    #mols.write_ob_mols_to_sdf_file('tests/TEST_reachable.sdf', [mol])
+
+    # atoms connecting the two cycles should be unreachable
+    assert not reachable(a, d) and not reachable(d, a)
+
+
+def test_reachable_recursion(dense):
     '''
     Test the recursive function that decides
     if two atoms are reachable without using

@@ -502,6 +502,21 @@ def calc_valence(rd_atom):
     return val
 
 
+def compare_bonds(b1, b2):
+    '''
+    Return whether two OB bonds have the
+    the same begin and end atom indices,
+    assuming they're in the same mol.
+    '''
+    return (
+        b1.GetBeginAtomIdx() == b2.GetBeginAtomIdx() and
+        b1.GetEndAtomIdx() == b2.GetEndAtomIdx()
+    ) or (
+        b1.GetBeginAtomIdx() == b2.GetEndAtomIdx() and
+        b1.GetEndAtomIdx() == b2.GetBeginAtomIdx()
+    )
+
+
 def reachable_r(curr_atom, goal_atom, avoid_bond, visited_atoms):
     '''
     Recursive helper for determining whether
@@ -511,7 +526,7 @@ def reachable_r(curr_atom, goal_atom, avoid_bond, visited_atoms):
     for nbr_atom in ob.OBAtomAtomIter(curr_atom):
         curr_bond = curr_atom.GetBond(nbr_atom)
         nbr_atom_idx = nbr_atom.GetIdx()
-        if curr_bond != avoid_bond and nbr_atom_idx not in visited_atoms:
+        if not compare_bonds(curr_bond, avoid_bond) and nbr_atom_idx not in visited_atoms:
             visited_atoms.add(nbr_atom_idx)
             if nbr_atom == goal_atom:
                 return True
@@ -522,15 +537,22 @@ def reachable_r(curr_atom, goal_atom, avoid_bond, visited_atoms):
 
 def reachable(atom_a, atom_b):
     '''
-    Return true if atom b is reachable from a
-    without using the bond between them.
+    Return whether atom_b is reachable from atom_a
+    without using the bond between them, i.e. whether
+    the bond can be removed without fragmenting the
+    molecule (because the bond is part of a ring).
     '''
+    assert atom_a.GetBond(atom_b), 'atoms must be bonded'
+
     if atom_a.GetExplicitDegree() == 1 or atom_b.GetExplicitDegree() == 1:
         return False # this is the _only_ bond for one atom
 
     # otherwise do recursive traversal
     return reachable_r(
-        atom_a, atom_b, atom_a.GetBond(atom_b), {atom_a.GetIdx()}
+        curr_atom=atom_a,
+        goal_atom=atom_b,
+        avoid_bond=atom_a.GetBond(atom_b),
+        visited_atoms={atom_a.GetIdx()}
     )
 
 
