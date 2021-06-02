@@ -111,9 +111,9 @@ class Molecule(Chem.RWMol):
             self.sanitize()
             return True, 'valid molecule'
         except Chem.AtomValenceException:
-            return False, 'failed to kekulize'
-        except Chem.AtomKekulizeException:
             return False, 'invalid valence'
+        except Chem.AtomKekulizeException:
+            return False, 'failed to kekulize'
 
     def uff_minimize(self):
         '''
