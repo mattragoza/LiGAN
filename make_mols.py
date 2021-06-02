@@ -1,6 +1,7 @@
 import sys, os, re, time
 from functools import lru_cache
 import numpy as np
+import pandas as pd
 from rdkit import Chem
 import molgrid
 import liGAN
@@ -37,24 +38,41 @@ def make_mols(
     n_examples,
     typer_fns,
     use_ob_mol,
+    remove_h,
 ):
-    atom_typer = liGAN.atom_types.AtomTyper.get_typer(typer_fns, 'c', device='cpu')
+    atom_typer = liGAN.atom_types.AtomTyper.get_typer(
+        typer_fns, 'c', device='cpu'
+    )
     bond_adder = liGAN.bond_adding.BondAdder()
 
     if not os.path.isdir('mols'):
         os.mkdir('mols')
 
-    print(
-        'example_idx lig_name pose_idx n_atoms_diff elem_count_diff '
-        'prop_count_diff rd_sim ob_sim smi_match add_time',
-        flush=True
-    )
+    columns = [
+        'example_idx',
+        'lig_name',
+        'pose_idx',
+        'elem_count_diff',
+        'prop_count_diff',
+        'n_atoms_diff',
+        'lig_smi',
+        'lig_valid',
+        'lig_reason',
+        'lig_add_smi',
+        'lig_add_valid',
+        'lig_add_reason',
+        'smi_match',
+        'rd_sim',
+        'ob_sim',
+        'add_time',
+    ]
+    print(' '.join(columns), flush=True)
 
     f = open(data_file)
-    for i in range(n_examples):
+    for example_idx in range(n_examples):
 
         lig_src = next(f).rstrip().split(' ')[4]
-        lig_src_no_ext = os.path.splitext(lig_src)[0]
+        lig_src_no_ext = lig_src.split('.', 1)[0]
         lig_name = os.path.basename(lig_src_no_ext)
         lig_name, pose_idx = lig_name.rsplit('_', 1)
         pose_idx = int(pose_idx)
@@ -92,39 +110,59 @@ def make_mols(
 
         ### STRUCT-LEVEL METRICS ###
 
-        n_atoms_diff = ( # difference in num atoms
-            lig_add_mol.n_atoms - lig_rd_mol.n_atoms
-        )
+        type_count_diff = ( # difference in overall type counts 
+            lig_struct.type_counts - lig_add_struct.type_counts
+        ).abs().sum().item()
 
-        elem_count_diff = ( # difference in element counts 
+        elem_count_diff = ( # difference in element type counts 
             lig_struct.elem_counts - lig_add_struct.elem_counts
         ).abs().sum().item()
 
-        prop_count_diff = ( # difference in property counts
+        prop_count_diff = ( # difference in property type counts
             lig_struct.prop_counts - lig_add_struct.prop_counts
         ).abs().sum().item()
 
         ### MOLECULE-LEVEL METRICS ###
 
+        n_atoms_diff = ( # difference in num atoms
+            lig_add_mol.n_atoms - lig_rd_mol.n_atoms
+        )
+
         # validate output molecule
         lig_add_valid, lig_add_reason = lig_add_mol.validate()
 
+        if remove_h: # remove hydrogen before computing similarity
+            lig_rd_mol = lig_rd_mol.remove_hs()
+            lig_add_mol = lig_add_mol.remove_hs()
+
+        # smiles string comparison
+        lig_smi = lig_rd_mol.to_smi()
+        lig_add_smi = lig_add_mol.to_smi()
+        smi_match = (lig_smi == lig_add_smi)
+
         if lig_valid and lig_add_valid:
-
-            # smiles string comparison
-            lig_smi = lig_rd_mol.to_smi()
-            lig_add_smi = lig_add_mol.to_smi()
-
             rd_sim = mols.get_rd_mol_similarity(lig_add_mol, lig_rd_mol)
             ob_sim = mols.get_ob_smi_similarity(lig_add_smi, lig_smi)
-
-            smi_match = (lig_smi == lig_add_smi)
         else:
-            rd_sim = ob_sim = smi_match = np.nan
+            rd_sim = ob_sim = np.nan
 
-        print('{} {} {} {} {} {} {:.4f} {:.4f} {} {:.4f}'.format(
-            i, lig_name, pose_idx, n_atoms_diff, elem_count_diff,
-            prop_count_diff, rd_sim, ob_sim, smi_match, add_time,
+        print('{} {} {} {} {} {} "{}" {} "{}" "{}" {} "{}" {} {:.4f} {:.4f} {:.4f}'.format(
+            example_idx,
+            lig_name,
+            pose_idx,
+            elem_count_diff,
+            prop_count_diff,
+            n_atoms_diff,
+            lig_smi,
+            lig_valid,
+            lig_reason,
+            lig_add_smi,
+            lig_add_valid,
+            lig_add_reason,
+            smi_match,
+            rd_sim,
+            ob_sim,
+            add_time,
         ), flush=True)
 
         if not smi_match: # write out the mismatched molecules
@@ -137,5 +175,12 @@ def make_mols(
 
 
 if __name__ == '__main__':
-    data_root, data_file, n_examples, typer_fns, use_ob_mol = sys.argv[1:]
-    make_mols(data_root, data_file, int(n_examples), typer_fns, use_ob_mol)
+    data_root, data_file, n_examples, typer_fns, use_ob_mol, remove_h = sys.argv[1:]
+    make_mols(
+        data_root,
+        data_file,
+        int(n_examples),
+        typer_fns,
+        use_ob_mol,
+        remove_h
+    )

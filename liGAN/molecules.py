@@ -99,6 +99,9 @@ class Molecule(Chem.RWMol):
     def add_hs(self):
         return type(self)(Chem.AddHs(self, addCoords=True))
 
+    def remove_hs(self):
+        return type(self)(Chem.RemoveHs(self, sanitize=False))
+
     def validate(self):
         if self.n_atoms == 0:
             return False, 'no atoms'

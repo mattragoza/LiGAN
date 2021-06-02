@@ -452,7 +452,12 @@ class OutputWriter(object):
 
         if ref_struct is not None:
 
-            # type count difference
+            # difference in num atoms
+            m.loc[idx, struct_type+'_n_atoms_diff'] = (
+                ref_struct.n_atoms - struct.n_atoms
+            )
+
+            # overall type count difference
             m.loc[idx, struct_type+'_type_diff'] = (
                 ref_struct.type_counts - struct.type_counts
             ).norm(p=1).item()
@@ -461,7 +466,7 @@ class OutputWriter(object):
                 m.loc[idx, struct_type+'_type_diff'] == 0
             )
 
-            # element count difference
+            # element type count difference
             m.loc[idx, struct_type+'_elem_diff'] = (
                 ref_struct.elem_counts - struct.elem_counts
             ).norm(p=1).item()
@@ -470,7 +475,7 @@ class OutputWriter(object):
                 m.loc[idx, struct_type+'_elem_diff'] == 0
             )
 
-            # property count difference
+            # property type count difference
             m.loc[idx, struct_type+'_prop_diff'] = (
                 ref_struct.prop_counts - struct.prop_counts
             ).norm(p=1).item()
@@ -527,6 +532,12 @@ class OutputWriter(object):
         m.loc[idx, mol_type+'_SMILES'] = smi
 
         if ref_mol: # compare to ref_mol
+
+            # difference in num atoms
+            m.loc[idx, mol_type+'_n_atoms_diff'] = (
+                ref_mol.n_atoms - mol.n_atoms
+            )
+
             ref_valid, ref_reason = ref_mol.validate()
 
             # get reference SMILES strings
@@ -534,6 +545,7 @@ class OutputWriter(object):
             m.loc[idx, mol_type+'_SMILES_match'] = (smi == ref_smi)
 
             if valid and ref_valid: # fingerprint similarity
+
                 m.loc[idx, mol_type+'_ob_sim'] = \
                     mols.get_ob_smi_similarity(ref_smi, smi)
                 m.loc[idx, mol_type+'_rdkit_sim'] = \
