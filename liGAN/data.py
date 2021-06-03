@@ -48,7 +48,11 @@ class AtomGridData(nn.Module):
         )
 
         # create molgrid maker and output tensors
-        self.grid_maker = molgrid.GridMaker(resolution, dimension)
+        self.grid_maker = molgrid.GridMaker(
+            resolution=resolution,
+            dimension=dimension,
+            gaussian_radius_multiple=-1.5,
+        )
         self.grids = torch.zeros(
             batch_size,
             self.n_rec_channels + self.n_lig_channels,

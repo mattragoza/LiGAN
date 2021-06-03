@@ -121,6 +121,7 @@ class TestAtomFitter(object):
                 size=32,
                 resolution=resolution
             ),
+            gaussian_radius_multiple=-1.5
         ))
 
     @pytest.fixture

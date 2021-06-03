@@ -91,7 +91,7 @@ class AtomFitter(object):
         self.verbose = verbose
         self.debug = debug
 
-        self.grid_maker = molgrid.GridMaker()
+        self.grid_maker = molgrid.GridMaker(gaussian_radius_multiple=-1.5)
         self.c2grid = molgrid.Coords2Grid(self.grid_maker)
 
         # lazily initialize atom density kernel
