@@ -12,7 +12,7 @@ from liGAN.atom_types import (
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf', ];[
+    'data/O_2_0_0.sdf',
     'data/N_2_0_0.sdf',
     'data/C_2_0_0.sdf',
     'data/benzene.sdf',
@@ -46,11 +46,12 @@ def test_make_one_hot():
 class TestAtomTyper(object):
 
     @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
-    def typer(self, request):
-        return AtomTyper.get_typer(
-            prop_funcs=request.param,
-            radius_func=Atom.cov_radius,
-        )
+    def prop_funcs(self, request):
+        return request.param
+
+    @pytest.fixture
+    def typer(self, prop_funcs):
+        return AtomTyper.get_typer(prop_funcs, radius_func=1.0)
 
     @pytest.fixture(params=test_sdf_files)
     def mol(self, request):
@@ -99,7 +100,7 @@ class TestAtomTyper(object):
                 Atom.aromatic,
                 Atom.h_acceptor,
                 Atom.h_donor,
-                Atom.h_degree,
+                Atom.h_count,
                 Atom.formal_charge,
             ]:
                 if f in typer:

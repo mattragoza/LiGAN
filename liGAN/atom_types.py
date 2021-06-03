@@ -203,11 +203,13 @@ class Atom(ob.OBAtom):
     def exp_h_count(self):
         return self.GetExplicitDegree() - self.GetHvyDegree()
 
-    def vdw_radius(self):
-        return ob.GetVdwRad(self)
+    @staticmethod
+    def vdw_radius(atomic_num):
+        return ob.GetVdwRad(atomic_num)
 
-    def cov_radius(self):
-        return ob.GetCovalentRad(self)
+    @staticmethod
+    def cov_radius(atomic_num):
+        return ob.GetCovalentRad(atomic_num)
 
 
 class AtomTyper(molgrid.PythonCallbackVectorTyper):
@@ -392,11 +394,17 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
             prop_funcs += [Atom.h_count]
             prop_ranges += [[0, 1, 2, 3, 4]]
 
-        if rf == 'v': # van der Waals
-            radius_func = Atom.vdw_radius
+        try: # interpret as fixed radius
+            fixed_radius = float(rf)
+            radius_func = lambda x: fixed_radius
 
-        elif rf == 'c': # covalent
-            radius_func = Atom.cov_radius
+        except: # element-specific radius
+
+            if rf == 'v': # van der Waals
+                radius_func = Atom.vdw_radius
+
+            elif rf == 'c': # covalent
+                radius_func = Atom.cov_radius
 
         return cls(prop_funcs, prop_ranges, radius_func, explicit_h, device)
 

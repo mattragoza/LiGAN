@@ -14,8 +14,10 @@ from liGAN.metrics import compute_struct_rmsd
 
 test_sdf_files = [
     'data/O_2_0_0.sdf', 'data/N_2_0_0.sdf', 'data/C_2_0_0.sdf',
-    'data/benzene.sdf', 'data/neopentane.sdf',
-    'data/sulfone.sdf', 'data/ATP.sdf',
+    'data/benzene.sdf',
+    'data/neopentane.sdf',
+    'data/sulfone.sdf',
+    'data/ATP.sdf',
 ]
 
 
@@ -91,12 +93,15 @@ def idx(request):
 class TestAtomFitter(object):
 
     @pytest.fixture(params=[
-        '-c',     '-v',
-        'oad-c',  'oad-v',
-        'oadc-c', 'oadc-v',
-        'on-c',   'on-v',
+        #'-c',     '-v',
+        #'oad-c',  'oad-v',
+        #'oadc-c', 'oadc-v',
+        #'on-c',   'on-v',
         #'oh-c', # different num atoms (missing Hs on all tests)
-        'oh-v', # different property counts (not all carbons aromatic, or aromatic Hs if using convolution)
+        #'oh-v', # different property counts (not all carbons aromatic, or aromatic Hs if using convolution)
+        'oadc-0.50', 'oadc-1.00', 'oadc-1.50',
+        'on-0.50',   'on-1.00',   'on-1.50',
+        'oh-0.50',   'oh-1.00',   'oh-1.50',
     ])
     def typer(self, request):
         prop_funcs, radius_func = request.param.split('-')

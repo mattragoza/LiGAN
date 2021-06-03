@@ -279,6 +279,9 @@ class AtomFitter(object):
         the method assumes that values/coords/indices 
         are all sorted by value.
         '''
+        if len(coords) <= 1: # nothing to suppress
+            return coords, idx_xyz, idx_c
+
         r = typer.elem_radii
         if matrix or (matrix is None and len(coords) < 1000):
 
@@ -360,6 +363,7 @@ class AtomFitter(object):
         if (
             not_none(self.min_dist) and self.min_dist > 0.0
             and not_none(self.n_atoms_detect) and self.n_atoms_detect > 1
+            and len(coords) > 1
         ):
             coords, idx_xyz, idx_c = self.suppress_non_max(
                 values, coords, idx_xyz, idx_c, grid.typer
