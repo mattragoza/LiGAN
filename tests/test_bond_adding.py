@@ -54,7 +54,7 @@ def iter_atom_pairs(in_mol, out_mol, explicit_h=False):
 
 
 def write_pymol(visited_mols, in_mol):
-    pymol_file = 'tests/TEST_' + in_mol.name + '.pymol'
+    pymol_file = 'tests/output/TEST_' + in_mol.name + '.pymol'
     with open(pymol_file, 'w') as f:
         f.write('load {}\n'.format(write_mols(visited_mols, in_mol)))
         f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'a')))
@@ -99,7 +99,7 @@ def write_mols(visited_mols, in_mol, mode=None):
     if mode:
         mol_name += '_' + mode
 
-    mol_file = 'tests/TEST_{}.sdf'.format(mol_name)
+    mol_file = 'tests/output/TEST_{}.sdf'.format(mol_name)
     mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
     return mol_file
 
@@ -157,7 +157,7 @@ def dense(request):
             explicit_h=False
         )
     )
-    mols.write_ob_mols_to_sdf_file('tests/TEST_dense_{}.sdf'.format(n_atoms), [mol])
+    mols.write_ob_mols_to_sdf_file('tests/output/TEST_dense_{}.sdf'.format(n_atoms), [mol])
 
     assert mol.NumAtoms() == n_atoms, mol.NumAtoms()
     assert mol.NumBonds() == n_atoms*(n_atoms-1)/2, mol.NumBonds()
@@ -224,7 +224,7 @@ def test_reachable_basic():
 
     #a.SetAtomicNum(8)
     #a.GetBond(d).SetBondOrder(2)
-    #mols.write_ob_mols_to_sdf_file('tests/TEST_reachable.sdf', [mol])
+    #mols.write_ob_mols_to_sdf_file('tests/output/TEST_reachable.sdf', [mol])
 
     # atoms connecting the two cycles should be unreachable
     assert not reachable(a, d) and not reachable(d, a)

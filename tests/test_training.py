@@ -16,10 +16,10 @@ def solver(request):
         data_kws=dict(
             data_root='data/molport',
             batch_size=1,
-            rec_typer='on-c',
-            lig_typer='on-c',
-            resolution=0.5,
-            grid_size=20,
+            rec_typer='on-1',
+            lig_typer='on-1',
+            resolution=1.0,
+            grid_size=10,
             shuffle=False,
             random_rotation=False,
             random_translation=0,
@@ -53,7 +53,7 @@ def solver(request):
             final_gd_iters=0,
         ),
         bond_adding_kws=dict(),
-        out_prefix='tests/TEST',
+        out_prefix='tests/output/TEST',
         device='cuda'
     )
 

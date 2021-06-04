@@ -71,7 +71,7 @@ def test_fix_valence(bad_mol_file):
     assert ob.OBKekulize(ob_mol), 'failed to kekulize'
     visited_mols.append(mols.copy_ob_mol(ob_mol))
 
-    write_aromatic('ob_' + bad_mol_file, visited_mols)
+    write_aromatic('tests/output/TEST_' + bad_mol_file, visited_mols)
 
     ob_mol = mols.Molecule.from_ob_mol(ob_mol)
     ob_mol.sanitize()

@@ -13,7 +13,9 @@ from liGAN.metrics import compute_struct_rmsd
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf', 'data/N_2_0_0.sdf', 'data/C_2_0_0.sdf',
+    'data/O_2_0_0.sdf',
+    'data/N_2_0_0.sdf',
+    'data/C_2_0_0.sdf',
     'data/benzene.sdf',
     'data/neopentane.sdf',
     'data/sulfone.sdf',
@@ -28,7 +30,7 @@ def write_pymol(
     conv_grid=None
 ):
     mol_name = in_struct.info['name']
-    pymol_file = 'tests/TEST_' + mol_name + '_fit.pymol'
+    pymol_file = 'tests/output/TEST_' + mol_name + '_fit.pymol'
     with open(pymol_file, 'w') as f:
 
         if visited_structs:
@@ -64,7 +66,7 @@ def write_pymol(
 
 
 def write_grid(grid, mol_name, grid_type):
-    dx_prefix = 'tests/TEST_{}_{}_0'.format(mol_name, grid_type)
+    dx_prefix = 'tests/output/TEST_{}_{}_0'.format(mol_name, grid_type)
     dx_files = grid.to_dx(dx_prefix)
     return dx_prefix + '*.dx', dx_prefix
 
@@ -80,7 +82,7 @@ def make_grid(grid, elem_values):
 def write_structs(visited_structs, in_mol, mol_name):
     visited_mols = [m.to_ob_mol()[0] for m in visited_structs]
     write_mols = visited_mols + [in_mol]
-    mol_file = 'tests/TEST_{}_fit.sdf'.format(mol_name)
+    mol_file = 'tests/output/TEST_{}_fit.sdf'.format(mol_name)
     mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
     return mol_file
 

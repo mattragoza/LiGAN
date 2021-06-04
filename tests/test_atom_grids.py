@@ -44,18 +44,18 @@ class TestAtomGrid(object):
         assert new_grid.typer is grid.typer, 'different atom typer'
 
     def test_to_dx(self, grid):
-        dx_files = grid.to_dx('tests/TEST')
-        assert dx_files == ['tests/TEST_atomic_num_8.dx'], \
+        dx_files = grid.to_dx('tests/output/TEST')
+        assert dx_files == ['tests/output/TEST_atomic_num_8.dx'], \
             'incorrect file names'
 
     def test_from_dx(self, typer):
-        grid = AtomGrid.from_dx('tests/TEST', typer)
+        grid = AtomGrid.from_dx('tests/output/TEST', typer)
         assert grid.n_channels == 1, 'incorrect num channels'
         assert grid.size == 5, 'incorrect grid size'
 
     def test_to_and_from_dx(self, grid):
-        dx_files = grid.to_dx('tests/TEST')
-        new_grid = AtomGrid.from_dx('tests/TEST', grid.typer)
+        dx_files = grid.to_dx('tests/output/TEST')
+        new_grid = AtomGrid.from_dx('tests/output/TEST', grid.typer)
         print(grid.values)
         print()
         print(new_grid.values)
