@@ -1,4 +1,4 @@
-import sys, gzip, traceback, time
+import sys, os, gzip, traceback, time
 from functools import lru_cache
 from collections import Counter
 import numpy as np
@@ -249,6 +249,7 @@ def copy_ob_mol(ob_mol):
 
 
 def read_ob_mols_from_file(mol_file, in_format):
+    assert os.path.isfile(mol_file), 'file does not exist'
     ob_conv = ob.OBConversion()
     ob_conv.SetInFormat(in_format)
     ob_mol = ob.OBMol()

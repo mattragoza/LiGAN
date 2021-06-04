@@ -425,8 +425,12 @@ class TestBondAdding(object):
         assert prop_diff == 0, \
             'different property counts ({})'.format(prop_diff)
 
-        mols.Chem.SanitizeMol(in_mol)
-        mols.Chem.SanitizeMol(out_mol)
+        out_valid, out_reason = out_mol.validate()
+        assert out_valid, 'out_mol ' + out_reason
+
+        in_valid, in_reason = in_mol.validate()
+        assert in_valid, 'in_mol ' + in_reason
+
         in_smi = in_mol.to_smi()
         out_smi = out_mol.to_smi()
         rd_sim = mols.get_rd_mol_similarity(out_mol, in_mol, 'rdkit')
