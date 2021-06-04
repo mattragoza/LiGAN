@@ -174,11 +174,12 @@ def read_rd_mol_from_pdb_file(pdb_file, sanitize=True):
 
 def read_rd_mols_from_sdf_file(sdf_file, sanitize=True):
     if sdf_file.endswith('.gz'):
-        f = gzip.open(sdf_file)
-        suppl = Chem.ForwardSDMolSupplier(f, sanitize=sanitize)
+        with gzip.open(sdf_file) as f:
+            suppl = Chem.ForwardSDMolSupplier(f, sanitize=sanitize)
+            return [Molecule(mol) for mol in suppl]
     else:
         suppl = Chem.SDMolSupplier(sdf_file, sanitize=sanitize)
-    return [Molecule(mol) for mol in suppl]
+        return [Molecule(mol) for mol in suppl]
 
 
 def write_rd_mol_to_sdf_file(sdf_file, mol, name='', kekulize=True):
