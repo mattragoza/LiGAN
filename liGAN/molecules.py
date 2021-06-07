@@ -41,7 +41,7 @@ class Molecule(Chem.RWMol):
 
     @classmethod
     def from_ob_mol(cls, ob_mol):
-        return cls(ob_mol_to_rd_mol(ob_mol))
+        return cls(ob_mol_to_rd_mol(ob_mol), ob_mol=ob_mol)
 
     @classmethod
     def from_sdf(cls, sdf_file, sanitize=True, idx=0):

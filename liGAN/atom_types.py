@@ -289,6 +289,12 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def elem_range(self):
         return self.prop_ranges[0]
 
+    @elem_range.setter
+    def elem_range(self, new_elem_range):
+        assert len(new_elem_range) > 0, 'empty element range'
+        assert bool(self.explicit_h) == (1 in new_elem_range)
+        self.prop_ranges[0] = new_elem_range
+
     def __contains__(self, prop):
         return prop in self.prop_idx
 

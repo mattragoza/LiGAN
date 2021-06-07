@@ -1,4 +1,4 @@
-import sys, os, pytest
+import sys, os, pytest, time
 import numpy as numpy
 from numpy import isclose
 from numpy.linalg import norm
@@ -151,7 +151,7 @@ class TestDecoder(object):
 
 class TestGenerator(object):
 
-    @pytest.fixture(params=['AE','CE','VAE','CVAE','GAN','CGAN'])
+    @pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN'])
     def gen(self, request):
         model_type = getattr(models, request.param)
         return model_type(
@@ -317,3 +317,35 @@ class TestGenerator(object):
         models.normalize_grad(gen)
 
         assert isclose(1, models.compute_grad_norm(gen))
+
+    def test_gen_benchmark(self, gen):
+
+        t0 = time.time()
+        for i in range(10):
+
+            batch_size = 10
+            inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
+            conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
+
+            if type(gen) == models.AE:
+                generated, latents = gen(inputs)
+
+            elif type(gen) == models.CE:
+                generated, latents = gen(conditions)
+
+            elif type(gen) == models.VAE:
+                generated, latents, means, log_stds = gen(inputs, batch_size)
+
+            elif type(gen) == models.CVAE:
+                generated, latents, means, log_stds = gen(
+                    inputs, conditions, batch_size
+                )
+
+            elif type(gen) == models.GAN:
+                generated, latents = gen(batch_size)
+
+            elif type(gen) == models.CGAN:
+                generated, latents = gen(conditions, batch_size)
+
+        t_delta = time.time() - t0
+        assert t_delta < 1, 'too slow'

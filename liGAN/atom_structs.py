@@ -33,12 +33,9 @@ class AtomStruct(object):
 
         self.info = info
 
-        self.atom_types = [
-            self.typer.get_atom_type(t) for t in self.types
-        ]
-        self.atomic_radii = torch.as_tensor([
-            typer.radius_func(a.atomic_num) for a in self.atom_types
-        ], dtype=dtype, device=device)
+        # compute these lazily, since they're expensive and not always needed
+        self._atom_types = None
+        self._atomic_radii = None
 
     @staticmethod
     def check_shapes(coords, types, typer):
@@ -87,6 +84,22 @@ class AtomStruct(object):
         channels_file = os.path.splitext(sdf_file)[0] + '.channels'
         types = read_channels_from_file(channels_file, channels)
         return cls.from_rd_mol(rd_mol, types, channels)
+
+    @property
+    def atom_types(self):
+        if self._atom_types is None:
+            self._atom_types = [
+                self.typer.get_atom_type(t) for t in self.types
+            ]
+        return self._atom_types
+
+    @property
+    def atomic_radii(self):
+        if self._atomic_radii is None:
+            self._atomic_radii = torch.as_tensor([
+                self.typer.radius_func(a.atomic_num) for a in self.atom_types
+            ], dtype=self.dtype, device=self.device)
+        return self._atomic_radii
 
     @property
     def n_atoms(self):

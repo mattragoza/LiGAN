@@ -1,3 +1,4 @@
+import sys, os, re, time
 import torch
 from torch import nn
 
@@ -24,6 +25,7 @@ class AtomGridData(nn.Module):
         rec_molcache=None,
         lig_molcache=None,
         device='cuda',
+        debug=False,
     ):
         super().__init__()
 
@@ -68,6 +70,7 @@ class AtomGridData(nn.Module):
 
         self.random_rotation = random_rotation
         self.random_translation = random_translation
+        self.debug = debug
 
     @classmethod
     def from_param(cls, param):
@@ -131,15 +134,17 @@ class AtomGridData(nn.Module):
         split_rec_lig=False,
         ligand_only=False,
     ):
-        assert len(self) > 0
+        assert len(self) > 0, 'data is empty'
 
         # get next batch of structures and labels
         examples = self.ex_provider.next_batch(self.batch_size)
         examples.extract_label(0, self.labels)
+        t1 = time.time()
 
         rec_structs = []
         lig_structs = []
         for i, example in enumerate(examples):
+            t0 = time.time()
 
             rec_coord_set, lig_coord_set = example.coord_sets
             transform = molgrid.Transform(
@@ -150,6 +155,7 @@ class AtomGridData(nn.Module):
             self.transforms[i] = transform # store transforms
             transform.forward(example, example)
             self.grid_maker.forward(example, self.grids[i])
+            t1 = time.time()
 
             rec_struct = atom_structs.AtomStruct.from_coord_set(
                 rec_coord_set,
@@ -163,6 +169,10 @@ class AtomGridData(nn.Module):
             )
             rec_structs.append(rec_struct)
             lig_structs.append(lig_struct)
+
+            t2 = time.time()
+            if self.debug:
+                print(t1-t0, t2-t1)
         
         if split_rec_lig or ligand_only:
 

@@ -1,4 +1,4 @@
-import sys, os, pytest
+import sys, os, pytest, time
 from numpy import isclose
 from caffe.proto import caffe_pb2
 os.environ['GLOG_minloglevel'] = '1'
@@ -20,6 +20,7 @@ class TestAtomGridData(object):
             resolution=0.5,
             dimension=23.5,
             shuffle=False,
+            debug=True,
         )
 
     @pytest.fixture
@@ -100,3 +101,11 @@ class TestAtomGridData(object):
         assert not isclose(0, rec_grids.norm().cpu())
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
+
+    def test_data_benchmark(self, data, data_file):
+        data.populate(data_file)
+        t0 = time.time()
+        for i in range(10):
+            data.forward()
+        t_delta = time.time() - t0
+        assert t_delta < 1, 'too slow'

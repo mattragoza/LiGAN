@@ -1,25 +1,27 @@
-import sys, os, pytest
+import sys, os, pytest, time
 from numpy import isclose, isnan
+import pandas as pd
 from torch import optim
 
 sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
+@pytest.fixture(params=['AE']) #, 'CE', 'VAE', 'CVAE'])
 def solver(request):
+    model_type = request.param
     return getattr(
-        liGAN.training, request.param + 'Solver'
+        liGAN.training, model_type + 'Solver'
     )(
-        train_file='data/molportFULL_rand_test0_50.types',
-        test_file='data/molportFULL_rand_test0_50.types',
+        train_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
+        test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         data_kws=dict(
-            data_root='data/molport',
-            batch_size=1,
+            data_root='data/crossdock2020',
+            batch_size=10,
             rec_typer='on-1',
             lig_typer='on-1',
-            resolution=1.0,
-            grid_size=10,
+            resolution=0.5,
+            grid_size=1,
             shuffle=False,
             random_rotation=False,
             random_translation=0,
@@ -27,11 +29,11 @@ def solver(request):
             lig_molcache=None,
         ),
         gen_model_kws=dict(
-            n_filters=5,
-            n_levels=3,
+            n_filters=1,
+            n_levels=1,
             conv_per_level=1,
-            batch_norm=2,
-            n_latent=128,
+            batch_norm=0,
+            n_latent=1,
             init_conv_pool=False,
             skip_connect=True,
         ),
@@ -46,14 +48,9 @@ def solver(request):
             betas=(0.9, 0.999),
         ),
         disc_optim_kws=None,
-        atom_fitting_kws=dict(
-            multi_atom=True,
-            n_atoms_detect=10,
-            interm_gd_iters=0,
-            final_gd_iters=0,
-        ),
+        atom_fitting_kws=dict(),
         bond_adding_kws=dict(),
-        out_prefix='tests/output/TEST',
+        out_prefix='tests/output/TEST_' + model_type,
         device='cuda'
     )
 
@@ -84,25 +81,39 @@ class TestSolver(object):
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
 
-    def test_solver_test_fit(self, solver):
+    def asdf_test_solver_test_fit(self, solver):
         solver.test(1, fit_atoms=True)
         assert solver.curr_iter == 0
         assert len(solver.metrics) == 1
         assert 'lig_gen_fit_type_diff' in solver.metrics
 
     def test_solver_train(self, solver):
+        max_iter = 100
+        test_interval = 10
+        n_test_batches = 1
+        fit_interval = 0
+        save_interval = 100
+
+        t0 = time.time()
         solver.train(
-            max_iter=10,
-            test_interval=10,
-            n_test_batches=1,
-            fit_interval=10,
-            save_interval=10,
+            max_iter,
+            test_interval,
+            n_test_batches,
+            fit_interval,
+            save_interval
         )
-        assert solver.curr_iter == 10
-        assert len(solver.metrics) == (1 + 10 + 1 + 1)
+        t_delta = time.time() - t0
+
+        pd.set_option('display.max_columns', 100)
+        print(solver.metrics)
+        assert solver.curr_iter == max_iter
+        assert len(solver.metrics) == (
+            max_iter + 1 + (max_iter//test_interval + 1) * n_test_batches
+        )
         assert 'recon_loss' in solver.metrics
         if isinstance(solver, liGAN.training.VAESolver):
             assert 'kldiv_loss' in solver.metrics
-        loss_i = solver.metrics.loc[( 0, 'test'), 'loss'].mean()
-        loss_f = solver.metrics.loc[(10, 'test'), 'loss'].mean()
+        loss_i = solver.metrics.loc[(0, 'train'), 'loss'].mean()
+        loss_f = solver.metrics.loc[(max_iter, 'train'), 'loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
+        assert t_delta < 10, 'too slow'

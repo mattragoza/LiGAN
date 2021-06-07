@@ -64,7 +64,8 @@ class BondAdder(object):
         for bond in ob.OBMolBondIter(ob_mol):
             a1 = bond.GetBeginAtom()
             a2 = bond.GetEndAtom()
-            bond.SetAromatic(a1.IsAromatic() and a2.IsAromatic())
+            if bond.IsInRing():
+                bond.SetAromatic(a1.IsAromatic() and a2.IsAromatic())
 
         return True
 
@@ -380,6 +381,11 @@ class BondAdder(object):
         self.make_h_explicit(ob_mol, atoms)
         visit_mol(ob_mol, 'fill_rem_valences')
 
+        # set flags to try to prevent further perception
+        ob_mol.SetHydrogensAdded(True)
+        ob_mol.SetAromaticPerceived(True)
+        ob_mol.SetHybridizationPerceived(True)
+
         return ob_mol, visited_mols
 
     def post_process_rd_mol(self, rd_mol, struct=None):
@@ -471,7 +477,7 @@ class BondAdder(object):
         add_mol = Molecule.from_ob_mol(ob_mol)
 
         # convert output mol back to struct, to see if types match
-        add_struct = struct.typer.make_struct(add_mol.to_ob_mol())
+        add_struct = struct.typer.make_struct(ob_mol)
 
         visited_mols = [
             Molecule.from_ob_mol(m) for m in visited_mols
