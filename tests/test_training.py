@@ -2,12 +2,26 @@ import sys, os, pytest, time
 from numpy import isclose, isnan
 import pandas as pd
 from torch import optim
+pd.set_option('display.max_rows', 100)
+pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
 import liGAN
 
 
-@pytest.fixture(params=['AE']) #, 'CE', 'VAE', 'CVAE'])
+@pytest.fixture
+def train_params():
+    return dict(
+        max_iter=10,
+        test_interval=10,
+        n_test_batches=1,
+        fit_interval=0,
+        norm_interval=0,
+        save_interval=10,
+    )
+
+
+@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
 def solver(request):
     model_type = request.param
     return getattr(
@@ -17,23 +31,21 @@ def solver(request):
         test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         data_kws=dict(
             data_root='data/crossdock2020',
-            batch_size=10,
+            batch_size=1,
             rec_typer='on-1',
             lig_typer='on-1',
             resolution=0.5,
-            grid_size=1,
+            dimension=23.5,
             shuffle=False,
             random_rotation=False,
             random_translation=0,
-            rec_molcache=None,
-            lig_molcache=None,
+            cache_structs=False,
         ),
         gen_model_kws=dict(
-            n_filters=1,
-            n_levels=1,
-            conv_per_level=1,
-            batch_norm=0,
-            n_latent=1,
+            n_filters=32,
+            n_levels=4,
+            conv_per_level=3,
+            n_latent=1024,
             init_conv_pool=False,
             skip_connect=True,
         ),
@@ -72,8 +84,15 @@ class TestSolver(object):
         assert not isnan(loss.item()), 'loss is nan'
 
     def test_solver_step(self, solver):
-        metrics_i = solver.step()
+        metrics_i = solver.step(compute_norm=False)
         _, metrics_f = solver.forward(solver.train_data)
+        assert isnan(metrics_i['gen_grad_norm']), 'grad norm computed'
+        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+
+    def test_solver_step_norm(self, solver):
+        metrics_i = solver.step(compute_norm=True)
+        _, metrics_f = solver.forward(solver.train_data)
+        assert not isnan(metrics_i['gen_grad_norm']), 'grad norm not computed'
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
 
     def test_solver_test(self, solver):
@@ -87,24 +106,16 @@ class TestSolver(object):
         assert len(solver.metrics) == 1
         assert 'lig_gen_fit_type_diff' in solver.metrics
 
-    def test_solver_train(self, solver):
-        max_iter = 100
-        test_interval = 10
-        n_test_batches = 1
-        fit_interval = 0
-        save_interval = 100
+    def test_solver_train(self, solver, train_params):
+
+        max_iter = train_params['max_iter']
+        test_interval = train_params['test_interval']
+        n_test_batches = train_params['n_test_batches']
 
         t0 = time.time()
-        solver.train(
-            max_iter,
-            test_interval,
-            n_test_batches,
-            fit_interval,
-            save_interval
-        )
+        solver.train(**train_params)
         t_delta = time.time() - t0
 
-        pd.set_option('display.max_columns', 100)
         print(solver.metrics)
         assert solver.curr_iter == max_iter
         assert len(solver.metrics) == (
@@ -116,4 +127,10 @@ class TestSolver(object):
         loss_i = solver.metrics.loc[(0, 'train'), 'loss'].mean()
         loss_f = solver.metrics.loc[(max_iter, 'train'), 'loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
-        assert t_delta < 10, 'too slow'
+
+        t_per_iter = t_delta / max_iter
+        iters_per_day = (24*60*60) / t_per_iter
+        k_iters_per_day = int(iters_per_day//1000)
+        assert k_iters_per_day >= 100, 'too slow ({:d}k iters/day)'.format(
+            k_iters_per_day
+        )

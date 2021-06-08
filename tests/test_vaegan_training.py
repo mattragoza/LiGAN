@@ -1,46 +1,59 @@
-import sys, os, pytest
+import sys, os, pytest, time
 from numpy import isclose, isnan
-from torch import optim
 import pandas as pd
+from torch import optim
 pd.set_option('display.max_rows', 100)
+pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
 import liGAN
 
 
+@pytest.fixture
+def train_params():
+    return dict(
+        max_iter=10,
+        test_interval=10,
+        n_test_batches=1,
+        fit_interval=0,
+        norm_interval=0,
+        save_interval=10,
+    )
+
+
 @pytest.fixture(params=['VAEGAN', 'CVAEGAN'])
 def solver(request):
+    model_type = request.param
     return getattr(
-        liGAN.training, request.param + 'Solver'
+        liGAN.training, model_type + 'Solver'
     )(
-        train_file='data/molportFULL_rand_test0_50.types',
-        test_file='data/molportFULL_rand_test0_50.types',
+        train_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
+        test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         data_kws=dict(
-            data_root='data/molport',
+            data_root='data/crossdock2020',
             batch_size=1,
             rec_typer='on-1',
             lig_typer='on-1',
-            resolution=1.0,
-            grid_size=10,
+            resolution=0.5,
+            dimension=23.5,
             shuffle=False,
             random_rotation=False,
             random_translation=0,
-            rec_molcache=None,
-            lig_molcache=None,
+            cache_structs=False,
         ),
         gen_model_kws=dict(
-            n_filters=5,
-            n_levels=3,
-            conv_per_level=1,
+            n_filters=32,
+            n_levels=4,
+            conv_per_level=3,
             spectral_norm=2,
-            n_latent=128,
+            n_latent=1024,
             init_conv_pool=False,
             skip_connect=True,
         ),
         disc_model_kws=dict(
-            n_filters=5,
-            n_levels=3,
-            conv_per_level=1,
+            n_filters=32,
+            n_levels=4,
+            conv_per_level=3,
             spectral_norm=2,
             n_output=1,
         ),
@@ -69,14 +82,9 @@ def solver(request):
             clip_gradient=1,
             n_train_iters=2,
         ),
-        atom_fitting_kws=dict(
-            multi_atom=True,
-            n_atoms_detect=10,
-            interm_gd_iters=0,
-            final_gd_iters=0,
-        ),
+        atom_fitting_kws=dict(),
         bond_adding_kws=dict(),
-        out_prefix='tests/output/TEST',
+        out_prefix='tests/output/TEST_' + model_type,
         device='cuda'
     )
 
@@ -127,19 +135,16 @@ class TestGANSolver(object):
         metrics_i = solver.disc_step(grid_type='real')
         _, metrics_f = solver.disc_forward(solver.train_data, grid_type='real')
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
-        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
     def test_solver_disc_step_poster(self, solver):
         metrics_i = solver.disc_step(grid_type='poster')
         _, metrics_f = solver.disc_forward(solver.train_data, grid_type='poster')
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
-        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
     def test_solver_disc_step_prior(self, solver):
         metrics_i = solver.disc_step(grid_type='prior')
         _, metrics_f = solver.disc_forward(solver.train_data, grid_type='prior')
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
-        assert metrics_i['disc_grad_norm'] <= 1, 'gradient not normalized'
 
     def test_solver_gen_step_poster(self, solver):
         metrics_i = solver.gen_step(grid_type='poster')
@@ -162,26 +167,34 @@ class TestGANSolver(object):
         assert len(solver.metrics) == 2
         assert 'lig_gen_fit_n_atoms' in solver.metrics
 
-    def test_solver_train(self, solver):
-        solver.train(
-            max_iter=10,
-            test_interval=10,
-            n_test_batches=4,
-            fit_interval=10,
-            save_interval=10,
-        )
-        assert solver.curr_iter == 10
-        print(solver.metrics)         # test train test test_on_train
+    def test_solver_train(self, solver, train_params):
+
+        max_iter = train_params['max_iter']
+        test_interval = train_params['test_interval']
+        n_test_batches = train_params['n_test_batches']
+    
+        t0 = time.time()
+        solver.train(**train_params)
+        t_delta = time.time() - t0
+
+        print(solver.metrics)
+        assert solver.curr_iter == max_iter
         assert len(solver.metrics) == (
-            4*2 + 3*10 + 4*2 + 3
+            3*(max_iter + 1) + 2*(max_iter//test_interval + 1) * n_test_batches
         )
+        assert 'kldiv_loss' in solver.metrics
+        assert 'recon_loss' in solver.metrics
         assert 'gan_loss' in solver.metrics
-        if isinstance(solver, liGAN.training.VAEGANSolver):
-            assert 'recon_loss' in solver.metrics
-            assert 'kldiv_loss' in solver.metrics
         loss_i = solver.metrics.loc[( 0,  0, 'test', 'gen'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 20, 'test', 'gen'), 'loss'].mean()
         assert (loss_f - loss_i) < 0, 'generator loss did not decrease'
         loss_i = solver.metrics.loc[( 0,  0, 'test', 'disc'), 'loss'].mean()
         loss_f = solver.metrics.loc[(10, 20, 'test', 'disc'), 'loss'].mean()
         assert (loss_f - loss_i) < 0, 'discriminator loss did not decrease'
+
+        t_per_iter = t_delta / max_iter
+        iters_per_day = (24*60*60) / t_per_iter
+        k_iters_per_day = int(iters_per_day//1000)
+        assert k_iters_per_day >= 100, 'too slow ({:d}k iters/day)'.format(
+            k_iters_per_day
+        )

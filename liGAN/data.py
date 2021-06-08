@@ -24,6 +24,7 @@ class AtomGridData(nn.Module):
         n_samples=1,
         rec_molcache=None,
         lig_molcache=None,
+        cache_structs=True,
         device='cuda',
         debug=False,
     ):
@@ -45,6 +46,7 @@ class AtomGridData(nn.Module):
             data_root=data_root,
             recmolcache=rec_molcache or '',
             ligmolcache=lig_molcache or '',
+            cache_structs=cache_structs,
             shuffle=shuffle,
             num_copies=n_samples,
         )

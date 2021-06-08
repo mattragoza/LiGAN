@@ -346,7 +346,7 @@ class Solver(nn.Module):
         return metrics
 
     @save_on_exception
-    def step(self, update=True, sync=False):
+    def step(self, update=True, compute_norm=True, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
@@ -359,20 +359,23 @@ class Solver(nn.Module):
         torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
 
-        if update:
+        if update or compute_norm:
             self.optimizer.zero_grad()
             loss.backward()
             t2 = time.time()
 
             self.clip_gradient()
-            grad_norm = models.compute_grad_norm(self.model)
+            if compute_norm:
+                grad_norm = models.compute_grad_norm(self.model)
+            else:
+                grad_norm = np.nan
             t3 = time.time()
 
-            self.optimizer.step()
+            if update:
+                self.optimizer.step()
+                self.curr_iter += 1
             if sync:
                 torch.cuda.synchronize()
-
-            self.curr_iter += 1
 
         m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
@@ -380,7 +383,7 @@ class Solver(nn.Module):
         metrics['forward_time'] = t1 - t0
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
-        if update:
+        if update or compute_norm:
             if isinstance(self, DiscriminativeSolver):
                 metrics['disc_grad_norm'] = grad_norm
             elif isinstance(self, GenerativeSolver):
@@ -395,7 +398,7 @@ class Solver(nn.Module):
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
         assert not loss.isnan(), 'loss is nan'
-        if update:
+        if compute_norm:
             assert not np.isnan(grad_norm), 'gradient is nan'
             assert not np.isclose(0, grad_norm), 'gradient is zero'
         return metrics
@@ -406,6 +409,7 @@ class Solver(nn.Module):
         test_interval,
         n_test_batches,
         fit_interval,
+        norm_interval,
         save_interval,
     ):
         while self.curr_iter <= max_iter:
@@ -420,9 +424,12 @@ class Solver(nn.Module):
                 self.test(n_test_batches, fit_atoms)
 
             if self.curr_iter < max_iter:
-                self.step(update=True)
+                compute_norm = (
+                    norm_interval > 0 and self.curr_iter % norm_interval == 0
+                )
+                self.step(update=True, compute_norm=compute_norm)
             else:
-                self.step(update=False)
+                self.step(update=False, compute_norm=compute_norm)
                 break
 
         self.save_state()
@@ -894,7 +901,7 @@ class GANSolver(GenerativeSolver):
         return self.metrics.loc[(self.gen_iter, self.disc_iter, 'test')]
 
     @save_on_exception
-    def disc_step(self, grid_type, update=True, batch_idx=0, sync=False):
+    def disc_step(self, grid_type, update=True, compute_norm=True, batch_idx=0, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
@@ -914,20 +921,23 @@ class GANSolver(GenerativeSolver):
         torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
         
-        if update:
+        if update or compute_norm:
             self.disc_optimizer.zero_grad()
             loss.backward()
             t2 = time.time()
 
             self.clip_gradient(disc=True)
-            grad_norm = models.compute_grad_norm(self.disc_model)
+            if compute_norm:
+                grad_norm = models.compute_grad_norm(self.disc_model)
+            else:
+                grad_norm = np.nan
             t3 = time.time()
 
-            self.disc_optimizer.step()
+            if update:
+                self.disc_optimizer.step()
+                self.disc_iter += 1
             if sync:
                 torch.cuda.synchronize()
-
-            self.disc_iter += 1
 
         m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
@@ -935,7 +945,7 @@ class GANSolver(GenerativeSolver):
         metrics['forward_time'] = t1 - t0
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
-        if update:
+        if update or compute_norm:
             metrics['disc_grad_norm'] = grad_norm
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
@@ -947,13 +957,13 @@ class GANSolver(GenerativeSolver):
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
         assert not loss.isnan(), 'discriminator loss is nan'
-        if update:
+        if compute_norm:
             assert not np.isnan(grad_norm), 'discriminator gradient is nan'
             #assert not np.isclose(0, grad_norm), 'discriminator gradient is zero'
         return metrics
 
     @save_on_exception
-    def gen_step(self, grid_type='prior', update=True, batch_idx=0, sync=False):
+    def gen_step(self, grid_type='prior', update=True, compute_norm=True, batch_idx=0, sync=False):
         torch.cuda.reset_max_memory_allocated()
         t0 = time.time()
 
@@ -973,20 +983,23 @@ class GANSolver(GenerativeSolver):
         torch.cuda.reset_max_memory_allocated()
         t1 = time.time()
 
-        if update:
+        if update or compute_norm:
             self.gen_optimizer.zero_grad()
             loss.backward()
             t2 = time.time()
 
             self.clip_gradient(gen=True)
-            grad_norm = models.compute_grad_norm(self.gen_model)
+            if compute_norm:
+                grad_norm = models.compute_grad_norm(self.gen_model)
+            else:
+                grad_norm = np.nan
             t3 = time.time()
 
-            self.gen_optimizer.step()
+            if update:
+                self.gen_optimizer.step()
+                self.gen_iter += 1
             if sync:
                 torch.cuda.synchronize()
-
-            self.gen_iter += 1
 
         m2 = torch.cuda.max_memory_allocated()
         t4 = time.time()
@@ -994,7 +1007,7 @@ class GANSolver(GenerativeSolver):
         metrics['forward_time'] = t1 - t0
         metrics['forward_gpu'] = m1 / MB
         metrics['memory'] = get_memory_used() / MB
-        if update:
+        if update or compute_norm:
             metrics['gen_grad_norm'] = grad_norm
             metrics['backward_time'] = t4 - t1
             metrics['backward_grad_time'] = t2 - t1
@@ -1006,17 +1019,17 @@ class GANSolver(GenerativeSolver):
         metrics = self.metrics.loc[idx]
         self.print_metrics(idx[:-1], metrics)
         assert not loss.isnan(), 'generator loss is nan'
-        if update:
+        if compute_norm:
             assert not np.isnan(grad_norm), 'generator gradient is nan'
             assert not np.isclose(0, grad_norm), 'generator gradient is zero'
         return metrics
 
-    def train_disc(self, n_iters, update=True):
+    def train_disc(self, n_iters, update=True, compute_norm=True):
 
         for i in range(n_iters):
             batch_idx = 0 if update else i
             grid_type = self.get_grid_phase(batch_idx, disc=True)
-            loss = self.disc_step(grid_type, update, batch_idx)['gan_loss']
+            loss = self.disc_step(grid_type, update, compute_norm, batch_idx)['gan_loss']
             if grid_type == 'real':
                 loss_real = loss
             else:
@@ -1024,12 +1037,12 @@ class GANSolver(GenerativeSolver):
 
         return loss_real, loss_gen
 
-    def train_gen(self, n_iters, update=True):
+    def train_gen(self, n_iters, update=True, compute_norm=True):
 
         for i in range(n_iters):
             batch_idx = 0 if update else i
             grid_type = self.get_grid_phase(batch_idx, disc=False)
-            loss = self.gen_step(grid_type, update, batch_idx)['gan_loss']
+            loss = self.gen_step(grid_type, update, compute_norm, batch_idx)['gan_loss']
 
         return loss
 
@@ -1039,6 +1052,7 @@ class GANSolver(GenerativeSolver):
         test_interval,
         n_test_batches,
         fit_interval,
+        norm_interval,
         save_interval,
     ):
         init_iter = self.curr_iter
@@ -1074,11 +1088,19 @@ class GANSolver(GenerativeSolver):
             else: # train both models
                 update_disc = update_gen = True
 
+            compute_norm = (
+                norm_interval > 0 and divides(norm_interval, i)
+            )
+
             disc_loss_real, disc_loss_gen = self.train_disc(
-                self.n_disc_train_iters, update=update_disc
+                self.n_disc_train_iters,
+                update=update_disc,
+                compute_norm=compute_norm,
             )
             gen_loss = self.train_gen(
-                self.n_gen_train_iters, update=update_gen
+                self.n_gen_train_iters,
+                update=update_gen,
+                compute_norm=compute_norm,
             )
 
             if i == max_iter:
