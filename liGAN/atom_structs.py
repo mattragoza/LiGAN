@@ -58,6 +58,10 @@ class AtomStruct(object):
         if not coord_set.has_vector_types():
             coord_set.make_vector_types()
 
+        # if already on gpu, we shouldn't copy back and forth
+        assert not coord_set.coords.ongpu(), 'coords on gpu'
+        assert not coord_set.type_vector.ongpu(), 'types on gpu'
+
         return cls(
             coords=coord_set.coords.tonumpy(),
             types=coord_set.type_vector.tonumpy(), # should be float

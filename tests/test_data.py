@@ -108,4 +108,4 @@ class TestAtomGridData(object):
         for i in range(10):
             data.forward()
         t_delta = time.time() - t0
-        assert t_delta < 1, 'too slow'
+        assert t_delta < 1, 'too slow ({:.2f}s)'.format(t_delta)
