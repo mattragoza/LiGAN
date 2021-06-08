@@ -84,7 +84,6 @@ def compute_min_rmsd(coords1, types1, coords2, types2):
     coords2 = np.array(coords2)
     types1 = np.array(types1)
     types2 = np.array(types2)
-    print(coords1.shape, types1.shape)
 
     # check that atom types are compatible
     # CAUTION this may not be sufficient for vector types

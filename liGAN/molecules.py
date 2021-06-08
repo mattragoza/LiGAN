@@ -112,7 +112,7 @@ class Molecule(Chem.RWMol):
             return True, 'valid molecule'
         except Chem.AtomValenceException:
             return False, 'invalid valence'
-        except Chem.AtomKekulizeException:
+        except Chem.KekulizeException:
             return False, 'failed to kekulize'
 
     def uff_minimize(self):

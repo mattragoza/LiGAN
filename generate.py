@@ -116,15 +116,20 @@ class OutputWriter(object):
                 else:
                     rd_mols = [mol]
 
-            mols.write_rd_mols_to_sdf_file(
-                out, rd_mols, str(sample_idx), kekulize=False
-            )
+            try:
+                mols.write_rd_mols_to_sdf_file(
+                    out, rd_mols, str(sample_idx), kekulize=False
+                )
+            except ValueError:
+                print(sdf_file, sample_idx, is_real)
+                raise
 
         if sample_idx == 0:
             self.sdf_files.append(sdf_file)
         
         if sample_idx + 1 == self.n_samples or is_real:
             out.close()
+            del self.open_files[sdf_file]
 
     def write_atom_types(self, types_file, atom_types):
 
@@ -684,7 +689,8 @@ def write_pymol_script(
         for dx_prefix in dx_prefixes: # load density grids
             try:
                 m = re.match(
-                    '^grids/({}_.*)$'.format(out_prefix), str(dx_prefix)
+                    '^grids/({}_.*)$'.format(re.escape(out_prefix)),
+                    str(dx_prefix)
                 )
             except AttributeError:
                 print(dx_prefix, file=sys.stderr)
@@ -697,14 +703,14 @@ def write_pymol_script(
             try:
                 m = re.match(
                     r'^(molecules|structs)/({}_.*)\.sdf(\.gz)?$'.format(
-                        out_prefix
+                        re.escape(out_prefix)
                     ),
                     str(sdf_file)
                 )
+                obj_name = m.group(2)
             except AttributeError:
                 print(sdf_file, file=sys.stderr)
                 raise
-            obj_name = m.group(2)
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
 
 
@@ -826,7 +832,7 @@ def generate(
                     complex_grids = None if prior else data.grids
 
                     if gen_model:
-                        if verbose: print('Calling generator forward')
+                        if verbose: print('Calling generator forward (prior={})'.format(prior))
                         lig_gen_grids, latents, _, _ = gen_model(
                             complex_grids, rec_grids, batch_size
                         )
@@ -848,14 +854,16 @@ def generate(
 
                 if verbose: print('Getting real molecule from data root')
 
+                my_split_ext = lambda f: f.rsplit('.', 1 + f.endswith('.gz'))
+
                 rec_src_file = rec_struct.info['src_file']
-                rec_src_no_ext = os.path.splitext(rec_src_file)[0]
+                rec_src_no_ext = my_split_ext(rec_src_file)[0]
                 rec_mol = find_real_rec_in_data_root(
                     data.root_dir, rec_src_no_ext
                 )
 
                 lig_src_file = lig_struct.info['src_file']
-                lig_src_no_ext = os.path.splitext(lig_src_file)[0]
+                lig_src_no_ext = my_split_ext(lig_src_file)[0]
                 lig_name = os.path.basename(lig_src_no_ext)
                 lig_mol = find_real_lig_in_data_root(
                     data.root_dir, lig_src_no_ext, use_ob=True
@@ -972,10 +980,7 @@ def main(argv):
     pd.set_option('display.width', display_width)
 
     device = 'cuda'
-    if 'random_seed' in config:
-        liGAN.set_random_seed(config['random_seed'])
-    else:
-        liGAN.set_random_seed()
+    liGAN.set_random_seed(config.get('random_seed', None))
 
     print('Loading data')
     data_file = config['data'].pop('data_file')
