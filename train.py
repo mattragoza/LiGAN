@@ -63,6 +63,12 @@ def main(argv):
         solver.load_state()
         solver.load_metrics()
 
+    if 'max_n_iters' in config:
+        config['train']['max_iter'] = min(
+            config['train']['max_iter'],
+            solver.curr_iter + config['max_n_iters']
+        )
+
     solver.train(**config['train'])
 
 
