@@ -46,7 +46,7 @@ def solver(request):
             n_levels=4,
             conv_per_level=3,
             spectral_norm=2,
-            n_latent=1024,
+            n_latent=128,
             init_conv_pool=False,
             skip_connect=True,
         ),

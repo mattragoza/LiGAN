@@ -45,7 +45,7 @@ def solver(request):
             n_filters=32,
             n_levels=4,
             conv_per_level=3,
-            n_latent=1024,
+            n_latent=128,
             init_conv_pool=False,
             skip_connect=True,
         ),

@@ -131,11 +131,7 @@ class AtomGridData(nn.Module):
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
 
-    def forward(
-        self,
-        split_rec_lig=False,
-        ligand_only=False,
-    ):
+    def forward(self, split_rec_lig=False):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures and labels
@@ -176,20 +172,17 @@ class AtomGridData(nn.Module):
             if self.debug:
                 print(t1-t0, t2-t1)
         
-        if split_rec_lig or ligand_only:
+        if split_rec_lig:
 
             rec_grids, lig_grids = torch.split(
                 self.grids,
                 [self.n_rec_channels, self.n_lig_channels],
                 dim=1,
             )
-            if ligand_only:
-                return lig_grids, lig_structs, self.labels
-            else:
-                return (
-                    (rec_grids, lig_grids),
-                    (rec_structs, lig_structs),
-                    self.labels
-                )
+            return (
+                (rec_grids, lig_grids),
+                (rec_structs, lig_structs),
+                self.labels
+            )
         else:
             return self.grids, (rec_structs, lig_structs), self.labels

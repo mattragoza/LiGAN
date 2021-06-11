@@ -130,9 +130,7 @@ class Solver(nn.Module):
                 **gen_model_kws
             )
             if gen_model_state:
-                self.gen_model.load_state_dict(
-                    torch.load(gen_model_state)
-                )
+                self.gen_model.load_state_dict(torch.load(gen_model_state))
 
             gen_optim_type = getattr(optim, gen_optim_kws.pop('type'))
             self.n_gen_train_iters = gen_optim_kws.pop('n_train_iters', 2)
@@ -146,15 +144,13 @@ class Solver(nn.Module):
 
             print('Initializing discriminative model and optimizer')
             disc_model_state = disc_model_kws.pop('state', None)
-            self.disc_model = models.Encoder(
+            self.disc_model = models.Discriminator(
                 n_channels=self.n_channels_disc,
                 grid_size=self.train_data.grid_size,
                 **disc_model_kws
             ).to(device)
             if disc_model_state:
-                self.disc_model.load_state_dict(
-                    torch.load(disc_model_state)
-                )
+                self.disc_model.load_state_dict(torch.load(disc_model_state))
 
             disc_optim_type = getattr(optim, disc_optim_kws.pop('type'))
             self.n_disc_train_iters = disc_optim_kws.pop('n_train_iters', 2)
@@ -436,7 +432,9 @@ class Solver(nn.Module):
 
 
 class DiscriminativeSolver(Solver):
-
+    '''
+    This is untested, do not use.
+    '''
     @property
     def n_channels_disc(self):
         return self.train_data.n_channels
@@ -472,7 +470,10 @@ class DiscriminativeSolver(Solver):
 
 
 class GenerativeSolver(Solver):
-
+    '''
+    Base class for training models that
+    generate ligand grids.
+    '''
     @property
     def n_channels_out(self):
         return self.train_data.n_lig_channels
@@ -521,10 +522,12 @@ class AESolver(GenerativeSolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         t1 = time.time()
 
-        lig_gen_grids, latent_vecs = self.gen_model(lig_grids)
+        lig_gen_grids, latent_vecs, _, _ = self.gen_model(inputs=lig_grids)
         loss, metrics = self.compute_loss(lig_grids, lig_gen_grids)
         t2 = time.time()
         
@@ -581,11 +584,13 @@ class VAESolver(AESolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         t1 = time.time()
 
         lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-            self.gen_model(lig_grids, data.batch_size)
+            self.gen_model(inputs=lig_grids, batch_size=data.batch_size)
         loss, metrics = self.compute_loss(
             lig_grids, lig_gen_grids, latent_means, latent_log_stds
         )
@@ -625,7 +630,7 @@ class CESolver(AESolver):
 
     @property
     def n_channels_in(self):
-        return 0
+        return None
 
     @property
     def n_channels_cond(self):
@@ -634,11 +639,12 @@ class CESolver(AESolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-            data.forward(split_rec_lig=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         t1 = time.time()
 
-        lig_gen_grids, latent_vecs = self.gen_model(rec_grids)
+        lig_gen_grids, latent_vecs, _, _ = self.gen_model(conditions=rec_grids)
         loss, metrics = self.compute_loss(lig_grids, lig_gen_grids)
         t2 = time.time()
 
@@ -687,13 +693,18 @@ class CVAESolver(VAESolver):
     def forward(self, data, fit_atoms=False):
         t0 = time.time()
 
-        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-            data.forward(split_rec_lig=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         rec_lig_grids = data.grids
         t1 = time.time()
 
         lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-            self.gen_model(rec_lig_grids, rec_grids, data.batch_size)
+            self.gen_model(
+                inputs=rec_lig_grids,
+                conditions=rec_grids,
+                batch_size=data.batch_size
+            )
         
         loss, metrics = self.compute_loss(
             lig_grids, lig_gen_grids, latent_means, latent_log_stds
@@ -779,11 +790,13 @@ class GANSolver(GenerativeSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real: # get real examples
-                lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+                grids, structs, _ = data.forward(split_rec_lig=True)
+                rec_grids, lig_grids = grids
+                rec_structs, lig_structs = structs
                 labels = torch.ones(data.batch_size, 1, device=self.device)
 
             else: # get generated examples
-                lig_grids, _ = self.gen_model(data.batch_size)
+                lig_grids, _, _, _ = self.gen_model(batch_size=data.batch_size)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
             
         t1 = time.time()
@@ -815,7 +828,8 @@ class GANSolver(GenerativeSolver):
         assert grid_type == 'prior', 'invalid grid type'
 
         # get generated examples
-        lig_gen_grids, latent_vecs = self.gen_model(data.batch_size)
+        lig_gen_grids, latent_vecs, _, _ = \
+            self.gen_model(batch_size=data.batch_size)
         labels = torch.ones(data.batch_size, 1, device=self.device)
         t1 = time.time()
 
@@ -1131,14 +1145,17 @@ class CGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-                data.forward(split_rec_lig=True)
+            grids, structs, _ = data.forward(split_rec_lig=True)
+            rec_grids, lig_grids = grids
+            rec_structs, lig_structs = structs
             t1 = time.time()
             if real:
                 labels = torch.ones(data.batch_size, 1, device=self.device)
 
             else: # get generated examples
-                lig_gen_grids, _ = self.gen_model(rec_grids, data.batch_size)
+                lig_gen_grids, _, _, _ = self.gen_model(
+                    conditions=rec_grids, batch_size=data.batch_size
+                )
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
                 lig_grids = lig_gen_grids
 
@@ -1167,12 +1184,13 @@ class CGANSolver(GANSolver):
         assert grid_type == 'prior', 'invalid grid type'
 
         # get generated examples
-        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-            data.forward(split_rec_lig=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         t1 = time.time()
 
-        lig_gen_grids, latent_vecs = self.gen_model(
-            rec_grids, data.batch_size
+        lig_gen_grids, latent_vecs, _, _ = self.gen_model(
+            conditions=rec_grids, batch_size=data.batch_size
         )
         labels = torch.ones(data.batch_size, 1, device=self.device)
         t2 = time.time()
@@ -1272,7 +1290,9 @@ class VAEGANSolver(GANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real or not prior: # get real examples
-                lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+                grids, structs, _ = data.forward(split_rec_lig=True)
+                rec_grids, lig_grids = grids
+                rec_structs, lig_structs = structs
             else: # prior
                 lig_grids = None
             t1 = time.time()
@@ -1282,7 +1302,9 @@ class VAEGANSolver(GANSolver):
 
             else: # get generated examples
                 lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-                    self.gen_model(lig_grids, data.batch_size)
+                    self.gen_model(
+                        inputs=lig_grids, batch_size=data.batch_size
+                    )
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
 
         t2 = time.time()
@@ -1310,14 +1332,18 @@ class VAEGANSolver(GANSolver):
         prior = (grid_type == 'prior')
 
         if not prior: # get real examples
-            lig_grids, lig_structs, _ = data.forward(ligand_only=True)
+            grids, structs, _ = data.forward(split_rec_lig=True)
+            rec_grids, lig_grids = grids
+            rec_structs, lig_structs = structs
         else: # prior
             lig_grids = None
         t1 = time.time()
 
         # get generated examples
         lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-            self.gen_model(lig_grids, data.batch_size)
+            self.gen_model(
+                inputs=lig_grids, batch_size=data.batch_size
+            )
         labels = torch.ones(data.batch_size, 1, device=self.device)
         t2 = time.time()
 
@@ -1407,9 +1433,10 @@ class CVAEGANSolver(VAEGANSolver):
         with torch.no_grad(): # do not backprop to generator or data
 
             # get real examples
-            (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-                data.forward(split_rec_lig=True)
-            rec_lig_grids = data.grids if not prior else None
+            grids, structs, _ = data.forward(split_rec_lig=True)
+            rec_grids, lig_grids = grids
+            rec_structs, lig_structs = structs
+            rec_lig_grids = None if prior else data.grids
             t1 = time.time()
 
             if real:
@@ -1417,7 +1444,11 @@ class CVAEGANSolver(VAEGANSolver):
 
             else: # get generated examples
                 lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-                    self.gen_model(rec_lig_grids, rec_grids, data.batch_size)
+                    self.gen_model(
+                        inputs=rec_lig_grids,
+                        conditions=rec_grids,
+                        batch_size=data.batch_size
+                    )
                 rec_lig_grids = torch.cat([rec_grids, lig_gen_grids], dim=1)
                 labels = torch.zeros(data.batch_size, 1, device=self.device)
 
@@ -1446,13 +1477,18 @@ class CVAEGANSolver(VAEGANSolver):
         prior = (grid_type == 'prior')
 
         # get generated examples
-        (rec_grids, lig_grids), (rec_structs, lig_structs), _ = \
-            data.forward(split_rec_lig=True)
+        grids, structs, _ = data.forward(split_rec_lig=True)
+        rec_grids, lig_grids = grids
+        rec_structs, lig_structs = structs
         rec_lig_grids = None if prior else data.grids
         t1 = time.time()
 
         lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-            self.gen_model(rec_lig_grids, rec_grids, data.batch_size)
+            self.gen_model(
+                inputs=rec_lig_grids,
+                conditions=rec_grids,
+                batch_size=data.batch_size
+            )
         rec_lig_grids = torch.cat([rec_grids, lig_gen_grids], dim=1)
         labels = torch.ones(data.batch_size, 1, device=self.device)
         t2 = time.time()

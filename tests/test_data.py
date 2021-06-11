@@ -80,15 +80,6 @@ class TestAtomGridData(object):
         assert not isclose(0, grids.norm().cpu())
         assert all(labels == 1)
 
-    def test_data_forward_ligs(self, data, data_file):
-        data.populate(data_file)
-        lig_grids, lig_structs, labels = data.forward(ligand_only=True)
-        assert lig_grids.shape == (10, data.n_lig_channels, 48, 48, 48)
-        assert len(lig_structs) == 10
-        assert labels.shape == (10,)
-        assert not isclose(0, lig_grids.norm().cpu())
-        assert all(labels == 1)
-
     def test_data_forward_split(self, data, data_file):
         data.populate(data_file)
         grids, structs, labels = data.forward(split_rec_lig=True)

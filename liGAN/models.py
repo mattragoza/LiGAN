@@ -38,6 +38,10 @@ def initialize_weights(m, caffe=False):
 
 
 def compute_grad_norm(model):
+    '''
+    Compute the L2 norm of the gradient
+    on model parameters.
+    '''
     grad_norm2 = 0
     for p in model.parameters():
         if p.grad is None:
@@ -46,31 +50,31 @@ def compute_grad_norm(model):
     return grad_norm2**(1/2)
 
 
-def normalize_grad(model):
-    grad_norm = compute_grad_norm(model)
-    if grad_norm is None:
-        return
-    for p in model.parameters():
-        if p.grad is None:
-            continue
-        p.grad /= grad_norm
+class Conv3DReLU(nn.Sequential):
+    '''
+    A 3D convolutional layer followed by leaky ReLU.
 
+    Batch normalization can be applied either before
+    (batch_norm=1) or after (batch_norm=2) the ReLU.
 
-class ConvReLU(nn.Sequential):
+    Spectral normalization is applied by indicating
+    the number of power iterations (spectral_norm).
+    '''
+    conv_type = nn.Conv3d
 
     def __init__(
         self,
-        n_input,
-        n_output,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
+        n_channels_in,
+        n_channels_out,
+        kernel_size=3,
+        relu_leak=0.1,
+        batch_norm=False,
+        spectral_norm=False,
     ):
         modules = [
-            nn.Conv3d(
-                in_channels=n_input,
-                out_channels=n_output,
+            self.conv_type(
+                in_channels=n_channels_in,
+                out_channels=n_channels_out,
                 kernel_size=kernel_size,
                 padding=kernel_size//2,
             ),
@@ -80,10 +84,10 @@ class ConvReLU(nn.Sequential):
             )
         ]
 
-        if batch_norm > 0:
-            modules.insert(batch_norm, nn.BatchNorm3d(n_output))
+        if batch_norm > 0: # value indicates order wrt conv and relu
+            modules.insert(batch_norm, nn.BatchNorm3d(n_channels_out))
 
-        if spectral_norm > 0:
+        if spectral_norm > 0: # value indicates num power iterations
             modules[0] = nn.utils.spectral_norm(
                 modules[0], n_power_iterations=spectral_norm
             )
@@ -91,112 +95,63 @@ class ConvReLU(nn.Sequential):
         super().__init__(*modules)
 
 
-class ConvBlock(nn.Sequential):
+class TConv3DReLU(Conv3DReLU):
+    '''
+    A 3D transposed convolution layer and leaky ReLU.
+
+    Batch normalization can be applied either before
+    (batch_norm=1) or after (batch_norm=2) the ReLU.
+
+    Spectral normalization is applied by indicating
+    the number of power iterations (spectral_norm).
+    '''
+    conv_type = nn.ConvTranspose3d
+
+
+class Conv3DBlock(nn.Sequential):
+    '''
+    A sequence of n_convs ConvReLUs with the same settings.
+    '''
+    conv_type = Conv3DReLU
 
     def __init__(
         self,
         n_convs,
-        n_input,
-        n_output,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
+        n_channels_in,
+        n_channels_out,
         dense_net=False,
+        **kwargs
     ):
         if dense_net:
             raise NotImplementedError('TODO densely-connected')
 
         modules = []
         for i in range(n_convs):
-
-            conv_relu = ConvReLU(
-                n_input,
-                n_output,
-                kernel_size,
-                relu_leak,
-                batch_norm,
-                spectral_norm,
-            )
-
-            n_input = n_output
-            modules.append(conv_relu)
+            modules.append(self.conv_type(
+                n_channels_in=n_channels_in,
+                n_channels_out=n_channels_out,
+                **kwargs
+            ))
+            n_channels_in = n_channels_out
 
         super().__init__(*modules)
 
 
-class DeconvReLU(nn.Sequential):
-
-    def __init__(
-        self,
-        n_input,
-        n_output,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        modules = [
-            nn.ConvTranspose3d(
-                in_channels=n_input,
-                out_channels=n_output,
-                kernel_size=kernel_size,
-                padding=kernel_size//2,
-            ),
-            nn.LeakyReLU(
-                negative_slope=relu_leak,
-                inplace=True,
-            )
-        ]
-
-        if batch_norm > 0:
-            modules.insert(batch_norm, nn.BatchNorm3d(n_output))
-
-        if spectral_norm > 0:
-            modules[0] = nn.utils.spectral_norm(
-                modules[0], n_power_iterations=spectral_norm
-            )
-
-        super().__init__(*modules)
+class TConv3DBlock(Conv3DBlock):
+    '''
+    A sequence of n_convs TConvReLUs with the same settings.
+    '''
+    conv_type = TConv3DReLU
 
 
-class DeconvBlock(nn.Sequential):
-
-    def __init__(
-        self,
-        n_deconvs,
-        n_input,
-        n_output,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-        dense_net=False,
-    ):
-        if dense_net:
-            raise NotImplementedError('TODO densely-connected')
-
-        modules = []
-        for i in range(n_deconvs):
-
-            deconv_relu = DeconvReLU(
-                n_input,
-                n_output,
-                kernel_size,
-                relu_leak,
-                batch_norm,
-                spectral_norm,
-            )
-
-            n_input = n_output
-            modules.append(deconv_relu)
-
-        super().__init__(*modules)
-
-
-class Pooling(nn.Sequential):
-
-    def __init__(self, n_input, pool_type, pool_factor):
+class Pool3D(nn.Sequential):
+    '''
+    A layer that decreases 3D spatial dimensions,
+    either by max pooling (pool_type=m), average
+    pooling (pool_type=a), or strided convolution
+    (pool_type=c).
+    '''
+    def __init__(self, n_channels, pool_type, pool_factor):
 
         if pool_type == 'm':
             pool = nn.MaxPool3d(
@@ -212,9 +167,9 @@ class Pooling(nn.Sequential):
 
         elif pool_type == 'c':
             pool = nn.Conv3d(
-                in_channels=n_input,
-                out_channels=n_input,
-                groups=n_input,
+                in_channels=n_channels,
+                out_channels=n_channels,
+                groups=n_channels,
                 kernel_size=pool_factor,
                 stride=pool_factor,
             )
@@ -225,9 +180,14 @@ class Pooling(nn.Sequential):
         super().__init__(pool)
 
 
-class Unpooling(nn.Sequential):
-
-    def __init__(self, n_input, unpool_type, unpool_factor):
+class Unpool3D(nn.Sequential):
+    '''
+    A layer that increases the 3D spatial dimensions,
+    either by nearest neighbor (unpool_type=n), tri-
+    linear interpolation (unpool_type=t), or strided
+    transposed convolution (unpool_type=c).
+    '''
+    def __init__(self, n_channels, unpool_type, unpool_factor):
 
         if unpool_type in unpool_type_map:
             
@@ -238,10 +198,10 @@ class Unpooling(nn.Sequential):
 
         elif unpool_type == 'c':
             
-            unpool = nn.Deconv3d(
-                in_channels=n_input,
-                out_channels=n_input,
-                groups=n_input,
+            unpool = nn.ConvTranspose3d(
+                in_channels=n_channels,
+                out_channels=n_channels,
+                groups=n_channels,
                 kernel_size=unpool_factor,
                 stride=unpool_factor,
             )
@@ -253,7 +213,9 @@ class Unpooling(nn.Sequential):
 
 
 class Reshape(nn.Module):
-
+    '''
+    A layer that reshapes the input.
+    '''
     def __init__(self, *args):
         super().__init__()
         self.shape = tuple(args)
@@ -262,8 +224,12 @@ class Reshape(nn.Module):
         return x.reshape(self.shape)
 
 
-class ReshapeFc(nn.Sequential):
-
+class Grid2Vec(nn.Sequential):
+    '''
+    A fully connected layer applied to a
+    flattened version of the input, for
+    transforming from grids to vectors.
+    '''
     def __init__(
         self, in_shape, n_output, activ_fn=None, spectral_norm=0
     ):
@@ -284,8 +250,12 @@ class ReshapeFc(nn.Sequential):
         super().__init__(*modules)
 
 
-class FcReshape(nn.Sequential):
-
+class Vec2Grid(nn.Sequential):
+    '''
+    A fully connected layer followed by
+    reshaping the output, for transforming
+    from vectors to grids.
+    '''
     def __init__(
         self, n_input, out_shape, relu_leak, batch_norm, spectral_norm
     ):
@@ -307,8 +277,12 @@ class FcReshape(nn.Sequential):
         super().__init__(*modules)
 
 
-class Encoder(nn.Module):
-
+class GridEncoder(nn.Module):
+    '''
+    A sequence of 3D convolution blocks and
+    pooling layers, followed by one or more
+    fully connected output tasks.
+    '''
     # TODO reimplement the following:
     # - self-attention
     # - densely-connected
@@ -344,34 +318,38 @@ class Encoder(nn.Module):
 
         if init_conv_pool:
 
-            self.add_conv(
-                'init_conv',
-                n_filters,
-                kernel_size,
-                relu_leak,
-                batch_norm,
-                spectral_norm,
+            self.add_conv3d(
+                name='init_conv',
+                n_filters=n_filters,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
             )
-            self.add_pool('init_pool', pool_type, pool_factor)
+            self.add_pool3d(
+                name='init_pool',
+                pool_type=pool_type,
+                pool_factor=pool_factor
+            )
 
         for i in range(n_levels):
 
             if i > 0: # downsample between conv blocks
-                pool_name = 'level' + str(i) + '_pool'
-                self.add_pool(
-                    pool_name, pool_type, pool_factor
+                self.add_pool3d(
+                    name='level'+str(i)+'_pool',
+                    pool_type=pool_type,
+                    pool_factor=pool_factor
                 )
                 n_filters *= width_factor
-
-            conv_block_name = 'level' + str(i)
-            self.add_conv_block(
-                conv_block_name,
-                conv_per_level,
-                n_filters,
-                kernel_size,
-                relu_leak,
-                batch_norm,
-                spectral_norm,
+ 
+            self.add_conv3d_block(
+                name='level'+str(i),
+                n_convs=conv_per_level,
+                n_filters=n_filters,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
             )
 
         # fully-connected outputs
@@ -386,85 +364,81 @@ class Encoder(nn.Module):
         self.n_tasks = len(n_output)
         self.task_modules = []
 
-        for i, (n_o, activ_fn) in enumerate(zip(n_output, output_activ_fn)):
-            fc_name = 'fc' + str(i)
-            self.add_reshape_fc(fc_name, n_o, activ_fn, spectral_norm)
+        for i, (n_output_i, activ_fn_i) in enumerate(
+            zip(n_output, output_activ_fn)
+        ):
+            self.add_grid2vec(
+                name='fc'+str(i),
+                n_output=n_output_i,
+                activ_fn=activ_fn_i,
+                spectral_norm=spectral_norm
+            )
 
-    def add_conv(
-        self,
-        name,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        conv = ConvReLU(
-            self.n_channels,
-            n_filters,
-            kernel_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+    def add_conv3d(self, name, n_filters, **kwargs):
+        conv = Conv3DReLU(
+            n_channels_in=self.n_channels,
+            n_channels_out=n_filters,
+            **kwargs
         )
         self.add_module(name, conv)
         self.grid_modules.append(conv)
         self.n_channels = n_filters
 
-    def add_pool(self, name, pool_type, pool_factor):
-        pool = Pooling(self.n_channels, pool_type, pool_factor)
+    def add_pool3d(self, name, pool_factor, **kwargs):
+        pool = Pool3D(
+            n_channels=self.n_channels,
+            pool_factor=pool_factor,
+            **kwargs
+        )
         self.add_module(name, pool)
         self.grid_modules.append(pool)
         self.grid_size //= pool_factor
 
-    def add_conv_block(
-        self,
-        name,
-        n_convs,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        conv_block = ConvBlock(
-            n_convs,
-            self.n_channels,
-            n_filters,
-            kernel_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+    def add_conv3d_block(self, name, n_filters, **kwargs):
+        conv_block = Conv3DBlock(
+            n_channels_in=self.n_channels,
+            n_channels_out=n_filters,
+            **kwargs
         )
         self.add_module(name, conv_block)
         self.grid_modules.append(conv_block)
         self.n_channels = n_filters
 
-    def add_reshape_fc(self, name, n_output, activ_fn, spectral_norm):
-        in_shape = (self.n_channels,) + (self.grid_size,)*3
-        fc = ReshapeFc(in_shape, n_output, activ_fn, spectral_norm)
+    def add_grid2vec(self, name, **kwargs):
+        fc = Grid2Vec(
+            in_shape=(self.n_channels,) + (self.grid_size,)*3,
+            **kwargs
+        )
         self.add_module(name, fc)
         self.task_modules.append(fc)
 
-    def forward(self, input):
+    def forward(self, inputs):
 
         # conv pool sequence
         conv_features = []
         for f in self.grid_modules:
-            output = f(input)
-            input = output
-
-            if not isinstance(f, Pooling):
-                conv_features.append(output)
+            outputs = f(inputs)
+            if not isinstance(f, Pool3D):
+                conv_features.append(outputs)
+            inputs = outputs
 
         # fully-connected outputs
-        outputs = [f(input) for f in self.task_modules]
+        outputs = [f(inputs) for f in self.task_modules]
 
         return reduce_list(outputs), conv_features
 
 
-class Decoder(nn.Module):
+# this is basically just an alias
+class Discriminator(GridEncoder):
+    pass
 
+
+class GridDecoder(nn.Module):
+    '''
+    A fully connected layer followed by a
+    sequence of 3D transposed convolution
+    blocks and unpooling layers.
+    '''
     # TODO re-implement the following:
     # - self-attention
     # - densely-connected
@@ -478,14 +452,14 @@ class Decoder(nn.Module):
         n_channels,
         width_factor,
         n_levels,
-        deconv_per_level,
+        tconv_per_level,
         kernel_size,
         relu_leak,
         batch_norm,
         spectral_norm,
         unpool_type,
         unpool_factor,
-        n_output,
+        n_channels_out,
         final_unpool=False,
         skip_connect=False,
     ):
@@ -495,14 +469,14 @@ class Decoder(nn.Module):
         # first fc layer maps to initial grid shape
         self.fc_modules = []
         self.n_input = n_input
-        self.add_fc_reshape(
-            'fc',
-            n_input,
-            n_channels,
-            grid_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+        self.add_vec2grid(
+            name='fc',
+            n_input=n_input,
+            n_channels=n_channels,
+            grid_size=grid_size,
+            relu_leak=relu_leak,
+            batch_norm=batch_norm,
+            spectral_norm=spectral_norm,
         )
         n_filters = n_channels
 
@@ -511,133 +485,103 @@ class Decoder(nn.Module):
 
             if i + 1 < n_levels: # unpool between deconv blocks
                 unpool_name = 'level' + str(i) + '_unpool'
-                self.add_unpool(
-                    unpool_name, unpool_type, unpool_factor
+                self.add_unpool3d(
+                    name=unpool_name,
+                    unpool_type=unpool_type,
+                    unpool_factor=unpool_factor
                 )
                 n_filters //= width_factor
 
-            deconv_block_name = 'level' + str(i)
-            self.add_deconv_block(
-                deconv_block_name,
-                deconv_per_level,
-                n_filters,
-                kernel_size,
-                relu_leak,
-                batch_norm,
-                spectral_norm,
+            tconv_block_name = 'level' + str(i)
+            self.add_tconv3d_block(
+                name=tconv_block_name,
+                n_convs=tconv_per_level,
+                n_filters=n_filters,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
             )
 
         if final_unpool:
-            self.add_unpool('final_unpool', unpool_type, unpool_factor)
+            self.add_unpool3d('final_unpool', unpool_type, unpool_factor)
 
-        # final deconv maps to correct n_output channels
-        self.add_deconv(
-            'final_conv',
-            n_output,
-            kernel_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+        # final tconv maps to correct n_output channels
+        self.add_tconv3d(
+            name='final_conv',
+            n_filters=n_channels_out,
+            kernel_size=kernel_size,
+            relu_leak=relu_leak,
+            batch_norm=batch_norm,
+            spectral_norm=spectral_norm,
         )
 
-    def add_fc_reshape(
-        self,
-        name,
-        n_input,
-        n_channels,
-        grid_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        out_shape = (n_channels,) + (grid_size,)*3
-        fc_reshape = FcReshape(
-            n_input, out_shape, relu_leak, batch_norm, spectral_norm
+    def add_vec2grid(self, name, n_channels, grid_size, **kwargs):
+        vec2grid = Vec2Grid(
+            out_shape=(n_channels,) + (grid_size,)*3,
+            **kwargs
         )
-        self.add_module(name, fc_reshape)
-        self.fc_modules.append(fc_reshape)
+        self.add_module(name, vec2grid)
+        self.fc_modules.append(vec2grid)
         self.n_channels = n_channels
         self.grid_size = grid_size
 
-    def add_unpool(self, name, unpool_type, unpool_factor):
-        unpool = Unpooling(self.n_channels, unpool_type, unpool_factor)
+    def add_unpool3d(self, name, unpool_factor, **kwargs):
+        unpool = Unpool3D(
+            n_channels=self.n_channels,
+            unpool_factor=unpool_factor,
+            **kwargs
+        )
         self.add_module(name, unpool)
         self.grid_modules.append(unpool)
         self.grid_size *= unpool_factor
 
-    def add_deconv(
-        self,
-        name,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        n_channels = self.n_channels
-        if self.skip_connect:
-            n_channels *= 2
-        deconv = DeconvReLU(
-            n_channels,
-            n_filters,
-            kernel_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+    def add_tconv3d(self, name, n_filters, **kwargs):
+        tconv = TConv3DReLU(
+            n_channels_in=self.n_channels * (1 + self.skip_connect),
+            n_channels_out=n_filters,
+            **kwargs
         )
-        self.add_module(name, deconv)
-        self.grid_modules.append(deconv)
+        self.add_module(name, tconv)
+        self.grid_modules.append(tconv)
         self.n_channels = n_filters
 
-    def add_deconv_block(
-        self,
-        name,
-        n_deconvs,
-        n_filters,
-        kernel_size,
-        relu_leak,
-        batch_norm,
-        spectral_norm,
-    ):
-        n_channels = self.n_channels
-
-        if self.skip_connect:
-            n_channels *= 2
-
-        deconv_block = DeconvBlock(
-            n_deconvs,
-            n_channels,
-            n_filters,
-            kernel_size,
-            relu_leak,
-            batch_norm,
-            spectral_norm,
+    def add_tconv3d_block(self, name, n_filters, **kwargs):
+        tconv_block = TConv3DBlock(
+            n_channels_in=self.n_channels * (1 + self.skip_connect),
+            n_channels_out=n_filters,
+            **kwargs
         )
-
-        self.add_module(name, deconv_block)
-        self.grid_modules.append(deconv_block)
+        self.add_module(name, tconv_block)
+        self.grid_modules.append(tconv_block)
         self.n_channels = n_filters
 
-    def forward(self, input, conv_featuresS=None):
+    def forward(self, inputs, conv_features=None):
 
         for f in self.fc_modules:
-            output = f(input)
-            input = output
+            outputs = f(inputs)
+            inputs = outputs
 
         for i, f in enumerate(self.grid_modules):
-            if self.skip_connect and not isinstance(f, Unpooling):
-                print(i, input.shape, conv_features[i].shape)
-                input = torch.cat([input, conv_features[-i-1]], dim=1)
-            output = f(input)
-            input = output
+            if self.skip_connect and not isinstance(f, Unpool3D):
+                #print(i, input.shape, conv_features[-i-1].shape)
+                inputs = torch.cat([inputs, conv_features[-i-1]], dim=1)
+            outputs = f(inputs)
+            inputs = outputs
 
-        return output
+        return outputs
 
 
-class Generator(nn.Sequential):
+class GridGenerator(nn.Sequential):
+    '''
+    A generative model of 3D grids that can take the form
+    of an encoder-decoder architecture (e.g. AE, VAE) or
+    a decoder-only architecture (e.g. GAN). The model can
+    also have a conditional encoder (e.g. CE, CVAE, CGAN).
+    '''
+    is_variational = False
     has_input_encoder = False
     has_conditional_encoder = False
-    variational = False
 
     def __init__(
         self,
@@ -661,7 +605,7 @@ class Generator(nn.Sequential):
         skip_connect=False,
         device='cuda',
     ):
-        assert type(self) != Generator, 'Generator is abstract'
+        assert type(self) != GridGenerator, 'GridGenerator is abstract'
 
         super().__init__()
         self.check_encoder_channels(n_channels_in, n_channels_cond)
@@ -675,12 +619,12 @@ class Generator(nn.Sequential):
 
         if self.has_input_encoder:
 
-            if self.variational:
-                n_output = [n_latent, n_latent] # means and log_stds
+            if self.is_variational: # means and log_stds
+                encoder_output = [n_latent, n_latent]
             else:
-                n_output = n_latent
+                encoder_output = n_latent
 
-            self.input_encoder = Encoder(
+            self.input_encoder = GridEncoder(
                 n_channels=n_channels_in,
                 grid_size=grid_size,
                 n_filters=n_filters,
@@ -693,13 +637,13 @@ class Generator(nn.Sequential):
                 spectral_norm=spectral_norm,
                 pool_type=pool_type,
                 pool_factor=pool_factor,
-                n_output=n_output,
+                n_output=encoder_output,
                 init_conv_pool=init_conv_pool,
             )
 
         if self.has_conditional_encoder:
 
-            self.conditional_encoder = Encoder(
+            self.conditional_encoder = GridEncoder(
                 n_channels=n_channels_cond,
                 grid_size=grid_size,
                 n_filters=n_filters,
@@ -718,20 +662,20 @@ class Generator(nn.Sequential):
 
         self.skip_connect = skip_connect
 
-        self.decoder = Decoder(
+        self.decoder = GridDecoder(
             n_input=self.n_decoder_input,
             grid_size=grid_size // pool_factor**(n_levels-1),
             n_channels=n_filters * width_factor**(n_levels-1),
             width_factor=width_factor,
             n_levels=n_levels,
-            deconv_per_level=conv_per_level,
+            tconv_per_level=conv_per_level,
             kernel_size=kernel_size,
             relu_leak=relu_leak,
             batch_norm=batch_norm,
             spectral_norm=spectral_norm,
             unpool_type=unpool_type,
             unpool_factor=pool_factor,
-            n_output=n_channels_out,
+            n_channels_out=n_channels_out,
             final_unpool=init_conv_pool,
         )
 
@@ -741,13 +685,18 @@ class Generator(nn.Sequential):
     def check_encoder_channels(self, n_channels_in, n_channels_cond):
         if self.has_input_encoder:
             assert is_positive_int(n_channels_in)
+        else:
+            assert n_channels_in is None
+
         if self.has_conditional_encoder:
             assert is_positive_int(n_channels_cond)
+        else:
+            assert n_channels_cond is None
 
     @property
     def n_decoder_input(self):
         n = 0
-        if self.has_input_encoder or self.variational:
+        if self.has_input_encoder or self.is_variational:
             n += self.n_latent
         if self.has_conditional_encoder:
             n += self.n_latent
@@ -762,73 +711,89 @@ class Generator(nn.Sequential):
         return latents
 
 
-class AE(Generator):
+class AE(GridGenerator):
+    is_variational = False
     has_input_encoder = True
+    has_conditional_encoder = False
 
-    def forward(self, inputs):
-        latents, _ = self.input_encoder(inputs)
-        return self.decoder(latents), latents
+    def forward(self, inputs=None, conditions=None, batch_size=None):
+
+        if inputs is None: # "prior", not expected to work
+            in_latents = self.sample_latents(batch_size)
+        else: # posterior
+            in_latents, _ = self.input_encoder(inputs)
+
+        return self.decoder(in_latents), in_latents, None, None
 
 
-class VAE(AE):
-    variational = True
+class VAE(GridGenerator):
+    is_variational = True
+    has_input_encoder = True
+    has_conditional_encoder = False
 
-    def forward(self, inputs, batch_size):
+    def forward(self, inputs=None, conditions=None, batch_size=None):
 
-        if inputs is not None: # posterior
-            (means, log_stds), _ = self.input_encoder(inputs)
-        else: # prior
+        if inputs is None: # prior
             means, log_stds = None, None
+        else: # posterior
+            (means, log_stds), _ = self.input_encoder(inputs)
 
-        latents = self.sample_latents(batch_size, means, log_stds)
+        var_latents = self.sample_latents(batch_size, means, log_stds)
+        return self.decoder(var_latents), var_latents, means, log_stds
 
-        return self.decoder(latents), latents, means, log_stds
 
-
-class CE(Generator):
+class CE(GridGenerator):
+    is_variational = False
+    has_input_encoder = False
     has_conditional_encoder = True
 
-    def forward(self, conditions):
-        latents, cond_features = self.conditional_encoder(conditions)
-        return self.decoder(
-            latents, cond_features if self.skip_connect else None
-        ), latents
-
-
-class CVAE(VAE):
-    has_conditional_encoder = True
-
-    def forward(self, inputs, conditions, batch_size):
-
-        if inputs is not None: # posterior
-            (means, log_stds), _ = self.input_encoder(inputs)
-        else: # prior
-            means, log_stds = None, None
-
-        input_latents = self.sample_latents(batch_size, means, log_stds)
+    def forward(self, inputs=None, conditions=None, batch_size=None):
         cond_latents, cond_features = self.conditional_encoder(conditions)
-        latents = torch.cat([input_latents, cond_latents], dim=1)
+        return self.decoder(
+            cond_latents, cond_features if self.skip_connect else None
+        ), cond_latents, None, None
+
+
+class CVAE(GridGenerator):
+    is_variational = True
+    has_input_encoder = True
+    has_conditional_encoder = True
+
+    def forward(self, inputs=None, conditions=None, batch_size=None):
+
+        if inputs is None: # prior
+            means, log_stds = None, None
+        else: # posterior
+            (means, log_stds), _ = self.input_encoder(inputs)
+
+        in_latents = self.sample_latents(batch_size, means, log_stds)
+        cond_latents, cond_features = self.conditional_encoder(conditions)
+        cat_latents = torch.cat([in_latents, cond_latents], dim=1)
 
         return self.decoder(
-            latents, cond_features if self.skip_connect else None
-        ), latents, means, log_stds
+            cat_latents, cond_features if self.skip_connect else None
+        ), cat_latents, means, log_stds
 
 
-class GAN(Generator):
-    variational = True # just means we provide noise to decoder here
+class GAN(GridGenerator):
+    is_variational = True # just means we provide noise to decoder
+    has_input_encoder = False
+    has_conditional_encoder = False
 
-    def forward(self, batch_size):
-        latents = self.sample_latents(batch_size)
-        return self.decoder(latents), latents
+    def forward(self, inputs=None, conditions=None, batch_size=None):
+        var_latents = self.sample_latents(batch_size)
+        return self.decoder(var_latents), var_latents, None, None
 
 
 class CGAN(GAN):
+    is_variational = True # just means we provide noise to decoder
+    has_input_encoder = False
     has_conditional_encoder = True
 
-    def forward(self, conditions, batch_size):
-        sampled_latents = self.sample_latents(batch_size)
+    def forward(self, inputs=None, conditions=None, batch_size=None):
+        var_latents = self.sample_latents(batch_size)
         cond_latents, cond_features = self.conditional_encoder(conditions)
-        latents = torch.cat([sampled_latents, cond_latents], dim=1)
+        cat_latents = torch.cat([var_latents, cond_latents], dim=1)
         return self.decoder(
-            latents, cond_features if self.skip_connect else None
-        ), latents
+            cat_latents, cond_features if self.skip_connect else None
+        ), cat_latents, None, None
