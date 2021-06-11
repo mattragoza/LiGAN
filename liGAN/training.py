@@ -1,4 +1,4 @@
-import os, time, psutil, pynvml, re, glob
+import sys, os, time, psutil, pynvml, re, glob
 from collections import OrderedDict
 from functools import partial
 import numpy as np
@@ -75,10 +75,15 @@ def save_on_exception(method):
 
 def find_last_iter(out_prefix, min_iter=-1):
     last_iter = min_iter
-    state_file_re = re.compile(out_prefix + r'_iter_(\d+)')
-    for state_file in glob.glob(out_prefix + '_iter_*'):
+    state_file_re = re.compile(re.escape(out_prefix) + r'_iter_(\d+).*state')
+    for state_file in glob.glob(out_prefix + '_iter_*state'):
         m = state_file_re.match(state_file)
-        last_iter = max(last_iter, int(m.group(1)))
+        try:
+            last_iter = max(last_iter, int(m.group(1)))
+        except AttributeError:
+            print(state_file_re.pattern)
+            print(state_file)
+            raise
     if last_iter > min_iter:
         return last_iter
     else:
@@ -249,7 +254,11 @@ class Solver(nn.Module):
             torch.save(state_dict, state_file)
 
     def load_state(self, cont_iter=None):
-        self.curr_iter = cont_iter if cont_iter else self.find_last_iter()
+
+        if cont_iter is None:
+            self.curr_iter = self.find_last_iter()
+        else:
+            self.curr_iter = cont_iter
 
         if hasattr(self, 'gen_model'):
 

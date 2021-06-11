@@ -95,6 +95,14 @@ class TestSolver(object):
         assert not isnan(metrics_i['gen_grad_norm']), 'grad norm not computed'
         assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
 
+    def test_solver_state(self, solver):
+        assert solver.curr_iter == 0
+        solver.save_state()
+        solver.step()
+        assert solver.curr_iter == 1
+        solver.load_state(cont_iter=0)
+        assert solver.curr_iter == 0
+
     def test_solver_test(self, solver):
         solver.test(1, fit_atoms=False)
         assert solver.curr_iter == 0
