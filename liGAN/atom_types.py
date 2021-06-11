@@ -226,6 +226,17 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     A function giving the atomic radius is also needed.
     '''
+
+    # default element ranges for crossdock2020
+    lig_elem_range = [
+       #C, N, O, Na, Mg,  P,  S, Cl,  K, Ca, Zn
+        6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30
+    ]
+    rec_elem_range = [
+       #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
+        5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26
+    ]
+
     def __init__(
         self,
         prop_funcs,
@@ -357,24 +368,48 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     @classmethod
     def get_typer(cls, prop_funcs, radius_func, rec=False, device='cuda'):
+        '''
+        Factory method for creating AtomTypers
+        using simple string codes that specify
+        which property channels to include after
+        the element channels.
 
+        The ranges for these channels are all
+        set automatically, and were selected
+        for the Crossdock2020 dataset.
+
+        prop_funcs
+          o -> aromatic [False, True]
+          a -> h bond acceptor [True]
+          d -> h bond donor [True]
+          c -> formal charge [-1, 0, 1]
+          n -> hydrogen count [0, 1, 2, 3, 4]
+          h -> use explicit hydrogens
+
+        radius_func
+          v -> van der Waals radius
+          c -> covalent radius
+          # -> fixed radius size (in angstroms)
+
+        rec
+          False -> use ligand elements
+            [B, C, N, O, F, P, S, Cl, Br, I, Fe]
+          True -> use receptor elements
+            [C, N, O, Na, Mg, P, S, Cl, K, Ca, Zn]
+
+        Out-of-range heavy elements are converted
+        to the last elements in the range.
+        '''
         pf, rf = prop_funcs, radius_func
 
         # first property is always atomic number
         prop_funcs = [Atom.atomic_num]
 
         # use different ranges for receptors than ligands
-        # these ranges were selected using Crossdock2020
         if rec:
-            prop_ranges = [
-                #C, N, O, Na, Mg,  P,  S, Cl,  K, Ca, Zn
-                [6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30]
-            ]
+            prop_ranges = [list(cls.rec_elem_range)]
         else: # ligand
-            prop_ranges = [
-                #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
-                [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
-            ]
+            prop_ranges = [list(cls.lig_elem_range)]
 
         explicit_h = ('h' in pf)
         if explicit_h:

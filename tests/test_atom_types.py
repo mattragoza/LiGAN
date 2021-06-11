@@ -53,6 +53,12 @@ class TestAtomTyper(object):
     def typer(self, prop_funcs):
         return AtomTyper.get_typer(prop_funcs, radius_func=1.0)
 
+    @pytest.fixture
+    def rec_typer(self, prop_funcs):
+        return AtomTyper.get_typer(
+            prop_funcs, radius_func=1.0, rec=True
+        )
+
     @pytest.fixture(params=test_sdf_files)
     def mol(self, request):
         sdf_file = request.param
@@ -65,10 +71,13 @@ class TestAtomTyper(object):
         assert len(typer.prop_funcs) > 1
         assert len(typer.prop_funcs) == len(typer.prop_ranges)
         assert typer.prop_funcs[0] == Atom.atomic_num
-        assert typer.n_elem_types == len(typer.prop_ranges[0])
         assert typer.explicit_h == (1 in typer.elem_range)
+        assert typer.elem_range[typer.explicit_h:] == typer.lig_elem_range
         for f in typer.prop_funcs:
             assert typer.prop_funcs[typer.prop_idx[f]] == f
+
+    def test_rec_typer_init(self, rec_typer):
+        assert rec_typer.elem_range[rec_typer.explicit_h:] == rec_typer.rec_elem_range
 
     def test_typer_names(self, typer):
         print(list(typer.get_type_names()))
