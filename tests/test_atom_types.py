@@ -67,6 +67,10 @@ class TestAtomTyper(object):
         mol.name = os.path.splitext(os.path.basename(sdf_file))[0]
         return mol
 
+    def test_typer_defaults(self):
+        assert AtomTyper.rec_elem_range == [6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30]
+        assert AtomTyper.lig_elem_range == [5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26]
+
     def test_typer_init(self, typer):
         assert len(typer.prop_funcs) > 1
         assert len(typer.prop_funcs) == len(typer.prop_ranges)

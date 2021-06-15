@@ -229,12 +229,12 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     # default element ranges for crossdock2020
     lig_elem_range = [
-       #C, N, O, Na, Mg,  P,  S, Cl,  K, Ca, Zn
-        6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30
-    ]
-    rec_elem_range = [
        #B, C, N, O, F,  P,  S, Cl, Br,  I, Fe
         5, 6, 7, 8, 9, 15, 16, 17, 35, 53, 26
+    ]
+    rec_elem_range = [
+       #C, N, O, Na, Mg,  P,  S, Cl,  K, Ca, Zn
+        6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 30
     ]
 
     def __init__(
@@ -312,7 +312,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_type_names(self):
         for func, range_ in zip(self.prop_funcs, self.prop_ranges):
             for value in range_:
-                yield '{}_{}'.format(func.__name__, value)
+                yield '{}={}'.format(func.__name__, value)
 
     def get_type_vector(self, ob_atom):
 

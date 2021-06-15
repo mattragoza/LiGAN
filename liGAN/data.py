@@ -15,6 +15,7 @@ class AtomGridData(nn.Module):
         batch_size,
         rec_typer,
         lig_typer,
+        use_rec_elems=False,
         resolution=0.5,
         dimension=None,
         grid_size=None,
@@ -36,8 +37,8 @@ class AtomGridData(nn.Module):
             dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
-        self.lig_typer = AtomTyper.get_typer(*lig_typer.split('-'))
-        self.rec_typer = AtomTyper.get_typer(*rec_typer.split('-'))
+        self.lig_typer = AtomTyper.get_typer(*lig_typer.split('-'), rec=False)
+        self.rec_typer = AtomTyper.get_typer(*rec_typer.split('-'), rec=use_rec_elems)
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
