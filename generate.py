@@ -191,7 +191,7 @@ class OutputWriter(object):
                 src_mol = struct.info['src_mol']
                 self.write_sdf(sdf_file, src_mol, sample_idx, is_real=True)
 
-                if is_lig_grid: # no rec minimization
+                if 'min_mol' in src_mol.info:
                     sdf_file = self.mol_dir / (grid_prefix+'_src_uff.sdf.gz')
                     min_mol = src_mol.info['min_mol']
                     self.write_sdf(sdf_file, min_mol, sample_idx, is_real=True)
@@ -392,7 +392,7 @@ class OutputWriter(object):
                 self.compute_struct_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_struct, lig_struct)
 
         if self.verbose:
-            print(self.metrics.loc[lig_name].loc[sample_idxs])
+            print(self.metrics.loc[lig_name].loc[sample_idxs].transpose())
 
     def compute_grid_metrics(
         self, idx, grid_type, grid, ref_grid=None, mean_grid=None
@@ -564,6 +564,9 @@ class OutputWriter(object):
                 m.loc[idx, mol_type+'_rdkit_sim'] = np.nan
                 m.loc[idx, mol_type+'_morgan_sim'] = np.nan
                 m.loc[idx, mol_type+'_maccs_sim'] = np.nan
+
+        if 'min_mol' not in mol.info:
+            return
 
         # UFF energy minimization
         min_mol = mol.info['min_mol']
@@ -834,9 +837,12 @@ def generate(
                     if gen_model:
                         if verbose: print('Calling generator forward (prior={})'.format(prior))
                         lig_gen_grids, latents, _, _ = gen_model(
-                            complex_grids, rec_grids, batch_size
+                            inputs=complex_grids,
+                            conditions=rec_grids,
+                            batch_size=batch_size
                         )
                         # TODO interpolation here!
+                        assert not interpolate, 'TODO'
 
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
@@ -881,7 +887,8 @@ def generate(
 
             rec_struct.info['src_mol'] = rec_mol
             lig_struct.info['src_mol'] = lig_mol
-            lig_struct.info['add_mol'] = lig_add_mol
+            if fit_atoms:
+                lig_struct.info['add_mol'] = lig_add_mol
 
             grid_types = [
                 ('rec', rec_grids, data.rec_typer),

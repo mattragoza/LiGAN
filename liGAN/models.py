@@ -797,3 +797,7 @@ class CGAN(GAN):
         return self.decoder(
             cat_latents, cond_features if self.skip_connect else None
         ), cat_latents, None, None
+
+
+VAEGAN = VAE
+CVAEGAN = CVAE
