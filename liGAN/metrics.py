@@ -57,9 +57,16 @@ def compute_struct_metrics(struct_type, structs):
     return m
 
 
-def compute_mean_type_diff_and_exact_types(structs, ref_structs):
-    type_counts = [s.type_counts for s in structs]
-    ref_type_counts = [s.type_counts for s in ref_structs]
+def compute_mean_type_diff(structs, ref_structs, which=None):
+    if which is None:
+        type_counts = [s.type_counts for s in structs]
+        ref_type_counts = [s.type_counts for s in ref_structs]
+    elif which == 'elem':
+        type_counts = [s.elem_counts for s in structs]
+        ref_type_counts = [s.elem_counts for s in ref_structs]
+    elif which == 'prop':
+        type_counts = [s.prop_counts for s in structs]
+        ref_type_counts = [s.prop_counts for s in ref_structs]
     type_diffs = np.array([
         (t-r).norm(p=1).item() for t,r in zip(type_counts, ref_type_counts)
     ])
@@ -144,6 +151,10 @@ def compute_paired_struct_metrics(
     m = compute_struct_metrics(struct_type, structs)
     m.update(compute_struct_metrics(ref_struct_type, ref_structs))
     m[struct_type+'_type_diff'], m[struct_type+'_exact_types'] = \
-        compute_mean_type_diff_and_exact_types(structs, ref_structs)
+        compute_mean_type_diff(structs, ref_structs)
+    m[struct_type+'_elem_diff'], m[struct_type+'_exact_elems'] = \
+        compute_mean_type_diff(structs, ref_structs, which='elem')
+    m[struct_type+'_prop_diff'], m[struct_type+'_exact_props'] = \
+        compute_mean_type_diff(structs, ref_structs, which='prop')
     m[struct_type+'_atom_rmsd'] = compute_mean_atom_rmsd(structs, ref_structs)
     return m

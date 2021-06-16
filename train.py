@@ -61,7 +61,11 @@ def main(argv):
 
     if config['continue']:
         solver.load_state()
-        solver.load_metrics()
+        try:
+            solver.load_metrics()
+        except FileNotFoundError:
+            if solver.curr_iter > 0:
+                raise
 
     if 'max_n_iters' in config:
         config['train']['max_iter'] = min(
