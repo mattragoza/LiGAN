@@ -205,7 +205,7 @@ class TestGridDecoder(object):
 
 class TestGridGenerator(object):
 
-    @pytest.fixture(params=[AE, CE, VAE, CVAE, GAN, CGAN])
+    @pytest.fixture(params=[AE]) #, CE, VAE, CVAE, GAN, CGAN])
     def gen(self, request):
         model_type = request.param
         return model_type(
@@ -213,10 +213,10 @@ class TestGridGenerator(object):
             n_channels_cond=16 if model_type.has_conditional_encoder else None,
             n_channels_out=19,
             grid_size=8,
-            n_filters=5,
+            n_filters=32,
             width_factor=2,
             n_levels=3,
-            conv_per_level=1,
+            conv_per_level=5,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
@@ -225,6 +225,8 @@ class TestGridGenerator(object):
             unpool_type='n',
             n_latent=128,
             skip_connect=False,
+            init_conv_pool=True,
+            block_type='',
             device='cuda'
         )
 
@@ -247,7 +249,7 @@ class TestGridGenerator(object):
         assert outputs.norm() > 0, 'output norm is zero'
 
     def test_gen_forward_prior(self, gen):
-
+        print(gen)
         batch_size = 10
         inputs = None
         conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()

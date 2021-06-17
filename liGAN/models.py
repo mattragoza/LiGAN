@@ -108,7 +108,7 @@ class TConv3DReLU(Conv3DReLU):
     conv_type = nn.ConvTranspose3d
 
 
-class Conv3DBlock(nn.Sequential):
+class Conv3DBlock(nn.Module):
     '''
     A sequence of n_convs ConvReLUs with the same settings.
     '''
@@ -119,22 +119,51 @@ class Conv3DBlock(nn.Sequential):
         n_convs,
         n_channels_in,
         n_channels_out,
-        dense_net=False,
+        block_type=None,
         **kwargs
     ):
-        if dense_net:
-            raise NotImplementedError('TODO densely-connected')
+        super().__init__()
 
-        modules = []
+        self.conv_modules = []
         for i in range(n_convs):
-            modules.append(self.conv_type(
+            conv = self.conv_type(
                 n_channels_in=n_channels_in,
                 n_channels_out=n_channels_out,
                 **kwargs
-            ))
+            )
+            self.conv_modules.append(conv)
+            self.add_module(str(i), conv)
             n_channels_in = n_channels_out
 
-        super().__init__(*modules)
+        self.block_type = block_type
+
+    def __len__(self):
+        return len(self.conv_modules)
+
+    def forward(self, inputs):
+
+        if not self.conv_modules:
+            return inputs
+
+        identity = inputs # for resnet
+        all_inputs = [inputs] # for densenet
+
+        for f in self.conv_modules:
+            outputs = f(inputs)
+
+            if self.block_type == 'd': # densenet
+                all_inputs.append(outputs)
+                inputs = torch.cat(all_inputs, dim=1)
+            else:
+                inputs = outputs
+
+        if not self.conv_modules:
+            return identity
+
+        if self.block_type == 'r': # resnet
+            return outputs + identity
+        else:
+            return outputs
 
 
 class TConv3DBlock(Conv3DBlock):
@@ -216,9 +245,12 @@ class Reshape(nn.Module):
     '''
     A layer that reshapes the input.
     '''
-    def __init__(self, *args):
+    def __init__(self, shape):
         super().__init__()
-        self.shape = tuple(args)
+        self.shape = tuple(shape)
+
+    def __repr__(self):
+        return 'Reshape(shape={})'.format(self.shape)
 
     def forward(self, x):
         return x.reshape(self.shape)
@@ -235,7 +267,7 @@ class Grid2Vec(nn.Sequential):
     ):
         n_input = np.prod(in_shape)
         modules = [
-            Reshape(-1, n_input),
+            Reshape(shape=(-1, n_input)),
             nn.Linear(n_input, n_output)
         ]
 
@@ -262,7 +294,7 @@ class Vec2Grid(nn.Sequential):
         n_output = np.prod(out_shape)
         modules = [
             nn.Linear(n_input, n_output),
-            Reshape(-1, *out_shape),
+            Reshape(shape=(-1, *out_shape)),
             nn.LeakyReLU(negative_slope=relu_leak, inplace=True),
         ]
 
@@ -306,6 +338,7 @@ class GridEncoder(nn.Module):
         n_output=1,
         output_activ_fn=None,
         init_conv_pool=False,
+        block_type=None,
     ):
         super().__init__()
 
@@ -350,6 +383,7 @@ class GridEncoder(nn.Module):
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
+                block_type=block_type,
             )
 
         # fully-connected outputs
@@ -385,6 +419,8 @@ class GridEncoder(nn.Module):
         self.n_channels = n_filters
 
     def add_pool3d(self, name, pool_factor, **kwargs):
+        assert self.grid_size % pool_factor == 0, \
+            'cannot pool remaining spatial dims'
         pool = Pool3D(
             n_channels=self.n_channels,
             pool_factor=pool_factor,
@@ -462,6 +498,7 @@ class GridDecoder(nn.Module):
         n_channels_out,
         final_unpool=False,
         skip_connect=False,
+        block_type=None,
     ):
         super().__init__()
         self.skip_connect = skip_connect
@@ -501,10 +538,15 @@ class GridDecoder(nn.Module):
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
+                block_type=block_type,
             )
 
         if final_unpool:
-            self.add_unpool3d('final_unpool', unpool_type, unpool_factor)
+            self.add_unpool3d(
+                name='final_unpool',
+                unpool_type=unpool_type,
+                unpool_factor=unpool_factor,
+            )
 
         # final tconv maps to correct n_output channels
         self.add_tconv3d(
@@ -603,6 +645,7 @@ class GridGenerator(nn.Sequential):
         n_latent=1024,
         init_conv_pool=False,
         skip_connect=False,
+        block_type=None,
         device='cuda',
     ):
         assert type(self) != GridGenerator, 'GridGenerator is abstract'
@@ -639,6 +682,7 @@ class GridGenerator(nn.Sequential):
                 pool_factor=pool_factor,
                 n_output=encoder_output,
                 init_conv_pool=init_conv_pool,
+                block_type=block_type,
             )
 
         if self.has_conditional_encoder:
@@ -658,14 +702,17 @@ class GridGenerator(nn.Sequential):
                 pool_factor=pool_factor,
                 n_output=n_latent,
                 init_conv_pool=init_conv_pool,
+                block_type=block_type,
             )
 
         self.skip_connect = skip_connect
 
+        n_pools = n_levels - 1 + init_conv_pool
+
         self.decoder = GridDecoder(
             n_input=self.n_decoder_input,
-            grid_size=grid_size // pool_factor**(n_levels-1),
-            n_channels=n_filters * width_factor**(n_levels-1),
+            grid_size=grid_size // pool_factor**n_pools,
+            n_channels=n_filters * width_factor**n_pools,
             width_factor=width_factor,
             n_levels=n_levels,
             tconv_per_level=conv_per_level,
@@ -677,6 +724,7 @@ class GridGenerator(nn.Sequential):
             unpool_factor=pool_factor,
             n_channels_out=n_channels_out,
             final_unpool=init_conv_pool,
+            block_type=block_type,
         )
 
         super().to(device)
