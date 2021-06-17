@@ -87,7 +87,7 @@ def find_last_iter(out_prefix, min_iter=-1):
     if last_iter > min_iter:
         return last_iter
     else:
-        raise FileNotFoundError('could not find state files')
+        raise FileNotFoundError('could not find state files ({})'.format(last_iter))
 
 
 class Solver(nn.Module):
@@ -298,6 +298,14 @@ class Solver(nn.Module):
         self.metrics = pd.read_csv(
             csv_file, sep=' '
         ).set_index(self.index_cols)
+
+    def load_state_and_metrics(self):
+        self.load_state()
+        try:
+            self.load_metrics()
+        except FileNotFoundError:
+            if self.curr_iter > 0:
+                raise
 
     def print_metrics(self, idx, metrics):
         index_str = ' '.join(
