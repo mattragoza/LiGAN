@@ -1057,6 +1057,8 @@ class GANSolver(GenerativeSolver):
 
     def train_disc(self, n_iters, update=True, compute_norm=True):
 
+        loss_real = np.nan
+        loss_gen = np.nan
         for i in range(n_iters):
             batch_idx = 0 if update else i
             grid_type = self.get_grid_phase(batch_idx, disc=True)
