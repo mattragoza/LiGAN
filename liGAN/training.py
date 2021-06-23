@@ -73,6 +73,10 @@ def save_on_exception(method):
     return wrapper
 
 
+def get_state_prefix(out_prefix, iter_):
+    return '{}_iter_{}'.format(out_prefix, iter_)
+
+
 def find_last_iter(out_prefix, min_iter=-1):
     last_iter = min_iter
     state_file_re = re.compile(re.escape(out_prefix) + r'_iter_(\d+).*state')
@@ -223,11 +227,13 @@ class Solver(nn.Module):
 
     @property
     def state_prefix(self):
-        return '{}_iter_{}'.format(self.out_prefix, self.curr_iter)
+        return get_state_prefix(self.out_prefix, self.curr_iter)
 
     def save_state(self):
 
         if hasattr(self, 'gen_model'):
+
+            self.gen_model.cpu()
 
             state_file = self.state_prefix + '.gen_model_state'
             print('Saving generative model state to ' + state_file)
@@ -240,7 +246,11 @@ class Solver(nn.Module):
             state_dict['iter'] = self.gen_iter
             torch.save(state_dict, state_file)
 
+            self.gen_model.to(self.device)
+
         if hasattr(self, 'disc_model'):
+
+            self.disc_model.cpu()
 
             state_file = self.state_prefix + '.disc_model_state'
             print('Saving discriminative model state to ' + state_file)
@@ -252,6 +262,8 @@ class Solver(nn.Module):
             state_dict['optim_state'] = self.disc_optimizer.state_dict() 
             state_dict['iter'] = self.disc_iter
             torch.save(state_dict, state_file)
+
+            self.disc_model.to(self.device)
 
     def load_state(self, cont_iter=None):
 
