@@ -628,6 +628,7 @@ def find_real_lig_in_data_root(data_root, lig_src_no_ext, use_ob=False):
             lig_mol_base = m.group(1) + '.sdf'
             idx = int(m.group(2))
             lig_mol_file = os.path.join(data_root, lig_mol_base)
+            os.stat(lig_mol_file)
 
         except OSError:
             lig_mol_base = lig_src_no_ext + '.sdf'
@@ -832,34 +833,33 @@ def generate(
                     grids, structs, _ = data.forward(split_rec_lig=True)
                     rec_structs, lig_structs = structs
                     rec_grids, lig_grids = grids
-                    complex_grids = None if prior else data.grids
+                    rec_lig_grids = data.grids
 
                     if gen_model:
                         if verbose: print('Calling generator forward (prior={})'.format(prior))
                         lig_gen_grids, latents, _, _ = gen_model(
-                            inputs=complex_grids,
+                            inputs=None if prior else rec_lig_grids,
                             conditions=rec_grids,
-                            batch_size=batch_size
+                            batch_size=batch_size,
                         )
                         # TODO interpolation here!
                         assert not interpolate, 'TODO'
+
+                        for i, name in enumerate(data.lig_typer.get_type_names()):
+                            print(name, '\t', (lig_gen_grids[:,i]**2).sum().item())
 
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
 
             # undo transform so structs are all aligned
             transform = data.transforms[batch_idx]
-            lig_center = lig_struct.center # store for atom fitting
             transform.backward(rec_struct.coords, rec_struct.coords)
             transform.backward(lig_struct.coords, lig_struct.coords)
 
             # only process real rec/lig once, since they're
             # the same for all samples of a given ligand
-
             if sample_idx == 0:
-
                 if verbose: print('Getting real molecule from data root')
-
                 my_split_ext = lambda f: f.rsplit('.', 1 + f.endswith('.gz'))
 
                 rec_src_file = rec_struct.info['src_file']
@@ -911,7 +911,7 @@ def generate(
                 grid = liGAN.atom_grids.AtomGrid(
                     values=grids[batch_idx],
                     typer=atom_typer,
-                    center=lig_center, # use original (transformed) center
+                    center=lig_struct.center,
                     resolution=data.resolution
                 )
 

@@ -112,6 +112,11 @@ class AtomGrid(object):
         )
 
     def get_coords(self, idx_xyz):
+        '''
+        Return the 3D coordinates located
+        at each of the provided (x,y,z)
+        spatial indices of the grid.
+        '''
         return spatial_index_to_coords(
             idx_xyz,
             self.center,
@@ -121,6 +126,11 @@ class AtomGrid(object):
 
 
 def center_to_origin(center, size, resolution):
+    '''
+    Compute the coordinates of the origin of
+    a grid with the provided center, size,
+    and resolution.
+    '''
     return center - resolution * (size - 1) / 2.0
 
 
@@ -133,6 +143,11 @@ def unravel_index(idx, shape):
 
 
 def spatial_index_to_coords(idx_xyz, center, size, resolution):
+    '''
+    Compute 3D coordinates located at each of
+    the provided (x,y,z) spatial indices of a
+    grid with center, size, and resolution.
+    '''
     origin = center_to_origin(center, size, resolution)
     return origin + resolution * idx_xyz.float()
 

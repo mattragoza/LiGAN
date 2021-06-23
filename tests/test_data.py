@@ -1,6 +1,5 @@
-import sys, os, pytest, time
+import sys, os, pytest, time, torch
 from numpy import isclose
-from caffe.proto import caffe_pb2
 os.environ['GLOG_minloglevel'] = '1'
 
 sys.path.insert(0, '.')
@@ -24,31 +23,27 @@ class TestAtomGridData(object):
         )
 
     @pytest.fixture
-    def data_param(self):
-        param = caffe_pb2.MolGridDataParameter()
-        param.root_folder = 'data/molport'
-        param.batch_size = 10
-        param.recmap = 'on-c'
-        param.ligmap = 'on-c'
-        param.resolution = 0.5
-        param.dimension = 23.5
-        return param
+    def data2(self):
+        return AtomGridData(
+            data_root='data',
+            batch_size=2,
+            rec_typer='on-c',
+            lig_typer='on-c',
+            resolution=0.5,
+            dimension=23.5,
+            shuffle=False,
+            debug=False,
+        )
 
     @pytest.fixture
     def data_file(self):
         return 'data/molportFULL_rand_test0_1000.types'
 
-    def test_data_init(self, data):
-        assert data.n_rec_channels == (data.rec_typer.n_types if data.rec_typer else 0)
-        assert data.n_lig_channels == data.lig_typer.n_types
-        assert data.ex_provider
-        assert data.grid_maker
-        assert data.grids.shape == (10, data.n_channels) + (data.grid_size,)*3
-        assert isclose(0, data.grids.norm().cpu())
-        assert len(data) == 0
+    @pytest.fixture
+    def data2_file(self):
+        return 'data/two_atoms.types'
 
-    def test_data_from_param(self, data_param):
-        data = AtomGridData.from_param(data_param)
+    def test_data_init(self, data):
         assert data.n_rec_channels == (data.rec_typer.n_types if data.rec_typer else 0)
         assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
@@ -100,3 +95,51 @@ class TestAtomGridData(object):
             data.forward()
         t_delta = time.time() - t0
         assert t_delta < 1, 'too slow ({:.2f}s)'.format(t_delta)
+
+    def test_data_no_transform(self, data2, data2_file):
+        data2.populate(data2_file)
+        data2.random_rotation = False
+        data2.random_translation = 0.0
+        n_trials = 100
+
+        diff = 0.0
+        for i in range(n_trials):
+            grids, _, _ = data2.forward()
+            assert grids.norm() > 0, 'initial grids are empty'
+            diff += (grids[0] - grids[1]).abs().max()
+
+        diff /= n_trials
+        assert diff < 0.1, \
+            'no-transform grids are different ({:.2f})'.format(diff)
+
+    def test_data_rand_rotate(self, data2, data2_file):
+        data2.populate(data2_file)
+        data2.random_rotation = True
+        data2.random_translation = 0.0
+        n_trials = 100
+
+        diff = 0.0
+        for i in range(n_trials):
+            grids, _, _ = data2.forward()
+            assert grids.norm() > 0, 'rotated grids are empty'
+            diff += (grids[0] - grids[1]).abs().max()
+
+        diff /= n_trials
+        assert diff > 0.5, \
+            'rotated grids are the same ({:.2f})'.format(diff)
+
+    def test_data_rand_translate(self, data2, data2_file):
+        data2.populate(data2_file)
+        data2.random_rotation = False
+        data2.random_translation = 2.0
+        n_trials = 100
+
+        diff = 0.0
+        for i in range(n_trials):
+            grids, _, _ = data2.forward()
+            assert grids.norm() > 0, 'translated grids are empty'
+            diff += (grids[0] - grids[1]).abs().max()
+
+        diff /= n_trials
+        assert diff > 0.5, \
+            'translated grids are the same ({:.2f})'.format(diff)
