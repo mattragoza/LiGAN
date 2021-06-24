@@ -136,6 +136,7 @@ class AtomGridData(nn.Module):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures and labels
+        print('Calling data forward')
         examples = self.ex_provider.next_batch(self.batch_size)
         examples.extract_label(0, self.labels)
         t1 = time.time()
@@ -146,14 +147,16 @@ class AtomGridData(nn.Module):
             t0 = time.time()
 
             rec_coord_set, lig_coord_set = example.coord_sets
-            transform = molgrid.Transform(
-                lig_coord_set.center(),
-                self.random_translation,
-                self.random_rotation,
+
+            self.transforms[i] = molgrid.Transform(
+                center=lig_coord_set.center(),
+                random_translate=self.random_translation,
+                random_rotation=self.random_rotation,
+            ) # store transforms
+
+            self.grid_maker.forward(
+                example, self.transforms[i], self.grids[i]
             )
-            self.transforms[i] = transform # store transforms
-            transform.forward(example, example)
-            self.grid_maker.forward(example, self.grids[i])
             t1 = time.time()
 
             rec_struct = atom_structs.AtomStruct.from_coord_set(
