@@ -4,6 +4,10 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 import pandas as pd
+pd.set_option('display.width', 200)
+pd.set_option('display.max_columns', 10)
+pd.set_option('display.max_colwidth', 32)
+pd.set_option('display.max_rows', 120)
 import torch
 from rdkit import Chem
 
@@ -64,7 +68,7 @@ class OutputWriter(object):
         self.verbose = verbose
 
         # keep sdf files open so that all samples of a given
-        # struct or molecule can be written to one file
+        #   struct or molecule can be written to one file
         self.open_files = dict()
 
         # create directories for output files
@@ -83,6 +87,19 @@ class OutputWriter(object):
             self.mol_dir = Path('molecules')
             self.mol_dir.mkdir(exist_ok=True)
 
+    def print(self, *args, **kwargs):
+        if self.verbose:
+            print(*args, **kwargs)
+
+    def close_files(self):
+        '''
+        Close all open files that the output
+        writer currently has a reference to
+        and delete the references.
+        '''
+        for f, out in list(self.open_files.items()):
+            out.close()
+            del self.open_files[f]
 
     def write_sdf(self, sdf_file, mol, sample_idx, is_real):
         '''
@@ -98,9 +115,7 @@ class OutputWriter(object):
         out = self.open_files[sdf_file]
 
         if sample_idx == 0 or not is_real:
-
-            if self.verbose:
-                print('Writing {} sample {}'.format(sdf_file, sample_idx))
+            self.print('Writing {} sample {}'.format(sdf_file, sample_idx))
                 
             if isinstance(mol, AtomStruct):
                 struct = mol
@@ -133,24 +148,19 @@ class OutputWriter(object):
 
     def write_atom_types(self, types_file, atom_types):
 
-        if self.verbose:
-            print('Writing ' + str(types_file))
-
+        self.print('Writing ' + str(types_file))
         write_atom_types_to_file(types_file, atom_types)
 
     def write_dx(self, dx_prefix, grid):
 
-        if self.verbose:
-            print('Writing {} .dx files'.format(dx_prefix))
+        self.print('Writing {} .dx files'.format(dx_prefix))
 
         grid.to_dx(dx_prefix)
         self.dx_prefixes.append(dx_prefix)
 
     def write_latent(self, latent_file, latent_vec):
 
-        if self.verbose:
-            print('Writing ' + str(latent_file))
-
+        self.print('Writing ' + str(latent_file))
         write_latent_vecs_to_file(latent_file, [latent_vec])
 
     def write(self, lig_name, grid_type, sample_idx, grid):
@@ -161,31 +171,33 @@ class OutputWriter(object):
         grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_type)
         i = str(sample_idx)
 
+        assert grid_type in {
+            'rec', 'lig', 'lig_gen', 'lig_fit', 'lig_gen_fit'
+        }
         is_lig_grid = grid_type.startswith('lig')
         is_gen_grid = grid_type.endswith('_gen')
         is_fit_grid = grid_type.endswith('_fit')
+
         is_real_grid = not (is_gen_grid or is_fit_grid)
         is_first_real_grid = (is_real_grid and sample_idx == 0)
         has_struct = (is_real_grid or is_fit_grid)
-        has_conv_grid = not is_fit_grid
-        is_generated = is_gen_grid or grid_type.endswith('gen_fit')
+        has_conv_grid = not is_fit_grid # and is_lig_grid ?
 
-        # write atom type stucts and molecules
+        # write atomic structs and molecules
         if has_struct and self.output_sdf:
 
-            # the struct that created this grid (via molgrid.GridMaker)
-            # note that depending on the grid_type, this can be either
-            # a fit structure OR from a real molecule
+            # get struct that created this grid (via molgrid.GridMaker)
+            #   note that depending on the grid_type, this can either be
+            #   from atom fitting OR from typing a real molecule
             struct = grid.info['src_struct']
 
-            # note that the real (source) molecule and atom types don't
-            # change between different samples, so only write them once
+            # the real (source) molecule and atom types don't change
+            #   between different samples, so only write them once
 
-            # and we don't apply bond adding to the rec struct,
-            # so only lig structs have add_mol and min_mol
+            # and we don't apply bond adding to the receptor struct,
+            #   so only ligand structs have add_mol and min_mol
 
-            # write real molecule
-            if is_first_real_grid:
+            if is_first_real_grid: # write real molecule
 
                 sdf_file = self.mol_dir / (grid_prefix + '_src.sdf.gz')
                 src_mol = struct.info['src_mol']
@@ -202,8 +214,7 @@ class OutputWriter(object):
                 sdf_file = self.struct_dir / (grid_prefix + '.sdf.gz')
                 self.write_sdf(sdf_file, struct, sample_idx, is_real_grid)
 
-                # write atom type channels
-                if self.output_types:
+                if self.output_types: # write atom type channels
 
                     types_base = grid_prefix + '_' + i + '.atom_types'
                     types_file = self.struct_dir / types_base
@@ -227,12 +238,12 @@ class OutputWriter(object):
             dx_prefix = self.grid_dir / (grid_prefix + '_' + i)
             self.write_dx(dx_prefix, grid)
 
-            if has_conv_grid and self.output_conv:
+            if has_conv_grid and self.output_conv: # write convolved grid
 
                 dx_prefix = self.grid_dir / (grid_prefix + '_conv_' + i)
                 self.write_dx(dx_prefix, grid.info['conv_grid'])                  
 
-        # write latent vector
+        # write latent vectors
         if is_gen_grid and self.output_latent:
 
             latent_file = self.latent_dir / (grid_prefix + '_' + i + '.latent')
@@ -249,70 +260,52 @@ class OutputWriter(object):
                 set(lig_grids[i]) == set(self.grid_types) for i in lig_grids
             )
 
-            if has_all_samples and has_all_grids:
+            if has_all_samples and has_all_grids: # compute batch metrics
 
-                # compute batch metrics
-                if self.verbose:
-                    print(
-                        'Computing metrics for all ' + lig_name + ' samples'
-                        )
+                self.print('Computing metrics for all '+lig_name+' samples')
                 try:
                     self.compute_metrics(lig_name, range(self.n_samples))
                 except:
-                    for out in self.open_files.values():
-                        out.close()
+                    self.close_files()
                     raise
 
-                if self.verbose:
-                    print('Writing ' + self.metric_file)
-
+                self.print('Writing ' + self.metric_file)
                 self.metrics.to_csv(self.metric_file, sep=' ')
 
-                if self.verbose:
-                    print('Writing ' + self.pymol_file)
-
+                self.print('Writing ' + self.pymol_file)
                 write_pymol_script(
                     self.pymol_file,
                     self.out_prefix,
                     self.dx_prefixes,
                     self.sdf_files,
                 )
-                del self.grids[lig_name]
+                del self.grids[lig_name] # free memory
 
         else: # only store until grids for this sample are ready
             has_all_grids = set(lig_grids[sample_idx]) == set(self.grid_types)
 
-            if has_all_grids:
+            if has_all_grids: # compute sample metrics
 
-                # compute sample metrics
-                if self.verbose:
-                    print('Computing metrics for {} sample {}'.format(
-                        lig_name, sample_idx
-                    ))
-
+                self.print('Computing metrics for {} sample {}'.format(
+                    lig_name, sample_idx
+                ))
                 try:
                     self.compute_metrics(lig_name, [sample_idx])
                 except:
-                    for open_files in self.out_files.values():
-                        for out in open_files.values():
-                            out.close()
+                    self.close_files()
                     raise
 
-                if self.verbose:
-                    print('Writing ' + self.metric_file)
-
+                self.print('Writing ' + self.metric_file)
                 self.metrics.to_csv(self.metric_file, sep=' ')
 
-                if self.verbose:
-                    print('Writing ' + self.pymol_file)
-
+                self.print('Writing ' + self.pymol_file)
                 write_pymol_script(
                     self.pymol_file,
                     self.out_prefix,
                     self.dx_prefixes,
                     self.sdf_files,
                 )
-                del self.grids[lig_name][sample_idx]
+                del self.grids[lig_name][sample_idx] # free memory
 
     def compute_metrics(self, lig_name, sample_idxs):
         '''
@@ -320,99 +313,183 @@ class OutputWriter(object):
         and molecules for a given ligand in metrics data frame.
         '''
         lig_grids = self.grids[lig_name]
+        has_rec = ('rec' in self.grid_types)
         has_lig_gen = ('lig_gen' in self.grid_types)
         has_lig_fit = ('lig_fit' in self.grid_types)
         has_lig_gen_fit = ('lig_gen_fit' in self.grid_types)
 
-        if self.batch_metrics: # compute mean grids
+        if self.batch_metrics: # compute mean grids and type counts
 
-            lig_grid_mean = sum(lig_grids[i]['lig'].values for i in sample_idxs) / self.n_samples
+            def get_mean_type_counts(struct_batch):
+                n = len(struct_batch)
+                type_counts = sum([s.type_counts for s in struct_batch]) / n
+                elem_counts = sum([s.elem_counts for s in struct_batch]) / n
+                prop_counts = sum([s.prop_counts for s in struct_batch]) / n
+                return type_counts, elem_counts, prop_counts
+
+            lig_grid_batch = [lig_grids[i]['lig'].values for i in sample_idxs]
+            lig_grid_mean = sum(lig_grid_batch) / self.n_samples
+
+            lig_struct_batch = [lig_grids[i]['lig'].info['src_struct'] for i in sample_idxs]
+            lig_mean_counts = get_mean_type_counts(lig_struct_batch)
+
+            if has_lig_fit:
+                lig_fit_struct_batch = [lig_grids[i]['lig_fit'].info['src_struct'] for i in sample_idxs]
+                lig_fit_mean_counts = get_mean_type_counts(lig_fit_struct_batch)
 
             if has_lig_gen:
                 lig_gen_grid_mean = sum(lig_grids[i]['lig_gen'].values for i in sample_idxs) / self.n_samples
                 lig_latent_mean = sum(lig_grids[i]['lig_gen'].info['src_latent'] for i in sample_idxs) / self.n_samples
+
+                if has_lig_gen_fit:
+                    lig_gen_fit_struct_batch = [lig_grids[i]['lig_gen_fit'].info['src_struct'] for i in sample_idxs]
+                    lig_gen_fit_mean_counts = get_mean_type_counts(lig_gen_fit_struct_batch)
         else:
             lig_grid_mean = None
-
-            if has_lig_gen:
-                lig_gen_grid_mean = None
-                lig_latent_mean = None
+            lig_mean_counts = None
+            lig_fit_mean_counts = None
+            lig_gen_grid_mean = None
+            lig_latent_mean = None
+            lig_gen_fit_mean_counts = None
 
         for sample_idx in sample_idxs:
             idx = (lig_name, sample_idx)
 
+            rec_grid = lig_grids[sample_idx]['rec'] if has_rec else None
             lig_grid = lig_grids[sample_idx]['lig']
-            self.compute_grid_metrics(idx, 'lig', lig_grid, mean_grid=lig_grid_mean)
+            self.compute_grid_metrics(idx,
+                grid_type='lig',
+                grid=lig_grid,
+                mean_grid=lig_grid_mean,
+                cond_grid=rec_grid,
+            )
 
             lig_struct = lig_grid.info['src_struct']
-            self.compute_struct_metrics(idx, 'lig', lig_struct)
+            self.compute_struct_metrics(idx,
+                struct_type='lig',
+                struct=lig_struct,
+                mean_counts=lig_mean_counts,
+            )
 
             lig_mol = lig_struct.info['src_mol']
-            self.compute_mol_metrics(idx, 'lig', lig_mol)
+            self.compute_mol_metrics(idx,
+                mol_type='lig', mol=lig_mol
+            )
 
             if has_lig_fit or has_lig_gen_fit:
 
                 lig_add_mol = lig_struct.info['add_mol']
-                self.compute_mol_metrics(idx, 'lig_add', lig_add_mol, lig_mol)
+                self.compute_mol_metrics(idx,
+                    mol_type='lig_add', mol=lig_add_mol, ref_mol=lig_mol
+                )
 
             if has_lig_gen:
 
                 lig_gen_grid = lig_grids[sample_idx]['lig_gen']
-                self.compute_grid_metrics(idx, 'lig_gen', lig_gen_grid, lig_grid, lig_gen_grid_mean)
+                self.compute_grid_metrics(idx,
+                    grid_type='lig_gen',
+                    grid=lig_gen_grid,
+                    ref_grid=lig_grid,
+                    mean_grid=lig_gen_grid_mean,
+                    cond_grid=rec_grid
+                )
 
                 lig_latent = lig_gen_grid.info['src_latent']
-                self.compute_latent_metrics(idx, 'lig', lig_latent, lig_latent_mean)
+                self.compute_latent_metrics(idx,
+                    latent_type='lig',
+                    latent=lig_latent,
+                    mean_latent=lig_latent_mean
+                )
 
             if has_lig_fit:
 
                 lig_fit_grid = lig_grids[sample_idx]['lig_fit']
-                self.compute_grid_metrics(idx, 'lig_fit', lig_fit_grid, lig_grid)
+                self.compute_grid_metrics(idx,
+                    grid_type='lig_fit',
+                    grid=lig_fit_grid,
+                    ref_grid=lig_grid,
+                    cond_grid=rec_grid,
+                )
 
                 lig_fit_struct = lig_fit_grid.info['src_struct']
-                self.compute_struct_metrics(idx, 'lig_fit', lig_fit_struct, lig_struct)
+                self.compute_struct_metrics(idx,
+                    struct_type='lig_fit',
+                    struct=lig_fit_struct,
+                    ref_struct=lig_struct,
+                    mean_counts=lig_fit_mean_counts,
+                )
 
                 lig_fit_add_mol = lig_fit_struct.info['add_mol']
-                self.compute_mol_metrics(idx, 'lig_fit_add', lig_fit_add_mol, lig_mol)
+                self.compute_mol_metrics(idx,
+                    mol_type='lig_fit_add',
+                    mol=lig_fit_add_mol,
+                    ref_mol=lig_mol,
+                )
 
                 lig_fit_add_struct = lig_fit_add_mol.info['type_struct']
-                self.compute_struct_metrics(idx, 'lig_fit_add', lig_fit_add_struct, lig_struct)
+                self.compute_struct_metrics(idx,
+                    struct_type='lig_fit_add',
+                    struct=lig_fit_add_struct,
+                    ref_struct=lig_struct,
+                )
 
             if has_lig_gen_fit:
 
                 lig_gen_fit_grid = lig_grids[sample_idx]['lig_gen_fit']
-                self.compute_grid_metrics(idx, 'lig_gen_fit', lig_gen_fit_grid, lig_gen_grid)
+                self.compute_grid_metrics(idx,
+                    grid_type='lig_gen_fit',
+                    grid=lig_gen_fit_grid,
+                    ref_grid=lig_gen_grid,
+                    cond_grid=rec_grid,
+                )
 
                 lig_gen_fit_struct = lig_gen_fit_grid.info['src_struct']
-                self.compute_struct_metrics(idx, 'lig_gen_fit', lig_gen_fit_struct, lig_struct)
+                self.compute_struct_metrics(idx,
+                    struct_type='lig_gen_fit',
+                    struct=lig_gen_fit_struct,
+                    ref_struct=lig_struct,
+                    mean_counts=lig_gen_fit_mean_counts,
+                )
 
                 lig_gen_fit_add_mol = lig_gen_fit_struct.info['add_mol']
-                self.compute_mol_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_mol, lig_mol)
+                self.compute_mol_metrics(idx,
+                    mol_type='lig_gen_fit_add',
+                    mol=lig_gen_fit_add_mol,
+                    ref_mol=lig_mol,
+                )
 
                 lig_gen_fit_add_struct = lig_gen_fit_add_mol.info['type_struct']
-                self.compute_struct_metrics(idx, 'lig_gen_fit_add', lig_gen_fit_add_struct, lig_struct)
+                self.compute_struct_metrics(idx,
+                    struct_type='lig_gen_fit_add',
+                    struct=lig_gen_fit_add_struct,
+                    ref_struct=lig_struct,
+                )
 
-        if self.verbose:
-            print(self.metrics.loc[lig_name].loc[sample_idxs].transpose())
+        self.print(self.metrics.loc[lig_name].loc[sample_idxs].transpose())
 
     def compute_grid_metrics(
-        self, idx, grid_type, grid, ref_grid=None, mean_grid=None
+        self,
+        idx,
+        grid_type,
+        grid,
+        ref_grid=None,
+        mean_grid=None,
+        cond_grid=None,
     ):
         m = self.metrics
 
         # density magnitude
-        m.loc[idx, grid_type+'_norm'] = grid.values.norm().item()
+        m.loc[idx, grid_type+'_grid_norm'] = grid.values.norm().item()
+        m.loc[idx, grid_type+'_grid_elem_norm'] = grid.elem_values.norm().item()
+        m.loc[idx, grid_type+'_grid_prop_norm'] = grid.prop_values.norm().item()
 
         if mean_grid is not None:
 
             # density variance
             # (divide by n_samples (+1) for sample (population) variance)
-            variance = (
+            m.loc[idx, grid_type+'_grid_variance'] = (
                 (grid.values - mean_grid)**2
             ).sum().item()
-        else:
-            variance = np.nan
-
-        m.loc[idx, grid_type+'_variance'] = variance
 
         if ref_grid is not None:
 
@@ -421,10 +498,29 @@ class OutputWriter(object):
                 (ref_grid.values - grid.values)**2
             ).sum().item() / 2
 
-            # density L1 loss
-            m.loc[idx, grid_type+'_L1_loss'] = (
-                (ref_grid.values - grid.values).abs()
+            m.loc[idx, grid_type+'_elem_L2_loss'] = (
+                (ref_grid.elem_values - grid.elem_values)**2
+            ).sum().item() / 2
+
+            m.loc[idx, grid_type+'_prop_L2_loss'] = (
+                (ref_grid.prop_values - grid.prop_values)**2
+            ).sum().item() / 2
+
+        if cond_grid is not None:
+
+            # density product
+            m.loc[idx, grid_type+'_rec_prod'] = (
+                cond_grid.values.sum(dim=0) * grid.values.sum(dim=0)
             ).sum().item()
+
+            m.loc[idx, grid_type+'_rec_elem_prod'] = (
+                cond_grid.elem_values.sum(dim=0) * grid.elem_values.sum(dim=0)
+            ).sum().item()
+
+            m.loc[idx, grid_type+'_rec_prop_prod'] = (
+                cond_grid.prop_values.sum(dim=0) * grid.prop_values.sum(dim=0)
+            ).sum().item()
+
 
     def compute_latent_metrics(
         self, idx, latent_type, latent, mean_latent=None
@@ -446,7 +542,7 @@ class OutputWriter(object):
         m.loc[idx, latent_type+'_latent_variance'] = variance
 
     def compute_struct_metrics(
-        self, idx, struct_type, struct, ref_struct=None
+        self, idx, struct_type, struct, ref_struct=None, mean_counts=None,
     ):
         m = self.metrics
 
@@ -454,6 +550,23 @@ class OutputWriter(object):
         m.loc[idx, struct_type+'_radius'] = (
             struct.radius if struct.n_atoms > 0 else np.nan
         )
+
+        if mean_counts is not None:
+
+            mean_type_counts, mean_elem_counts, mean_prop_counts = \
+                mean_counts
+
+            m.loc[idx, struct_type+'_type_variance'] = (
+                (struct.type_counts - mean_type_counts)**2
+            ).sum().item()
+
+            m.loc[idx, struct_type+'_elem_variance'] = (
+                (struct.elem_counts - mean_elem_counts)**2
+            ).sum().item()
+
+            m.loc[idx, struct_type+'_prop_variance'] = (
+                (struct.prop_counts - mean_prop_counts)**2
+            ).sum().item()
 
         if ref_struct is not None:
 
@@ -467,27 +580,15 @@ class OutputWriter(object):
                 ref_struct.type_counts - struct.type_counts
             ).norm(p=1).item()
 
-            m.loc[idx, struct_type+'_exact_types'] = (
-                m.loc[idx, struct_type+'_type_diff'] == 0
-            )
-
             # element type count difference
             m.loc[idx, struct_type+'_elem_diff'] = (
                 ref_struct.elem_counts - struct.elem_counts
             ).norm(p=1).item()
 
-            m.loc[idx, struct_type+'_exact_elems'] = (
-                m.loc[idx, struct_type+'_elem_diff'] == 0
-            )
-
             # property type count difference
             m.loc[idx, struct_type+'_prop_diff'] = (
                 ref_struct.prop_counts - struct.prop_counts
             ).norm(p=1).item()
-
-            m.loc[idx, struct_type+'_exact_props'] = (
-                m.loc[idx, struct_type+'_prop_diff'] == 0
-            )
 
             # minimum atom-only RMSD (ignores properties)
             rmsd = metrics.compute_struct_rmsd(ref_struct, struct)
@@ -980,11 +1081,6 @@ def main(argv):
 
     with open(args.config_file) as f:
         config = yaml.safe_load(f)
-
-    pd.set_option('display.max_columns', 100)
-    pd.set_option('display.max_colwidth', 100)
-    display_width = 185
-    pd.set_option('display.width', display_width)
 
     device = 'cuda'
     liGAN.set_random_seed(config.get('random_seed', None))
