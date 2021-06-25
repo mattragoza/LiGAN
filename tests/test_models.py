@@ -10,13 +10,19 @@ from liGAN.models import AE, VAE, CE, CVAE, GAN, CGAN
 from liGAN.models import compute_grad_norm as param_grad_norm
 
 
+batch_size = 10
+n_lig_channels = 11
+n_rec_channels = 13
+grid_size = 48
+
+
 class TestConv3DReLU(object):
 
-    @pytest.fixture
-    def conv(self):
-        return models.Conv3DReLU(
-            n_channels_in=19,
-            n_channels_out=16,
+    @pytest.fixture(params=[models.Conv3DReLU, models.TConv3DReLU])
+    def conv(self, request):
+        return request.param(
+            n_channels_in=n_rec_channels,
+            n_channels_out=n_lig_channels,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
@@ -27,24 +33,24 @@ class TestConv3DReLU(object):
         assert len(conv) == 3, 'different num modules'
 
     def test_forward_cpu(self, conv):
-        x = torch.zeros(10, 19, 8, 8, 8).cpu()
+        x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cpu()
         y = conv.to('cpu')(x)
-        assert y.shape == (10, 16, 8, 8, 8), 'different output shape'
+        assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
 
     def test_forward_cuda(self, conv):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+        x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cuda()
         y = conv.to('cuda')(x)
-        assert y.shape == (10, 16, 8, 8, 8), 'different output shape'
+        assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
 
 
 class TestConv3DBlock(object):
 
-    @pytest.fixture
-    def convs(self):
-        return models.Conv3DBlock(
+    @pytest.fixture(params=[models.Conv3DBlock, models.TConv3DBlock])
+    def convs(self, request):
+        return request.param(
             n_convs=4,
-            n_channels_in=19,
-            n_channels_out=16,
+            n_channels_in=n_rec_channels,
+            n_channels_out=n_lig_channels,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
@@ -55,26 +61,26 @@ class TestConv3DBlock(object):
         assert len(convs) == 4, 'different num modules'
 
     def test_forward_cpu(self, convs):
-        x = torch.zeros(10, 19, 8, 8, 8).cpu()
+        x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cpu()
         y = convs.to('cpu')(x)
-        assert y.shape == (10, 16, 8, 8, 8), 'different output shape'
+        assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
 
     def test_forward_cuda(self, convs):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+        x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cuda()
         y = convs.to('cuda')(x)
-        assert y.shape == (10, 16, 8, 8, 8), 'different output shape'
+        assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
 
 
 class TestGridEncoder(object):
 
     def get_enc(self, n_output):
         return models.GridEncoder(
-            n_channels=19,
-            grid_size=8,
-            n_filters=5,
+            n_channels=n_lig_channels,
+            grid_size=grid_size,
+            n_filters=32,
             width_factor=2,
             n_levels=3,
-            conv_per_level=1,
+            conv_per_level=4,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
@@ -96,28 +102,31 @@ class TestGridEncoder(object):
     def enc2(self):
         return self.get_enc([128, 128])
 
+    @pytest.fixture
+    def x(self):
+        return torch.zeros(
+            batch_size, n_lig_channels, grid_size, grid_size, grid_size
+        ).cuda()
+
     def test_enc1_init(self, enc1):
         assert len(enc1.grid_modules) == 5, 'different num grid modules'
         assert len(enc1.task_modules) == 1, 'different num task modules'
-        assert enc1.n_channels == 20, 'different num grid channels'
-        assert enc1.grid_size == 2, 'different grid size'
+        assert enc1.n_channels == 128, 'different num grid channels'
+        assert enc1.grid_size == grid_size//4, 'different grid size'
 
-    def test_enc1_forward(self, enc1):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc1_forward(self, enc1, x):
         y, _ = enc1(x)
         assert y.shape == (10, 128), 'different output shape'
         assert y.norm() > 0, 'output norm is zero'
 
-    def test_enc1_backward0(self, enc1):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc1_backward0(self, enc1, x):
         x.requires_grad = True
         y, _ = enc1(x)
         y.backward(torch.zeros_like(y))
         assert x.grad is not None, 'input has no gradient'
         assert x.grad.norm() == 0, 'input gradient not zero'
 
-    def test_enc1_backward1(self, enc1):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc1_backward1(self, enc1, x):
         x.requires_grad = True
         y, _ = enc1(x)
         y.backward(torch.ones_like(y))
@@ -127,26 +136,23 @@ class TestGridEncoder(object):
     def test_enc2_init(self, enc2):
         assert len(enc2.grid_modules) == 5, 'different num grid modules'
         assert len(enc2.task_modules) == 2, 'different num task modules'
-        assert enc2.n_channels == 20, 'different num grid channels'
-        assert enc2.grid_size == 2, 'different grid size'
+        assert enc2.n_channels == 128, 'different num grid channels'
+        assert enc2.grid_size == grid_size//4, 'different grid size'
 
-    def test_enc2_forward(self, enc2):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc2_forward(self, enc2, x):
         (y0, y1), _ = enc2(x)
         assert y0.shape == y1.shape == (10, 128), 'different output shape'
         assert y0.norm() > 0, 'output norm is zero'
         assert y1.norm() > 0, 'output norm is zero'
 
-    def test_enc2_backward0(self, enc2):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc2_backward0(self, enc2, x):
         x.requires_grad = True
         (y0, y1), _ = enc2(x)
         (y0 + y1).backward(torch.zeros_like(y0 + y1))
         assert x.grad is not None, 'input has no gradient'
         assert x.grad.norm() == 0, 'input gradient not zero'
 
-    def test_enc2_backward1(self, enc2):
-        x = torch.zeros(10, 19, 8, 8, 8).cuda()
+    def test_enc2_backward1(self, enc2, x):
         x.requires_grad = True
         (y0, y1), _ = enc2(x)
         (y0 + y1).backward(torch.ones_like(y0 + y1))
@@ -160,42 +166,45 @@ class TestGridDecoder(object):
     def dec(self):
         return models.GridDecoder(
             n_input=128,
-            grid_size=2,
-            n_channels=64,
+            grid_size=grid_size // 2**2,
+            n_channels=32 * 2**2,
             width_factor=2,
             n_levels=3,
-            tconv_per_level=1,
+            tconv_per_level=4,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=2,
             spectral_norm=1,
             unpool_type='n',
             unpool_factor=2,
-            n_channels_out=19,
+            n_channels_out=n_rec_channels,
         ).cuda()
+
+    @pytest.fixture
+    def x(self):
+        return torch.zeros(batch_size, 128).cuda()
 
     def test_init(self, dec):
         assert len(dec.fc_modules) == 1, 'different num fc modules'
         assert len(dec.grid_modules) == 6, 'different num grid modules'
-        assert dec.n_channels == 19, 'different num grid channels'
-        assert dec.grid_size == 8, 'different grid size'
+        assert dec.n_channels == n_rec_channels, 'different num grid channels'
+        assert dec.grid_size == grid_size, 'different grid size'
 
-    def test_forward(self, dec):
-        x = torch.zeros(10, 128).cuda()
+    def test_forward(self, dec, x):
         y = dec(x)
-        assert y.shape == (10, 19, 8, 8, 8), 'different output shape'
+        assert y.shape == (
+            batch_size, n_rec_channels, grid_size, grid_size, grid_size
+        ), 'different output shape'
         assert y.norm() > 0, 'output norm is zero'
 
-    def test_backward0(self, dec):
-        x = torch.zeros(10, 128).cuda()
+    def test_backward0(self, dec, x):
         x.requires_grad = True
         y = dec(x)
         y.backward(torch.zeros_like(y))
         assert x.grad is not None, 'input has not gradient'
         assert x.grad.norm() == 0, 'input gradient not zero'
 
-    def test_backward1(self, dec):
-        x = torch.zeros(10, 128).cuda()
+    def test_backward1(self, dec, x):
         x.requires_grad = True
         y = dec(x)
         y.backward(torch.ones_like(y))
@@ -205,30 +214,42 @@ class TestGridDecoder(object):
 
 class TestGridGenerator(object):
 
-    @pytest.fixture(params=[AE]) #, CE, VAE, CVAE, GAN, CGAN])
+    @pytest.fixture(params=[AE, CE, VAE, CVAE, GAN, CGAN])
     def gen(self, request):
         model_type = request.param
         return model_type(
-            n_channels_in=19 if model_type.has_input_encoder else None,
-            n_channels_cond=16 if model_type.has_conditional_encoder else None,
-            n_channels_out=19,
-            grid_size=8,
-            n_filters=32,
+            n_channels_in=n_lig_channels if model_type.has_input_encoder else None,
+            n_channels_cond=n_rec_channels if model_type.has_conditional_encoder else None,
+            n_channels_out=n_lig_channels,
+            grid_size=grid_size,
+            n_filters=3,
             width_factor=2,
             n_levels=3,
-            conv_per_level=5,
+            conv_per_level=4,
             kernel_size=3,
             relu_leak=0.1,
-            batch_norm=2,
+            batch_norm=0,
             spectral_norm=1,
             pool_type='a',
             unpool_type='n',
             n_latent=128,
-            skip_connect=False,
-            init_conv_pool=True,
+            skip_connect=model_type.has_conditional_encoder,
+            init_conv_pool=False,
             block_type='',
             device='cuda'
         )
+
+    @pytest.fixture
+    def inputs(self):
+        return torch.zeros(
+            batch_size, n_lig_channels, grid_size, grid_size, grid_size
+        ).cuda()
+
+    @pytest.fixture
+    def conditions(self):
+        return torch.zeros(
+            batch_size, n_rec_channels, grid_size, grid_size, grid_size
+        ).cuda()
 
     def test_gen_init(self, gen):
         n = type(gen).__name__
@@ -236,38 +257,21 @@ class TestGridGenerator(object):
         assert gen.has_input_encoder == n.endswith('AE')
         assert gen.has_conditional_encoder == n.startswith('C')
 
-    def test_gen_forward_poster(self, gen):
-
-        batch_size = 10
-        inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
-
+    def test_gen_forward_poster(self, gen, inputs, conditions):
         outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
-
-        assert outputs.shape == (batch_size, 19, 8, 8, 8), 'different output shape'
+        assert outputs.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
         assert latents.shape == (batch_size, gen.n_decoder_input), 'different latent shape'
         assert outputs.norm() > 0, 'output norm is zero'
 
-    def test_gen_forward_prior(self, gen):
-        print(gen)
-        batch_size = 10
-        inputs = None
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
-
-        outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
-
-        assert outputs.shape == (batch_size, 19, 8, 8, 8), 'different output shape'
+    def test_gen_forward_prior(self, gen, conditions):
+        outputs, latents, means, log_stds = gen(None, conditions, batch_size)
+        assert outputs.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
         assert latents.shape == (batch_size, gen.n_decoder_input), 'different latent shape'
         assert outputs.norm() > 0, 'output norm is zero'
 
-    def test_gen_backward_poster0(self, gen):
-
-        batch_size = 10
-        inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
+    def test_gen_backward_poster0(self, gen, inputs, conditions):
         inputs.requires_grad = True
         conditions.requires_grad = True
-
         outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
         outputs.backward(torch.zeros_like(outputs))
 
@@ -290,14 +294,9 @@ class TestGridGenerator(object):
         else:
             assert conditions.grad is None, 'condition has a gradient'
 
-    def test_gen_backward_poster1(self, gen):
-
-        batch_size = 10
-        inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
+    def test_gen_backward_poster1(self, gen, inputs, conditions):
         inputs.requires_grad = True
         conditions.requires_grad = True
-
         outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
         outputs.backward(torch.ones_like(outputs))
 
@@ -320,14 +319,10 @@ class TestGridGenerator(object):
         else:
             assert conditions.grad is None, 'condition has a gradient'
 
-    def test_gen_backward_prior0(self, gen):
-
-        batch_size = 10
-        inputs = None
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
+    def test_gen_backward_prior0(self, gen, conditions):
         conditions.requires_grad = True
 
-        outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
+        outputs, latents, means, log_stds = gen(None, conditions, batch_size)
         outputs.backward(torch.zeros_like(outputs))
 
         assert param_grad_norm(gen) == 0, 'param gradient not zero'
@@ -345,14 +340,10 @@ class TestGridGenerator(object):
         else:
             assert conditions.grad is None, 'condition has a gradient'
 
-    def test_gen_backward_prior1(self, gen):
-
-        batch_size = 10
-        inputs = None
-        conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
+    def test_gen_backward_prior1(self, gen, conditions):
         conditions.requires_grad = True
 
-        outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
+        outputs, latents, means, log_stds = gen(None, conditions, batch_size)
         outputs.backward(torch.ones_like(outputs))
 
         assert param_grad_norm(gen) > 0, 'param gradient is zero'
@@ -370,15 +361,10 @@ class TestGridGenerator(object):
         else:
             assert conditions.grad is None, 'condition has a gradient'
 
-    def test_gen_benchmark(self, gen):
+    def test_gen_benchmark(self, gen, inputs, conditions):
 
         t0 = time.time()
         for i in range(10):
-
-            batch_size = 10
-            inputs = torch.zeros(batch_size, 19, 8, 8, 8).cuda()
-            conditions = torch.zeros(batch_size, 16, 8, 8, 8).cuda()
-
             generated, latents, means, log_stds = gen(inputs, conditions, batch_size)
 
         t_delta = time.time() - t0

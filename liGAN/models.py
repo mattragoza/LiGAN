@@ -501,7 +501,7 @@ class GridDecoder(nn.Module):
         block_type=None,
     ):
         super().__init__()
-        self.skip_connect = skip_connect
+        self.skip_connect = bool(skip_connect)
 
         # first fc layer maps to initial grid shape
         self.fc_modules = []
@@ -529,6 +529,13 @@ class GridDecoder(nn.Module):
                 )
                 n_filters //= width_factor
 
+            if skip_connect:
+                n_skip_channels = self.n_channels
+                if i < n_levels - 1:
+                    n_skip_channels //= 2
+            else:
+                n_skip_channels = 0
+
             tconv_block_name = 'level' + str(i)
             self.add_tconv3d_block(
                 name=tconv_block_name,
@@ -539,6 +546,7 @@ class GridDecoder(nn.Module):
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
                 block_type=block_type,
+                n_skip_channels=n_skip_channels
             )
 
         if final_unpool:
@@ -580,7 +588,7 @@ class GridDecoder(nn.Module):
 
     def add_tconv3d(self, name, n_filters, **kwargs):
         tconv = TConv3DReLU(
-            n_channels_in=self.n_channels * (1 + self.skip_connect),
+            n_channels_in=self.n_channels,
             n_channels_out=n_filters,
             **kwargs
         )
@@ -588,9 +596,9 @@ class GridDecoder(nn.Module):
         self.grid_modules.append(tconv)
         self.n_channels = n_filters
 
-    def add_tconv3d_block(self, name, n_filters, **kwargs):
+    def add_tconv3d_block(self, name, n_filters, n_skip_channels, **kwargs):
         tconv_block = TConv3DBlock(
-            n_channels_in=self.n_channels * (1 + self.skip_connect),
+            n_channels_in=self.n_channels + n_skip_channels,
             n_channels_out=n_filters,
             **kwargs
         )
@@ -598,16 +606,15 @@ class GridDecoder(nn.Module):
         self.grid_modules.append(tconv_block)
         self.n_channels = n_filters
 
-    def forward(self, inputs, conv_features=None):
+    def forward(self, inputs, skip_features=None):
 
         for f in self.fc_modules:
             outputs = f(inputs)
             inputs = outputs
 
-        for i, f in enumerate(self.grid_modules):
-            if self.skip_connect and not isinstance(f, Unpool3D):
-                #print(i, input.shape, conv_features[-i-1].shape)
-                inputs = torch.cat([inputs, conv_features[-i-1]], dim=1)
+        for f in self.grid_modules:
+            if self.skip_connect and isinstance(f, TConv3DBlock):
+                inputs = torch.cat([inputs, skip_features.pop()], dim=1)
             outputs = f(inputs)
             inputs = outputs
 
@@ -705,8 +712,6 @@ class GridGenerator(nn.Sequential):
                 block_type=block_type,
             )
 
-        self.skip_connect = skip_connect
-
         n_pools = n_levels - 1 + init_conv_pool
 
         self.decoder = GridDecoder(
@@ -724,6 +729,7 @@ class GridGenerator(nn.Sequential):
             unpool_factor=pool_factor,
             n_channels_out=n_channels_out,
             final_unpool=init_conv_pool,
+            skip_connect=skip_connect,
             block_type=block_type,
         )
 
@@ -732,14 +738,14 @@ class GridGenerator(nn.Sequential):
 
     def check_encoder_channels(self, n_channels_in, n_channels_cond):
         if self.has_input_encoder:
-            assert is_positive_int(n_channels_in)
+            assert is_positive_int(n_channels_in), n_channels_in
         else:
-            assert n_channels_in is None
+            assert n_channels_in is None, n_channels_in
 
         if self.has_conditional_encoder:
-            assert is_positive_int(n_channels_cond)
+            assert is_positive_int(n_channels_cond), n_channels_cond
         else:
-            assert n_channels_cond is None
+            assert n_channels_cond is None, n_channels_cond
 
     @property
     def n_decoder_input(self):
@@ -771,7 +777,8 @@ class AE(GridGenerator):
         else: # posterior
             in_latents, _ = self.input_encoder(inputs)
 
-        return self.decoder(in_latents), in_latents, None, None
+        outputs = self.decoder(inputs=in_latents)
+        return outputs, in_latents, None, None
 
 
 class VAE(GridGenerator):
@@ -787,7 +794,8 @@ class VAE(GridGenerator):
             (means, log_stds), _ = self.input_encoder(inputs)
 
         var_latents = self.sample_latents(batch_size, means, log_stds)
-        return self.decoder(var_latents), var_latents, means, log_stds
+        outputs = self.decoder(inputs=var_latents)
+        return outputs, var_latents, means, log_stds
 
 
 class CE(GridGenerator):
@@ -797,9 +805,10 @@ class CE(GridGenerator):
 
     def forward(self, inputs=None, conditions=None, batch_size=None):
         cond_latents, cond_features = self.conditional_encoder(conditions)
-        return self.decoder(
-            cond_latents, cond_features if self.skip_connect else None
-        ), cond_latents, None, None
+        outputs = self.decoder(
+            inputs=cond_latents, skip_features=cond_features
+        )
+        return outputs, cond_latents, None, None
 
 
 class CVAE(GridGenerator):
@@ -818,9 +827,10 @@ class CVAE(GridGenerator):
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([in_latents, cond_latents], dim=1)
 
-        return self.decoder(
-            cat_latents, cond_features if self.skip_connect else None
-        ), cat_latents, means, log_stds
+        outputs = self.decoder(
+            inputs=cat_latents, skip_features=cond_features
+        )
+        return outputs, cat_latents, means, log_stds
 
 
 class GAN(GridGenerator):
@@ -830,7 +840,8 @@ class GAN(GridGenerator):
 
     def forward(self, inputs=None, conditions=None, batch_size=None):
         var_latents = self.sample_latents(batch_size)
-        return self.decoder(var_latents), var_latents, None, None
+        outputs = self.decoder(inputs=var_latents)
+        return outputs, var_latents, None, None
 
 
 class CGAN(GAN):
@@ -842,10 +853,12 @@ class CGAN(GAN):
         var_latents = self.sample_latents(batch_size)
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([var_latents, cond_latents], dim=1)
-        return self.decoder(
-            cat_latents, cond_features if self.skip_connect else None
-        ), cat_latents, None, None
+        outputs = self.decoder(
+            inputs=cat_latents, skip_features=cond_features
+        )
+        return outputs, cat_latents, None, None
 
 
+# aliases that correspond to solver type
 VAEGAN = VAE
 CVAEGAN = CVAE
