@@ -3,11 +3,12 @@ from numpy import isclose
 os.environ['GLOG_minloglevel'] = '1'
 
 sys.path.insert(0, '.')
-from liGAN.data import AtomGridData
+from liGAN.data import molgrid, MolDataset, AtomGridData
 from liGAN.atom_types import AtomTyper
+from liGAN.atom_structs import AtomStruct
 
 
-batch_size = 16
+batch_size = 10
 
 
 class TestAtomGridData(object):
@@ -15,7 +16,7 @@ class TestAtomGridData(object):
     @pytest.fixture
     def data(self):
         return AtomGridData(
-            data_root='/net/pulsar/home/koes/paf46_shared/PocketomeGenCross_Output',
+            data_root=os.environ['CROSSDOCK_ROOT'],
             batch_size=batch_size,
             rec_typer='oadc-1.0',
             lig_typer='oadc-1.0',
@@ -103,18 +104,6 @@ class TestAtomGridData(object):
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
 
-    def test_data_benchmark(self, data, data_file):
-        data.populate(data_file)
-        n_trials = 100
-
-        t0 = time.time()
-        for i in range(n_trials):
-            data.forward()
-
-        t_delta = time.time() - t0
-        t_delta /= n_trials
-        assert t_delta < 1, 'too slow ({:.2f}s / batch)'.format(t_delta)
-
     def test_data_no_transform(self, data2, data2_file):
         data2.populate(data2_file)
         data2.random_rotation = False
@@ -162,3 +151,93 @@ class TestAtomGridData(object):
         diff /= n_trials
         assert diff > 0.5, \
             'translated grids are the same ({:.2f})'.format(diff)
+
+    def test_data_benchmark(self, data, data_file):
+        data.populate(data_file)
+        n_trials = 100
+
+        t0 = time.time()
+        for i in range(n_trials):
+            data.forward()
+
+        t_delta = time.time() - t0
+        t_delta /= n_trials
+        assert t_delta < 1, 'too slow ({:.2f}s / batch)'.format(t_delta)
+
+
+class TestMolDataset(object):
+
+    @pytest.fixture(params=[False, True])
+    def data(self, request):
+        use_dataset = request.param
+
+        data_root = os.environ['CROSSDOCK_ROOT']
+        data_file = 'data/it2_tt_0_lowrmsd_valid_mols_test0_100.types'
+
+        lig_typer = AtomTyper.get_typer('oadc', 1.0, rec=False)
+        rec_typer = AtomTyper.get_typer('oadc', 1.0, rec=True)
+
+        if use_dataset:
+            data = MolDataset(
+                rec_typer, lig_typer,
+                data_root=data_root,
+                data_file=data_file,
+                verbose=True,
+            )
+            #data = torch.utils.data.DataLoader(
+            #    data, batch_size=batch_size, collate_fn=list, num_workers=0
+            #)
+            #data.rec_typer = rec_typer
+            #data.lig_typer = lig_typer
+            return data
+        else:
+            data = molgrid.ExampleProvider(
+                rec_typer, lig_typer,
+                data_root=data_root,
+                cache_structs=True,
+            )
+            data.populate(data_file)
+            data.rec_typer = rec_typer
+            data.lig_typer = lig_typer
+            return data
+
+    def test_benchmark(self, data):
+        
+        t_start = time.time()
+        if isinstance(data, molgrid.ExampleProvider):
+            n_rows = data.size()
+            i = 0
+            while i < n_rows:
+                examples = data.next_batch(batch_size)
+                for ex in examples:
+                    rec_coord_set, lig_coord_set = ex.coord_sets
+                    rec_struct = AtomStruct.from_coord_set(
+                        rec_coord_set, data.rec_typer
+                    )
+                    lig_struct = AtomStruct.from_coord_set(
+                        lig_coord_set, data.lig_typer
+                    )
+                i += batch_size
+
+        elif isinstance(data, MolDataset):
+            n_rows = len(data)
+            for rec_mol, lig_mol in data:
+                rec_struct = data.rec_typer.make_struct(rec_mol)
+                lig_struct = data.lig_typer.make_struct(lig_mol)
+                print(rec_mol.GetTitle(), '\t', lig_mol.GetTitle())
+
+        else: # data loader
+            n_rows = len(data)
+            i = 0
+            for batch in data:
+                for rec_mol, lig_mol in batch:
+                    rec_struct = data.rec_typer.make_struct(rec_mol)
+                    lig_struct = data.lig_typer.make_struct(lig_mol)
+                    print(rec_mol.GetTitle(), '\t', lig_mol.GetTitle())
+                i += batch_size
+                if i > n_rows:
+                    break
+
+        t_delta = time.time() - t_start
+        t_delta /= n_rows
+        assert t_delta < 0.001, 'too slow ({:.4f}s / row)'.format(t_delta)

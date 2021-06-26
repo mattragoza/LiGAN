@@ -1,5 +1,6 @@
 import sys
 from collections import namedtuple, defaultdict
+from functools import lru_cache
 import numpy as np
 import torch
 import molgrid
@@ -251,6 +252,10 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         self.radius_func = radius_func
         self.explicit_h = explicit_h
 
+        # cached properties
+        self._n_types = sum(len(r) for r in self.prop_ranges)
+
+        # initialize the inherited molgrid.AtomTyper
         super().__init__(
             lambda a: (self.get_type_vector(a), self.get_radius(a)),
             self.n_types
@@ -286,7 +291,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
     @property
     def n_types(self):
-        return sum(len(r) for r in self.prop_ranges)
+        return self._n_types
 
     @property
     def n_elem_types(self):
@@ -319,9 +324,14 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         if not self.explicit_h and ob_atom.GetAtomicNum() == 1:
             return [0] * self.n_types
 
+        prop_values = tuple(f(ob_atom) for f in self.prop_funcs)
+        return self.get_type_vec_from_prop_values(prop_values)
+
+    @lru_cache(maxsize=65536)
+    def get_type_vec_from_prop_values(self, prop_values):
+
         type_vec = []
-        for func, range_ in zip(self.prop_funcs, self.prop_ranges):
-            value = func(ob_atom)
+        for value, range_ in zip(prop_values, self.prop_ranges):
             type_vec += make_one_hot(value, range_)
 
         return type_vec
@@ -330,15 +340,22 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return self.radius_func(ob_atom.GetAtomicNum())
 
     def make_struct(self, ob_mol, dtype=None, device=None, **info):
+        '''
+        Convert an OBMol to an AtomStruct
+        by assigning each atom a type vector
+        based on its atomic properties.
+        '''
+        n_atoms = ob_mol.NumAtoms()
+        coords = np.zeros((n_atoms, 3))
+        types = np.zeros((n_atoms, self.n_types))
 
-        coords, types = [], []
-        for ob_atom in ob.OBMolAtomIter(ob_mol):
-            coords.append([ob_atom.x(), ob_atom.y(), ob_atom.z()])
-            types.append(self.get_type_vector(ob_atom))
+        for i, ob_atom in enumerate(ob.OBMolAtomIter(ob_mol)):
+            coords[i] = ob_atom.GetX(), ob_atom.GetY(), ob_atom.GetZ()
+            types[i] = self.get_type_vector(ob_atom)
 
         return AtomStruct(
-            coords=np.array(coords).reshape(-1, 3),
-            types=np.array(types).reshape(-1, self.n_types),
+            coords=coords,
+            types=types,
             typer=self,
             dtype=dtype,
             device=self.device if device is None else device,
@@ -448,6 +465,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
                 radius_func = Atom.cov_radius
 
         return cls(prop_funcs, prop_ranges, radius_func, explicit_h, device)
+
 
 
 def make_one_hot(value, range_):

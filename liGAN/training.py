@@ -79,6 +79,7 @@ class GenerativeSolver(nn.Module):
         bond_adding_kws={},
         device='cuda',
         debug=False,
+        sync_cuda=False,
     ):
         super().__init__()
         self.device = device
@@ -123,7 +124,7 @@ class GenerativeSolver(nn.Module):
 
         self.out_prefix = out_prefix
         self.debug = debug
-        self.sync_cuda = debug
+        self.sync_cuda = sync_cuda
 
     def init_gen_model(
         self,
@@ -431,6 +432,8 @@ class GenerativeSolver(nn.Module):
             rec_lig_grids = data.grids
             rec_structs, lig_structs = structs
 
+        if self.sync_cuda:
+            torch.cuda.synchronize()
         t1 = time.time()
 
         # get generated ligand grids
@@ -446,6 +449,9 @@ class GenerativeSolver(nn.Module):
                 conditions=rec_grids if has_cond else None,
                 batch_size=data.batch_size
             )
+
+        if self.sync_cuda:
+            torch.cuda.synchronize()
         t2 = time.time()
 
         if has_disc: # get discriminator predictions
@@ -467,6 +473,9 @@ class GenerativeSolver(nn.Module):
             rec_grids=rec_grids if has_cond else None,
             rec_lig_grids=lig_gen_grids if has_cond else None,
         )
+
+        if self.sync_cuda:
+            torch.cuda.synchronize()
         t3 = time.time()
 
         if fit_atoms:
@@ -480,6 +489,9 @@ class GenerativeSolver(nn.Module):
                 structs=lig_gen_fit_structs
             )
             self.save_mols(lig_gen_fit_mols, grid_type)
+
+        if self.sync_cuda:
+            torch.cuda.synchronize()
         t4 = time.time()
 
         if posterior:
@@ -502,6 +514,8 @@ class GenerativeSolver(nn.Module):
                     'lig_gen_fit', lig_gen_fit_structs
                 ))
 
+        if self.sync_cuda:
+            torch.cuda.synchronize()
         t5 = time.time()
 
         metrics['forward_data_time'] = t1 - t0
@@ -802,15 +816,17 @@ class GenerativeSolver(nn.Module):
             )
             self.insert_metrics(idx, metrics)
 
+        idx = idx[:-1]
+        metrics = self.metrics.loc[idx].mean()
+        self.print_metrics(idx, metrics)
+
     def test_models(self, n_batches, fit_atoms):
         '''
         Evaluate each model on n_batches of test
         data, optionally performing atom fitting.
         '''
         if self.has_disc_model:
-            self.test_model(
-                n_batches=n_batches, model_type='disc', fit_atoms=fit_atoms
-            )
+            self.test_model(n_batches=n_batches, model_type='disc')
 
         self.test_model(
             n_batches=n_batches, model_type='gen', fit_atoms=fit_atoms

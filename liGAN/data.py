@@ -1,10 +1,95 @@
 import sys, os, re, time
+import pandas as pd
+from openbabel import openbabel as ob
 import torch
-from torch import nn
+from torch import nn, utils
 
 import molgrid
 from . import atom_types, atom_structs, atom_grids
 from .atom_types import AtomTyper
+
+
+class MolDataset(utils.data.IterableDataset):
+
+    def __init__(
+        self, rec_typer, lig_typer, data_file, data_root, verbose=False
+    ):
+        super().__init__()
+
+        # what is this unknown column?
+        #  it's positive for low_rmsd, negative for ~low_rmsd,
+        #  but otherwise same absolute distributions...
+        data_cols = [
+            'low_rmsd',
+            'unknown', # ?
+            'affinity',
+            'rec_src',
+            'lig_src',
+            'vina_score'
+        ]
+        self.data = pd.read_csv(
+            data_file, sep=' ', names=data_cols, index_col=False
+        )
+        self.data_root = data_root
+
+        ob_conv = ob.OBConversion()
+        ob_conv.SetInFormat('pdb')
+        self.read_pdb = ob_conv.ReadFile
+
+        ob_conv = ob.OBConversion()
+        ob_conv.SetInFormat('sdf')
+        self.read_sdf = ob_conv.ReadFile
+
+        self.mol_cache = dict()
+        self.verbose = verbose
+
+        self.rec_typer = rec_typer
+        self.lig_typer = lig_typer
+
+    def read_mol(self, mol_src, pdb=False):
+
+        mol_file = os.path.join(self.data_root, mol_src)
+        if self.verbose:
+            print('Reading ' + mol_file)
+
+        assert os.path.isfile(mol_file), 'file does not exist'
+
+        mol = ob.OBMol()
+        if pdb:
+            assert self.read_pdb(mol, mol_file), 'failed to read mol'
+        else:
+            assert self.read_sdf(mol, mol_file), 'failed to read mol'
+
+        mol.AddHydrogens()
+        assert mol.NumAtoms() > 0, 'mol has zero atoms'
+
+        mol.SetTitle(mol_src)
+        return mol
+
+    def get_rec_mol(self, mol_src):
+        if mol_src not in self.mol_cache:
+            self.mol_cache[mol_src] = self.read_mol(mol_src, pdb=True)
+        return self.mol_cache[mol_src]
+
+    def get_lig_mol(self, mol_src):
+        if mol_src not in self.mol_cache:
+            self.mol_cache[mol_src] = self.read_mol(mol_src, pdb=False)
+        return self.mol_cache[mol_src]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        example = self.data.iloc[idx]
+        rec_mol = self.get_rec_mol(example.rec_src)
+        lig_mol = self.get_lig_mol(example.lig_src)
+        return rec_mol, lig_mol
+
+    def __iter__(self):
+        for rec_src, lig_src in zip(self.data.rec_src, self.data.lig_src):
+            rec_mol = self.get_rec_mol(rec_src)
+            lig_mol = self.get_lig_mol(lig_src)
+            yield rec_mol, lig_mol
 
 
 class AtomGridData(nn.Module):
@@ -65,9 +150,7 @@ class AtomGridData(nn.Module):
             dtype=torch.float32,
             device=device,
         )
-        self.labels = torch.zeros(
-            batch_size, dtype=torch.float32, device=device
-        )
+        self.labels = torch.zeros(batch_size, device=device)
         self.transforms = [None for i in range(batch_size)]
         self.batch_size = batch_size
 
@@ -126,16 +209,16 @@ class AtomGridData(nn.Module):
     def grid_size(self):
         return atom_grids.dimension_to_size(self.dimension, self.resolution)
 
-    def __len__(self):
-        return self.ex_provider.size()
-
     def populate(self, data_file):
         self.ex_provider.populate(data_file)
+
+    def __len__(self):
+        return self.ex_provider.size()
 
     def forward(self, split_rec_lig=False):
         assert len(self) > 0, 'data is empty'
 
-        # get next batch of structures and labels
+        # get next batch of structures
         t0 = time.time()
         examples = self.ex_provider.next_batch(self.batch_size)
         examples.extract_label(0, self.labels)
