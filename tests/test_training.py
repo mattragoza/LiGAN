@@ -40,9 +40,9 @@ def train_params():
 def solver(request):
     solver_type = getattr(liGAN.training, request.param + 'Solver')
     return solver_type(
-        train_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
-        test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         data_kws=dict(
+            train_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
+            test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
             data_root='data/crossdock2020',
             batch_size=1,
             rec_typer='on-1',

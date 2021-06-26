@@ -69,8 +69,6 @@ class GenerativeSolver(nn.Module):
     def __init__(
         self,
         out_prefix,
-        train_file,
-        test_file,
         data_kws={},
         gen_model_kws={},
         disc_model_kws={},
@@ -86,11 +84,7 @@ class GenerativeSolver(nn.Module):
         self.device = device
 
         print('Loading data')
-        self.train_data, self.test_data = (
-            data.AtomGridData(device=device, **data_kws) for i in range(2)
-        )
-        self.train_data.populate(train_file)
-        self.test_data.populate(test_file)
+        self.init_data(device=device, **data_kws)
 
         print('Initializing generative model and optimizer')
         self.init_gen_model(device=device, **gen_model_kws)
@@ -151,6 +145,13 @@ class GenerativeSolver(nn.Module):
 
         if gen_model_state:
             self.gen_model.load_state_dict(torch.load(gen_model_state))
+
+    def init_data(self, device, train_file, test_file, **data_kws):
+        self.train_data, self.test_data = (
+            data.AtomGridData(device=device, **data_kws) for i in range(2)
+        )
+        self.train_data.populate(train_file)
+        self.test_data.populate(test_file)
 
     def init_disc_model(
         self,

@@ -7,19 +7,23 @@ from liGAN.data import AtomGridData
 from liGAN.atom_types import AtomTyper
 
 
+batch_size = 16
+
+
 class TestAtomGridData(object):
 
     @pytest.fixture
     def data(self):
         return AtomGridData(
-            data_root='data/molport',
-            batch_size=10,
-            rec_typer='on-c',
-            lig_typer='on-c',
+            data_root='/net/pulsar/home/koes/paf46_shared/PocketomeGenCross_Output',
+            batch_size=batch_size,
+            rec_typer='oadc-1.0',
+            lig_typer='oadc-1.0',
             resolution=0.5,
             dimension=23.5,
-            shuffle=False,
+            shuffle=True,
             debug=True,
+            cache_structs=True,
         )
 
     @pytest.fixture
@@ -27,8 +31,8 @@ class TestAtomGridData(object):
         return AtomGridData(
             data_root='data',
             batch_size=2,
-            rec_typer='on-c',
-            lig_typer='on-c',
+            rec_typer='oadc-1.0',
+            lig_typer='oadc-1.0',
             resolution=0.5,
             dimension=23.5,
             shuffle=False,
@@ -37,7 +41,7 @@ class TestAtomGridData(object):
 
     @pytest.fixture
     def data_file(self):
-        return 'data/molportFULL_rand_test0_1000.types'
+        return 'data/it2_tt_0_lowrmsd_valid_mols_test0_1000.types'
 
     @pytest.fixture
     def data2_file(self):
@@ -48,7 +52,7 @@ class TestAtomGridData(object):
         assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
         assert data.grid_maker
-        assert data.grids.shape == (10, data.n_channels) + (data.grid_size,)*3
+        assert data.grids.shape == (batch_size, data.n_channels) + (data.grid_size,)*3
         assert isclose(0, data.grids.norm().cpu())
         assert len(data) == 0
 
@@ -61,6 +65,17 @@ class TestAtomGridData(object):
         data.populate(data_file)
         assert len(data) == 2000
 
+    def test_data_find_real_mol(self, data, data_file):
+        data.populate(data_file)
+        return
+        for ex in data.ex_provider.next_batch(16):
+            rec_src = ex.coord_sets[0].src
+            lig_src = ex.coord_sets[1].src
+            rec_file, rec_name, rec_idx = data.find_real_mol(rec_src, '.pdb')
+            lig_file, lig_name, lig_idx = data.find_real_mol(lig_src, '.sdf')
+            assert os.path.isfile(rec_file), rec_file
+            assert os.path.isfile(lig_file), lig_file
+
     def test_data_forward_empty(self, data):
         with pytest.raises(AssertionError):
             data.forward()
@@ -69,9 +84,9 @@ class TestAtomGridData(object):
         data.populate(data_file)
         grids, structs, labels = data.forward()
         rec_structs, lig_structs = structs
-        assert grids.shape == (10, data.n_channels, 48, 48, 48)
-        assert len(lig_structs) == 10
-        assert labels.shape == (10,)
+        assert grids.shape == (batch_size, data.n_channels) + (data.grid_size,)*3
+        assert len(lig_structs) == batch_size
+        assert labels.shape == (batch_size,)
         assert not isclose(0, grids.norm().cpu())
         assert all(labels == 1)
 
@@ -80,21 +95,25 @@ class TestAtomGridData(object):
         grids, structs, labels = data.forward(split_rec_lig=True)
         rec_grids, lig_grids = grids
         rec_structs, lig_structs = structs
-        assert rec_grids.shape == (10, data.n_lig_channels, 48, 48, 48)
-        assert lig_grids.shape == (10, data.n_rec_channels, 48, 48, 48)
-        assert len(lig_structs) == 10
-        assert labels.shape == (10,)
+        assert rec_grids.shape == (batch_size, data.n_lig_channels) + (data.grid_size,)*3
+        assert lig_grids.shape == (batch_size, data.n_rec_channels) + (data.grid_size,)*3
+        assert len(lig_structs) == batch_size
+        assert labels.shape == (batch_size,)
         assert not isclose(0, rec_grids.norm().cpu())
         assert not isclose(0, lig_grids.norm().cpu())
         assert all(labels == 1)
 
     def test_data_benchmark(self, data, data_file):
         data.populate(data_file)
+        n_trials = 100
+
         t0 = time.time()
-        for i in range(10):
+        for i in range(n_trials):
             data.forward()
+
         t_delta = time.time() - t0
-        assert t_delta < 1, 'too slow ({:.2f}s)'.format(t_delta)
+        t_delta /= n_trials
+        assert t_delta < 1, 'too slow ({:.2f}s / batch)'.format(t_delta)
 
     def test_data_no_transform(self, data2, data2_file):
         data2.populate(data2_file)

@@ -15,7 +15,7 @@ class AtomGridData(nn.Module):
         batch_size,
         rec_typer,
         lig_typer,
-        use_rec_elems=False,
+        use_rec_elems=True,
         resolution=0.5,
         dimension=None,
         grid_size=None,
@@ -136,9 +136,13 @@ class AtomGridData(nn.Module):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures and labels
+        t0 = time.time()
         examples = self.ex_provider.next_batch(self.batch_size)
         examples.extract_label(0, self.labels)
-        t1 = time.time()
+        t_mol = time.time() - t0
+
+        t_grid = 0
+        t_struct = 0
 
         rec_structs = []
         lig_structs = []
@@ -172,20 +176,49 @@ class AtomGridData(nn.Module):
             lig_structs.append(lig_struct)
 
             t2 = time.time()
-            if self.debug:
-                print(t1-t0, t2-t1)
-        
-        if split_rec_lig:
+            t_grid += t1 - t0
+            t_struct += t2 - t1
 
-            rec_grids, lig_grids = torch.split(
+        t0 = time.time()
+        grids = self.grids
+        structs = (rec_structs, lig_structs)
+
+        if split_rec_lig:
+            grids = torch.split(
                 self.grids,
                 [self.n_rec_channels, self.n_lig_channels],
                 dim=1,
             )
-            return (
-                (rec_grids, lig_grids),
-                (rec_structs, lig_structs),
-                self.labels
-            )
-        else:
-            return self.grids, (rec_structs, lig_structs), self.labels
+        
+        t_split = time.time() - t0
+        t_total = t_mol + t_grid + t_struct + t_split
+
+        if self.debug:
+            print('{:.4f}s ({:.2f} {:.2f} {:.2f} {:.2f})'.format(
+                t_total,
+                100*t_mol/t_total,
+                100*t_grid/t_total,
+                100*t_struct/t_total,
+                100*t_split/t_total,
+            ))
+
+        return grids, structs, self.labels
+
+
+    def find_real_mol(self, mol_src, ext):
+        return find_real_mol(mol_src, self.root_dir, ext)
+
+
+def find_real_mol(mol_src, data_root, ext):
+
+    m = re.match(r'(.+)_(\d+)((\..*)+)', mol_src)
+    if m:
+        mol_name = m.group(1)
+        pose_idx = int(m.group(2))
+    else:
+        m = re.match(r'(.+)((\..*)+)', mol_src)
+        mol_name = m.group(1)
+        pose_idx = 0
+
+    mol_file = os.path.join(data_root, mol_name + ext)
+    return mol_file, mol_name, pose_idx

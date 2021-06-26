@@ -42,21 +42,18 @@ def main(argv):
     )
 
     solver = solver_type(
-        train_file=config['data'].pop('train_file'),
-        test_file=config['data'].pop('test_file'),
         data_kws=config['data'],
         gen_model_kws=config['gen_model'],
-        disc_model_kws=config.get('disc_model', None),
+        disc_model_kws=config.get('disc_model', {}),
         loss_fn_kws=config['loss_fn'],
         gen_optim_kws=config['gen_optim'],
-        disc_optim_kws=config.get('disc_optim', None),
+        disc_optim_kws=config.get('disc_optim', {}),
         atom_fitting_kws=config['atom_fitting'],
         bond_adding_kws=config.get('bond_adding', {}),
         out_prefix=config['out_prefix'],
-        caffe_init=config['caffe_init'],
-        balance=config['balance'],
         device='cuda',
-        debug=args.debug
+        debug=args.debug,
+        sync_cuda=config.get('sync_cuda', False),
     )
 
     if config['continue']:
@@ -68,10 +65,10 @@ def main(argv):
     if 'max_n_iters' in config:
         config['train']['max_iter'] = min(
             config['train']['max_iter'],
-            solver.curr_iter + config['max_n_iters']
+            solver.gen_iter + config['max_n_iters']
         )
 
-    solver.train(**config['train'])
+    solver.train_and_test(**config['train'])
 
 
 if __name__ == '__main__':
