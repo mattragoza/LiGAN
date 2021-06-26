@@ -31,7 +31,7 @@ def save_on_exception(method):
         try:
             return method(self, *args, **kwargs)
         except:
-            self.save_state()
+            self.save_state_and_metrics()
             raise
     return wrapper
 
@@ -246,15 +246,35 @@ class GenerativeSolver(nn.Module):
     def state_prefix(self):
         return get_state_prefix(self.out_prefix, self.gen_iter)
 
+    @property
+    def gen_model_state_file(self):
+        return self.state_prefix + '.gen_model_state'
+
+    @property
+    def gen_solver_state_file(self):
+        return self.state_prefix + '.gen_solver_state'
+
+    @property
+    def disc_model_state_file(self):
+        return self.state_prefix + '.disc_model_state'
+
+    @property
+    def disc_solver_state_file(self):
+        return self.state_prefix + '.disc_solver_state'
+
+    @property
+    def metrics_file(self):
+        return self.out_prefix + '.train_metrics'
+
     def save_state(self):
 
         self.gen_model.cpu()
 
-        state_file = self.state_prefix + '.gen_model_state'
+        state_file = self.gen_model_state_file
         print('Saving generative model state to ' + state_file)
         torch.save(self.gen_model.state_dict(), state_file)
 
-        state_file = self.state_prefix + '.gen_solver_state'
+        state_file = self.gen_solver_state_file
         print('Saving generative solver state to ' + state_file)
         state_dict = OrderedDict()
         state_dict['optim_state'] = self.gen_optimizer.state_dict() 
@@ -266,11 +286,11 @@ class GenerativeSolver(nn.Module):
         if self.has_disc_model:
             self.disc_model.cpu()
 
-            state_file = self.state_prefix + '.disc_model_state'
+            state_file = self.disc_model_state_file
             print('Saving discriminative model state to ' + state_file)
             torch.save(self.disc_model.state_dict(), state_file)
 
-            state_file = self.state_prefix + '.disc_solver_state'
+            state_file = self.disc_solver_state_file
             print('Saving discriminative solver state to ' + state_file)
             state_dict = OrderedDict()
             state_dict['optim_state'] = self.disc_optimizer.state_dict() 
@@ -312,12 +332,12 @@ class GenerativeSolver(nn.Module):
         return find_last_iter(self.out_prefix)
 
     def save_metrics(self):
-        csv_file = self.out_prefix + '.train_metrics'
+        csv_file = self.metrics_file
         print('Writing training metrics to ' + csv_file)
         self.metrics.to_csv(csv_file, sep=' ')
 
     def load_metrics(self):
-        csv_file = self.out_prefix + '.train_metrics'
+        csv_file = self.metrics_file
         print('Reading training metrics from ' + csv_file)
         self.metrics = pd.read_csv(
             csv_file, sep=' '
@@ -330,6 +350,10 @@ class GenerativeSolver(nn.Module):
         except FileNotFoundError:
             if self.gen_iter > 0:
                 raise
+
+    def save_state_and_metrics(self):
+        self.save_metrics()
+        self.save_state()
 
     def print_metrics(self, idx, metrics):
         index_str = ' '.join(
@@ -831,6 +855,7 @@ class GenerativeSolver(nn.Module):
         self.test_model(
             n_batches=n_batches, model_type='gen', fit_atoms=fit_atoms
         )
+        self.save_metrics()
 
     def train_model(
         self, n_iters, model_type, update=True, compute_norm=True
@@ -945,7 +970,7 @@ class GenerativeSolver(nn.Module):
             if i == max_iter:
                 break
 
-        self.save_state()
+        self.save_state_and_metrics()
 
 
 class AESolver(GenerativeSolver):
