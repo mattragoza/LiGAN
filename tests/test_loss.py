@@ -17,7 +17,7 @@ class TestLossFunction(object):
 
     @pytest.fixture
     def loss_fn(self, loss_kws):
-        return liGAN.loss_fns.LossFunction(**loss_kws)
+        return liGAN.loss_fns.LossFunction(device='cpu', **loss_kws)
 
     def test_loss_init(self, loss_fn):
         assert loss_fn.kldiv_loss_wt == 0.0

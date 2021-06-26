@@ -45,7 +45,8 @@ class TestAtomGrid(object):
 
     def test_to_dx(self, grid):
         dx_files = grid.to_dx('tests/output/TEST')
-        assert dx_files == ['tests/output/TEST_atomic_num_8.dx'], \
+        print(dx_files)
+        assert dx_files == ['tests/output/TEST_atomic_num=8.dx'], \
             'incorrect file names'
 
     def test_from_dx(self, typer):
