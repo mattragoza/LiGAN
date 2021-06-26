@@ -22,19 +22,16 @@ def is_positive_int(x):
     return isinstance(x, int) and x > 0
 
 
-def initialize_weights(m, caffe=False):
+def caffe_init_weights(module):
     '''
     Xavier initialization with fan-in variance
     norm mode, as implemented in caffe.
     '''
-    if isinstance(m, (nn.Linear, nn.Conv3d, nn.ConvTranspose3d)):
-        fan_in = nn.init._calculate_correct_fan(m.weight, 'fan_in')
-        if caffe:
-            scale = np.sqrt(3 / fan_in)
-            nn.init.uniform_(m.weight, -scale, scale)
-            nn.init.constant_(m.bias, 0)
-        else:
-            pass # use default PyTorch initialization
+    if isinstance(module, (nn.Linear, nn.Conv3d, nn.ConvTranspose3d)):
+        fan_in = nn.init._calculate_correct_fan(module.weight, 'fan_in')
+        scale = np.sqrt(3 / fan_in)
+        nn.init.uniform_(module.weight, -scale, scale)
+        nn.init.constant_(module.bias, 0)
 
 
 def compute_grad_norm(model):
@@ -48,6 +45,10 @@ def compute_grad_norm(model):
             continue
         grad_norm2 += (p.grad.data**2).sum().item()
     return grad_norm2**(1/2)
+
+
+def clip_grad_norm(model, max_norm):
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
 
 class Conv3DReLU(nn.Sequential):
@@ -844,7 +845,7 @@ class GAN(GridGenerator):
         return outputs, var_latents, None, None
 
 
-class CGAN(GAN):
+class CGAN(GridGenerator):
     is_variational = True # just means we provide noise to decoder
     has_input_encoder = False
     has_conditional_encoder = True

@@ -2,11 +2,24 @@ import sys, os, pytest, time
 from numpy import isclose, isnan
 import pandas as pd
 from torch import optim
+pd.set_option('display.width', 180)
 pd.set_option('display.max_rows', 100)
 pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
 import liGAN
+from liGAN import models, training
+from liGAN.models import compute_grad_norm as param_grad_norm
+
+
+def param_norm(model):
+    '''
+    Compute the L2 norm of model parameters.
+    '''
+    norm2 = 0
+    for p in model.parameters():
+        norm2 += (p.data**2).sum().item()
+    return norm2**(1/2)
 
 
 @pytest.fixture
@@ -16,17 +29,17 @@ def train_params():
         test_interval=10,
         n_test_batches=1,
         fit_interval=0,
-        norm_interval=0,
+        norm_interval=10,
         save_interval=10,
     )
 
 
-@pytest.fixture(params=['AE', 'CE', 'VAE', 'CVAE'])
+@pytest.fixture(params=[
+    'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN', 'VAEGAN', 'CVAEGAN'
+])
 def solver(request):
-    model_type = request.param
-    return getattr(
-        liGAN.training, model_type + 'Solver'
-    )(
+    solver_type = getattr(liGAN.training, request.param + 'Solver')
+    return solver_type(
         train_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         test_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
         data_kws=dict(
@@ -34,106 +47,404 @@ def solver(request):
             batch_size=1,
             rec_typer='on-1',
             lig_typer='on-1',
-            resolution=0.5,
-            dimension=23.5,
+            resolution=1.0,
+            grid_size=16,
             shuffle=False,
             random_rotation=False,
             random_translation=0,
             cache_structs=False,
         ),
         gen_model_kws=dict(
-            n_filters=32,
+            n_filters=8,
             n_levels=4,
-            conv_per_level=3,
+            conv_per_level=1,
+            spectral_norm=1,
             n_latent=128,
             init_conv_pool=False,
-            skip_connect=True,
+            skip_connect=solver_type.gen_model_type.has_conditional_encoder,
         ),
-        disc_model_kws=None,
+        disc_model_kws=dict(
+            n_filters=8,
+            n_levels=4,
+            conv_per_level=1,
+            spectral_norm=1,
+            n_output=1,
+        ),
         loss_fn_kws=dict(
-            types=dict(recon_loss='2'),
-            weights=dict(kldiv_loss=0.1, recon_loss=1.0)
+            types=dict(recon_loss='2', gan_loss='w'),
+            weights=dict(
+                kldiv_loss=1.0,
+                recon_loss=1.0,
+                gan_loss=1.0 * solver_type.has_disc_model,
+                steric_loss=1.0 * solver_type.gen_model_type.has_conditional_encoder,
+            )
         ),
         gen_optim_kws=dict(
-            type='Adam',
+            type='RMSprop',
             lr=1e-5,
-            betas=(0.9, 0.999),
+            n_train_iters=1,
         ),
-        disc_optim_kws=None,
+        disc_optim_kws=dict(
+            type='RMSprop',
+            lr=5e-5,
+            n_train_iters=2,
+        ),
         atom_fitting_kws=dict(),
         bond_adding_kws=dict(),
-        out_prefix='tests/output/TEST_' + model_type,
-        device='cuda'
+        out_prefix='tests/output/TEST_' + request.param,
+        device='cuda',
+        debug=True
     )
 
 
-class TestSolver(object):
+def check_grad(model, expect_grad, name):
+    if expect_grad:
+        assert param_grad_norm(model) > 0, name + ' grad is zero'
+    else:
+        assert param_grad_norm(model) == 0, name + ' grad not zero'
+
+
+def check_solver_grad(
+    solver,
+    expect_disc_grad,
+    expect_dec_grad,
+    expect_inp_enc_grad,
+    expect_cond_enc_grad
+):
+    if solver.has_disc_model:
+        check_grad(solver.disc_model, expect_disc_grad, 'disc')
+
+    check_grad(solver.gen_model.decoder, expect_dec_grad, 'decoder')
+
+    if solver.gen_model.has_input_encoder:
+        check_grad(
+            solver.gen_model.input_encoder,
+            expect_inp_enc_grad,
+            name='input encoder'
+        )
+
+    if solver.gen_model.has_conditional_encoder:
+        check_grad(
+            solver.gen_model.conditional_encoder,
+            expect_cond_enc_grad,
+            name='cond encoder'
+        )
+
+
+class TestGenerativeSolver(object):
+
+    ### TEST INITIALIZE
 
     def test_solver_init(self, solver):
-        assert solver.curr_iter == 0
+
+        assert type(solver.gen_model) == type(solver).gen_model_type
+        assert solver.gen_iter == 0
+
+        solver_name = type(solver).__name__
+        assert solver.has_complex_input == ('CVAE' in solver_name)
+
+        assert solver.has_disc_model == ('GAN' in solver_name)
+        if solver_name.endswith('GAN'):
+            assert type(solver.disc_model) == models.Discriminator
+            assert solver.disc_iter == 0
+
+        assert isinstance(solver.train_data, liGAN.data.AtomGridData)
+        assert isinstance(solver.test_data, liGAN.data.AtomGridData)
+        assert isinstance(solver.loss_fn, liGAN.loss_fns.LossFunction)
+        assert isinstance(solver.atom_fitter, liGAN.atom_fitting.AtomFitter)
+        assert isinstance(solver.bond_adder, liGAN.bond_adding.BondAdder)
+        assert isinstance(solver.metrics, pd.DataFrame)
+        assert len(solver.metrics) == 0
+
         for name, params in solver.named_parameters():
             if name.endswith('weight'):
                 assert params.detach().norm().cpu() > 0, 'weights are zero'
             elif name.endswith('bias'):
-                pass
-                #assert params.detach().norm().cpu() == 0, 'bias is non-zero'
+                pass # ok for bias to be zero
 
-    def test_solver_forward(self, solver):
-        loss, metrics = solver.forward(solver.train_data)
-        assert not isclose(0, loss.item()), 'loss is zero'
-        assert not isnan(loss.item()), 'loss is nan'
+    ### TEST GRID PHASE
 
-    def test_solver_step(self, solver):
-        metrics_i = solver.step(compute_norm=False)
-        _, metrics_f = solver.forward(solver.train_data)
-        assert isnan(metrics_i['gen_grad_norm']), 'grad norm computed'
-        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+    def test_solver_gen_phases(self, solver):
+        phases = [solver.get_gen_grid_phase(i) for i in range(6)]
+        assert phases, phases
 
-    def test_solver_step_norm(self, solver):
-        metrics_i = solver.step(compute_norm=True)
-        _, metrics_f = solver.forward(solver.train_data)
-        assert not isnan(metrics_i['gen_grad_norm']), 'grad norm not computed'
-        assert metrics_f['loss'] < metrics_i['loss'], 'loss did not decrease'
+    def test_solver_disc_phases(self, solver):
+        if solver.has_disc_model:
+            phases = [solver.get_disc_grid_phase(i) for i in range(6)]
+            assert phases, phases
+
+    ### TEST FORWARD PASS
+
+    def test_solver_gen_forward_poster(self, solver):
+
+        if solver.has_posterior_phase:
+            data = solver.train_data
+            loss, metrics = solver.gen_forward(data, grid_type='poster')
+            for k, v in metrics.items():
+                print(k, v)
+            assert loss.item() != 0, 'loss is zero'
+
+    def test_solver_gen_forward_prior(self, solver):
+
+        if solver.has_prior_phase:
+            data = solver.train_data
+            loss, metrics = solver.gen_forward(data, grid_type='prior')
+            for k, v in metrics.items():
+                print(k, v)
+            assert loss.item() != 0, 'loss is zero'
+
+    def test_solver_disc_forward_real(self, solver):
+
+        if solver.has_disc_model:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='real')
+            for k, v in metrics.items():
+                print(k, v)
+            assert loss.item() != 0, 'loss is zero'
+
+    def test_solver_disc_forward_poster(self, solver):
+
+        if solver.has_disc_model and solver.has_posterior_phase:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='poster')
+            for k, v in metrics.items():
+                print(k, v)
+            assert loss.item() != 0, 'loss is zero'
+
+    def test_solver_disc_forward_prior(self, solver):
+
+        if solver.has_disc_model and solver.has_prior_phase:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='prior')
+            for k, v in metrics.items():
+                print(k, v)
+            assert loss.item() != 0, 'loss is zero'
+
+    ### TEST BACKWARD PASS
+
+    def test_solver_gen_backward_poster(self, solver):
+
+        if solver.has_posterior_phase:
+            data = solver.train_data
+            loss, metrics = solver.gen_forward(data, grid_type='poster')
+            metrics = solver.gen_backward(loss)
+            for k, v in metrics.items():
+                print(k, v)
+            check_solver_grad(solver, True, True, True, True)
+
+    def test_solver_gen_backward_prior(self, solver):
+
+        if solver.has_prior_phase:
+            data = solver.train_data
+            loss, metrics = solver.gen_forward(data, grid_type='prior')
+            metrics = solver.gen_backward(loss)
+            for k, v in metrics.items():
+                print(k, v)
+            check_solver_grad(solver, True, True, False, True)
+
+    def test_solver_disc_backward_real(self, solver):
+
+        if solver.has_disc_model:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='real')
+            metrics = solver.gen_backward(loss)
+            for k, v in metrics.items():
+                print(k, v)
+            check_solver_grad(solver, True, False, False, False)
+
+    def test_solver_disc_backward_poster(self, solver):
+
+        if solver.has_disc_model and solver.has_posterior_phase:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='poster')
+            metrics = solver.gen_backward(loss)
+            for k, v in metrics.items():
+                print(k, v)
+            check_solver_grad(solver, True, False, False, False)
+
+    def test_solver_disc_backward_prior(self, solver):
+
+        if solver.has_disc_model and solver.has_prior_phase:
+            data = solver.train_data
+            loss, metrics = solver.disc_forward(data, grid_type='prior')
+            metrics = solver.gen_backward(loss)
+            for k, v in metrics.items():
+                print(k, v)
+            check_solver_grad(solver, True, False, False, False)
+
+    ### TEST TRAINING STEP
+
+    def test_solver_gen_step_poster(self, solver):
+        if solver.has_posterior_phase:
+            data = solver.train_data
+            liGAN.set_random_seed(0)
+            metrics0 = solver.gen_step(grid_type='poster')
+            liGAN.set_random_seed(0)
+            _, metrics1 = solver.gen_forward(data, grid_type='poster')
+            assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
+    def test_solver_gen_step_prior(self, solver):
+        if solver.has_prior_phase:
+            data = solver.train_data
+            liGAN.set_random_seed(0)
+            metrics0 = solver.gen_step(grid_type='prior')
+            liGAN.set_random_seed(0)
+            _, metrics1 = solver.gen_forward(data, grid_type='prior')
+            assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
+    def test_solver_disc_step_real(self, solver):
+        if solver.has_disc_model:
+            data = solver.train_data
+            liGAN.set_random_seed(0)
+            metrics0 = solver.disc_step(grid_type='real')
+            liGAN.set_random_seed(0)
+            _, metrics1 = solver.disc_forward(data, grid_type='real')
+            assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
+    def test_solver_disc_step_poster(self, solver):
+        if solver.has_disc_model and solver.has_posterior_phase:
+            data = solver.train_data
+            liGAN.set_random_seed(0)
+            metrics0 = solver.disc_step(grid_type='poster')
+            liGAN.set_random_seed(0)
+            _, metrics1 = solver.disc_forward(data, grid_type='poster')
+            assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
+    def test_solver_disc_step_prior(self, solver):
+        if solver.has_disc_model and solver.has_prior_phase:
+            data = solver.train_data
+            liGAN.set_random_seed(0)
+            metrics0 = solver.disc_step(grid_type='prior')
+            liGAN.set_random_seed(0)
+            _, metrics1 = solver.disc_forward(data, grid_type='prior')
+            assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
+    ### TEST SOLVER SAVE/LOAD STATE
 
     def test_solver_state(self, solver):
-        assert solver.curr_iter == 0
+
+        assert solver.gen_iter == 0
+        assert solver.disc_iter == 0
+        init_norm = param_norm(solver)
         solver.save_state()
-        solver.step()
-        assert solver.curr_iter == 1
+
+        if solver.has_posterior_phase:
+            solver.gen_step(grid_type='poster')
+            if solver.has_disc_model:
+                solver.disc_step(grid_type='poster')
+
+        elif solver.has_prior_phase:
+            solver.gen_step(grid_type='prior')
+            if solver.has_disc_model:
+                solver.disc_step(grid_type='prior')
+
+        assert solver.gen_iter == 1
+        assert solver.disc_iter == int(solver.has_disc_model)
+        norm = param_norm(solver)
+        norm_diff = (norm - init_norm)
+        assert not isclose(norm, init_norm), \
+            'same params after update ({:.2f})'.format(norm_diff)
+
         solver.load_state(cont_iter=0)
-        assert solver.curr_iter == 0
+        assert solver.gen_iter == 0
+        norm = param_norm(solver)
+        norm_diff = (norm - init_norm)
+        assert isclose(norm, init_norm), \
+            'different params after load ({:.2f})'.format(norm_diff)
 
-    def test_solver_test(self, solver):
-        solver.test(1, fit_atoms=False)
-        assert solver.curr_iter == 0
+    ### TEST TESTING MODELS
+
+    def test_solver_test_disc(self, solver):
+        assert len(solver.metrics) == 0
+        if solver.has_disc_model:
+            solver.test_model(n_batches=10, model_type='disc', fit_atoms=False)
+            assert solver.disc_iter == 0
+            assert len(solver.metrics) == 10
+
+    def test_solver_test_gen(self, solver):
+        assert len(solver.metrics) == 0
+        solver.test_model(n_batches=10, model_type='gen', fit_atoms=False)
+        assert solver.gen_iter == 0
+        assert len(solver.metrics) == 10
+
+    def test_solver_test_gen_fit(self, solver):
+        assert len(solver.metrics) == 0
+        solver.test_model(n_batches=1, model_type='gen', fit_atoms=True)
+        assert solver.gen_iter == 0
         assert len(solver.metrics) == 1
+        print(solver.metrics.transpose())
+        assert 'lig_gen_fit_n_atoms' in solver.metrics.columns
+        if solver.has_posterior_phase:
+            assert 'lig_gen_fit_type_diff' in solver.metrics.columns
 
-    def asdf_test_solver_test_fit(self, solver):
-        solver.test(1, fit_atoms=True)
-        assert solver.curr_iter == 0
-        assert len(solver.metrics) == 1
-        assert 'lig_gen_fit_type_diff' in solver.metrics
+    def test_solver_test_models(self, solver):
+        assert len(solver.metrics) == 0
+        solver.test_models(n_batches=10, fit_atoms=False)
+        assert solver.gen_iter == 0
+        assert solver.disc_iter == 0
+        assert len(solver.metrics) == 10 + solver.has_disc_model * 10
 
-    def test_solver_train(self, solver, train_params):
+    ### TEST TRAINING MODELS
+
+    def test_solver_train_gen(self, solver):
+        solver.train_model(n_iters=10, model_type='gen')
+        assert solver.gen_iter == len(solver.metrics) == 10
+
+    def test_solver_train_disc(self, solver):
+        if solver.has_disc_model:
+            solver.train_model(n_iters=10, model_type='disc')
+            assert solver.disc_iter == len(solver.metrics) == 10
+
+    def test_solver_train_models(self, solver):
+        solver.train_models(update=True)
+        assert not solver.balance
+        assert solver.gen_iter == solver.n_gen_train_iters
+        if solver.has_disc_model:
+            assert solver.disc_iter == solver.n_disc_train_iters
+        assert len(solver.metrics) == (
+            solver.n_gen_train_iters + 
+            (solver.n_disc_train_iters if solver.has_disc_model else 0)
+        )
+
+    def test_solver_train_models_noup(self, solver):
+        solver.train_models(update=False)
+        assert not solver.balance
+        assert solver.gen_iter == 0
+        if solver.has_disc_model:
+            assert solver.disc_iter == 0
+        print(solver.metrics)
+        assert len(solver.metrics) == (
+            solver.n_gen_train_iters + 
+            (solver.n_disc_train_iters if solver.has_disc_model else 0)
+        )
+
+    def test_solver_train_and_test(self, solver, train_params):
 
         max_iter = train_params['max_iter']
         test_interval = train_params['test_interval']
         n_test_batches = train_params['n_test_batches']
 
         t0 = time.time()
-        solver.train(**train_params)
+        solver.train_and_test(**train_params)
         t_delta = time.time() - t0
 
         print(solver.metrics)
-        assert solver.curr_iter == max_iter
-        assert len(solver.metrics) == (
-            max_iter + 1 + (max_iter//test_interval + 1) * n_test_batches
+        assert solver.gen_iter == max_iter
+
+        m = solver.metrics.reset_index()
+        n_train_rows = (max_iter + 1) * (
+            solver.n_gen_train_iters + (
+                solver.n_disc_train_iters if solver.has_disc_model else 0
+            )
         )
-        assert 'recon_loss' in solver.metrics
-        if isinstance(solver, liGAN.training.VAESolver):
-            assert 'kldiv_loss' in solver.metrics
-        loss_i = solver.metrics.loc[(0, 'train'), 'loss'].mean()
-        loss_f = solver.metrics.loc[(max_iter, 'train'), 'loss'].mean()
+        n_test_rows = (max_iter//test_interval + 1) * (
+            n_test_batches + (n_test_batches if solver.has_disc_model else 0)
+        )
+        assert len(m[m['data_phase'] == 'train']) == n_train_rows, 'unexpected num trains'
+        assert len(m[m['data_phase'] == 'test']) == n_test_rows, 'unexpected num tests'
+
+        loss_i = m[m['iteration'] == 0]['loss'].mean()
+        loss_f = m[m['iteration'] == max_iter]['loss'].mean()
         assert loss_f < loss_i, 'loss did not decrease'
 
         t_per_iter = t_delta / max_iter

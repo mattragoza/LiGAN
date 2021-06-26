@@ -136,7 +136,6 @@ class AtomGridData(nn.Module):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures and labels
-        print('Calling data forward')
         examples = self.ex_provider.next_batch(self.batch_size)
         examples.extract_label(0, self.labels)
         t1 = time.time()

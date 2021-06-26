@@ -1,4 +1,4 @@
-import time
+import time, random
 import rdkit # import before molgrid to avoid RuntimeWarning
 import numpy as np
 import torch, molgrid
@@ -15,6 +15,7 @@ def set_random_seed(random_seed=None):
     if random_seed is None:
         random_seed = get_unique_seed()
     print('Setting random seed to', random_seed)
+    random.seed(random_seed)
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
     molgrid.set_random_seed(random_seed)

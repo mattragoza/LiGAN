@@ -6,6 +6,7 @@ from . import (
 	atom_grids,
 	data,
 	models,
+	loss_fns,
 	training,
 	atom_fitting,
 	bond_adding,
