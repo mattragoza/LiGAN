@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import torch
 from torch import nn
@@ -20,6 +21,16 @@ def reduce_list(obj):
 
 def is_positive_int(x):
     return isinstance(x, int) and x > 0
+
+
+def get_n_params(model):
+    total = 0
+    for p in list(model.parameters()):
+        n = 1
+        for dim in p.shape:
+            n *= dim
+        total += n
+    return total
 
 
 def caffe_init_weights(module):
@@ -120,23 +131,138 @@ class Conv3DBlock(nn.Module):
         n_convs,
         n_channels_in,
         n_channels_out,
-        block_type=None,
+        block_type='c',
+        growth_rate=8,
+        bottleneck_factor=0,
+        debug=False,
         **kwargs
     ):
         super().__init__()
 
-        self.conv_modules = []
-        for i in range(n_convs):
-            conv = self.conv_type(
+        assert block_type in {'c', 'r', 'd'}, block_type
+        self.residual = (block_type == 'r')
+        self.dense = (block_type == 'd')
+
+        if self.residual:
+            self.init_skip_conv(
                 n_channels_in=n_channels_in,
                 n_channels_out=n_channels_out,
                 **kwargs
             )
+
+        if self.dense:
+            self.init_final_conv(
+                n_channels_in=n_channels_in,
+                n_convs=n_convs,
+                growth_rate=growth_rate,
+                n_channels_out=n_channels_out,
+                **kwargs
+            )
+            n_channels_out = growth_rate
+
+        self.init_conv_sequence(
+            n_convs=n_convs,
+            n_channels_in=n_channels_in,
+            n_channels_out=n_channels_out,
+            bottleneck_factor=bottleneck_factor, 
+            **kwargs
+        )
+
+    def init_skip_conv(
+        self, n_channels_in, n_channels_out, kernel_size, **kwargs
+    ):
+        if n_channels_out != n_channels_in:
+
+            # 1x1x1 conv to map input to output channels
+            self.skip_conv = self.conv_type(
+                n_channels_in=n_channels_in,
+                n_channels_out=n_channels_out,
+                kernel_size=1,
+                **kwargs
+            )
+        else:
+            self.skip_conv = nn.Identity()
+
+    def init_final_conv(
+        self,
+        n_channels_in,
+        n_convs,
+        growth_rate,
+        n_channels_out,
+        kernel_size,
+        **kwargs
+    ):
+        # 1x1x1 final "compression" convolution
+        self.final_conv = self.conv_type(
+            n_channels_in=n_channels_in + n_convs*growth_rate,
+            n_channels_out=n_channels_out,
+            kernel_size=1,
+            **kwargs
+        )
+
+    def bottleneck_conv(
+        self,
+        n_channels_in,
+        n_channels_bn,
+        n_channels_out,
+        kernel_size,
+        **kwargs
+    ):
+        assert n_channels_bn > 0, \
+            (n_channels_in, n_channels_bn, n_channels_out)
+
+        return nn.Sequential(
+            self.conv_type(
+                n_channels_in=n_channels_in,
+                n_channels_out=n_channels_bn,
+                kernel_size=1,
+                **kwargs,
+            ),
+            self.conv_type(
+                n_channels_in=n_channels_bn,
+                n_channels_out=n_channels_bn,
+                kernel_size=kernel_size,
+                **kwargs
+            ),
+            self.conv_type(
+                n_channels_in=n_channels_bn,
+                n_channels_out=n_channels_out,
+                kernel_size=1,
+                **kwargs,
+            )
+        )
+
+    def init_conv_sequence(
+        self,
+        n_convs,
+        n_channels_in,
+        n_channels_out,
+        bottleneck_factor,
+        **kwargs
+    ):
+        self.conv_modules = []
+        for i in range(n_convs):
+
+            if bottleneck_factor: # bottleneck convolution
+                conv = self.bottleneck_conv(
+                    n_channels_in=n_channels_in,
+                    n_channels_bn=n_channels_in//bottleneck_factor,
+                    n_channels_out=n_channels_out,
+                    **kwargs
+                )
+            else: # single convolution
+                conv = self.conv_type(
+                    n_channels_in=n_channels_in,
+                    n_channels_out=n_channels_out,
+                    **kwargs
+                )
             self.conv_modules.append(conv)
             self.add_module(str(i), conv)
-            n_channels_in = n_channels_out
 
-        self.block_type = block_type
+            if self.dense:
+                n_channels_in += n_channels_out
+            else:
+                n_channels_in = n_channels_out
 
     def __len__(self):
         return len(self.conv_modules)
@@ -146,25 +272,28 @@ class Conv3DBlock(nn.Module):
         if not self.conv_modules:
             return inputs
 
-        identity = inputs # for resnet
-        all_inputs = [inputs] # for densenet
+        if self.dense:
+            all_inputs = [inputs]
 
-        for f in self.conv_modules:
-            outputs = f(inputs)
+        # convolution sequence
+        for i, f in enumerate(self.conv_modules):
+            
+            if self.residual:
+                identity = self.skip_conv(inputs) if i == 0 else inputs
+                outputs = f(inputs) + identity
+            else:
+                outputs = f(inputs)
 
-            if self.block_type == 'd': # densenet
+            if self.dense:
                 all_inputs.append(outputs)
                 inputs = torch.cat(all_inputs, dim=1)
             else:
                 inputs = outputs
 
-        if not self.conv_modules:
-            return identity
+        if self.dense:
+            outputs = self.final_conv(inputs)
 
-        if self.block_type == 'r': # resnet
-            return outputs + identity
-        else:
-            return outputs
+        return outputs
 
 
 class TConv3DBlock(Conv3DBlock):
@@ -318,9 +447,7 @@ class GridEncoder(nn.Module):
     '''
     # TODO reimplement the following:
     # - self-attention
-    # - densely-connected
     # - batch discrimination
-    # - fully-convolutional
     
     def __init__(
         self,
@@ -339,9 +466,13 @@ class GridEncoder(nn.Module):
         n_output=1,
         output_activ_fn=None,
         init_conv_pool=False,
-        block_type=None,
+        block_type='c',
+        growth_rate=8,
+        bottleneck_factor=0,
+        debug=False,
     ):
         super().__init__()
+        self.debug = debug
 
         # sequence of convs and/or pools
         self.grid_modules = []
@@ -355,7 +486,7 @@ class GridEncoder(nn.Module):
             self.add_conv3d(
                 name='init_conv',
                 n_filters=n_filters,
-                kernel_size=kernel_size,
+                kernel_size=kernel_size+2,
                 relu_leak=relu_leak,
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
@@ -365,6 +496,7 @@ class GridEncoder(nn.Module):
                 pool_type=pool_type,
                 pool_factor=pool_factor
             )
+            n_filters *= width_factor
 
         for i in range(n_levels):
 
@@ -385,6 +517,9 @@ class GridEncoder(nn.Module):
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
                 block_type=block_type,
+                growth_rate=growth_rate,
+                bottleneck_factor=bottleneck_factor,
+                debug=debug,
             )
 
         # fully-connected outputs
@@ -409,6 +544,10 @@ class GridEncoder(nn.Module):
                 spectral_norm=spectral_norm
             )
 
+    def print(self, *args, **kwargs):
+        if self.debug:
+            print('DEBUG', *args, **kwargs, file=sys.stderr)
+
     def add_conv3d(self, name, n_filters, **kwargs):
         conv = Conv3DReLU(
             n_channels_in=self.n_channels,
@@ -418,10 +557,13 @@ class GridEncoder(nn.Module):
         self.add_module(name, conv)
         self.grid_modules.append(conv)
         self.n_channels = n_filters
+        self.print(name, self.n_channels, self.grid_size)
 
     def add_pool3d(self, name, pool_factor, **kwargs):
         assert self.grid_size % pool_factor == 0, \
-            'cannot pool remaining spatial dims'
+            'cannot pool remaining spatial dims ({} % {})'.format(
+                self.grid_size, pool_factor
+            )
         pool = Pool3D(
             n_channels=self.n_channels,
             pool_factor=pool_factor,
@@ -430,6 +572,7 @@ class GridEncoder(nn.Module):
         self.add_module(name, pool)
         self.grid_modules.append(pool)
         self.grid_size //= pool_factor
+        self.print(name, self.n_channels, self.grid_size)
 
     def add_conv3d_block(self, name, n_filters, **kwargs):
         conv_block = Conv3DBlock(
@@ -440,6 +583,7 @@ class GridEncoder(nn.Module):
         self.add_module(name, conv_block)
         self.grid_modules.append(conv_block)
         self.n_channels = n_filters
+        self.print(name, self.n_channels, self.grid_size)
 
     def add_grid2vec(self, name, **kwargs):
         fc = Grid2Vec(
@@ -448,19 +592,25 @@ class GridEncoder(nn.Module):
         )
         self.add_module(name, fc)
         self.task_modules.append(fc)
+        self.print(name, self.n_channels, self.grid_size)
 
     def forward(self, inputs):
 
-        # conv pool sequence
+        # conv-pool sequence
         conv_features = []
         for f in self.grid_modules:
+
             outputs = f(inputs)
+            self.print(inputs.shape, '->', f, '->', outputs.shape)
+
             if not isinstance(f, Pool3D):
                 conv_features.append(outputs)
             inputs = outputs
 
         # fully-connected outputs
         outputs = [f(inputs) for f in self.task_modules]
+        outputs_shape = [o.shape for o in outputs]
+        self.print(inputs.shape, '->', self.task_modules, '->', outputs_shape)
 
         return reduce_list(outputs), conv_features
 
@@ -478,8 +628,6 @@ class GridDecoder(nn.Module):
     '''
     # TODO re-implement the following:
     # - self-attention
-    # - densely-connected
-    # - fully-convolutional
     # - gaussian output
 
     def __init__(
@@ -499,10 +647,14 @@ class GridDecoder(nn.Module):
         n_channels_out,
         final_unpool=False,
         skip_connect=False,
-        block_type=None,
+        block_type='c',
+        growth_rate=8,
+        bottleneck_factor=0,
+        debug=False,
     ):
         super().__init__()
         self.skip_connect = bool(skip_connect)
+        self.debug = debug
 
         # first fc layer maps to initial grid shape
         self.fc_modules = []
@@ -533,7 +685,7 @@ class GridDecoder(nn.Module):
             if skip_connect:
                 n_skip_channels = self.n_channels
                 if i < n_levels - 1:
-                    n_skip_channels //= 2
+                    n_skip_channels //= width_factor
             else:
                 n_skip_channels = 0
 
@@ -547,25 +699,50 @@ class GridDecoder(nn.Module):
                 batch_norm=batch_norm,
                 spectral_norm=spectral_norm,
                 block_type=block_type,
-                n_skip_channels=n_skip_channels
+                growth_rate=growth_rate,
+                bottleneck_factor=bottleneck_factor,
+                n_skip_channels=n_skip_channels,
+                debug=debug,
             )
 
         if final_unpool:
+
             self.add_unpool3d(
                 name='final_unpool',
                 unpool_type=unpool_type,
                 unpool_factor=unpool_factor,
             )
+            n_skip_channels //= width_factor
 
-        # final tconv maps to correct n_output channels
-        self.add_tconv3d(
-            name='final_conv',
-            n_filters=n_channels_out,
-            kernel_size=kernel_size,
-            relu_leak=relu_leak,
-            batch_norm=batch_norm,
-            spectral_norm=spectral_norm,
-        )
+            self.add_tconv3d_block(
+                name='final_conv',
+                n_convs=tconv_per_level,
+                n_filters=n_channels_out,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
+                block_type=block_type,
+                growth_rate=growth_rate,
+                bottleneck_factor=bottleneck_factor,
+                n_skip_channels=n_skip_channels,
+                debug=debug,
+            )
+
+        else: # final tconv maps to correct n_output channels
+
+            self.add_tconv3d(
+                name='final_conv',
+                n_filters=n_channels_out,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                batch_norm=batch_norm,
+                spectral_norm=spectral_norm,
+            )
+
+    def print(self, *args, **kwargs):
+        if self.debug:
+            print('DEBUG', *args, **kwargs, file=sys.stderr)
 
     def add_vec2grid(self, name, n_channels, grid_size, **kwargs):
         vec2grid = Vec2Grid(
@@ -576,6 +753,7 @@ class GridDecoder(nn.Module):
         self.fc_modules.append(vec2grid)
         self.n_channels = n_channels
         self.grid_size = grid_size
+        self.print(name, self.n_channels, self.grid_size)
 
     def add_unpool3d(self, name, unpool_factor, **kwargs):
         unpool = Unpool3D(
@@ -586,6 +764,7 @@ class GridDecoder(nn.Module):
         self.add_module(name, unpool)
         self.grid_modules.append(unpool)
         self.grid_size *= unpool_factor
+        self.print(name, self.n_channels, self.grid_size)
 
     def add_tconv3d(self, name, n_filters, **kwargs):
         tconv = TConv3DReLU(
@@ -596,8 +775,11 @@ class GridDecoder(nn.Module):
         self.add_module(name, tconv)
         self.grid_modules.append(tconv)
         self.n_channels = n_filters
+        self.print(name, self.n_channels, self.grid_size)
 
-    def add_tconv3d_block(self, name, n_filters, n_skip_channels, **kwargs):
+    def add_tconv3d_block(
+        self, name, n_filters, n_skip_channels, **kwargs
+    ):
         tconv_block = TConv3DBlock(
             n_channels_in=self.n_channels + n_skip_channels,
             n_channels_out=n_filters,
@@ -606,17 +788,26 @@ class GridDecoder(nn.Module):
         self.add_module(name, tconv_block)
         self.grid_modules.append(tconv_block)
         self.n_channels = n_filters
+        self.print(name, self.n_channels, self.grid_size)
 
     def forward(self, inputs, skip_features=None):
 
         for f in self.fc_modules:
             outputs = f(inputs)
+            self.print(inputs.shape, '->', f, '->', outputs.shape)
             inputs = outputs
 
         for f in self.grid_modules:
+
             if self.skip_connect and isinstance(f, TConv3DBlock):
-                inputs = torch.cat([inputs, skip_features.pop()], dim=1)
+                skip_inputs = skip_features.pop()
+                inputs = torch.cat([inputs, skip_inputs], dim=1)
+                inputs_shape = [inputs.shape, skip_inputs.shape]
+            else:
+                inputs_shape = inputs.shape
+
             outputs = f(inputs)
+            self.print(inputs_shape, '->', f, '->', outputs.shape)
             inputs = outputs
 
         return outputs
@@ -653,10 +844,14 @@ class GridGenerator(nn.Sequential):
         n_latent=1024,
         init_conv_pool=False,
         skip_connect=False,
-        block_type=None,
+        block_type='c',
+        growth_rate=8,
+        bottleneck_factor=0,
         device='cuda',
+        debug=False,
     ):
         assert type(self) != GridGenerator, 'GridGenerator is abstract'
+        self.debug = debug
 
         super().__init__()
         self.check_encoder_channels(n_channels_in, n_channels_cond)
@@ -691,6 +886,9 @@ class GridGenerator(nn.Sequential):
                 n_output=encoder_output,
                 init_conv_pool=init_conv_pool,
                 block_type=block_type,
+                growth_rate=growth_rate,
+                bottleneck_factor=bottleneck_factor,
+                debug=debug,
             )
 
         if self.has_conditional_encoder:
@@ -711,6 +909,9 @@ class GridGenerator(nn.Sequential):
                 n_output=n_latent,
                 init_conv_pool=init_conv_pool,
                 block_type=block_type,
+                growth_rate=growth_rate,
+                bottleneck_factor=bottleneck_factor,
+                debug=debug,
             )
 
         n_pools = n_levels - 1 + init_conv_pool
@@ -732,6 +933,9 @@ class GridGenerator(nn.Sequential):
             final_unpool=init_conv_pool,
             skip_connect=skip_connect,
             block_type=block_type,
+            growth_rate=growth_rate,
+            bottleneck_factor=bottleneck_factor,
+            debug=debug,
         )
 
         super().to(device)

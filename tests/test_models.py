@@ -1,4 +1,5 @@
 import sys, os, pytest, time
+from contextlib import redirect_stderr
 import numpy as numpy
 from numpy import isclose
 from numpy.linalg import norm
@@ -11,8 +12,8 @@ from liGAN.models import compute_grad_norm as param_grad_norm
 
 
 batch_size = 10
-n_lig_channels = 11
-n_rec_channels = 13
+n_lig_channels = 16
+n_rec_channels = 16
 grid_size = 48
 
 
@@ -46,28 +47,39 @@ class TestConv3DReLU(object):
 class TestConv3DBlock(object):
 
     @pytest.fixture(params=[models.Conv3DBlock, models.TConv3DBlock])
-    def convs(self, request):
-        return request.param(
-            n_convs=4,
+    def conv_type(self, request):
+        return request.param
+
+    @pytest.fixture(params=['c', 'r', 'd'])
+    def block_type(self, request):
+        return request.param
+
+    @pytest.fixture(params=[1, 2, 4])
+    def bn_factor(self, request):
+        return request.param
+
+    @pytest.fixture
+    def conv_block(self, conv_type, block_type, bn_factor):
+        return conv_type(
+            n_convs=3,
             n_channels_in=n_rec_channels,
             n_channels_out=n_lig_channels,
             kernel_size=3,
             relu_leak=0.1,
-            batch_norm=2,
-            spectral_norm=1
+            batch_norm=0,
+            spectral_norm=1,
+            block_type=block_type,
+            bottleneck_factor=bn_factor,
         )
 
-    def test_init(self, convs):
-        assert len(convs) == 4, 'different num modules'
+    def test_init(self, conv_block):
+        assert len(conv_block) == 3, 'different num modules'
 
-    def test_forward_cpu(self, convs):
-        x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cpu()
-        y = convs.to('cpu')(x)
-        assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
-
-    def test_forward_cuda(self, convs):
+    def test_forward_cuda(self, conv_block):
         x = torch.zeros(batch_size, n_rec_channels, grid_size, grid_size, grid_size).cuda()
-        y = convs.to('cuda')(x)
+        y = conv_block.to('cuda')(x)
+        print(conv_block)
+        print(get_n_params(conv_block))
         assert y.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
 
 
@@ -214,18 +226,33 @@ class TestGridDecoder(object):
 
 class TestGridGenerator(object):
 
-    @pytest.fixture(params=[AE, CE, VAE, CVAE, GAN, CGAN])
-    def gen(self, request):
-        model_type = request.param
-        return model_type(
+    @pytest.fixture(params=[CVAE])#AE, CE, VAE, CVAE, GAN, CGAN])
+    def model_type(self, request):
+        return request.param
+
+    @pytest.fixture(params=['c'])#, 'r', 'd'])
+    def block_type(self, request):
+        return request.param
+
+    @pytest.fixture(params=[0])#, 2, 4])
+    def bn_factor(self, request):
+        return request.param
+
+    @pytest.fixture(params=[0, 1])
+    def init_conv_pool(self, request):
+        return request.param
+
+    @pytest.fixture
+    def gen(self, model_type, init_conv_pool, block_type, bn_factor):
+        model = model_type(
             n_channels_in=n_lig_channels if model_type.has_input_encoder else None,
             n_channels_cond=n_rec_channels if model_type.has_conditional_encoder else None,
             n_channels_out=n_lig_channels,
             grid_size=grid_size,
-            n_filters=3,
+            n_filters=32,
             width_factor=2,
-            n_levels=3,
-            conv_per_level=4,
+            n_levels=4 - bool(init_conv_pool),
+            conv_per_level=3,
             kernel_size=3,
             relu_leak=0.1,
             batch_norm=0,
@@ -234,10 +261,16 @@ class TestGridGenerator(object):
             unpool_type='n',
             n_latent=128,
             skip_connect=model_type.has_conditional_encoder,
-            init_conv_pool=False,
-            block_type='',
-            device='cuda'
+            init_conv_pool=init_conv_pool,
+            block_type=block_type,
+            bottleneck_factor=bn_factor,
+            device='cuda',
+            debug=True,
         )
+        model.name = '{}_{}_{}_{}'.format(
+            model_type.__name__, init_conv_pool, block_type, bn_factor
+        )
+        return model
 
     @pytest.fixture
     def inputs(self):
@@ -362,10 +395,26 @@ class TestGridGenerator(object):
             assert conditions.grad is None, 'condition has a gradient'
 
     def test_gen_benchmark(self, gen, inputs, conditions):
+        n_trials = 10
 
         t0 = time.time()
-        for i in range(10):
-            generated, latents, means, log_stds = gen(inputs, conditions, batch_size)
+        for i in range(n_trials):
+            if i == 0:
+                debug_file = 'tests/output/TEST_{}.model_debug'.format(gen.name)
+                with open(debug_file, 'w') as f:
+                    with redirect_stderr(f):
+                        generated, latents, means, log_stds = gen(
+                            inputs, conditions, batch_size
+                        )
+            else:
+                generated, latents, means, log_stds = gen(
+                    inputs, conditions, batch_size
+                )
 
         t_delta = time.time() - t0
-        assert t_delta < 1, 'too slow'
+        t_delta /= n_trials
+        n_params = models.get_n_params(gen)
+        assert t_delta < 0, \
+            '{:.1f}M params\t{:.2f}s / batch'.format(
+                n_params / 1e6, t_delta
+            )
