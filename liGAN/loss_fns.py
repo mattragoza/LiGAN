@@ -177,5 +177,5 @@ def product_loss(rec_grids, lig_grids):
     of total density at each point.
     '''
     return (
-        rec_grids.sum(dim=1) * lig_grids.sum(dim=1)
+        rec_grids.sum(dim=1) * lig_grids.clamp(min=0).sum(dim=1)
     ).sum() / lig_grids.shape[0]
