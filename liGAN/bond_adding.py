@@ -386,6 +386,10 @@ class BondAdder(object):
         ob_mol.SetAromaticPerceived(True)
         ob_mol.SetHybridizationPerceived(True)
 
+        for a in ob.OBMolAtomIter(ob_mol):
+            if not a.IsInRing():
+                a.SetAromatic(False)
+
         return ob_mol, visited_mols
 
     def post_process_rd_mol(self, rd_mol, struct=None):
