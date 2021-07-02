@@ -10,25 +10,25 @@ class TestOBMol(object):
 
     @pytest.fixture
     def water(self):
-        mol = mols.read_ob_mols_from_file('data/O_2_0_0.sdf', 'sdf')[0]
+        mol = mols.read_ob_mols_from_file('tests/input/O_2_0_0.sdf', 'sdf')[0]
         mol.AddHydrogens()
         return mol
 
     @pytest.fixture
     def ammonia(self):
-        mol = mols.read_ob_mols_from_file('data/N_2_0_0.sdf', 'sdf')[0]
+        mol = mols.read_ob_mols_from_file('tests/input/N_2_0_0.sdf', 'sdf')[0]
         mol.AddHydrogens()
         return mol
 
     @pytest.fixture
     def methane(self):
-        mol = mols.read_ob_mols_from_file('data/C_2_0_0.sdf', 'sdf')[0]
+        mol = mols.read_ob_mols_from_file('tests/input/C_2_0_0.sdf', 'sdf')[0]
         mol.AddHydrogens()
         return mol
 
     @pytest.fixture
     def benzene(self):
-        mol = mols.read_ob_mols_from_file('data/benzene.sdf', 'sdf')[0]
+        mol = mols.read_ob_mols_from_file('tests/input/benzene.sdf', 'sdf')[0]
         mol.AddHydrogens()
         return mol
 

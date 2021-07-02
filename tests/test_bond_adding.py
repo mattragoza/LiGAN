@@ -10,13 +10,16 @@ from liGAN.bond_adding import BondAdder, get_max_valences, reachable, compare_bo
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf',
-    'data/N_2_0_0.sdf',
-    'data/C_2_0_0.sdf',
-    'data/benzene.sdf',
-    'data/neopentane.sdf',
-    'data/sulfone.sdf', #TODO reassign guanidine double bond
-    'data/ATP.sdf',
+    'tests/input/O_2_0_0.sdf',
+    'tests/input/N_2_0_0.sdf',
+    'tests/input/C_2_0_0.sdf',
+    'tests/input/benzene.sdf',
+    'tests/input/neopentane.sdf',
+    'tests/input/sulfone.sdf', #TODO reassign guanidine double bond
+    'tests/input/ATP.sdf',
+    #'tests/input/buckyball.sdf', # takes a very long time, why?
+    'tests/input/4fic_C_0UL.sdf',
+    'tests/input/3el8_B_rec_4fic_0ul_lig_tt_docked_13.sdf.gz',
 ]
 
 
@@ -99,7 +102,7 @@ def write_mols(visited_mols, in_mol, mode=None):
     if mode:
         mol_name += '_' + mode
 
-    mol_file = 'tests/output/TEST_{}.sdf'.format(mol_name)
+    mol_file = 'tests/output/TEST_ob_{}.sdf'.format(mol_name)
     mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
     return mol_file
 
