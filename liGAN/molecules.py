@@ -69,12 +69,24 @@ class Molecule(Chem.RWMol):
         return self.GetNumAtoms()
 
     @property
+    def n_bonds(self):
+        return self.GetNumBonds()
+
+    @property
     def n_hydros(self):
         return self.GetNumAtoms() - self.GetNumHeavyAtoms()
 
     @property
     def n_frags(self):
         return len(Chem.GetMolFrags(self))
+
+    @property
+    def atoms(self):
+        return [self.GetAtomWithIdx(i) for i in self.n_atoms]
+
+    @property
+    def bonds(self):
+        return [self.GetBondWithIdx(i) for i in self.n_bonds]
 
     @property
     def center(self):
@@ -249,14 +261,17 @@ def copy_ob_mol(ob_mol):
     return copy_mol
 
 
-def read_ob_mols_from_file(mol_file, in_format):
-    assert os.path.isfile(mol_file), 'file does not exist'
+
+def read_ob_mols_from_file(mol_file, in_format=None, n_mols=None):
+    assert os.path.isfile(mol_file), mol_file + ' does not exist'
+    if in_format is None:
+        in_format = mol_file.split('.', 1)[1]
     ob_conv = ob.OBConversion()
     ob_conv.SetInFormat(in_format)
     ob_mol = ob.OBMol()
     not_at_end = ob_conv.ReadFile(ob_mol, mol_file)
     ob_mols = [ob_mol]
-    while not_at_end:
+    while not_at_end and (n_mols is None or len(ob_mols) < n_mols):
         ob_mol = ob.OBMol()
         not_at_end = ob_conv.Read(ob_mol)
         ob_mols.append(ob_mol)
@@ -281,6 +296,17 @@ def write_ob_mols_to_sdf_file(sdf_file, ob_mols, options='h'):
         else:
             ob_conv.Write(ob_mol)
     ob_conv.CloseOutFile()
+
+
+def ob_mol_center(ob_mol):
+    assert ob_mol.NumAtoms() > 0
+    x, y, z, n = 0
+    for a in ob.OBMolAtomIter(ob_mol):
+        x += a.GetX()
+        y += a.GetY()
+        z += a.GetZ()
+        n += 1
+    return (x/n, y/n, z/n)
 
 
 def ob_mol_count_elems(ob_mol):
