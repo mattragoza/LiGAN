@@ -466,7 +466,7 @@ class BondAdder(object):
 
         return rd_mol
 
-    def make_mol(self, struct):
+    def make_mol(self, struct, visited=True):
         '''
         Create a Molecule from an AtomStruct with added
         bonds, trying to maintain the same atom types.
@@ -483,17 +483,20 @@ class BondAdder(object):
         # convert output mol back to struct, to see if types match
         add_struct = struct.typer.make_struct(ob_mol)
 
-        visited_mols = [
-            Molecule.from_ob_mol(m) for m in visited_mols
-        ] + [add_mol]
+        if visited:
+            visited_mols = [
+                Molecule.from_ob_mol(m) for m in visited_mols
+            ] + [add_mol]
 
-        return add_mol, add_struct, visited_mols
+            return add_mol, add_struct, visited_mols
+        else:
+            return add_mol, add_struct
 
     def make_batch(self, structs):
 
         add_mols, add_structs = [], []
         for struct in structs:
-            add_mol, add_struct, _ = self.make_mol(struct)
+            add_mol, add_struct = self.make_mol(struct, visited=False)
             add_mols.append(add_mol)
             add_structs.append(add_struct)
 
