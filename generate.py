@@ -951,6 +951,7 @@ def generate(
 
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
+            lig_center = lig_struct.center
 
             # undo transform so structs are all aligned
             transform = data.transforms[batch_idx]
@@ -1012,7 +1013,7 @@ def generate(
                 grid = liGAN.atom_grids.AtomGrid(
                     values=grids[batch_idx],
                     typer=atom_typer,
-                    center=lig_struct.center,
+                    center=lig_center,
                     resolution=data.resolution
                 )
 
