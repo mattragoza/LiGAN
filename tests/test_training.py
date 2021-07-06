@@ -444,11 +444,15 @@ class TestGenerativeSolver(object):
         assert len(m[m['data_phase'] == 'test']) == n_test_rows, 'unexpected num tests'
 
         assert os.path.isfile(solver.metrics_file), solver.metrics_file
-        assert os.path.isfile(solver.gen_model_state_file), solver.gen_model_state_file
-        assert os.path.isfile(solver.disc_model_state_file), solver.disc_model_state_file
+        assert os.path.isfile(solver.gen_model_state_file), \
+            solver.gen_model_state_file
+        assert os.path.isfile(solver.gen_solver_state_file), \
+            solver.gen_solver_state_file
         if solver.has_disc_model:
-            assert os.path.isfile(solver.gen_solver_state_file), solver.gen_solver_state_file
-            assert os.path.isfile(solver.disc_solver_state_file), solver.disc_solver_state_file
+            assert os.path.isfile(solver.disc_model_state_file), \
+                solver.disc_model_state_file
+            assert os.path.isfile(solver.disc_solver_state_file), \
+                solver.disc_solver_state_file
 
         loss_i = m[m['iteration'] == 0]['loss'].mean()
         loss_f = m[m['iteration'] == max_iter]['loss'].mean()

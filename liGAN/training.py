@@ -610,7 +610,7 @@ class GenerativeSolver(nn.Module):
         )
         disc_preds, _ = self.disc_model(inputs=disc_grids)
         loss, metrics = self.loss_fn(
-            disc_labels=disc_labels, disc_preds=disc_preds
+            disc_labels=disc_labels, disc_preds=disc_preds, use_loss_wt=False
         )
         t3 = time.time()
 

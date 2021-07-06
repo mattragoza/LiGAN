@@ -71,6 +71,7 @@ class LossFunction(nn.Module):
         disc_preds=None,
         rec_grids=None,
         rec_lig_grids=None,
+        use_loss_wt=True,
     ):
         '''
         Computes the loss as follows:
@@ -95,22 +96,22 @@ class LossFunction(nn.Module):
         if not_none(lig_grids) and not_none(lig_gen_grids):
             recon_loss = self.recon_loss_fn(lig_gen_grids, lig_grids)
             losses['recon_loss'] = recon_loss.item()
-            loss += self.recon_loss_wt * recon_loss
+            loss += (self.recon_loss_wt if use_loss_wt else 1) * recon_loss
 
         if not_none(latent_means) and not_none(latent_log_stds):
             kldiv_loss = self.kldiv_loss_fn(latent_means, latent_log_stds)
             losses['kldiv_loss'] = kldiv_loss.item()
-            loss += self.kldiv_loss_wt * kldiv_loss
+            loss += (self.kldiv_loss_wt if use_loss_wt else 1) * kldiv_loss
 
         if not_none(disc_labels) and not_none(disc_preds):
             gan_loss = self.gan_loss_fn(disc_preds, disc_labels)
             losses['gan_loss'] = gan_loss.item()
-            loss += self.gan_loss_wt * gan_loss
+            loss += (self.gan_loss_wt if use_loss_wt else 1) * gan_loss
 
         if not_none(rec_grids) and not_none(rec_lig_grids):
             steric_loss = self.steric_loss_fn(rec_grids, rec_lig_grids)
             losses['steric_loss'] = steric_loss.item()
-            loss += self.steric_loss_wt * steric_loss
+            loss += (self.steric_loss_wt if use_loss_wt else 1) * steric_loss
 
         losses['loss'] = loss.item()
         return loss, losses
