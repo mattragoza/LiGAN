@@ -961,12 +961,24 @@ class GridGenerator(nn.Sequential):
             n += self.n_latent
         return n
 
-    def sample_latents(self, batch_size, means=None, log_stds=None):
+    def sample_latents(
+        self, batch_size, means=None, log_stds=None,
+        z_score=None, truncate=None, var_factor=1.0,
+    ):
         latents = torch.randn((batch_size, self.n_latent), device=self.device)
+
+        if z_score is not None:
+            latents = latents / latents.norm(dim=1, keepdim=True) * z_score
+
+        if truncate is not None:
+            latents = torch.fmod(latents, truncate)
+
         if log_stds is not None:
-            latents *= torch.exp(log_stds)
+            latents *= torch.exp(log_stds) * var_factor
+
         if means is not None:
             latents += means
+
         return latents
 
 
@@ -1021,14 +1033,15 @@ class CVAE(GridGenerator):
     has_input_encoder = True
     has_conditional_encoder = True
 
-    def forward(self, inputs=None, conditions=None, batch_size=None):
-
+    def forward(
+        self, inputs=None, conditions=None, batch_size=None, **kwargs
+    ):
         if inputs is None: # prior
             means, log_stds = None, None
         else: # posterior
             (means, log_stds), _ = self.input_encoder(inputs)
 
-        in_latents = self.sample_latents(batch_size, means, log_stds)
+        in_latents = self.sample_latents(batch_size, means, log_stds, **kwargs)
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([in_latents, cond_latents], dim=1)
 

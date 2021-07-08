@@ -900,6 +900,8 @@ def generate(
     n_samples,
     fit_atoms,
     prior=False,
+    z_score=None,
+    truncate=None,
     var_factor=1.0,
     interpolate=False,
     spherical=False,
@@ -942,6 +944,9 @@ def generate(
                             inputs=None if prior else rec_lig_grids,
                             conditions=rec_grids,
                             batch_size=batch_size,
+                            z_score=z_score,
+                            truncate=truncate,
+                            var_factor=var_factor,
                         )
                         # TODO interpolation here!
                         assert not interpolate, 'TODO'
