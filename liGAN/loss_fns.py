@@ -1,6 +1,11 @@
 from collections import OrderedDict as odict
+from math import pi
 import torch
 from torch import nn
+
+has_both = lambda a, b: (
+    a is not None and b is not None
+)
 
 
 class LossFunction(nn.Module):
@@ -19,39 +24,72 @@ class LossFunction(nn.Module):
     The different loss terms are computed based
     on the input provided to the forward method.
     '''
-    def __init__(self, types, weights, device):
+    def __init__(self, types, weights, schedules={}, device='cuda'):
         super().__init__()
         self.init_loss_weights(**weights)
         self.init_loss_types(**types)
+        self.init_loss_schedules(**schedules)
         self.device = device
 
     def init_loss_weights(
-        self, kldiv_loss=0, recon_loss=0, gan_loss=0, steric_loss=0
+        self,
+        kldiv_loss=0,
+        recon_loss=0,
+        gan_loss=0,
+        steric_loss=0,
+        kldiv2_loss=0,
+        recon2_loss=0,
     ):
         self.kldiv_loss_wt = float(kldiv_loss)
         self.recon_loss_wt = float(recon_loss)
         self.gan_loss_wt = float(gan_loss)
         self.steric_loss_wt = float(steric_loss)
+        self.kldiv2_loss_wt = float(kldiv2_loss)
+        self.recon2_loss_wt = float(recon2_loss)
 
     def init_loss_types(
-        self, kldiv_loss='k', recon_loss='2', gan_loss='x', steric_loss='p'
+        self,
+        kldiv_loss='k',
+        recon_loss='2',
+        gan_loss='x',
+        steric_loss='p',
+        recon2_loss='2',
+        kldiv2_loss='k'
     ):
-        self.init_kldiv_loss_fn(kldiv_loss)
-        self.init_recon_loss_fn(recon_loss)
-        self.init_gan_loss_fn(gan_loss)
-        self.init_steric_loss_fn(steric_loss)
+        self.kldiv_loss_fn = get_kldiv_loss_fn(kldiv_loss)
+        self.recon_loss_fn = get_recon_loss_fn(recon_loss)
+        self.gan_loss_fn = get_gan_loss_fn(gan_loss)
+        self.steric_loss_fn = get_steric_loss_fn(steric_loss)
+        self.kldiv2_loss_fn = get_kldiv_loss_fn(kldiv2_loss)
+        self.recon2_loss_fn = get_recon_loss_fn(recon2_loss)
 
-    def init_kldiv_loss_fn(self, kldiv_loss_type):
-        self.kldiv_loss_fn = get_kldiv_loss_fn(kldiv_loss_type)
-
-    def init_recon_loss_fn(self, recon_loss_type):
-        self.recon_loss_fn = get_recon_loss_fn(recon_loss_type)
-
-    def init_gan_loss_fn(self, gan_loss_type):
-        self.gan_loss_fn = get_gan_loss_fn(gan_loss_type)
-
-    def init_steric_loss_fn(self, steric_loss_type):
-        self.steric_loss_fn = get_steric_loss_fn(steric_loss_type)
+    def init_loss_schedules(
+        self,
+        kldiv_loss={},
+        recon_loss={},
+        gan_loss={},
+        steric_loss={},
+        kldiv2_loss={},
+        recon2_loss={},
+    ):
+        self.kldiv_loss_schedule, _ = get_loss_schedule(
+            start_wt=self.kldiv_loss_wt, **kldiv_loss
+        )
+        self.recon_loss_schedule, _ = get_loss_schedule(
+            start_wt=self.recon_loss_wt, **recon_loss
+        )
+        self.gan_loss_schedule, self.end_gan_loss_wt = get_loss_schedule(
+            start_wt=self.gan_loss_wt, **gan_loss
+        )
+        self.steric_loss_schedule, self.end_steric_loss_wt = get_loss_schedule(
+            start_wt=self.steric_loss_wt, **steric_loss
+        )
+        self.kldiv2_loss_schedule, _ = get_loss_schedule(
+            start_wt=self.kldiv2_loss_wt, **kldiv2_loss
+        )
+        self.recon2_loss_schedule, _ = get_loss_schedule(
+            start_wt=self.recon2_loss_wt, **recon2_loss
+        )
 
     @property
     def has_prior_loss(self):
@@ -59,7 +97,10 @@ class LossFunction(nn.Module):
         Whether the loss function ever has
         non-zero value on prior samples.
         '''
-        return self.gan_loss_wt != 0 or self.steric_loss_wt != 0
+        return not (
+            self.gan_loss_wt == self.end_gan_loss_wt == 
+            self.steric_loss_wt == self.end_steric_loss_wt == 0
+        )
 
     def forward(
         self,
@@ -71,7 +112,12 @@ class LossFunction(nn.Module):
         disc_preds=None,
         rec_grids=None,
         rec_lig_grids=None,
+        latent2_means=None,
+        latent2_log_stds=None,
+        real_latents=None,
+        gen_latents=None,
         use_loss_wt=True,
+        iteration=0,
     ):
         '''
         Computes the loss as follows:
@@ -89,60 +135,122 @@ class LossFunction(nn.Module):
         provided to the method, and each computed term is
         also returned as values in an OrderedDict.
         '''
-        not_none = lambda x: x is not None
-        losses = odict()
         loss = torch.zeros(1, device=self.device)
+        losses = odict() # track each loss term
 
-        if not_none(lig_grids) and not_none(lig_gen_grids):
+        if has_both(lig_grids, lig_gen_grids):
             recon_loss = self.recon_loss_fn(lig_gen_grids, lig_grids)
+            recon_loss_wt = \
+                self.recon_loss_schedule(iteration) if use_loss_wt else 1
+            loss += recon_loss_wt * recon_loss
             losses['recon_loss'] = recon_loss.item()
-            loss += (self.recon_loss_wt if use_loss_wt else 1) * recon_loss
+            losses['recon_loss_wt'] = recon_loss_wt
 
-        if not_none(latent_means) and not_none(latent_log_stds):
+        if has_both(latent_means, latent_log_stds):
             kldiv_loss = self.kldiv_loss_fn(latent_means, latent_log_stds)
+            kldiv_loss_wt = \
+                self.kldiv_loss_schedule(iteration) if use_loss_wt else 1
+            loss += kldiv_loss_wt * kldiv_loss
             losses['kldiv_loss'] = kldiv_loss.item()
-            loss += (self.kldiv_loss_wt if use_loss_wt else 1) * kldiv_loss
+            losses['kldiv_loss_wt'] = kldiv_loss_wt
 
-        if not_none(disc_labels) and not_none(disc_preds):
+        if has_both(disc_labels, disc_preds):
             gan_loss = self.gan_loss_fn(disc_preds, disc_labels)
+            gan_loss_wt = \
+                self.gan_loss_schedule(iteration) if use_loss_wt else 1
+            loss += gan_loss_wt * gan_loss
             losses['gan_loss'] = gan_loss.item()
-            loss += (self.gan_loss_wt if use_loss_wt else 1) * gan_loss
+            losses['gan_loss_wt'] = gan_loss_wt
 
-        if not_none(rec_grids) and not_none(rec_lig_grids):
+        if has_both(rec_grids, rec_lig_grids):
             steric_loss = self.steric_loss_fn(rec_grids, rec_lig_grids)
+            steric_loss_wt = \
+                self.steric_loss_schedule(iteration) if use_loss_wt else 1
+            loss += steric_loss_wt * steric_loss
             losses['steric_loss'] = steric_loss.item()
-            loss += (self.steric_loss_wt if use_loss_wt else 1) * steric_loss
+            losses['steric_loss_wt'] = steric_loss_wt
+
+        if has_both(latent2_means, latent2_log_stds):
+            kldiv2_loss = self.kldiv2_loss_fn(latent2_means, latent2_log_stds)
+            kldiv2_loss_wt = \
+                self.kldiv2_loss_schedule(iteration) if use_loss_wt else 1
+            loss += kldiv2_loss_wt * kldiv2_loss
+            losses['kldiv2_loss'] = kldiv2_loss.item()
+            losses['kldiv2_loss_wt'] = kldiv2_loss_wt
+
+        if has_both(real_latents, gen_latents):
+            recon2_loss = self.recon2_loss_fn(gen_latents, real_latents)
+            recon2_loss_wt = \
+                self.recon2_loss_schedule(iteration) if use_loss_wt else 1
+            loss += recon2_loss_wt * recon2_loss
+            losses['recon2_loss'] = recon2_loss.item()
+            losses['recon2_loss_wt'] = recon2_loss_wt
 
         losses['loss'] = loss.item()
         return loss, losses
 
 
+
+### function for getting loss schedule fn from config
+
+def get_loss_schedule(
+    start_wt,
+    start_iter=500000,
+    end_wt=None,
+    period=100000,
+    type='d',
+):
+    '''
+    Return a function that takes the
+    iteration as input and returns a
+    modulated loss weight as output.
+    '''
+    assert period > 0, period
+    assert type in {'d', 'c', 'r'}, type
+    periodic = (type != 'd')
+    restart = (type == 'r')
+    end_iter = start_iter + period
+
+    def loss_schedule(iteration):
+        if end_wt is None or iteration < start_iter:
+            return start_wt
+        if iteration >= end_iter and not periodic:
+            return end_wt
+        wt_range = (end_wt - start_wt)
+        theta = (iteration - start_iter) / period * pi
+        if restart: # jump from end_wt to start_wt
+            theta %= pi
+        return end_wt - wt_range * 0.5 * (1 + torch.cos(theta))
+
+    return loss_schedule, end_wt
+
+
 ### functions for getting loss functions from config
 
 
-def get_kldiv_loss_fn(kldiv_loss_type):
-    assert kldiv_loss_type == 'k', kldiv_loss_type
+def get_kldiv_loss_fn(type):
+    assert type == 'k', type
     return kl_divergence
 
 
-def get_recon_loss_fn(recon_loss_type):
-    assert recon_loss_type in {'1', '2'}, recon_loss_type
-    if recon_loss_type == '1':
+def get_recon_loss_fn(type):
+    assert type in {'1', '2', 'm'}, type
+    if type == '1':
         return L1_loss
-    else:
+    else: # '2'
         return L2_loss
 
 
-def get_gan_loss_fn(gan_loss_type):
-    assert gan_loss_type in {'x', 'w'}, gan_loss_type
-    if gan_loss_type == 'w':
+def get_gan_loss_fn(type):
+    assert type in {'x', 'w'}, type
+    if type == 'w':
         return wasserstein_loss
-    else:
+    else: # 'x'
         return torch.nn.BCEWithLogitsLoss()
 
 
-def get_steric_loss_fn(steric_loss_type):
-    assert steric_loss_type == 'p', steric_loss_type
+def get_steric_loss_fn(type):
+    assert type == 'p', type
     return product_loss
 
 

@@ -496,6 +496,7 @@ class GenerativeSolver(nn.Module):
             latent_log_stds=latent_log_stds if posterior else None,
             rec_grids=rec_grids if has_cond else None,
             rec_lig_grids=lig_gen_grids if has_cond else None,
+            iteration=self.gen_iter,
         )
 
         if self.sync_cuda:
