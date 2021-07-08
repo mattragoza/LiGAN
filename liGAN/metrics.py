@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 import scipy as sp
 import scipy.optimize
@@ -46,14 +47,44 @@ def compute_mean_n_atoms(structs):
     return np.mean([s.n_atoms for s in structs])
 
 
+def compute_n_atoms_variance(structs):
+    m = np.mean([s.n_atoms for s in structs])
+    return np.mean([(s.n_atoms-m)**2 for s in structs])
+
+
 def compute_mean_radius(structs):
     return np.mean([s.radius for s in structs])
+
+
+def compute_type_variance(structs, which=None):
+
+    if which is None:
+        type_counts = [s.type_counts for s in structs]
+
+    elif which == 'elem':
+        type_counts = [s.elem_counts for s in structs]
+
+    elif which == 'prop':
+        type_counts = [s.prop_counts for s in structs]
+
+    m = torch.stack(type_counts).mean(dim=0)
+    return np.mean([
+        (t-m).norm(p=1).item() for t in type_counts
+    ])
 
 
 def compute_struct_metrics(struct_type, structs):
     m = OrderedDict()
     m[struct_type+'_n_atoms'] = compute_mean_n_atoms(structs)
+    m[struct_type+'_n_atoms_variance'] = compute_n_atoms_variance(structs)
     m[struct_type+'_radius'] = compute_mean_radius(structs)
+    m[struct_type+'_type_variance'] = compute_type_variance(structs)
+    m[struct_type+'_elem_variance'] = compute_type_variance(
+        structs, which='elem'
+    )
+    m[struct_type+'_prop_variance'] = compute_type_variance(
+        structs, which='prop'
+    )
     return m
 
 
