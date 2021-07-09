@@ -13,7 +13,13 @@ class TestLossFunction(object):
     def loss_kws(self):
         return dict(
             types=dict(recon_loss='2', gan_loss='w'),
-            weights=dict(recon_loss=1, gan_loss=10, steric_loss=-1)
+            weights=dict(
+                recon_loss=1,
+                gan_loss=10,
+                steric_loss=-1,
+                kldiv2_loss=2,
+                recon2_loss=-10,
+            )
         )
 
     @pytest.fixture
@@ -25,6 +31,8 @@ class TestLossFunction(object):
         assert loss_fn.recon_loss_wt == 1.0
         assert loss_fn.gan_loss_wt == 10.0
         assert loss_fn.steric_loss_wt == -1.0
+        assert loss_fn.kldiv2_loss_wt == 2.0
+        assert loss_fn.recon2_loss_wt == -10
 
     def test_loss_null(self, loss_fn):
         loss, losses = loss_fn()
@@ -105,6 +113,44 @@ class TestLossFunction(object):
         )
         assert loss.item() == -100
         assert losses == dict(loss=-100, steric_loss=100, steric_loss_wt=-1)
+
+    def test_loss_kldiv20(self, loss_fn):
+        a = torch.zeros(10, 10)
+        b = torch.zeros(10, 10)
+        loss, losses = loss_fn(
+            latent2_means=a, latent2_log_stds=b
+        )
+        assert loss.item() == 0
+        assert losses == dict(loss=0, kldiv2_loss=0, kldiv2_loss_wt=2)
+
+    def test_loss_kldiv21(self, loss_fn):
+        a = torch.ones(10, 10)
+        b = torch.zeros(10, 10)
+        loss, losses = loss_fn(
+            latent2_means=a, latent2_log_stds=b
+        )
+        assert loss.item() == 10
+        assert losses == dict(loss=10, kldiv2_loss=5, kldiv2_loss_wt=2)
+
+    def test_loss_recon20(self, loss_fn):
+        real_latents = torch.zeros(10, 10)
+        gen_latents = torch.zeros(10, 10)
+        loss, losses = loss_fn(
+            real_latents=real_latents, gen_latents=gen_latents
+        )
+        assert loss.item() == 0
+        print(losses)
+        assert losses == dict(loss=0, recon2_loss=0, recon2_loss_wt=-10)
+
+    def test_loss_recon21(self, loss_fn):
+        real_latents = torch.zeros(10, 10)
+        gen_latents = torch.ones(10, 10)
+        loss, losses = loss_fn(
+            real_latents=real_latents, gen_latents=gen_latents
+        )
+        assert loss.item() == -50
+        print(losses)
+        assert losses == dict(loss=-50, recon2_loss=5, recon2_loss_wt=-10)
 
 
 class TestLossSchedule(object):

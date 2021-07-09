@@ -53,8 +53,8 @@ class LossFunction(nn.Module):
         recon_loss='2',
         gan_loss='x',
         steric_loss='p',
+        kldiv2_loss='k',
         recon2_loss='2',
-        kldiv2_loss='k'
     ):
         self.kldiv_loss_fn = get_kldiv_loss_fn(kldiv_loss)
         self.recon_loss_fn = get_recon_loss_fn(recon_loss)
@@ -130,6 +130,7 @@ class LossFunction(nn.Module):
             gan_loss_fn(disc_preds, disc_labels)
         + steric_loss_wt * 
             steric_loss_fn(rec_grids, rec_lig_grids)
+        + ...
 
         Each term is computed iff both of its inputs are
         provided to the method, and each computed term is
@@ -188,7 +189,6 @@ class LossFunction(nn.Module):
 
         losses['loss'] = loss.item()
         return loss, losses
-
 
 
 ### function for getting loss schedule fn from config
