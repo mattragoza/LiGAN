@@ -234,7 +234,7 @@ class GenerativeSolver(nn.Module):
         self.prior_iter = 0
 
     def init_loss_fn(
-        self, device, balance=False, **loss_fn_kws,
+        self, device, balance=False, learn_recon_var=False, **loss_fn_kws,
     ):
         self.loss_fn = loss_fns.LossFunction(device=device, **loss_fn_kws)
 
@@ -264,6 +264,16 @@ class GenerativeSolver(nn.Module):
             assert self.loss_fn.steric_loss_wt == 0, \
                 'non-zero steric loss but no rec'
 
+        if learn_recon_var: # learn recon loss variance as a parameter
+            self.gen_log_var = nn.Parameter(torch.zeros(1, device=device))
+            if self.has_prior_model:
+                self.prior_log_var = nn.Parameter(torch.zeros(1, device=device))
+        else:
+            self.gen_log_var = torch.zeros(1, device=device)
+            if self.has_prior_model:
+                self.prior_log_var = torch.zeros(1, device=device)
+
+        self.learn_recon_var = learn_recon_var
         self.balance = balance
 
     @property
@@ -624,6 +634,8 @@ class GenerativeSolver(nn.Module):
             latent2_log_stds=latent2_log_stds if compute_stage2_loss else None,
             real_latents=latent_vecs if compute_stage2_loss else None,
             gen_latents=latent_vecs_gen if compute_stage2_loss else None,
+            gen_log_var=self.gen_log_var if posterior else None,
+            prior_log_var=self.prior_log_var if compute_stage2_loss else None,
             iteration=self.gen_iter,
         )
 

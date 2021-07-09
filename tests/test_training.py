@@ -35,8 +35,9 @@ def train_params():
 
 
 @pytest.fixture(params=[
-    'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN',
-    'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
+    'CVAE2',
+    #'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN',
+    #'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
 ])
 def solver(request):
     solver_type = getattr(liGAN.training, request.param + 'Solver')
@@ -85,7 +86,8 @@ def solver(request):
                 steric_loss=1.0 * solver_type.gen_model_type.has_conditional_encoder,
                 kldiv2_loss=1.0 * solver_type.has_prior_model,
                 recon2_loss=1.0 * solver_type.has_prior_model,
-            )
+            ),
+            learn_recon_var=True,
         ),
         gen_optim_kws=dict(
             type='RMSprop',
@@ -269,6 +271,17 @@ class TestGenerativeSolver(object):
             for k, v in metrics.items():
                 print(k, v)
             check_solver_grad(solver, True, True, True, True, True)
+
+            if solver.learn_recon_var:
+                assert (solver.gen_log_var.grad.data**2).sum() > 0, \
+                    'no gen_log_var gradient'
+                if solver.has_prior_model:
+                    assert (solver.prior_log_var.grad.data**2).sum() > 0, \
+                        'no prior_log_var gradient'
+            else:
+                assert solver.gen_log_var.grad is None
+                if solver.has_prior_model:
+                    assert solver.prior_log_var.grad is None
 
     def test_solver_gen_backward_prior(self, solver):
 

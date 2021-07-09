@@ -116,6 +116,8 @@ class LossFunction(nn.Module):
         latent2_log_stds=None,
         real_latents=None,
         gen_latents=None,
+        gen_log_var=torch.zeros(1),
+        prior_log_var=torch.zeros(1),
         use_loss_wt=True,
         iteration=0,
     ):
@@ -140,12 +142,15 @@ class LossFunction(nn.Module):
         losses = odict() # track each loss term
 
         if has_both(lig_grids, lig_gen_grids):
-            recon_loss = self.recon_loss_fn(lig_gen_grids, lig_grids)
+            recon_loss = self.recon_loss_fn(
+                lig_gen_grids, lig_grids, gen_log_var
+            )
             recon_loss_wt = \
                 self.recon_loss_schedule(iteration) if use_loss_wt else 1
             loss += recon_loss_wt * recon_loss
             losses['recon_loss'] = recon_loss.item()
             losses['recon_loss_wt'] = recon_loss_wt
+            losses['recon_log_var'] = gen_log_var.item()
 
         if has_both(latent_means, latent_log_stds):
             kldiv_loss = self.kldiv_loss_fn(latent_means, latent_log_stds)
@@ -180,12 +185,15 @@ class LossFunction(nn.Module):
             losses['kldiv2_loss_wt'] = kldiv2_loss_wt
 
         if has_both(real_latents, gen_latents):
-            recon2_loss = self.recon2_loss_fn(gen_latents, real_latents)
+            recon2_loss = self.recon2_loss_fn(
+                gen_latents, real_latents, prior_log_var
+            )
             recon2_loss_wt = \
                 self.recon2_loss_schedule(iteration) if use_loss_wt else 1
             loss += recon2_loss_wt * recon2_loss
             losses['recon2_loss'] = recon2_loss.item()
             losses['recon2_loss_wt'] = recon2_loss_wt
+            losses['recon2_log_var'] = prior_log_var.item()
 
         losses['loss'] = loss.item()
         return loss, losses
@@ -266,12 +274,16 @@ def kl_divergence(means, log_stds):
     ).sum() / means.shape[0]
 
 
-def L1_loss(predictions, labels):
-    return (labels - predictions).abs().sum() / labels.shape[0]
+def L1_loss(predictions, labels, log_var=0):
+    return torch.sum(
+        ((labels - predictions) / torch.exp(log_var)).abs() + log_var
+    ) / labels.shape[0]
 
 
-def L2_loss(predictions, labels):
-    return ((labels - predictions)**2).sum() / 2 / labels.shape[0]
+def L2_loss(predictions, labels, log_var=0):
+    return torch.sum(
+        ((labels - predictions) / torch.exp(log_var))**2 / 2.0 + log_var
+    ) / labels.shape[0]
 
 
 def wasserstein_loss(predictions, labels):
