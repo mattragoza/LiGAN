@@ -1105,18 +1105,19 @@ CVAEGAN = CVAE
 class VAE2(VAE):
     '''
     This is a module that allows insertion of
-    a prior model, aka 2nd-stage VAE, into an
-    existing VAE model.
+    a prior model, aka stage 2 VAE, into an
+    existing VAE model, aka a two-stage VAE.
     '''
     def forward2(
         self,
         prior_model,
         inputs=None,
         conditions=None,
-        batch_size=None
+        batch_size=None,
+        **kwargs,
     ):
         if inputs is None: # prior
-            in_latents = None
+            var_latents = means = log_stds = None
 
         else: # stage-1 posterior
             (means, log_stds), _ = self.input_encoder(inputs)
@@ -1125,7 +1126,9 @@ class VAE2(VAE):
             )
 
         # insert prior model (output is stage-2 posterior or prior)
-        gen_latents, _, means2, log_stds2 = prior_model(inputs=var_latents, batch_size=batch_size)
+        gen_latents, _, means2, log_stds2 = prior_model(
+            inputs=var_latents, batch_size=batch_size
+        )
 
         outputs = self.decoder(inputs=gen_latents)
         return (
@@ -1135,17 +1138,19 @@ class VAE2(VAE):
 
 
 class CVAE2(CVAE):
-
+    '''
+    Two-stage CVAE.
+    '''
     def forward2(
         self,
         prior_model,
         inputs=None,
         conditions=None,
         batch_size=None,
-        **kwargs
+        **kwargs,
     ):
         if inputs is None: # prior
-            in_latents = None
+            in_latents = means = log_stds = None
 
         else: # stage-1 posterior
             (means, log_stds), _ = self.input_encoder(inputs)
@@ -1154,7 +1159,9 @@ class CVAE2(CVAE):
             )
 
         # insert prior model (output is stage-2 posterior or prior)
-        gen_latents, _, means2, log_stds2 = prior_model(inputs=in_latents, batch_size=batch_size)
+        gen_latents, _, means2, log_stds2 = prior_model(
+            inputs=in_latents, batch_size=batch_size
+        )
 
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([gen_latents, cond_latents], dim=1)

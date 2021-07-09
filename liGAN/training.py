@@ -64,6 +64,7 @@ class GenerativeSolver(nn.Module):
     '''
     gen_model_type = None
     has_disc_model = False
+    has_prior_model = False
     has_complex_input = False
 
     def __init__(
@@ -72,9 +73,11 @@ class GenerativeSolver(nn.Module):
         data_kws={},
         gen_model_kws={},
         disc_model_kws={},
+        prior_model_kws={},
         loss_fn_kws={},
         gen_optim_kws={},
         disc_optim_kws={},
+        prior_optim_kws={},
         atom_fitting_kws={},
         bond_adding_kws={},
         device='cuda',
@@ -99,6 +102,14 @@ class GenerativeSolver(nn.Module):
 
         else: # needed for df index
             self.disc_iter = 0
+
+        if self.has_prior_model:
+
+            print('Initializing prior model and optimizer')
+            self.init_prior_model(device=device, **prior_model_kws)
+            self.init_prior_optimizer(**prior_optim_kws)
+        else:
+            self.prior_iter = 0
 
         self.init_loss_fn(device=device, **loss_fn_kws)
 
@@ -126,6 +137,13 @@ class GenerativeSolver(nn.Module):
         self.debug = debug
         self.sync_cuda = sync_cuda
 
+    def init_data(self, device, train_file, test_file, **data_kws):
+        self.train_data, self.test_data = (
+            data.AtomGridData(device=device, **data_kws) for i in range(2)
+        )
+        self.train_data.populate(train_file)
+        self.test_data.populate(test_file)
+
     def init_gen_model(
         self,
         device,
@@ -147,13 +165,6 @@ class GenerativeSolver(nn.Module):
         if gen_model_state:
             self.gen_model.load_state_dict(torch.load(gen_model_state))
 
-    def init_data(self, device, train_file, test_file, **data_kws):
-        self.train_data, self.test_data = (
-            data.AtomGridData(device=device, **data_kws) for i in range(2)
-        )
-        self.train_data.populate(train_file)
-        self.test_data.populate(test_file)
-
     def init_disc_model(
         self,
         device,
@@ -172,6 +183,24 @@ class GenerativeSolver(nn.Module):
 
         if disc_model_state:
             self.disc_model.load_state_dict(torch.load(disc_model_state))
+
+    def init_prior_model(
+        self,
+        device,
+        caffe_init=False,
+        prior_model_state=None,
+        **prior_model_kws
+    ):
+        self.prior_model = models.Stage2VAE(
+            n_input=self.gen_model.n_latent,
+            **prior_model_kws
+        ).to(device)
+
+        if caffe_init:
+            self.disc_model.apply(models.caffe_init_weights)
+
+        if prior_model_state:
+            self.prior_model.load_state_dict(torch.load(prior_model_state))
 
     def init_gen_optimizer(
         self, type, n_train_iters=1, clip_gradient=0, **gen_optim_kws
@@ -193,6 +222,17 @@ class GenerativeSolver(nn.Module):
         )
         self.disc_iter = 0
 
+    def init_prior_optimizer(
+        self, type, n_train_iters=1, clip_gradient=0, **prior_optim_kws
+    ):
+        assert n_train_iters == self.n_gen_train_iters
+        self.n_prior_train_iters = n_train_iters
+        self.prior_clip_grad = clip_gradient
+        self.prior_optimizer = getattr(optim, type)(
+            self.prior_model.parameters(), **prior_optim_kws
+        )
+        self.prior_iter = 0
+
     def init_loss_fn(
         self, device, balance=False, **loss_fn_kws,
     ):
@@ -206,8 +246,19 @@ class GenerativeSolver(nn.Module):
                 self.gen_gan_loss = 0
         else:
             assert self.loss_fn.gan_loss_wt == 0, \
-                'non-zero GAN loss but no disc'
+                'non-zero GAN loss weight in non-GAN model'
             assert balance == False, 'can only balance GAN loss'
+
+        if self.has_prior_model:
+            assert self.loss_fn.kldiv2_loss_wt != 0, \
+                '2-stage VAE kldiv2 loss weight is zero'
+            assert self.loss_fn.recon2_loss_wt != 0, \
+                '2-stage VAE recon2 loss weight is zero' 
+        else:
+            assert self.loss_fn.kldiv2_loss_wt == 0, \
+                'non-zero kldiv2 weight, but no stage 2 VAE'
+            assert self.loss_fn.recon2_loss_wt == 0, \
+                'non-zero recon2 weight, but no stage 2 VAE'
 
         if not self.gen_model_type.has_conditional_encoder:
             assert self.loss_fn.steric_loss_wt == 0, \
@@ -263,6 +314,14 @@ class GenerativeSolver(nn.Module):
         return self.state_prefix + '.disc_solver_state'
 
     @property
+    def prior_model_state_file(self):
+        return self.state_prefix + '.prior_model_state'
+
+    @property
+    def prior_solver_state_file(self):
+        return self.state_prefix + '.prior_solver_state'
+
+    @property
     def metrics_file(self):
         return self.out_prefix + '.train_metrics'
 
@@ -299,6 +358,22 @@ class GenerativeSolver(nn.Module):
 
             self.disc_model.to(self.device)
 
+        if self.has_prior_model:
+            self.prior_model.cpu()
+
+            state_file = self.prior_model_state_file
+            print('Saving prior model state to ' + state_file)
+            torch.save(self.prior_model.state_dict(), state_file)
+
+            state_file = self.prior_solver_state_file
+            print('Saving prior solver state to ' + state_file)
+            state_dict = OrderedDict()
+            state_dict['optim_state'] = self.prior_optimizer.state_dict() 
+            state_dict['iter'] = self.prior_iter
+            torch.save(state_dict, state_file)
+
+            self.prior_model.to(self.device)
+
     def load_state(self, cont_iter=None):
 
         if cont_iter is None:
@@ -327,6 +402,18 @@ class GenerativeSolver(nn.Module):
             state_dict = torch.load(state_file)
             self.disc_optimizer.load_state_dict(state_dict['optim_state'])
             self.disc_iter = state_dict['iter']
+
+        if self.has_prior_model:
+
+            state_file = self.state_prefix + '.prior_model_state'
+            print('Loading prior model state from ' + state_file)
+            self.prior_model.load_state_dict(torch.load(state_file))
+
+            state_file = self.state_prefix + '.prior_solver_state'
+            print('Loading prior solver state from ' + state_file)
+            state_dict = torch.load(state_file)
+            self.prior_optimizer.load_state_dict(state_dict['optim_state'])
+            self.prior_iter = state_dict['iter']
 
     def find_last_iter(self):
         return find_last_iter(self.out_prefix)
@@ -377,24 +464,24 @@ class GenerativeSolver(nn.Module):
 
     @property
     def has_prior_phase(self):
-        return (
-            self.gen_model_type.is_variational and
-            self.loss_fn.has_prior_loss
-        )
+        return self.gen_model_type.is_variational
 
     @property
     def has_posterior_phase(self):
         return (
             self.gen_model_type.has_input_encoder or
-            not self.has_prior_phase
+            not self.has_prior_phase # CE exception
         )
 
-    def get_gen_grid_phase(self, batch_idx):
+    def get_gen_grid_phase(self, batch_idx, test=False):
         '''
         Determine whether to sample prior or
         posterior grids in the next gen batch.
         '''
         has_prior_phase = self.has_prior_phase
+        if not test: # only train on prior if there's a loss fn
+            has_prior_phase &= self.loss_fn.has_prior_loss
+
         has_posterior_phase = self.has_posterior_phase
         assert has_prior_phase or has_posterior_phase, 'no gen grid phases'
 
@@ -405,13 +492,19 @@ class GenerativeSolver(nn.Module):
         if has_prior_phase:
             grid_phases.append('prior')
 
+        if self.has_prior_model and test:
+            # get metrics on grids decoded from prior model
+            grid_phases.extend(['poster2', 'prior2'])
+
         phase_idx = (self.gen_iter + batch_idx)
         return grid_phases[phase_idx % len(grid_phases)]
 
-    def get_disc_grid_phase(self, batch_idx):
+    def get_disc_grid_phase(self, batch_idx, test=False):
         '''
         Determine whether to sample real, prior,
         or posterior grids in the next disc batch.
+
+        NOT integrated with stage-2 VAE.
         '''
         has_prior_phase = self.has_prior_phase
         has_posterior_phase = self.has_posterior_phase
@@ -443,11 +536,26 @@ class GenerativeSolver(nn.Module):
             valid_grid_types.add('prior')
         if self.has_posterior_phase:
             valid_grid_types.add('poster')
+        if self.has_prior_model:
+            valid_grid_types.add('prior2')
+            valid_grid_types.add('poster2')
 
         assert grid_type in valid_grid_types, \
             'invalid grid type ' + repr(grid_type)
+
+        if grid_type[-1] == '2': # decode grids using prior model
+            grid_type = grid_type[:-1]
+            decode_stage2_vecs = True
+        else:
+            decode_stage2_vecs = False
+
         prior = (grid_type == 'prior')
         posterior = (grid_type == 'poster')
+
+        # this flag indicate whether we compute loss for
+        #  the 2nd stage VAE, which we do regardless of
+        #  whether we decode the latent vecs it generates
+        compute_stage2_loss = (posterior and self.has_prior_model)
 
         t0 = time.time()
         if posterior or has_cond: # get real examples
@@ -467,12 +575,28 @@ class GenerativeSolver(nn.Module):
             else:
                 gen_input_grids = lig_grids
 
-        lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
-            self.gen_model(
-                inputs=gen_input_grids if posterior else None,
-                conditions=rec_grids if has_cond else None,
-                batch_size=data.batch_size
-            )
+        if decode_stage2_vecs: # should only do this in test phase
+            lig_gen_grids, latent_vecs, latent_means, latent_log_stds, \
+            latent_vecs_gen, latent2_means, latent2_log_stds = \
+                self.gen_model.forward2(
+                    prior_model=self.prior_model,
+                    inputs=gen_input_grids if posterior else None,
+                    conditions=rec_grids if has_cond else None,
+                    batch_size=data.batch_size,
+                )
+        else:
+            lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
+                self.gen_model(
+                    inputs=gen_input_grids if posterior else None,
+                    conditions=rec_grids if has_cond else None,
+                    batch_size=data.batch_size,
+                )
+            if compute_stage2_loss:
+                latent_vecs = latent_vecs.detach() # don't back prop
+                latent_vecs_gen, _, latent2_means, latent2_log_stds = \
+                    self.prior_model(
+                        inputs=latent_vecs, batch_size=data.batch_size
+                    )
 
         if self.sync_cuda:
             torch.cuda.synchronize()
@@ -496,6 +620,10 @@ class GenerativeSolver(nn.Module):
             latent_log_stds=latent_log_stds if posterior else None,
             rec_grids=rec_grids if has_cond else None,
             rec_lig_grids=lig_gen_grids if has_cond else None,
+            latent2_means=latent2_means if compute_stage2_loss else None,
+            latent2_log_stds=latent2_log_stds if compute_stage2_loss else None,
+            real_latents=latent_vecs if compute_stage2_loss else None,
+            gen_latents=latent_vecs_gen if compute_stage2_loss else None,
             iteration=self.gen_iter,
         )
 
@@ -646,19 +774,30 @@ class GenerativeSolver(nn.Module):
 
         if self.gen_clip_grad: # clip norm of parameter gradient
             models.clip_grad_norm(self.gen_model, self.gen_clip_grad)
+        if self.has_prior_model and self.prior_clip_grad:
+            models.clip_grad_norm(self.prior_model, self.prior_clip_grad)
 
         if compute_norm: # compute parameter gradient norm
             grad_norm = models.compute_grad_norm(self.gen_model)
+            if self.has_prior_model:
+                prior_grad_norm = models.compute_grad_norm(self.prior_model)
 
         t2 = time.time()
 
         if update: # descend gradient on parameters
             self.gen_optimizer.step()
             self.gen_iter += 1
+
+            # update the prior model on each gen step, also
+            if self.has_prior_model:
+                self.prior_optimizer.step()
+                self.prior_iter += 1
         
         t3 = time.time()
         if compute_norm:
             metrics['gen_grad_norm'] = grad_norm
+            if self.has_prior_model:
+                metrics['prior_grad_norm'] = prior_grad_norm
         metrics['backward_grad_time'] = t1 - t0
         metrics['backward_norm_time'] = t2 - t1
         metrics['backward_update_time'] = t3 - t2
@@ -820,12 +959,12 @@ class GenerativeSolver(nn.Module):
             t0 = time.time()
 
             if test_disc: # test discriminative model
-                grid_type = self.get_disc_grid_phase(i)
+                grid_type = self.get_disc_grid_phase(i, test=True)
                 loss, metrics = self.disc_forward(
                     data=self.test_data, grid_type=grid_type
                 )
             else: # test generative model
-                grid_type = self.get_gen_grid_phase(i)
+                grid_type = self.get_gen_grid_phase(i, test=True)
                 loss, metrics = self.gen_forward(
                     data=self.test_data,
                     grid_type=grid_type,
@@ -875,7 +1014,7 @@ class GenerativeSolver(nn.Module):
             batch_idx = 0 if update else i
 
             if train_disc: # train discriminative model
-                grid_type = self.get_disc_grid_phase(batch_idx)
+                grid_type = self.get_disc_grid_phase(batch_idx, test=False)
 
                 metrics = self.disc_step(
                     grid_type=grid_type,
@@ -889,7 +1028,7 @@ class GenerativeSolver(nn.Module):
                     self.disc_gan_loss = disc_gan_loss
 
             else: # train generative model
-                grid_type = self.get_gen_grid_phase(batch_idx)
+                grid_type = self.get_gen_grid_phase(batch_idx, test=False)
 
                 metrics = self.gen_step(
                     grid_type=grid_type,
@@ -1010,3 +1149,14 @@ class CVAEGANSolver(GenerativeSolver):
     gen_model_type = models.CVAE
     has_complex_input = True
     has_disc_model = True
+
+
+class VAE2Solver(GenerativeSolver):
+    gen_model_type = models.VAE2
+    has_prior_model = True
+
+
+class CVAE2Solver(GenerativeSolver):
+    gen_model_type = models.CVAE2
+    has_complex_input = True
+    has_prior_model = True

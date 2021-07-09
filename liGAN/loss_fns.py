@@ -97,9 +97,9 @@ class LossFunction(nn.Module):
         Whether the loss function ever has
         non-zero value on prior samples.
         '''
-        return not (
-            self.gan_loss_wt == self.end_gan_loss_wt == 
-            self.steric_loss_wt == self.end_steric_loss_wt == 0
+        return bool(
+            self.gan_loss_wt or self.end_gan_loss_wt or 
+            self.steric_loss_wt or self.end_steric_loss_wt
         )
 
     def forward(
