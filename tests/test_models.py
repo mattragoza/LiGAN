@@ -7,8 +7,9 @@ import torch
 
 sys.path.insert(0, '.')
 import liGAN.models as models
-from liGAN.models import AE, VAE, CE, CVAE, GAN, CGAN
+from liGAN.models import AE, VAE, CE, CVAE, GAN, CGAN, VAE2, CVAE2
 from liGAN.models import compute_grad_norm as param_grad_norm
+from liGAN.models import get_n_params
 
 
 batch_size = 10
@@ -226,7 +227,7 @@ class TestGridDecoder(object):
 
 class TestGridGenerator(object):
 
-    @pytest.fixture(params=[CVAE])#AE, CE, VAE, CVAE, GAN, CGAN])
+    @pytest.fixture(params=[AE, CE, VAE, CVAE, GAN, CGAN, VAE2, CVAE2])
     def model_type(self, request):
         return request.param
 
@@ -286,20 +287,20 @@ class TestGridGenerator(object):
 
     def test_gen_init(self, gen):
         n = type(gen).__name__
-        assert gen.is_variational == (n.endswith('VAE') or n.endswith('GAN'))
-        assert gen.has_input_encoder == n.endswith('AE')
+        assert gen.is_variational == ('VAE' in n) or n.endswith('GAN')
+        assert gen.has_input_encoder == ('AE' in n)
         assert gen.has_conditional_encoder == n.startswith('C')
 
     def test_gen_forward_poster(self, gen, inputs, conditions):
         outputs, latents, means, log_stds = gen(inputs, conditions, batch_size)
         assert outputs.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
-        assert latents.shape == (batch_size, gen.n_decoder_input), 'different latent shape'
+        assert latents.shape == (batch_size, gen.n_latent), 'different latent shape'
         assert outputs.norm() > 0, 'output norm is zero'
 
     def test_gen_forward_prior(self, gen, conditions):
         outputs, latents, means, log_stds = gen(None, conditions, batch_size)
         assert outputs.shape == (batch_size, n_lig_channels, grid_size, grid_size, grid_size), 'different output shape'
-        assert latents.shape == (batch_size, gen.n_decoder_input), 'different latent shape'
+        assert latents.shape == (batch_size, gen.n_latent), 'different latent shape'
         assert outputs.norm() > 0, 'output norm is zero'
 
     def test_gen_backward_poster0(self, gen, inputs, conditions):
@@ -418,3 +419,33 @@ class TestGridGenerator(object):
             '{:.1f}M params\t{:.2f}s / batch'.format(
                 n_params / 1e6, t_delta
             )
+
+
+class TestStage2VAE(object):
+
+    @pytest.fixture(params=[
+        (0, 0), (1, 96), (2, 96)
+    ])
+    def model(self, request):
+        n_h_layers, n_h_units = request.param
+        return models.Stage2VAE(
+            n_input=128,
+            n_h_layers=n_h_layers,
+            n_h_units=n_h_units,
+            n_latent=64,
+        ).to('cuda')
+
+    @pytest.fixture
+    def inputs(self):
+        return torch.zeros(10, 128, device='cuda')
+
+    def test_init(self, model):
+        assert model.n_latent == 64
+
+    def test_forward_poster(self, model, inputs):
+        outputs, _, _, _ = model(inputs=inputs, batch_size=10)
+        assert outputs.shape == inputs.shape
+
+    def test_forward_prior(self, model, inputs):
+        outputs, _, _, _ = model(batch_size=10)
+        assert outputs.shape == inputs.shape

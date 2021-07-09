@@ -62,6 +62,34 @@ def clip_grad_norm(model, max_norm):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
 
+def sample_latents(
+    batch_size,
+    n_latent,
+    means=None,
+    log_stds=None,
+    z_score=None,
+    truncate=None,
+    var_factor=1.0,
+    device='cuda',
+):
+    assert batch_size is not None, batch_size
+    latents = torch.randn((batch_size, n_latent), device=device)
+
+    if z_score is not None:
+        latents = latents / latents.norm(dim=1, keepdim=True) * z_score
+
+    if truncate is not None:
+        latents = torch.fmod(latents, truncate)
+
+    if log_stds is not None:
+        latents *= torch.exp(log_stds) * var_factor
+
+    if means is not None:
+        latents += means
+
+    return latents
+
+
 class Conv3DReLU(nn.Sequential):
     '''
     A 3D convolutional layer followed by leaky ReLU.
@@ -962,24 +990,16 @@ class GridGenerator(nn.Sequential):
         return n
 
     def sample_latents(
-        self, batch_size, means=None, log_stds=None,
-        z_score=None, truncate=None, var_factor=1.0,
+        self, batch_size, means=None, log_stds=None, **kwargs
     ):
-        latents = torch.randn((batch_size, self.n_latent), device=self.device)
-
-        if z_score is not None:
-            latents = latents / latents.norm(dim=1, keepdim=True) * z_score
-
-        if truncate is not None:
-            latents = torch.fmod(latents, truncate)
-
-        if log_stds is not None:
-            latents *= torch.exp(log_stds) * var_factor
-
-        if means is not None:
-            latents += means
-
-        return latents
+        return sample_latents(
+            batch_size=batch_size,
+            n_latent=self.n_latent,
+            means=means,
+            log_stds=log_stds,
+            device=self.device,
+            **kwargs
+        )
 
 
 class AE(GridGenerator):
@@ -1048,7 +1068,7 @@ class CVAE(GridGenerator):
         outputs = self.decoder(
             inputs=cat_latents, skip_features=cond_features
         )
-        return outputs, cat_latents, means, log_stds
+        return outputs, in_latents, means, log_stds
 
 
 class GAN(GridGenerator):
@@ -1074,9 +1094,146 @@ class CGAN(GridGenerator):
         outputs = self.decoder(
             inputs=cat_latents, skip_features=cond_features
         )
-        return outputs, cat_latents, None, None
+        return outputs, var_latents, None, None
 
 
 # aliases that correspond to solver type
 VAEGAN = VAE
 CVAEGAN = CVAE
+
+
+class VAE2(VAE):
+    '''
+    This is a module that allows insertion of
+    a prior model, aka 2nd-stage VAE, into an
+    existing VAE model.
+    '''
+    def forward2(
+        self,
+        prior_model,
+        inputs=None,
+        conditions=None,
+        batch_size=None
+    ):
+        if inputs is None: # prior
+            in_latents = None
+
+        else: # stage-1 posterior
+            (means, log_stds), _ = self.input_encoder(inputs)
+            var_latents = self.sample_latents(
+                batch_size, means, log_stds, **kwargs
+            )
+
+        # insert prior model (output is stage-2 posterior or prior)
+        gen_latents, _, means2, log_stds2 = prior_model(inputs=var_latents, batch_size=batch_size)
+
+        outputs = self.decoder(inputs=gen_latents)
+        return (
+            outputs, var_latents, means, log_stds,
+            gen_latents, means2, log_stds2
+        )
+
+
+class CVAE2(CVAE):
+
+    def forward2(
+        self,
+        prior_model,
+        inputs=None,
+        conditions=None,
+        batch_size=None,
+        **kwargs
+    ):
+        if inputs is None: # prior
+            in_latents = None
+
+        else: # stage-1 posterior
+            (means, log_stds), _ = self.input_encoder(inputs)
+            in_latents = self.sample_latents(
+                batch_size, means, log_stds, **kwargs
+            )
+
+        # insert prior model (output is stage-2 posterior or prior)
+        gen_latents, _, means2, log_stds2 = prior_model(inputs=in_latents, batch_size=batch_size)
+
+        cond_latents, cond_features = self.conditional_encoder(conditions)
+        cat_latents = torch.cat([gen_latents, cond_latents], dim=1)
+
+        outputs = self.decoder(
+            inputs=cat_latents, skip_features=cond_features
+        )
+        return (
+            outputs, in_latents, means, log_stds,
+            gen_latents, means2, log_stds2
+        )
+
+
+class Stage2VAE(nn.Module):
+
+    def __init__(
+        self,
+        n_input,
+        n_h_layers,
+        n_h_units,
+        n_latent,
+        relu_leak=0.1,
+        device='cuda'
+    ):
+        super().__init__()
+
+        # track dimensions for decoder
+        n_inputs = []
+
+        modules = []
+        for i in range(n_h_layers): # build encoder
+            modules.append(nn.Linear(n_input, n_h_units))
+            modules.append(nn.LeakyReLU(negative_slope=relu_leak))
+            n_inputs.append(n_input)
+            n_input = n_h_units
+
+        self.encoder = nn.Sequential(*modules)
+
+        # variational latent space
+        self.fc_mean = nn.Linear(n_input, n_latent)
+        self.fc_log_std = nn.Linear(n_input, n_latent)
+
+        modules = [ # decoder input fc
+            nn.Linear(n_latent, n_input),
+            nn.LeakyReLU(negative_slope=relu_leak)
+        ]
+
+        for n_output in reversed(n_inputs): # build decoder
+            modules.append(nn.Linear(n_input, n_output))
+            modules.append(nn.LeakyReLU(negative_slope=relu_leak))
+            n_input = n_output
+
+        self.decoder = nn.Sequential(*modules)
+
+        self.n_latent = n_latent
+        self.device = device
+
+    def forward(self, inputs=None, batch_size=None):
+
+        if inputs is None: # prior
+            means, log_stds = None, None
+
+        else: # posterior
+            enc_outputs = self.encoder(inputs)
+            means = self.fc_mean(enc_outputs)
+            log_stds = self.fc_log_std(enc_outputs)
+
+        var_latents = self.sample_latents(batch_size, means, log_stds)
+        outputs = self.decoder(var_latents)
+        return outputs, var_latents, means, log_stds
+
+    def sample_latents(
+        self, batch_size, means=None, log_stds=None, **kwargs
+    ):
+        return sample_latents(
+            batch_size=batch_size,
+            n_latent=self.n_latent,
+            means=means,
+            log_stds=log_stds,
+            device=self.device,
+            **kwargs
+        )
