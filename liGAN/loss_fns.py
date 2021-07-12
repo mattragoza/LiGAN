@@ -214,13 +214,13 @@ def get_loss_schedule(
     modulated loss weight as output.
     '''
     assert period > 0, period
-    assert type in {'d', 'c', 'r'}, type
-    periodic = (type != 'd')
+    assert type in {'n', 'd', 'c', 'r'}, type
+    periodic = (type == 'c ' or type == 'r')
     restart = (type == 'r')
     end_iter = start_iter + period
 
     def loss_schedule(iteration):
-        if end_wt is None or iteration < start_iter:
+        if type == 'n' or end_wt is None or iteration < start_iter:
             return start_wt
         if iteration >= end_iter and not periodic:
             return end_wt
@@ -281,6 +281,7 @@ def L1_loss(predictions, labels, log_var=0):
 
 
 def L2_loss(predictions, labels, log_var=0):
+    # https://github.com/daib13/TwoStageVAE/blob/master/network/two_stage_vae_model.py#L39
     return torch.sum(
         ((labels - predictions) / torch.exp(log_var))**2 / 2.0 + log_var
     ) / labels.shape[0]

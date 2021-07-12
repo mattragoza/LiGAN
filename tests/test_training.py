@@ -35,9 +35,9 @@ def train_params():
 
 
 @pytest.fixture(params=[
-    'CVAE2',
-    #'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN',
-    #'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
+    #'CVAE', 'CVAE2',
+    'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN',
+    'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
 ])
 def solver(request):
     solver_type = getattr(liGAN.training, request.param + 'Solver')
@@ -273,15 +273,17 @@ class TestGenerativeSolver(object):
             check_solver_grad(solver, True, True, True, True, True)
 
             if solver.learn_recon_var:
-                assert (solver.gen_log_var.grad.data**2).sum() > 0, \
-                    'no gen_log_var gradient'
+                assert (
+                    solver.gen_model.log_recon_var.grad.data**2
+                ).sum() > 0, 'no gen log_recon_var gradient'
                 if solver.has_prior_model:
-                    assert (solver.prior_log_var.grad.data**2).sum() > 0, \
-                        'no prior_log_var gradient'
+                    assert (
+                        solver.prior_model.log_recon_var.grad.data**2
+                    ).sum() > 0, 'no prior log_recon_var gradient'
             else:
-                assert solver.gen_log_var.grad is None
+                assert solver.gen_model.log_recon_var.grad is None
                 if solver.has_prior_model:
-                    assert solver.prior_log_var.grad is None
+                    assert solver.prior_model.log_recon_var.grad is None
 
     def test_solver_gen_backward_prior(self, solver):
 
@@ -349,15 +351,31 @@ class TestGenerativeSolver(object):
         if solver.has_posterior_phase:
             data = solver.train_data
             liGAN.set_random_seed(0)
+
+            if solver.learn_recon_var:
+                gen_log_var0 = solver.gen_model.log_recon_var.item()
+                if solver.has_prior_model:
+                    prior_log_var0 = solver.prior_model.log_recon_var.item()
+
             metrics0 = solver.gen_step(grid_type='poster')
             liGAN.set_random_seed(0)
             _, metrics1 = solver.gen_forward(data, grid_type='poster')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
+
             if solver.has_prior_model:
                 assert (
                     metrics1['recon2_loss'] + metrics1['kldiv2_loss'] < \
                     metrics0['recon2_loss'] + metrics0['kldiv2_loss']
                 ), 'prior model loss did not decrease'
+
+            if solver.learn_recon_var:
+                assert (
+                    solver.gen_model.log_recon_var != gen_log_var0
+                ), 'gen log_recon_var did not change'
+                if solver.has_prior_model:
+                    assert (
+                        solver.prior_model.log_recon_var != prior_log_var0
+                    ), 'prior log_recon_var did not change'
 
     def test_solver_gen_step_prior(self, solver):
         if solver.has_prior_phase and solver.loss_fn.has_prior_loss:
@@ -421,8 +439,8 @@ class TestGenerativeSolver(object):
 
         norm = param_norm(solver)
         norm_diff = (norm - init_norm)
-        assert not isclose(norm, init_norm), \
-            'same params after update ({:.2f})'.format(norm_diff)
+        assert abs(norm_diff) > 1e-4, \
+            'same params after update ({:.4f})'.format(norm_diff)
 
         solver.load_state(cont_iter=0)
         assert solver.gen_iter == 0

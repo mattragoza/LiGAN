@@ -62,6 +62,7 @@ class GenerativeSolver(nn.Module):
     Base class for training models that
     generate ligand atomic density grids.
     '''
+    # subclasses override these class attributes
     gen_model_type = None
     has_disc_model = False
     has_prior_model = False
@@ -89,6 +90,9 @@ class GenerativeSolver(nn.Module):
 
         print('Loading data')
         self.init_data(device=device, **data_kws)
+
+        # learn recon loss variance as a parameter
+        self.learn_recon_var = loss_fn_kws.pop('learn_recon_var', False)
 
         print('Initializing generative model and optimizer')
         self.init_gen_model(device=device, **gen_model_kws)
@@ -162,6 +166,13 @@ class GenerativeSolver(nn.Module):
         if caffe_init:
             self.gen_model.apply(models.caffe_init_weights)
 
+        if self.learn_recon_var:
+            self.gen_model.log_recon_var = nn.Parameter(
+                torch.zeros(1, device=device)
+            )
+        else:
+            self.gen_model.log_recon_var = torch.zeros(1, device=device)
+
         if gen_model_state:
             self.gen_model.load_state_dict(torch.load(gen_model_state))
 
@@ -197,7 +208,14 @@ class GenerativeSolver(nn.Module):
         ).to(device)
 
         if caffe_init:
-            self.disc_model.apply(models.caffe_init_weights)
+            self.prior_model.apply(models.caffe_init_weights)
+
+        if self.learn_recon_var:
+            self.prior_model.log_recon_var = nn.Parameter(
+                torch.zeros(1, device=device)
+            )
+        else:
+            self.prior_model.log_recon_var = torch.zeros(1, device=device)
 
         if prior_model_state:
             self.prior_model.load_state_dict(torch.load(prior_model_state))
@@ -234,7 +252,7 @@ class GenerativeSolver(nn.Module):
         self.prior_iter = 0
 
     def init_loss_fn(
-        self, device, balance=False, learn_recon_var=False, **loss_fn_kws,
+        self, device, balance=False, **loss_fn_kws,
     ):
         self.loss_fn = loss_fns.LossFunction(device=device, **loss_fn_kws)
 
@@ -264,16 +282,6 @@ class GenerativeSolver(nn.Module):
             assert self.loss_fn.steric_loss_wt == 0, \
                 'non-zero steric loss but no rec'
 
-        if learn_recon_var: # learn recon loss variance as a parameter
-            self.gen_log_var = nn.Parameter(torch.zeros(1, device=device))
-            if self.has_prior_model:
-                self.prior_log_var = nn.Parameter(torch.zeros(1, device=device))
-        else:
-            self.gen_log_var = torch.zeros(1, device=device)
-            if self.has_prior_model:
-                self.prior_log_var = torch.zeros(1, device=device)
-
-        self.learn_recon_var = learn_recon_var
         self.balance = balance
 
     @property
@@ -634,8 +642,8 @@ class GenerativeSolver(nn.Module):
             latent2_log_stds=latent2_log_stds if compute_stage2_loss else None,
             real_latents=latent_vecs if compute_stage2_loss else None,
             gen_latents=latent_vecs_gen if compute_stage2_loss else None,
-            gen_log_var=self.gen_log_var if posterior else None,
-            prior_log_var=self.prior_log_var if compute_stage2_loss else None,
+            gen_log_var=self.gen_model.log_recon_var if posterior else None,
+            prior_log_var=self.prior_model.log_recon_var if compute_stage2_loss else None,
             iteration=self.gen_iter,
         )
 
