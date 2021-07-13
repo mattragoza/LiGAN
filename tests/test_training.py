@@ -451,6 +451,12 @@ class TestGenerativeSolver(object):
         assert isclose(norm, init_norm), \
             'different params after load ({:.2f})'.format(norm_diff)
 
+        if solver.learn_recon_var:
+            state_dict = solver.state_dict()
+            assert 'gen_model.log_recon_var' in state_dict
+            if solver.has_prior_model:
+                assert 'prior_model.log_recon_var' in state_dict
+
     ### TEST TESTING MODELS
 
     def test_solver_test_disc(self, solver):

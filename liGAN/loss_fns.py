@@ -2,6 +2,7 @@ from collections import OrderedDict as odict
 from math import pi
 import torch
 from torch import nn
+pi = torch.tensor(pi)
 
 has_both = lambda a, b: (
     a is not None and b is not None
@@ -149,7 +150,7 @@ class LossFunction(nn.Module):
                 self.recon_loss_schedule(iteration) if use_loss_wt else 1
             loss += recon_loss_wt * recon_loss
             losses['recon_loss'] = recon_loss.item()
-            losses['recon_loss_wt'] = recon_loss_wt
+            losses['recon_loss_wt'] = recon_loss_wt.item()
             losses['recon_log_var'] = gen_log_var.item()
 
         if has_both(latent_means, latent_log_stds):
@@ -158,7 +159,7 @@ class LossFunction(nn.Module):
                 self.kldiv_loss_schedule(iteration) if use_loss_wt else 1
             loss += kldiv_loss_wt * kldiv_loss
             losses['kldiv_loss'] = kldiv_loss.item()
-            losses['kldiv_loss_wt'] = kldiv_loss_wt
+            losses['kldiv_loss_wt'] = kldiv_loss_wt.item()
 
         if has_both(disc_labels, disc_preds):
             gan_loss = self.gan_loss_fn(disc_preds, disc_labels)
@@ -166,7 +167,7 @@ class LossFunction(nn.Module):
                 self.gan_loss_schedule(iteration) if use_loss_wt else 1
             loss += gan_loss_wt * gan_loss
             losses['gan_loss'] = gan_loss.item()
-            losses['gan_loss_wt'] = gan_loss_wt
+            losses['gan_loss_wt'] = gan_loss_wt.item()
 
         if has_both(rec_grids, rec_lig_grids):
             steric_loss = self.steric_loss_fn(rec_grids, rec_lig_grids)
@@ -174,7 +175,7 @@ class LossFunction(nn.Module):
                 self.steric_loss_schedule(iteration) if use_loss_wt else 1
             loss += steric_loss_wt * steric_loss
             losses['steric_loss'] = steric_loss.item()
-            losses['steric_loss_wt'] = steric_loss_wt
+            losses['steric_loss_wt'] = steric_loss_wt.item()
 
         if has_both(latent2_means, latent2_log_stds):
             kldiv2_loss = self.kldiv2_loss_fn(latent2_means, latent2_log_stds)
@@ -182,7 +183,7 @@ class LossFunction(nn.Module):
                 self.kldiv2_loss_schedule(iteration) if use_loss_wt else 1
             loss += kldiv2_loss_wt * kldiv2_loss
             losses['kldiv2_loss'] = kldiv2_loss.item()
-            losses['kldiv2_loss_wt'] = kldiv2_loss_wt
+            losses['kldiv2_loss_wt'] = kldiv2_loss_wt.item()
 
         if has_both(real_latents, gen_latents):
             recon2_loss = self.recon2_loss_fn(
@@ -192,7 +193,7 @@ class LossFunction(nn.Module):
                 self.recon2_loss_schedule(iteration) if use_loss_wt else 1
             loss += recon2_loss_wt * recon2_loss
             losses['recon2_loss'] = recon2_loss.item()
-            losses['recon2_loss_wt'] = recon2_loss_wt
+            losses['recon2_loss_wt'] = recon2_loss_wt.item()
             losses['recon2_log_var'] = prior_log_var.item()
 
         losses['loss'] = loss.item()
@@ -213,17 +214,20 @@ def get_loss_schedule(
     iteration as input and returns a
     modulated loss weight as output.
     '''
-    assert period > 0, period
+    no_schedule = (
+        type == 'n' or end_wt is None or end_wt == start_wt
+    )
+    assert no_schedule or period > 0, period
     assert type in {'n', 'd', 'c', 'r'}, type
     periodic = (type == 'c ' or type == 'r')
     restart = (type == 'r')
     end_iter = start_iter + period
 
     def loss_schedule(iteration):
-        if type == 'n' or end_wt is None or iteration < start_iter:
-            return start_wt
+        if no_schedule or iteration < start_iter:
+            return torch.as_tensor(start_wt)
         if iteration >= end_iter and not periodic:
-            return end_wt
+            return torch.as_tensor(end_wt)
         wt_range = (end_wt - start_wt)
         theta = (iteration - start_iter) / period * pi
         if restart: # jump from end_wt to start_wt

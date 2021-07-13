@@ -406,6 +406,7 @@ class GenerativeSolver(nn.Module):
         state_file = self.state_prefix + '.gen_solver_state'
         print('Loading generative solver state from ' + state_file)
         state_dict = torch.load(state_file)
+
         self.gen_optimizer.load_state_dict(state_dict['optim_state'])
         self.gen_iter = state_dict['iter']
 
@@ -471,7 +472,11 @@ class GenerativeSolver(nn.Module):
 
     def insert_metrics(self, idx, metrics):
         for k, v in metrics.items():
-            self.metrics.loc[idx, k] = v
+            try:
+                self.metrics.loc[idx, k] = v
+            except AttributeError:
+                print(idx, k)
+                raise
 
     def save_mols(self, mols, grid_type):
         sdf_file = '{}_iter_{}_{}.sdf'.format(
@@ -886,7 +891,7 @@ class GenerativeSolver(nn.Module):
         t1 = time.time()
 
         if need_gradient: # backward pass
-            metrics.update(self.gen_backward(loss, update, compute_norm))           
+            metrics.update(self.gen_backward(loss, update, compute_norm))
 
         if self.sync_cuda:
             torch.cuda.synchronize()
