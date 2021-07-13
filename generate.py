@@ -893,6 +893,7 @@ def lerp(v0, v1, t):
 def generate(
     data,
     gen_model,
+    prior_model,
     atom_fitter,
     bond_adder,
     out_writer,
@@ -900,6 +901,7 @@ def generate(
     n_samples,
     fit_atoms,
     prior=False,
+    stage2=False,
     z_score=None,
     truncate=None,
     var_factor=1.0,
@@ -939,15 +941,30 @@ def generate(
                     rec_lig_grids = data.grids
 
                     if gen_model:
-                        if verbose: print('Calling generator forward (prior={})'.format(prior))
-                        lig_gen_grids, latents, _, _ = gen_model(
-                            inputs=None if prior else rec_lig_grids,
-                            conditions=rec_grids,
-                            batch_size=batch_size,
-                            z_score=z_score,
-                            truncate=truncate,
-                            var_factor=var_factor,
-                        )
+                        if verbose:
+                            print(f'Calling generator forward (prior={prior}, stage2={stage2})')
+
+                        if stage2: # insert prior model
+                            lig_gen_grids, _, _, _, latents, _, _ = \
+                                gen_model.forward2(
+                                    prior_model=prior_model,
+                                    inputs=None if prior else rec_lig_grids,
+                                    conditions=rec_grids,
+                                    batch_size=batch_size,
+                                    z_score=z_score,
+                                    truncate=truncate,
+                                    var_factor=var_factor,
+                                )
+                        else:
+                            lig_gen_grids, latents, _, _ = gen_model(
+                                inputs=None if prior else rec_lig_grids,
+                                conditions=rec_grids,
+                                batch_size=batch_size,
+                                z_score=z_score,
+                                truncate=truncate,
+                                var_factor=var_factor,
+                            )
+
                         # TODO interpolation here!
                         assert not interpolate, 'TODO'
 
@@ -1113,9 +1130,28 @@ def main(argv):
             **config['gen_model']
         )
         print('Loading generative model state')
-        gen_model.load_state_dict(torch.load(gen_model_state))
+        state_dict = torch.load(gen_model_state)
+        del state_dict['log_recon_var']
+        gen_model.load_state_dict(state_dict)
+
+        if gen_model_type.has_stage2:
+
+            print('Initializing prior model')
+            prior_model_state = config['prior_model'].pop('state')
+            prior_model = liGAN.models.Stage2VAE(
+                n_input=gen_model.n_latent,
+                **config['prior_model']
+            ).to(device)
+
+            print('Loading prior model state')
+            state_dict = torch.load(prior_model_state)
+            del state_dict['log_recon_var']
+            prior_model.load_state_dict(state_dict)
+        else:
+            prior_model = None
     else:
         gen_model = None
+        prior_model = None
         print('No generative model, using real grids')
 
     print('Initializing atom fitter')
@@ -1150,6 +1186,7 @@ def main(argv):
     generate(
         data=data,
         gen_model=gen_model,
+        prior_model=prior_model,
         atom_fitter=atom_fitter,
         bond_adder=bond_adder,
         out_writer=out_writer,
@@ -1161,4 +1198,3 @@ def main(argv):
 
 if __name__ == '__main__':
     main(sys.argv[1:])
-

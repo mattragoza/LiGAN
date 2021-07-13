@@ -851,6 +851,7 @@ class GridGenerator(nn.Sequential):
     is_variational = False
     has_input_encoder = False
     has_conditional_encoder = False
+    has_stage2 = False
 
     def __init__(
         self,
@@ -1103,6 +1104,7 @@ CVAEGAN = CVAE
 
 
 class VAE2(VAE):
+    has_stage2 = True
     '''
     This is a module that allows insertion of
     a prior model, aka stage 2 VAE, into an
@@ -1138,6 +1140,7 @@ class VAE2(VAE):
 
 
 class CVAE2(CVAE):
+    has_stage2 = True
     '''
     Two-stage CVAE.
     '''
