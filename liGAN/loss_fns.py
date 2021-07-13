@@ -8,6 +8,10 @@ has_both = lambda a, b: (
     a is not None and b is not None
 )
 
+has_both = lambda a, b: (
+    a is not None and b is not None
+)
+
 
 class LossFunction(nn.Module):
     '''
@@ -246,7 +250,7 @@ def get_kldiv_loss_fn(type):
 
 
 def get_recon_loss_fn(type):
-    assert type in {'1', '2', 'm'}, type
+    assert type in {'1', '2'}, type
     if type == '1':
         return L1_loss
     else: # '2'
