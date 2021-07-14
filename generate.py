@@ -1131,7 +1131,7 @@ def main(argv):
         )
         print('Loading generative model state')
         state_dict = torch.load(gen_model_state)
-        del state_dict['log_recon_var']
+        state_dict.pop('log_recon_var', None)
         gen_model.load_state_dict(state_dict)
 
         if gen_model_type.has_stage2:
@@ -1145,7 +1145,7 @@ def main(argv):
 
             print('Loading prior model state')
             state_dict = torch.load(prior_model_state)
-            del state_dict['log_recon_var']
+            state_dict.pop('log_recon_var', None)
             prior_model.load_state_dict(state_dict)
         else:
             prior_model = None
