@@ -38,66 +38,88 @@ class BondAdder(object):
 
         self.debug = debug
 
-    def set_aromaticity(self, ob_mol, atoms, struct):
+    def disable_perception(self, ob_mol):
         '''
-        Set aromaticiy of atoms based on their atom
-        types. Aromatic atoms are also marked as
-        having sp2 hybridization. Bonds are set as
-        aromatic iff both atoms are aromatic.
+        Set flags that prevent openbabel perception
+        of hybridization and aromaticity from being
+        triggered when the properties are accessed.
         '''
-        if Atom.aromatic not in struct.typer:
-            return False
-
-        # set this flag to ensure that openbabel doesn't
-        # reassign aromaticity when accessing IsAromatic()
-        # and also copies aromaticity when copying mol
+        ob_mol.SetHybridizationPerceived(True)
         ob_mol.SetAromaticPerceived(True)
 
-        for ob_atom, atom_type in zip(atoms, struct.atom_types):
+    def set_hybridization(self, ob_mol, atoms, struct):
+        '''
+        Set hybridization of atoms in two passes.
+        First, perceive the hybridization state
+        using openbabel, then turn off perception.
+        Next, set all aromatic atoms to sp2.
+        '''
+        # turn on perception
+        ob_mol.SetHybridizationPerceived(False)
 
-            if atom_type.aromatic:
-                ob_atom.SetAromatic(True)
-                ob_atom.SetHyb(2)
-            else:
-                ob_atom.SetAromatic(False)
+        # trigger perception
+        for ob_atom in atoms:
+            ob_atom.GetHyb()
 
+        # turn off perception
+        ob_mol.SetHybridizationPerceived(True)
+
+        # set all aromatic atoms to sp2
+        if Atom.aromatic in struct.typer:
+            for ob_atom, atom_type in zip(atoms, struct.atom_types):
+                if atom_type.aromatic:
+                    ob_atom.SetHyb(2)
+
+    def set_aromaticity(self, ob_mol, atoms, struct):
+        '''
+        Use openbabel to perceive aromaticity, or
+        set it based on atom types, if available.
+        Set bonds as aromatic iff they are between
+        aromatic atoms in a ring.
+        '''
+        if Atom.aromatic not in struct.typer:
+            
+            # turn on perception
+            ob_mol.SetAromaticPerceived(False)
+
+            # trigger perception
+            for ob_atom in atoms:
+                ob_atom.IsAromatic()
+
+        else: # set aromaticity based on atom types
+            for ob_atom, atom_type in zip(atoms, struct.atom_types):
+                ob_atom.SetAromatic(bool(atom_type.aromatic))
+
+        # turn off perception
+        ob_mol.SetAromaticPerceived(True)
+
+        # set bonds between aromatic ring atoms as aromatic
         for bond in ob.OBMolBondIter(ob_mol):
             a1 = bond.GetBeginAtom()
             a2 = bond.GetEndAtom()
             if bond.IsInRing():
                 bond.SetAromatic(a1.IsAromatic() and a2.IsAromatic())
 
-        return True
-
     def set_formal_charges(self, ob_mol, atoms, struct):
         '''
         Set formal charge on atoms based on their
         atom type, if it is available.
         '''
-        if Atom.formal_charge not in struct.typer:
-            return False
-
-        for ob_atom, atom_type in zip(atoms, struct.atom_types):
-            ob_atom.SetFormalCharge(atom_type.formal_charge)
-
-        return True
+        if Atom.formal_charge in struct.typer:
+            for ob_atom, atom_type in zip(atoms, struct.atom_types):
+                ob_atom.SetFormalCharge(atom_type.formal_charge)
 
     def set_min_h_counts(self, ob_mol, atoms, struct):
         '''
-        Set atoms to have the minimum number of Hs 
-        required by their atom type, if they do not
-        already. Does not remove Hs, and any added
-        Hs are implicit. Also unsets HydrogensAdded.
+        Set atoms to have at least the minimum number
+        of Hs required by their atom type. Does not
+        remove Hs, and any added Hs are implicit.
         '''
-        # this ensures that any implicit Hs added here
-        #   are made explicit when AddHydrogens() is called
-        ob_mol.SetHydrogensAdded(False)
-
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
 
             if struct.typer.explicit_h:
-                # all Hs should already be present
-                #   so no need to add implicit Hs
+                # all Hs should already be explicit,
+                #   though possibly not bonded yet
                 continue
 
             # get current hydrogen count
@@ -114,29 +136,36 @@ class BondAdder(object):
                 ob_atom.SetImplicitHCount(min_h_count - h_count)
 
     def add_within_distance(self, ob_mol, atoms, struct):
-
+        '''
+        Add bonds between every pair of atoms
+        that are within a certain distance.
+        '''
         # just do n^2 comparisons, worry about efficiency later
         coords = np.array([(a.GetX(), a.GetY(), a.GetZ()) for a in atoms])
         dists = squareform(pdist(coords))
 
-        # add bonds between every atom pair within a certain distance
+        # for every pairs of atoms in ob_mol,
         for i, atom_a in enumerate(atoms):
             for j, atom_b in enumerate(atoms):
                 if i >= j: # avoid redundant checks
                     continue
 
-                # if distance is between min and max bond length,
+                # if they are within min and max bond length,
                 if self.min_bond_len < dists[i,j] < self.max_bond_len:
 
-                    # add single bond
+                    # add a single bond between the atoms
                     ob_mol.AddBond(atom_a.GetIdx(), atom_b.GetIdx(), 1)
 
     def remove_bad_valences(self, ob_mol, atoms, struct):
-
+        '''
+        Remove hypervalent bonds without fragmenting
+        the molecule, and prioritize stretched bonds.
+        Also remove bonds between halogens/hydrogens.
+        '''
         # get max valence of the atoms
         max_vals = get_max_valences(atoms)
 
-        # remove any impossible bonds between halogens (mtr22- and hydrogens)
+        # remove any bonds between halogens or hydrogens
         for bond in ob.OBMolBondIter(ob_mol):
             atom_a = bond.GetBeginAtom()
             atom_b = bond.GetEndAtom()
@@ -146,9 +175,9 @@ class BondAdder(object):
             ):
                 ob_mol.DeleteBond(bond)
 
-        # removing bonds causing larger-than-permitted valences
-        # prioritize atoms with lowest max valence, since they tend
-        # to introduce the most problems with reachability (e.g O)
+        # remove bonds causing larger-than-permitted valences
+        #   prioritize atoms with lowest max valence, since they
+        #   place the hardest constraint on reachability (e.g O)
 
         atom_info = sort_atoms_by_valence(atoms, max_vals)
         for max_val, rem_val, atom in atom_info:
@@ -156,7 +185,7 @@ class BondAdder(object):
             if atom.GetExplicitValence() <= max_val:
                 continue
             # else, the atom could have an invalid valence
-            # so check whether we can modify a bond
+            #   so check whether we can modify a bond
 
             bond_info = sort_bonds_by_stretch(ob.OBAtomBondIter(atom))
             for bond_stretch, bond_len, bond in bond_info:
@@ -184,8 +213,15 @@ class BondAdder(object):
                     if atom.GetExplicitValence() <= max_vals[atom.GetIdx()]:
                         break
 
-    def remove_bad_geometry(self, ob_mol):
+        # deleting bonds resets this flag
+        ob_mol.SetHybridizationPerceived(True)
 
+    def remove_bad_geometry(self, ob_mol):
+        '''
+        Remove bonds with excessive stretch or angle strain
+        without fragmenting the molecule, and prioritizing
+        the most stretch bonds.
+        '''
         # eliminate geometrically poor bonds
         bond_info = sort_bonds_by_stretch(ob.OBMolBondIter(ob_mol))
         for bond_stretch, bond_len, bond in bond_info:
@@ -195,7 +231,7 @@ class BondAdder(object):
             atom2 = bond.GetEndAtom()
 
             # as long as we aren't disconnecting, let's remove things
-            # that are excessively far away (0.45 from ConnectTheDots)
+            #   that are excessively far away (0.45 from ConnectTheDots)
             # get bonds to be less than max allowed
             # also remove tight angles, as done in openbabel
             if (bond_stretch > self.max_bond_stretch
@@ -205,54 +241,57 @@ class BondAdder(object):
                 if reachable(atom1, atom2): # don't fragment the molecule
                     ob_mol.DeleteBond(bond)
 
+        # deleting bonds resets this flag
+        ob_mol.SetHybridizationPerceived(True)
+
     def fill_rem_valences(self, ob_mol, atoms, struct):
         '''
         Fill empty valences with hydrogens up to the
-        typical amount allowed by their atom type, and
-        remaining valences with higher bond orders.
+        amount expected by the atom type, or a typical
+        amount according to openbabel, and then fill
+        remaining empty valences with higher bond orders.
         '''
-        # if this flag is present, then new hydrogens are not added
-        ob_mol.SetHydrogensAdded(False)
-
-        # get max valence of the atoms
         max_vals = get_max_valences(atoms)
 
         for ob_atom, atom_type in zip(atoms, struct.atom_types):
-            assert ob_atom.GetImplicitHCount() == 0
-            
+          
             if struct.typer.explicit_h:
+                # all Hs should already be present
                 continue
 
             max_val = max_vals.get(ob_atom.GetIdx(), 1)
 
             if Atom.h_count in struct.typer:
-
-                # this should have already been set by set_min_h_counts
+                # this should have already been set
+                #   by set_min_h_counts, but whatever
                 h_count = Atom.h_count(ob_atom)
-                #assert h_count == atom_type.h_count, \
-                #    'wrong h_count ({} vs. {}, {})'.format(
-                #        h_count, atom_type.h_count, atom_type
-                #    )
                 if h_count < atom_type.h_count:
-                    ob_atom.SetImplicitHCount(atom_type.h_count - h_count)
+                    n = ob_atom.GetImplicitHCount()
+                    ob_atom.SetImplicitHCount(n + atom_type.h_count - h_count)
 
             elif ob_atom.GetExplicitValence() < max_val:
-
-                # this uses explicit valence and formal charge
-                # and it only ever INCREASES hydrogens, since it
-                # never sets implicit H to a negative value
+                # this uses explicit valence and formal charge,
+                #   and only ever INCREASES hydrogens, since it
+                #   never sets implicit H to a negative value
+                # but it does overwrite the existing value, so
+                #   we need to save it beforehand and then add
+                n = ob_atom.GetImplicitHCount()
                 ob.OBAtomAssignTypicalImplicitHydrogens(ob_atom)
+                n += ob_atom.GetImplicitHCount()
+                ob_atom.SetImplicitHCount(n)
 
+        # these have possibly changed
         max_vals = get_max_valences(atoms)
 
+        # now increment bond orders to fill remaining valences
         atom_info = sort_atoms_by_valence(atoms, max_vals)
         for max_val, rem_val, atom in reversed(atom_info):
 
             if atom.GetExplicitValence() >= max_val:
                 continue
             # else, the atom could have an empty valence
-            # so check whether we can augment a bond,
-            # prioritizing bonds that are too short
+            #   so check whether we can augment a bond,
+            #   prioritizing bonds that are too short
 
             bond_info = sort_bonds_by_stretch(ob.OBAtomBondIter(atom))
             for bond_stretch, bond_len, bond in reversed(bond_info):
@@ -275,32 +314,26 @@ class BondAdder(object):
                     bond.SetBondOrder(min(bond_order + min_val_diff, 3))
 
                     # if the current atom now has its preferred valence,
-                    # break and let other atoms choose next bonds to augment
+                    #   break and let other atoms choose next bonds to augment
                     if atom.GetExplicitValence() == max_vals[atom.GetIdx()]:
                         break
 
     def make_h_explicit(self, ob_mol, atoms):
+        '''
+        Make implicit hydrogens into
+        explicit hydrogens and set
+        their hybridization state.
+        '''
+        # hydrogens are not added if this flag is set
+        ob_mol.SetHydrogensAdded(False)
+        ob_mol.AddHydrogens()
 
-        imp_hs_i, exp_hs_i = [], []
-        for a in atoms:
-            imp_hs_i.append(Atom.imp_h_count(a))
-            exp_hs_i.append(Atom.exp_h_count(a))
+        for a in ob.OBMolAtomIter(ob_mol):
+            if a.GetAtomicNum() == 1:
+                a.SetHyb(1)
 
-        ob_mol.SetHydrogensAdded(False) # make sure we actually add them
-        assert ob_mol.AddHydrogens(), 'failed to add hydrogens'
-
-        try:
-            for a, imp_h_i, exp_h_i in zip(atoms, imp_hs_i, exp_hs_i):
-                imp_h_f = Atom.imp_h_count(a)
-                exp_h_f = Atom.exp_h_count(a)
-                assert imp_h_f == 0 and exp_h_f == exp_h_i + imp_h_i, \
-                    'failed to make H(s) explicit (imp={}, exp={} -> imp={}, exp={}, elem={})'.format(
-                        imp_h_i, exp_h_i, imp_h_f, exp_h_f, a.GetAtomicNum()
-                    )
-        except AssertionError:
-            #mols.write_ob_mols_to_sdf_file('tests/bad_explicit_h.sdf', [ob_mol])
-            #raise
-            pass
+        # AddHydrogens() resets some flags
+        self.disable_perception(ob_mol)
 
     def add_bonds(self, ob_mol, atoms, struct):
 
@@ -308,16 +341,42 @@ class BondAdder(object):
         visited_mols = []
 
         def visit_mol(mol, msg):
-            visited_mols.append(copy_ob_mol(mol))
+            mol = copy_ob_mol(mol)
+            visited_mols.append(mol)
             if self.debug:
+                bmap = {1:'-', 2:'=', 3:'≡'}
                 print(len(visited_mols), msg)
-
-        visit_mol(ob_mol, 'initial struct')
+                assert (
+                    mol.HasHybridizationPerceived() and 
+                    mol.HasAromaticPerceived()
+                ), 'perception is on'
+                return
+                for a in ob.OBMolAtomIter(mol):
+                    print('   ', (
+                        a.GetAtomicNum(),
+                        a.IsAromatic(),
+                        a.GetHyb(),
+                        a.GetImplicitHCount()
+                    ), end=' ')
+                    for b in ob.OBAtomBondIter(a):
+                        print('({}{}{})'.format(
+                            b.GetBeginAtomIdx(),
+                            bmap[b.GetBondOrder()],
+                            b.GetEndAtomIdx()
+                        ), end=' ')
+                    print()
 
         if len(atoms) == 0: # nothing to do
             return ob_mol, visited_mols
 
-        ob_mol.BeginModify() # why do we even need this?
+        # by default, openbabel tries to perceive
+        #   aromaticity and hybridization when you
+        #   first access those properties, but it
+        #   can be disabled by setting flags
+        # here, we will prefer to use atom type info
+        #   and only enable perception when needed
+        self.disable_perception(ob_mol)
+        visit_mol(ob_mol, 'initial struct')
 
         # add all bonds between atom pairs within a distance range
         self.add_within_distance(ob_mol, atoms, struct)
@@ -325,7 +384,7 @@ class BondAdder(object):
 
         # set minimum H counts to determine hyper valency
         #   but don't make them explicit yet to avoid issues
-        #   with bond adding/removal (i.e. ignore H bonds)
+        #   with bond adding/removal (i.e. ignore bonds to H)
         self.set_min_h_counts(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'set_min_h_counts')
 
@@ -333,6 +392,8 @@ class BondAdder(object):
         # remove bonds to atoms that are above their allowed valence
         #   with priority towards removing highly stretched bonds
         self.set_formal_charges(ob_mol, atoms, struct)
+        visit_mol(ob_mol, 'set_formal_charges')
+
         self.remove_bad_valences(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'remove_bad_valences')
 
@@ -340,57 +401,54 @@ class BondAdder(object):
         self.remove_bad_geometry(ob_mol)
         visit_mol(ob_mol, 'remove_bad_geometry')
 
-        # NOTE the next section is important, but not intuitive,
-        #   and the order of operations deserves explanation:
-        # need to AddHydrogens() before PerceiveBondOrders()
+        # need to make_h_explicit() before PerceiveBondOrders()
         #   bc it fills remaining EXPLICIT valence with bonds
-        # need to EndModify() before PerceiveBondOrders()
-        #   otherwise you get a segmentation fault
-        # need to AddHydrogens() after EndModify()
-        #   because EndModify() resets hydrogen coords
+        # need to set_hybridization() before make_h_explicit()
+        #   so that it generates the correct H coordinates
 
-        # need to set_aromaticity() before AND after EndModify()
-        #   otherwise aromatic atom types are missing
-
-        # hybridization and aromaticity are perceived in PBO()
-        #   but the flags are both are turned off at the end
-        #   which causes perception to be triggered again when
-        #   calls to GetHyb() or IsAromatic() are made
+        self.set_hybridization(ob_mol, atoms, struct)
+        visit_mol(ob_mol, 'set_hybridization')
 
         self.set_aromaticity(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'set_aromaticity')
 
-        ob_mol.EndModify()
         self.make_h_explicit(ob_mol, atoms)
+        visit_mol(ob_mol, 'make_h_explicit')
 
+        # hybridization and aromaticity are perceived in PBO()
+        #   but the flags are both are cleared at the end
+        #   so we have to disable perception again, and then
+        #   re-apply previous methods
         ob_mol.PerceiveBondOrders()
-        self.set_aromaticity(ob_mol, atoms, struct)
-        self.set_min_h_counts(ob_mol, atoms, struct) # maybe removed by PBO
-        self.make_h_explicit(ob_mol, atoms)
+        self.disable_perception(ob_mol)
         visit_mol(ob_mol, 'perceive_bond_orders')
+
+        self.set_min_h_counts(ob_mol, atoms, struct) # maybe removed by PBO?
+        self.set_hybridization(ob_mol, atoms, struct)
+        self.set_aromaticity(ob_mol, atoms, struct)
+        self.make_h_explicit(ob_mol, atoms)
+        visit_mol(ob_mol, 'recover_from_pbo')
 
         # try to fix higher bond orders that cause bad valences
         #   if hybrid flag is not set, then can alter hybridization
         self.remove_bad_valences(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'remove_bad_valences')
 
-        # fill remaining valences with h bonds,
-        #   up to typical num allowed by the atom types
-        #   and the rest with increased bond orders
+        # fill remaining valences with explicit Hs,
+        #   up to the num expected by the atom types,
+        #   and fill the rest with increased bond orders
         self.fill_rem_valences(ob_mol, atoms, struct)
-        self.make_h_explicit(ob_mol, atoms)
         visit_mol(ob_mol, 'fill_rem_valences')
 
-        # set flags to try to prevent further perception
-        ob_mol.SetHydrogensAdded(True)
-        ob_mol.SetAromaticPerceived(True)
-        ob_mol.SetHybridizationPerceived(True)
+        self.make_h_explicit(ob_mol, atoms)
+        visit_mol(ob_mol, 'make_h_explicit')
 
+        # final cleanup for validity
         for a in ob.OBMolAtomIter(ob_mol):
             if not a.IsInRing():
                 a.SetAromatic(False)
 
-        return ob_mol, visited_mols
+        return ob_mol, visited_mols   
 
     def post_process_rd_mol(self, rd_mol, struct=None):
         '''

@@ -17,10 +17,12 @@ test_sdf_files = [
     'tests/input/neopentane.sdf',
     'tests/input/sulfone.sdf', #TODO reassign guanidine double bond
     'tests/input/ATP.sdf',
-    #'tests/input/buckyball.sdf', # takes a very long time, why?
+    'tests/input/buckyball.sdf', # takes a very long time, why?
     'tests/input/4fic_C_0UL.sdf',
     'tests/input/3el8_B_rec_4fic_0ul_lig_tt_docked_13.sdf.gz',
 ]
+
+test_typer_fns = ['oadc']
 
 
 def iter_atoms(ob_mol, explicit_h=True):
@@ -56,23 +58,49 @@ def iter_atom_pairs(in_mol, out_mol, explicit_h=False):
     )
 
 
-def write_pymol(visited_mols, in_mol):
-    pymol_file = 'tests/output/TEST_' + in_mol.name + '.pymol'
+def write_ob_pymol(visited_mols, in_mol):
+    name = in_mol.name
+    write_pymol(name, visited_mols, in_mol, write_mol_fn=write_ob_mols)
+
+
+def write_rd_pymol(visited_mols, in_mol):
+    name = in_mol.info['ob_mol'].name
+    write_pymol(name, visited_mols, in_mol, write_mol_fn=write_rd_mols)
+
+
+def write_pymol(mol_name, visited_mols, in_mol, write_mol_fn):
+    pymol_file = 'tests/output/TEST_' + mol_name + '.pymol'
     with open(pymol_file, 'w') as f:
-        f.write('load {}\n'.format(write_mols(visited_mols, in_mol)))
-        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'a')))
-        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'e')))
-        f.write('load {}\n'.format(write_mols(visited_mols, in_mol, 'h')))
+        write_mols = visited_mols + [in_mol]
+        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols)))
+        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'a')))
+        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'e')))
+        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'h')))
         f.write('show_as nb_spheres\n')
         f.write('show sticks\n')
         f.write('util.cbam\n')
+        f.write('color white, (name H)\n')
+        f.write('color gray90, (name Md)\n')
+        f.write('color gray80, (name No)\n')
+        f.write('color gray70, (name Lr)\n')
+        f.write('color gray60, (name Rf)\n')
+        f.write('color gray50, (name Db)\n')
 
 
-def write_mols(visited_mols, in_mol, mode=None):
-    write_mols = visited_mols + [in_mol]
-    write_mols = [mols.copy_ob_mol(m) for m in write_mols]
-    hyb_map = {1:6, 2:7, 3:8}
-    hyd_map = {0:1, 1:6, 2:7, 3:8, 4:9}
+def write_rd_mols(mol_name, rd_mols, mode=None):
+    rd_mols = [mols.Molecule(m) for m in rd_mols]
+    mol_file = 'tests/output/TEST_rd_{}.sdf'.format(mol_name)
+    mols.write_rd_mols_to_sdf_file(mol_file, rd_mols)
+    return mol_file
+
+
+def write_ob_mols(mol_name, ob_mols, mode=None):
+    write_mols = [mols.copy_ob_mol(m) for m in ob_mols]
+    in_mol = ob_mols[-1]
+
+    # color by atomic properties by setting
+    #  the element based on the property value
+    value_map = {0:1, 1:101, 2:102, 3:103, 4:104, 5:105}
 
     for m in write_mols: # make sure we don't reassign these
         m.SetAromaticPerceived(True)
@@ -81,24 +109,23 @@ def write_mols(visited_mols, in_mol, mode=None):
     if mode == 'a': # show bond aromaticity as bond order
         for m in write_mols:
             for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(1 + 5*a.IsAromatic())
+                a.SetAtomicNum(value_map[a.IsAromatic()])
             for b in ob.OBMolBondIter(m):
                 b.SetBondOrder(1 + b.IsAromatic())
     
     elif mode == 'e': # show hybridization as element
         for m in write_mols:
             for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(hyb_map.get(a.GetHyb(), 1))
+                a.SetAtomicNum(value_map[a.GetHyb()])
 
     elif mode == 'h': # show implicit H count as element
         for m in write_mols:
             for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(hyd_map[a.GetImplicitHCount()])
+                a.SetAtomicNum(value_map[a.GetImplicitHCount()])
 
     elif mode is not None:
         raise ValueError(mode)
 
-    mol_name = in_mol.name
     if mode:
         mol_name += '_' + mode
 
@@ -145,36 +172,43 @@ def test_add_bond():
 @pytest.fixture(params=[10, 50])
 def dense(request):
     '''
-    An OBMol where every atom is
-    bonded to every other atom.
+    An OBMol where every pair of atoms
+    is bonded with some probability.
     '''
     n_atoms = request.param
+
+    p = 0.9
+    bonds = np.random.choice(
+        [0, 1], size=(n_atoms, n_atoms), p=[1-p, p]
+    ) * (1 - np.eye(n_atoms))
+
     mol, atoms = mols.make_ob_mol(
         coords=np.random.normal(0, 10, (n_atoms, 3)),
         types=np.ones((n_atoms, 1)),
-        bonds=1-np.eye(n_atoms),
+        bonds=bonds,
         typer=AtomTyper(
             prop_funcs=[Atom.atomic_num],
             prop_ranges=[[6]],
             radius_func=Atom.cov_radius,
-            explicit_h=False
+            explicit_h=False,
+            device='cpu'
         )
     )
-    mols.write_ob_mols_to_sdf_file('tests/output/TEST_dense_{}.sdf'.format(n_atoms), [mol])
-
-    assert mol.NumAtoms() == n_atoms, mol.NumAtoms()
-    assert mol.NumBonds() == n_atoms*(n_atoms-1)/2, mol.NumBonds()
-    for a in ob.OBMolAtomIter(mol):
-        for b in ob.OBMolAtomIter(mol):
-            if a != b:
-                assert mol.GetBond(a, b), 'missing bond'
+    mols.write_ob_mols_to_sdf_file(
+        'tests/output/TEST_dense_{}.sdf'.format(n_atoms), [mol]
+    )
     return mol
+
+
+def test_highly_fused_rings():
+    ob_mol = mols.read_ob_mols_from_file('tests/input/buckyball.sdf', 'sdf')[0]
+    mols.Molecule.from_ob_mol(ob_mol)
 
 
 def test_reachable_basic():
     '''
     D--E
-    |\/
+    | /
     |/\
     F  A--B
        | /
@@ -255,11 +289,11 @@ def test_reachable_recursion(dense):
 
 class TestBondAdding(object):
 
-    @pytest.fixture(params=['oad', 'oadc', 'on', 'oh'])
+    @pytest.fixture(params=test_typer_fns)
     def typer(self, request):
         prop_funcs = request.param
         radius_func = lambda x: 1
-        return AtomTyper.get_typer(prop_funcs, radius_func)
+        return AtomTyper.get_typer(prop_funcs, radius_func, device='cpu')
 
     @pytest.fixture
     def adder(self):
@@ -318,65 +352,53 @@ class TestBondAdding(object):
 
     def test_set_formal_charges(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.add_within_distance(out_mol, atoms, struct)
-        adder.set_min_h_counts(out_mol, atoms, struct)
-        adder.set_formal_charges(out_mol, atoms, struct)
-
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
+        ob_mol, atoms = struct.to_ob_mol()
+        adder.disable_perception(ob_mol)
+        adder.set_formal_charges(ob_mol, atoms, struct)
+        for i, o in iter_atom_pairs(in_mol, ob_mol, typer.explicit_h):
             assert o.GetFormalCharge() == i.GetFormalCharge(), \
                 'incorrect formal charge'
 
     def test_remove_bad_valences(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.add_within_distance(out_mol, atoms, struct)
-        adder.set_min_h_counts(out_mol, atoms, struct)
-        adder.set_formal_charges(out_mol, atoms, struct)
-        adder.remove_bad_valences(out_mol, atoms, struct)
+        ob_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(ob_mol, atoms, struct)
+        adder.remove_bad_valences(ob_mol, atoms, struct)
         max_vals = get_max_valences(atoms)
-
-        for o in iter_atoms(out_mol, typer.explicit_h):
+        for o in iter_atoms(ob_mol, typer.explicit_h):
             assert o.GetExplicitValence() <= max_vals.get(o.GetIdx(), 1), \
                 'invalid valence'
 
     def test_remove_bad_geometry(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.add_within_distance(out_mol, atoms, struct)
-        adder.set_min_h_counts(out_mol, atoms, struct)
-        adder.set_formal_charges(out_mol, atoms, struct)
-        adder.remove_bad_valences(out_mol, atoms, struct)
-        adder.remove_bad_geometry(out_mol)
+        ob_mol, atoms = struct.to_ob_mol()
+        adder.add_within_distance(ob_mol, atoms, struct)
+        adder.remove_bad_geometry(ob_mol)
 
     def test_set_aromaticity(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        adder.add_within_distance(out_mol, atoms, struct)
-        adder.set_min_h_counts(out_mol, atoms, struct)
-        adder.set_formal_charges(out_mol, atoms, struct)
-        adder.remove_bad_valences(out_mol, atoms, struct)
-        adder.remove_bad_geometry(out_mol)
-        adder.set_aromaticity(out_mol, atoms, struct)
-
-        for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
+        ob_mol, atoms = struct.to_ob_mol()
+        adder.disable_perception(ob_mol)
+        adder.set_aromaticity(ob_mol, atoms, struct)
+        for i, o in iter_atom_pairs(in_mol, ob_mol, typer.explicit_h):
             assert o.IsAromatic() == i.IsAromatic(), 'different aromaticity'
 
     def test_add_bonds(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, atoms = struct.to_ob_mol()
-        out_mol, visited_mols = adder.add_bonds(out_mol, atoms, struct)
+        ob_mol, atoms = struct.to_ob_mol()
+        ob_mol, visited_mols = adder.add_bonds(ob_mol, atoms, struct)
+        add_struct = typer.make_struct(ob_mol)
 
-        write_pymol(visited_mols, in_mol)
-        for t in struct.atom_types:
-            print(t)
+        write_ob_pymol(visited_mols, in_mol)
+        for t1, t2 in zip(struct.atom_types, add_struct.atom_types):
+            print(t1, '\t', t2)
 
         # check bonds between atoms in typed structure
-        for in_a, out_a in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
-            for in_b, out_b in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
+        for in_a, out_a in iter_atom_pairs(in_mol, ob_mol, typer.explicit_h):
+            for in_b, out_b in iter_atom_pairs(in_mol, ob_mol, typer.explicit_h):
 
                 in_bond = in_mol.GetBond(in_a, in_b)
-                out_bond = out_mol.GetBond(out_a, out_b)
+                out_bond = ob_mol.GetBond(out_a, out_b)
                 bstr = '{}-{}'.format(
                     ob.GetSymbol(in_a.GetAtomicNum()),
                     ob.GetSymbol(in_b.GetAtomicNum())
@@ -395,21 +417,26 @@ class TestBondAdding(object):
 
         # check whether correct num hydrogens were added
         n_in = in_mol.NumAtoms()
-        n_out = out_mol.NumAtoms()
+        n_out = ob_mol.NumAtoms()
         assert n_out == n_in, 'different num atoms ({} vs {})'.format(
             n_out, n_in
         )
 
     def test_convert_mol(self, in_mol):
-        mol = Molecule.from_ob_mol(in_mol)
-        out_mol = mol.to_ob_mol()
+        rd_mol = Molecule.from_ob_mol(in_mol)
+        out_mol = rd_mol.to_ob_mol()
+        in_smi = mols.ob_mol_to_smi(in_mol)
+        out_smi = mols.ob_mol_to_smi(out_mol)
+        ob_sim = mols.get_ob_smi_similarity(out_smi, in_smi)
+        assert out_smi == in_smi, \
+            'different SMILES strings ({:.3f})'.format(ob_sim)
 
     def test_make_mol(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
-        out_mol, add_struct, _ = adder.make_mol(struct)
+        out_mol, add_struct, visited_mols = adder.make_mol(struct)
         in_mol = Molecule.from_ob_mol(in_mol)
 
-        n_atoms_diff = (struct.n_atoms - add_struct.n_atoms)
+        n_atoms_diff = (in_mol.n_atoms - out_mol.n_atoms)
         elem_diff = (struct.elem_counts - add_struct.elem_counts).abs().sum()
         prop_diff = (struct.prop_counts - add_struct.prop_counts).abs().sum()
 
@@ -433,6 +460,8 @@ class TestBondAdding(object):
 
         in_valid, in_reason = in_mol.validate()
         assert in_valid, 'in_mol ' + in_reason
+
+        write_rd_pymol(visited_mols, in_mol)
 
         in_smi = in_mol.to_smi()
         out_smi = out_mol.to_smi()
