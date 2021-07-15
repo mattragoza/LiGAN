@@ -327,6 +327,36 @@ def ob_mol_delete_bonds(ob_mol):
     return ob_mol
 
 
+def ob_hyb_to_rd_hyb(ob_atom):
+    '''
+    Get the rdkit hybridization state
+    for an openbabel atom. See below:
+
+            OpenBabel   RDkit
+    unk     0           0
+    s       1           1
+    sp      1           2
+    sp2     2           3
+    sp3     3           4
+    sp3d    4           5
+    sp3d2   5           6
+    other   6+          7
+    '''
+    ob_hyb = ob_atom.GetHyb()
+    rd_hybs = Chem.HybridizationType
+    if 1 < ob_hyb < 6:
+        return rd_hybs.values[ob_hyb+1]
+    elif ob_hyb == 1: # s or sp
+        if ob_atom.GetAtomicNum() > 4:
+            return rd_hybs.SP
+        else: # no p orbitals
+            return rd_hybs.S
+    elif ob_hyb == 0:
+        return rd_hybs.UNSPECIFIED
+    else:
+        return rd_hybs.OTHER
+
+
 def ob_mol_to_rd_mol(ob_mol):
     '''
     Convert an OBMol to an RWMol, copying
@@ -344,6 +374,8 @@ def ob_mol_to_rd_mol(ob_mol):
         rd_atom.SetIsAromatic(ob_atom.IsAromatic())
         rd_atom.SetNumExplicitHs(ob_atom.GetImplicitHCount())
         rd_atom.SetNoImplicit(True) # don't use rdkit valence model
+        rd_atom.SetHybridization(ob_hyb_to_rd_hyb(ob_atom))
+
         idx = rd_mol.AddAtom(rd_atom)
 
         rd_coords = Geometry.Point3D(

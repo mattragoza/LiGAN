@@ -17,7 +17,7 @@ test_sdf_files = [
     'tests/input/neopentane.sdf',
     'tests/input/sulfone.sdf', #TODO reassign guanidine double bond
     'tests/input/ATP.sdf',
-    'tests/input/buckyball.sdf', # takes a very long time, why?
+    #'tests/input/buckyball.sdf', # takes a long time
     'tests/input/4fic_C_0UL.sdf',
     'tests/input/3el8_B_rec_4fic_0ul_lig_tt_docked_13.sdf.gz',
 ]
@@ -59,77 +59,123 @@ def iter_atom_pairs(in_mol, out_mol, explicit_h=False):
 
 
 def write_ob_pymol(visited_mols, in_mol):
-    name = in_mol.name
-    write_pymol(name, visited_mols, in_mol, write_mol_fn=write_ob_mols)
+    write_pymol(visited_mols, in_mol, mol_type='ob')
 
 
 def write_rd_pymol(visited_mols, in_mol):
-    name = in_mol.info['ob_mol'].name
-    write_pymol(name, visited_mols, in_mol, write_mol_fn=write_rd_mols)
+    write_pymol(visited_mols, in_mol, mol_type='rd')
 
 
-def write_pymol(mol_name, visited_mols, in_mol, write_mol_fn):
-    pymol_file = 'tests/output/TEST_' + mol_name + '.pymol'
+def write_pymol(visited_mols, in_mol, mol_type):
+    if mol_type == 'ob':
+        mol_name = in_mol.name
+        write_mols = write_ob_mols
+    else:
+        mol_name = in_mol.info['ob_mol'].name
+        write_mols = write_rd_mols
+    pymol_file = f'tests/output/TEST_{mol_type}_{mol_name}.pymol'
     with open(pymol_file, 'w') as f:
-        write_mols = visited_mols + [in_mol]
-        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols)))
-        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'a')))
-        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'e')))
-        f.write('load {}\n'.format(write_mol_fn(mol_name, write_mols, 'h')))
+        write = lambda mode: write_mols(
+            mol_name, visited_mols + [in_mol], mode
+        )
+        f.write('load {}\n'.format(write(None)))
+        f.write('load {}\n'.format(write('o')))
+        f.write('load {}\n'.format(write('e')))
+        f.write('load {}\n'.format(write('n')))
+        f.write('load {}\n'.format(write('a')))
+        f.write('load {}\n'.format(write('d')))
         f.write('show_as nb_spheres\n')
         f.write('show sticks\n')
         f.write('util.cbam\n')
         f.write('color white, (name H)\n')
-        f.write('color gray90, (name Md)\n')
-        f.write('color gray80, (name No)\n')
-        f.write('color gray70, (name Lr)\n')
-        f.write('color gray60, (name Rf)\n')
-        f.write('color gray50, (name Db)\n')
+        f.write('color red, (name Md)\n')
+        f.write('color orange, (name No)\n')
+        f.write('color yellow, (name Lr)\n')
+        f.write('color green, (name Rf)\n')
+        f.write('color blue, (name Db)\n')
+        f.write('color magenta, (name Sg)\n')
 
 
 def write_rd_mols(mol_name, rd_mols, mode=None):
-    rd_mols = [mols.Molecule(m) for m in rd_mols]
-    mol_file = 'tests/output/TEST_rd_{}.sdf'.format(mol_name)
-    mols.write_rd_mols_to_sdf_file(mol_file, rd_mols)
-    return mol_file
 
-
-def write_ob_mols(mol_name, ob_mols, mode=None):
-    write_mols = [mols.copy_ob_mol(m) for m in ob_mols]
-    in_mol = ob_mols[-1]
-
-    # color by atomic properties by setting
+    # color molecule by atomic properties by setting
     #  the element based on the property value
-    value_map = {0:1, 1:101, 2:102, 3:103, 4:104, 5:105}
+    value_map = {0:1, 1:101, 2:102, 3:103, 4:104, 5:105, 6:106}
 
-    for m in write_mols: # make sure we don't reassign these
-        m.SetAromaticPerceived(True)
-        m.SetHybridizationPerceived(True)
+    write_mols = [mols.Molecule(m) for m in rd_mols]
 
-    if mode == 'a': # show bond aromaticity as bond order
-        for m in write_mols:
-            for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(value_map[a.IsAromatic()])
-            for b in ob.OBMolBondIter(m):
-                b.SetBondOrder(1 + b.IsAromatic())
-    
-    elif mode == 'e': # show hybridization as element
-        for m in write_mols:
-            for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(value_map[a.GetHyb()])
+    for m in write_mols:
+        for a in m.GetAtoms():
 
-    elif mode == 'h': # show implicit H count as element
-        for m in write_mols:
-            for a in ob.OBMolAtomIter(m):
-                a.SetAtomicNum(value_map[a.GetImplicitHCount()])
+            if mode == 'o': # aromaticity
+                a.SetAtomicNum(value_map[a.GetIsAromatic()])
 
-    elif mode is not None:
-        raise ValueError(mode)
+            elif mode == 'e': # hybridization
+                a.SetAtomicNum(value_map[a.GetHybridization()])
+
+            elif mode == 'n': # implicit H count
+                a.SetAtomicNum(value_map[a.GetNumExplicitHs()])
+
+            elif mode == 'a': # hydrogen acceptor
+                a.SetAtomicNum(value_map[False])
+
+            elif mode == 'd': # hydrogen donor
+                a.SetAtomicNum(value_map[False])
+
+            elif mode is not None:
+                raise ValueError(mode)
+
+        if mode == 'o': # aromatic bonds
+            for b in m.GetBonds():
+                if b.GetIsAromatic():
+                    b.SetBondType(mols.Chem.BondType.DOUBLE)
+                else:
+                    b.SetBondType(mols.Chem.BondType.SINGLE)
 
     if mode:
         mol_name += '_' + mode
 
-    mol_file = 'tests/output/TEST_ob_{}.sdf'.format(mol_name)
+    mol_file = 'tests/output/TEST_rd_{}.sdf'.format(mol_name)
+    mols.write_rd_mols_to_sdf_file(mol_file, write_mols)
+    return mol_file
+
+
+def write_ob_mols(mol_name, ob_mols, mode=None):
+
+    # color molecule by atomic properties by setting
+    #  the element based on the property value
+    value_map = {0:1, 1:101, 2:102, 3:103, 4:104, 5:105, 6:106}
+
+    write_mols = [mols.copy_ob_mol(m) for m in ob_mols]
+
+    for m in write_mols:
+        for a in ob.OBMolAtomIter(m):
+
+            if mode == 'o': # aromaticity
+                a.SetAtomicNum(value_map[a.IsAromatic()])
+
+            elif mode == 'e': # hybridization
+                a.SetAtomicNum(value_map[mols.ob_hyb_to_rd_hyb(a)])
+
+            elif mode == 'n': # implicit H count
+                a.SetAtomicNum(value_map[a.GetImplicitHCount()])
+
+            elif mode == 'a': # hydrogen acceptor
+                a.SetAtomicNum(value_map[a.IsHbondAcceptor()])
+
+            elif mode == 'd': # hydrogen donor
+                a.SetAtomicNum(value_map[a.IsHbondDonor()])
+
+            elif mode is not None:
+                raise ValueError(mode)
+
+        if mode == 'o': # aromatic bonds
+            for b in ob.OBMolBondIter(m):
+                b.SetBondOrder(1 + b.IsAromatic())
+    if mode:
+        mol_name += '_' + mode
+
+    mol_file = f'tests/output/TEST_ob_{mol_name}.sdf'
     mols.write_ob_mols_to_sdf_file(mol_file, write_mols)
     return mol_file
 
@@ -443,10 +489,7 @@ class TestBondAdding(object):
         assert n_atoms_diff == 0, \
             'different num atoms ({})'.format(n_atoms_diff)
 
-        for t1, t2 in zip(
-            sorted(struct.atom_types),
-            sorted(add_struct.atom_types)
-        ):
+        for t1, t2 in zip(struct.atom_types, add_struct.atom_types):
             print(t1, '\t', t2)
 
         assert elem_diff == 0, \
@@ -472,3 +515,13 @@ class TestBondAdding(object):
 
         rmsd = out_mol.aligned_rmsd(in_mol)
         assert rmsd < 1.0, 'RMSD too high ({})'.format(rmsd)
+
+    def test_uff_minimize(self, adder, typer, in_mol):
+        struct = typer.make_struct(in_mol)
+        out_mol, add_struct, visited_mols = adder.make_mol(struct)
+        in_mol = Molecule.from_ob_mol(in_mol)
+        out_mol.validate()
+        min_mol = out_mol.uff_minimize()
+        write_rd_pymol(visited_mols + [min_mol], in_mol)
+        assert False, 'OK'
+
