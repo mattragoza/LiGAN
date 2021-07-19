@@ -504,6 +504,7 @@ class TestBondAdding(object):
         in_valid, in_reason = in_mol.validate()
         assert in_valid, 'in_mol ' + in_reason
 
+        print(len(visited_mols))
         write_rd_pymol(visited_mols, in_mol)
 
         in_smi = in_mol.to_smi()
@@ -519,9 +520,9 @@ class TestBondAdding(object):
     def test_uff_minimize(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)
         out_mol, add_struct, visited_mols = adder.make_mol(struct)
-        in_mol = Molecule.from_ob_mol(in_mol)
         out_mol.validate()
-        min_mol = out_mol.uff_minimize()
-        write_rd_pymol(visited_mols + [min_mol], in_mol)
-        assert False, 'OK'
-
+        out_mol_min = out_mol.uff_minimize()
+        in_mol = Molecule.from_ob_mol(in_mol)
+        in_mol.validate()
+        in_mol_min = in_mol.uff_minimize()
+        write_rd_pymol(visited_mols + [out_mol_min, in_mol_min], in_mol)

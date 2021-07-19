@@ -389,15 +389,15 @@ class BondAdder(object):
         visit_mol(ob_mol, 'set_min_h_counts')
 
         # set formal charge to correctly determine allowed valences
-        # remove bonds to atoms that are above their allowed valence
-        #   with priority towards removing highly stretched bonds
         self.set_formal_charges(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'set_formal_charges')
 
+        # remove bonds to atoms that are above their allowed valence
+        #   with priority towards removing highly stretched bonds
         self.remove_bad_valences(ob_mol, atoms, struct)
         visit_mol(ob_mol, 'remove_bad_valences')
 
-        # remove bonds whose lengths/angles are excessively distorted
+        # remove bonds with excessively distorted lengths/angles
         self.remove_bad_geometry(ob_mol)
         visit_mol(ob_mol, 'remove_bad_geometry')
 
@@ -416,8 +416,8 @@ class BondAdder(object):
         visit_mol(ob_mol, 'make_h_explicit')
 
         # hybridization and aromaticity are perceived in PBO()
-        #   but the flags are both are cleared at the end
-        #   so we have to disable perception again, and then
+        #   but the flags both are cleared at the end
+        # so we have to disable perception again, and then
         #   re-apply previous methods
         ob_mol.PerceiveBondOrders()
         self.disable_perception(ob_mol)

@@ -34,13 +34,12 @@ def main(argv):
                 'Setting output prefix to {}\n'.format(config['out_prefix'])
             )
 
-    if 'random_seed' in config:
-        liGAN.set_random_seed(config['random_seed'])
+    device = 'cuda'
+    liGAN.set_random_seed(config.get('random_seed', None))
 
     solver_type = getattr(
         liGAN.training, config['model_type'] + 'Solver'
     )
-
     solver = solver_type(
         data_kws=config['data'],
         gen_model_kws=config['gen_model'],
@@ -53,7 +52,7 @@ def main(argv):
         atom_fitting_kws=config['atom_fitting'],
         bond_adding_kws=config.get('bond_adding', {}),
         out_prefix=config['out_prefix'],
-        device='cuda',
+        device=device,
         debug=args.debug,
         sync_cuda=config.get('sync_cuda', False),
     )

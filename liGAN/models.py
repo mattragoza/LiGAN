@@ -70,21 +70,33 @@ def sample_latents(
     z_score=None,
     truncate=None,
     var_factor=1.0,
+    interpolate=False,
+    spherical=False,
     device='cuda',
 ):
     assert batch_size is not None, batch_size
+
+    # draw samples from standard normal distribution
     latents = torch.randn((batch_size, n_latent), device=device)
 
     if z_score is not None:
+        # normalize and scale by z_score
         latents = latents / latents.norm(dim=1, keepdim=True) * z_score
 
     if truncate is not None:
+        # truncate at threshold
         latents = torch.fmod(latents, truncate)
 
     if log_stds is not None:
-        latents *= torch.exp(log_stds) * var_factor
+        # scale by standard deviation
+        latents *= torch.exp(log_stds)
+
+    if var_factor is not None:
+        # scale by variation factor
+        latents *= var_factor
 
     if means is not None:
+        # shift by mean
         latents += means
 
     return latents

@@ -8,6 +8,7 @@ from . import (
 	models,
 	loss_fns,
 	training,
+	inference,
 	atom_fitting,
 	bond_adding,
 	metrics

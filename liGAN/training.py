@@ -152,7 +152,7 @@ class GenerativeSolver(nn.Module):
         self,
         device,
         caffe_init=False,
-        gen_model_state=None,
+        state=None,
         **gen_model_kws
     ):
         self.gen_model = self.gen_model_type(
@@ -173,14 +173,14 @@ class GenerativeSolver(nn.Module):
         else:
             self.gen_model.log_recon_var = torch.zeros(1, device=device)
 
-        if gen_model_state:
-            self.gen_model.load_state_dict(torch.load(gen_model_state))
+        if state:
+            self.gen_model.load_state_dict(torch.load(state))
 
     def init_disc_model(
         self,
         device,
         caffe_init=False,
-        disc_model_state=None,
+        state=None,
         **disc_model_kws
     ):
         self.disc_model = models.Discriminator(
@@ -192,14 +192,14 @@ class GenerativeSolver(nn.Module):
         if caffe_init:
             self.disc_model.apply(models.caffe_init_weights)
 
-        if disc_model_state:
-            self.disc_model.load_state_dict(torch.load(disc_model_state))
+        if state:
+            self.disc_model.load_state_dict(torch.load(state))
 
     def init_prior_model(
         self,
         device,
         caffe_init=False,
-        prior_model_state=None,
+        state=None,
         **prior_model_kws
     ):
         self.prior_model = models.Stage2VAE(
@@ -217,8 +217,8 @@ class GenerativeSolver(nn.Module):
         else:
             self.prior_model.log_recon_var = torch.zeros(1, device=device)
 
-        if prior_model_state:
-            self.prior_model.load_state_dict(torch.load(prior_model_state))
+        if state:
+            self.prior_model.load_state_dict(torch.load(state))
 
     def init_gen_optimizer(
         self, type, n_train_iters=1, clip_gradient=0, **gen_optim_kws
