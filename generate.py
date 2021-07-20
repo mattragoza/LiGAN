@@ -29,7 +29,7 @@ def main(argv):
     generator = generator_type(
         out_prefix=config['out_prefix'],
         n_samples=config['generate']['n_samples'],
-        fit_atoms=config['generate']['fit_atoms'],
+        fit_atoms=config['generate'].get('fit_atoms', True),
         data_kws=config['data'],
         gen_model_kws=config['gen_model'],
         prior_model_kws=config.get('prior_model', {}),

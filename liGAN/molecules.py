@@ -116,25 +116,25 @@ class Molecule(Chem.RWMol):
 
     def validate(self):
         if self.n_atoms == 0:
-            return False, 'no atoms'
+            return False, 'No atoms'
         if self.n_frags > 1:
-            return False, 'multiple fragments'
+            return False, 'Multiple fragments'
         try:
             self.sanitize()
-            return True, 'valid molecule'
+            return True, 'Valid molecule'
         except Chem.AtomValenceException:
-            return False, 'invalid valence'
+            return False, 'Invalid valence'
         except Chem.KekulizeException:
-            return False, 'failed to kekulize'
+            return False, 'Failed to kekulize'
 
-    def uff_minimize(self):
+    def uff_minimize(self, wrt=None):
         '''
         Minimize molecular geometry using UFF.
         The minimization results are stored in
         the info attribute of the returned mol.
         '''
         t_start = time.time()
-        min_mol, E_init, E_min, error = uff_minimize_rd_mol(self)
+        min_mol, E_init, E_min, error = uff_minimize_rd_mol(self, fixed_mol=wrt)
         rmsd = min_mol
         return Molecule(
             min_mol,
@@ -539,28 +539,47 @@ def get_ob_smi_similarity(smi1, smi2):
     return fgp1 | fgp2
 
 
-def uff_minimize_rd_mol(rd_mol, max_iters=10000):
+def uff_minimize_rd_mol(rd_mol, fixed_mol=None, n_iters=200, n_tries=1):
     '''
     Attempt to minimize rd_mol with UFF.
-    Returns min_mol, E_init, E_final, error
+    If fixed_mol is provided, minimize in
+    the context of the fixed receptor.
+
+    Returns (min_mol, E_init, E_final, error).
     '''
-    E_init = E_final = np.nan
-
+    rd_mol = Chem.RWMol(rd_mol)
     if rd_mol.GetNumAtoms() == 0:
-        return rd_mol, E_init, E_final, 'No atoms'
+        return rd_mol, np.nan, np.nan, 'No atoms'
 
-    try: # initialize molecule and force field
-        rd_mol = Chem.AddHs(rd_mol, addCoords=True)
-        uff = AllChem.UFFGetMoleculeForceField(rd_mol, confId=0)
+    E_init = np.nan
+    E_final = np.nan
+    error = None
+
+    # regenerate hydrogen coords with rdkit
+    rd_mol = Chem.AddHs(
+        Chem.RemoveHs(rd_mol, updateExplicitCount=True, sanitize=False),
+        explicitOnly=True,
+        addCoords=True
+    )
+
+    if fixed_mol: # combine into complex
+        orig_mol = rd_mol # remember the ligand
+        rd_mol = Chem.CombineMols(fixed_mol, rd_mol)
+
+    Chem.SanitizeMol(rd_mol, catchErrors=True)
+
+    # initialize molecule and force field
+    try:
+        uff = AllChem.UFFGetMoleculeForceField(
+            rd_mol, confId=0, ignoreInterfragInteractions=False
+        )
         uff.Initialize()
         E_init = uff.CalcEnergy()
 
     except Chem.rdchem.AtomValenceException:
-        return rd_mol, E_init, E_final, 'Invalid valence'
-
+        error = 'Invalid valence'
     except Chem.rdchem.KekulizeException:
-        return rd_mol, E_init, E_final, 'Failed to kekulize'
-
+        error = 'Failed to kekulize'
     except Exception as e:
         if 'getNumImplicitHs' in str(e):
             return rd_mol, E_init, E_final, 'No implicit valence'
@@ -570,20 +589,44 @@ def uff_minimize_rd_mol(rd_mol, max_iters=10000):
         write_rd_mol_to_sdf_file('badmol_uff1.sdf', rd_mol, kekulize=False)
         raise e
 
-    try: # minimize molecule with force field
-        result = uff.Minimize(maxIts=max_iters)
-        E_final = uff.CalcEnergy()
-        return (
-            rd_mol, E_init, E_final, 'Not converged' if result else None
-        )
+    if not error: # do minimization
 
-    except RuntimeError as e:
-        print('UFF2 exception')
-        write_rd_mol_to_sdf_file(
-            'badmol_uff2.sdf', rd_mol, kekulize=True
-        )
-        traceback.print_exc(file=sys.stdout)
-        return rd_mol, E_init, np.nan, str(e)
+        if fixed_mol: # fix receptor atoms
+            for i in range(fixed_mol.GetNumAtoms()):
+                uff.AddFixedPoint(i)
+
+        try: # minimize molecule with force field
+
+            not_converged = True
+            while n_tries > 0 and not_converged:
+                print('.', end='', flush=True)
+                not_converged = uff.Minimize(maxIts=n_iters)
+                n_tries -= 1
+            print(flush=True)
+
+            E_final = uff.CalcEnergy()
+            if not_converged:
+                error = 'Not converged'
+
+        except RuntimeError as e:
+            print('UFF2 exception')
+            error = str(e)
+            write_rd_mol_to_sdf_file(
+                'badmol_uff2.sdf', rd_mol, kekulize=True
+            )
+            traceback.print_exc(file=sys.stdout)
+
+    if fixed_mol:
+        # copy minimized conformation back to ligand
+        min_coords = rd_mol.GetConformer().GetPositions()
+        orig_conf = orig_mol.GetConformer()
+        for i, xyz in enumerate(min_coords[-orig_mol.GetNumAtoms():]):
+            orig_conf.SetAtomPosition(i, xyz)
+
+        # only return the minimized ligand
+        rd_mol = orig_mol
+
+    return rd_mol, E_init, E_final, error
 
 
 @catch_exception(exc_type=SyntaxError)

@@ -57,21 +57,21 @@ class MoleculeGenerator(object):
             self.init_gen_model(device=device, **gen_model_kws)
 
             if self.gen_model_type.has_stage2:
-
                 print('Initializing prior model')
                 self.init_prior_model(device=device, **prior_model_kws)
             else:
                 self.prior_model = None
         else:
-            print('No generative model, using real grids')
+            print('No generative model')
             self.gen_model = None
             self.prior_model = None
 
         if fit_atoms:
-            print('Initializing atom fitter and bond adder')
+            print('Initializing atom fitter')
             self.atom_fitter = liGAN.atom_fitting.AtomFitter(
                 device=device, **atom_fitting_kws
             )
+            print('Initializing bond adder')
             self.bond_adder = liGAN.bond_adding.BondAdder(
                 debug=debug, **bond_adding_kws
             )
@@ -96,7 +96,9 @@ class MoleculeGenerator(object):
         )
 
     def init_data(self, device, n_samples, data_file, **data_kws):
-        self.data = liGAN.data.AtomGridData(device=device, **data_kws)
+        self.data = liGAN.data.AtomGridData(
+            device=device, n_samples=n_samples, **data_kws
+        )
         self.data.populate(data_file)
 
     def init_gen_model(
@@ -213,14 +215,13 @@ class MoleculeGenerator(object):
         return (
             rec_structs, rec_grids,
             lig_structs, lig_grids, 
-            latents, lig_gen_grids
+            latents, lig_gen_grids,
         )
 
     def generate(
         self,
         n_examples,
         n_samples,
-        fit_atoms=False,
         prior=False,
         stage2=False,
         z_score=None,
@@ -228,6 +229,12 @@ class MoleculeGenerator(object):
         var_factor=1.0,
         interpolate=False,
         spherical=False,
+        fit_atoms=True,
+        add_bonds=True,
+        uff_minimize=False,
+        fit_to_real=False,
+        add_to_real=False,
+        minimize_real=False,
         verbose=True,
     ):
         '''
@@ -249,7 +256,7 @@ class MoleculeGenerator(object):
                 # index of nearest interpolation endpoint in batch
                 endpoint_idx = 0 if batch_idx < batch_size//2 else -1
 
-            is_first = (example_idx == sample_idx == 0)
+            need_real_mol = (sample_idx == 0)
             need_next_batch = (batch_idx == 0)
 
             if need_next_batch: # forward next batch
@@ -265,18 +272,18 @@ class MoleculeGenerator(object):
 
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
-            lig_center = lig_struct.center
 
-            # undo transform so structs are all aligned
+            # in order to align fit structs with real structs,
+            #   we need to apply the inverse of the transform
+            #   that was used to create the real density grids
             transform = self.data.transforms[batch_idx]
-            transform.backward(rec_struct.coords, rec_struct.coords)
-            transform.backward(lig_struct.coords, lig_struct.coords)
 
             # only process real rec/lig once, since they're
             #   the same for all samples of a given ligand
-            if sample_idx == 0:
+            if need_real_mol:
                 print('Getting real molecule from data root')
-                my_split_ext = lambda f: f.rsplit('.', 1 + f.endswith('.gz'))
+                my_split_ext = \
+                    lambda f: f.rsplit('.', 1 + f.endswith('.gz'))
 
                 rec_src_file = rec_struct.info['src_file']
                 rec_src_no_ext = my_split_ext(rec_src_file)[0]
@@ -291,23 +298,29 @@ class MoleculeGenerator(object):
                 lig_mol = find_real_lig_in_data_root(
                     self.data.root_dir, lig_src_no_ext, use_ob=True
                 )
-                assert rec_name in lig_name
 
-                if fit_atoms: # add bonds and minimize
+                if minimize_real:
+                    print('Minimizing real molecule', end='')
+                    lig_mol.info['min_mol'] = lig_mol.uff_minimize(wrt=rec_mol)
 
-                    print('Minimizing real molecule')
-                    lig_mol.info['min_mol'] = lig_mol.uff_minimize()
-
-                    print('Making molecule from real atoms')
+                if add_to_real:
+                    print('Adding bonds to real atoms')
                     lig_add_mol, lig_add_struct, _ = \
                         self.bond_adder.make_mol(lig_struct)
                     lig_add_mol.info['type_struct'] = lig_add_struct
-                    lig_add_mol.info['min_mol'] = lig_add_mol.uff_minimize()
+                    lig_struct.info['add_mol'] = lig_add_mol
+
+                    if uff_minimize:
+                        print('Minimizing bond-added molecule', end='')
+                        lig_add_mol.info['min_mol'] = \
+                            lig_add_mol.uff_minimize(wrt=rec_mol)
+
+            else: # check that the ligand is the same
+                assert rec_struct.info['src_file'] == rec_src_file
+                assert lig_struct.info['src_file'] == lig_src_file
 
             rec_struct.info['src_mol'] = rec_mol
             lig_struct.info['src_mol'] = lig_mol
-            if fit_atoms:
-                lig_struct.info['add_mol'] = lig_add_mol
 
             # now process atomic density grids
             grid_types = [
@@ -324,14 +337,16 @@ class MoleculeGenerator(object):
 
                 is_lig_grid = (grid_type.startswith('lig'))
                 is_gen_grid = (grid_type.endswith('gen'))
-                grid_needs_fit = (is_lig_grid and fit_atoms and (
-                    is_gen_grid or not self.gen_model
-                ))
+                if is_gen_grid:
+                    grid_needs_fit = fit_atoms and is_lig_grid
+                else:
+                    grid_needs_fit = fit_to_real and is_lig_grid
+                real_or_gen = 'generated' if is_gen_grid else 'real'
 
                 grid = liGAN.atom_grids.AtomGrid(
                     values=grids[batch_idx].detach(),
                     typer=atom_typer,
-                    center=lig_center,
+                    center=lig_struct.center,
                     resolution=self.data.resolution
                 )
 
@@ -344,7 +359,7 @@ class MoleculeGenerator(object):
 
                 # display progress
                 index_str = \
-                    f'[example_idx={example_idx} sample_idx={sample_idx} rec_name={rec_name} lig_name={lig_name} grid_type={grid_type}]'
+                    f'[example_idx={example_idx} sample_idx={sample_idx} lig_name={lig_name} grid_type={grid_type}]'
 
                 value_str = 'norm={:.4f} gpu={:.4f}'.format(
                     grid.values.norm(),
@@ -366,25 +381,29 @@ class MoleculeGenerator(object):
                     lig_name, sample_idx, grid_type, grid
                 )
 
-                if grid_needs_fit: # atom fitting, bond adding, minimize
-                    grid_type += '_fit'
+                if grid_needs_fit: # perform atom fitting
 
-                    fit_struct, fit_grid, visited_structs = \
-                        self.atom_fitter.fit_struct(
-                            grid, lig_struct.type_counts
-                        )
+                    print(f'Fitting atoms to {real_or_gen} grid')
+                    fit_struct, fit_grid, visited_structs = self.atom_fitter.fit_struct(grid, lig_struct.type_counts)
                     fit_struct.info['visited_structs'] = visited_structs
-
-                    if fit_struct.n_atoms > 0: # undo transform
-                        transform.backward(fit_struct.coords, fit_struct.coords)
-
-                    fit_add_mol, fit_add_struct, visited_mols = \
-                        self.bond_adder.make_mol(fit_struct)
-                    fit_add_mol.info['type_struct'] = fit_add_struct
-                    fit_add_mol.info['min_mol'] = fit_add_mol.uff_minimize()
-                    fit_struct.info['add_mol'] = fit_add_mol
                     fit_grid.info['src_struct'] = fit_struct
 
+                    if fit_struct.n_atoms > 0: # inverse transform
+                        transform.backward(fit_struct.coords, fit_struct.coords)
+
+                    if add_bonds: # do bond adding
+                        print(f'Adding bond to atoms fit to {real_or_gen} grid')
+                        fit_add_mol, fit_add_struct, visited_mols = \
+                            self.bond_adder.make_mol(fit_struct)
+                        fit_add_mol.info['type_struct'] = fit_add_struct
+                        fit_struct.info['add_mol'] = fit_add_mol
+
+                        if uff_minimize: # do minimization
+                            print(f'Minimizing molecule from {real_or_gen} fit atoms', end='')
+                            fit_add_mol.info['min_mol'] = \
+                                fit_add_mol.uff_minimize(wrt=rec_mol)
+
+                    grid_type += '_fit'
                     self.out_writer.write(
                         lig_name, sample_idx, grid_type, fit_grid
                     )
@@ -449,10 +468,10 @@ class OutputWriter(object):
     def __init__(
         self,
         out_prefix,
-        output_dx,
-        output_sdf,
-        output_types,
-        output_latent,
+        output_grids,
+        output_structs,
+        output_mols,
+        output_latents,
         output_visited,
         output_conv,
         n_samples,
@@ -461,10 +480,10 @@ class OutputWriter(object):
         verbose
     ):
         self.out_prefix = out_prefix
-        self.output_dx = output_dx
-        self.output_sdf = output_sdf
-        self.output_types = output_types
-        self.output_latent = output_latent
+        self.output_grids = output_grids
+        self.output_structs = output_structs
+        self.output_mols = output_mols
+        self.output_latents = output_latents
         self.output_visited = output_visited
         self.output_conv = output_conv
         self.n_samples = n_samples
@@ -491,18 +510,19 @@ class OutputWriter(object):
         self.open_files = dict()
 
         # create directories for output files
-        if output_latent:
+        if output_latents:
             self.latent_dir = Path('latents')
             self.latent_dir.mkdir(exist_ok=True)
 
-        if output_dx:
+        if output_grids:
             self.grid_dir = Path('grids')
             self.grid_dir.mkdir(exist_ok=True)
 
-        if output_sdf:
+        if output_structs:
             self.struct_dir = Path('structs')
             self.struct_dir.mkdir(exist_ok=True)
 
+        if output_mols:
             self.mol_dir = Path('molecules')
             self.mol_dir.mkdir(exist_ok=True)
 
@@ -580,7 +600,7 @@ class OutputWriter(object):
     def write_latent(self, latent_file, latent_vec):
 
         self.print('Writing ' + str(latent_file))
-        write_latent_vecs_to_file(latent_file, [latent_vec])
+        write_latent_vec_to_file(latent_file, latent_vec)
 
     def write(self, lig_name, sample_idx, grid_type, grid):
         '''
@@ -602,8 +622,8 @@ class OutputWriter(object):
         has_struct = (is_real_grid or is_fit_grid)
         has_conv_grid = not is_fit_grid # and is_lig_grid ?
 
-        # write atomic structs and molecules
-        if has_struct and self.output_sdf:
+        # write atomic structs and/or molecules
+        if has_struct:
 
             # get struct that created this grid (via molgrid.GridMaker)
             #   note that depending on the grid_type, this can either be
@@ -616,7 +636,8 @@ class OutputWriter(object):
             # and we don't apply bond adding to the receptor struct,
             #   so only ligand structs have add_mol and min_mol
 
-            if is_first_real_grid: # write real molecule
+            # write real molecule
+            if self.output_mols and is_first_real_grid:
 
                 sdf_file = self.mol_dir / (grid_prefix + '_src.sdf.gz')
                 src_mol = struct.info['src_mol']
@@ -628,7 +649,7 @@ class OutputWriter(object):
                     self.write_sdf(sdf_file, min_mol, sample_idx, is_real=True)
 
             # write typed atomic structure (real or fit)
-            if is_first_real_grid or is_fit_grid:
+            if self.output_structs and (is_first_real_grid or is_fit_grid):
 
                 sdf_file = self.struct_dir / (grid_prefix + '.sdf.gz')
                 self.write_sdf(sdf_file, struct, sample_idx, is_real_grid)
@@ -639,47 +660,51 @@ class OutputWriter(object):
                     types_file = self.struct_dir / types_base
                     self.write_atom_types(types_file, struct.atom_types)
 
-            # write bond-added molecule (real or fit, no rec bond adding)
-            if is_lig_grid and (
-                is_first_real_grid or is_fit_grid
-            ):
+            # write bond-added molecule (real or fit ligand)
+            if self.output_mols and 'add_mol' in struct.info:
                 sdf_file = self.mol_dir / (grid_prefix + '_add.sdf.gz')
                 add_mol = struct.info['add_mol']
-                self.write_sdf(sdf_file, add_mol, sample_idx, is_real_grid)                            
+                self.write_sdf(sdf_file, add_mol, sample_idx, is_real_grid)
 
-                sdf_file = self.mol_dir / (grid_prefix + '_add_uff.sdf.gz')
-                min_mol = add_mol.info['min_mol']
-                self.write_sdf(sdf_file, min_mol, sample_idx, is_real_grid)
+                if 'min_mol' in add_mol.info:
+                    sdf_file = self.mol_dir / (grid_prefix + '_add_uff.sdf.gz')
+                    min_mol = add_mol.info['min_mol']
+                    self.write_sdf(sdf_file, min_mol, sample_idx, is_real_grid)
 
         # write atomic density grids
-        if self.output_dx:
+        if self.output_grids:
 
             dx_prefix = self.grid_dir / (grid_prefix + '_' + i)
             self.write_dx(dx_prefix, grid)
 
-            if has_conv_grid and self.output_conv: # write convolved grid
+            # write convolved grid
+            if self.output_conv and 'conv_grid' in grid.info:
 
                 dx_prefix = self.grid_dir / (grid_prefix + '_conv_' + i)
-                self.write_dx(dx_prefix, grid.info['conv_grid'])                  
+                self.write_dx(dx_prefix, grid.info['conv_grid'])
 
         # write latent vectors
-        if is_gen_grid and self.output_latent:
+        if self.output_latents and is_gen_grid:
 
             latent_file = self.latent_dir / (grid_prefix + '_' + i + '.latent')
             self.write_latent(latent_file, grid.info['src_latent'])
 
         # store grid until ready to compute output metrics
+        #   if we're computing batch matrics, need all samples
+        #   otherwise, just need all grids for this sample
         self.grids[lig_name][sample_idx][grid_type] = grid
         lig_grids = self.grids[lig_name]
 
-        if self.batch_metrics: # store until grids for all samples are ready
+        if self.batch_metrics:
 
+            # store until grids for all samples are ready
             has_all_samples = (len(lig_grids) == self.n_samples)
             has_all_grids = all(
                 set(lig_grids[i]) == set(self.grid_types) for i in lig_grids
             )
 
-            if has_all_samples and has_all_grids: # compute batch metrics
+            # compute batch metrics
+            if has_all_samples and has_all_grids:
 
                 self.print('Computing metrics for all '+lig_name+' samples')
                 try:
@@ -700,10 +725,13 @@ class OutputWriter(object):
                 )
                 del self.grids[lig_name] # free memory
 
-        else: # only store until grids for this sample are ready
-            has_all_grids = set(lig_grids[sample_idx]) == set(self.grid_types)
-
-            if has_all_grids: # compute sample metrics
+        else:
+            # only store until grids for this sample are ready
+            has_all_grids = (
+                set(lig_grids[sample_idx]) == set(self.grid_types)
+            )
+            # compute sample metrics
+            if has_all_grids:
 
                 self.print('Computing metrics for {} sample {}'.format(
                     lig_name, sample_idx
@@ -795,7 +823,7 @@ class OutputWriter(object):
                 mol_type='lig', mol=lig_mol
             )
 
-            if has_lig_fit or has_lig_gen_fit:
+            if 'add_mol' in lig_struct.info:
 
                 lig_add_mol = lig_struct.info['add_mol']
                 self.compute_mol_metrics(idx,
@@ -1182,12 +1210,11 @@ def write_atom_types_to_file(types_file, atom_types):
         f.write('\n'.join(str(a) for a in atom_types))
 
 
-def write_latent_vecs_to_file(latent_file, latent_vecs):
+def write_latent_vec_to_file(latent_file, latent_vec):
 
     with open(latent_file, 'w') as f:
-        for v in latent_vecs:
-            line = ' '.join('{:.5f}'.format(x) for x in v) + '\n'
-            f.write(line)
+        for value in latent_vec:
+            f.write(str(value.item()) + '\n')
 
 
 def write_pymol_script(
@@ -1226,3 +1253,7 @@ def write_pymol_script(
                 print(sdf_file, file=sys.stderr)
                 raise
             f.write('load {}, {}\n'.format(sdf_file, obj_name))
+
+        f.write('util.cbam *rec_src\n')
+        f.write('util.cbag *lig_src\n')
+        f.write('util.cbac *lig_gen_fit_add\n')
