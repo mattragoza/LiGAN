@@ -2,6 +2,7 @@ import sys, os, gzip, traceback, time
 from functools import lru_cache
 from collections import Counter
 import numpy as np
+import scipy as sp
 
 from openbabel import openbabel as ob
 from openbabel import pybel
@@ -89,10 +90,14 @@ class Molecule(Chem.RWMol):
         return [self.GetBondWithIdx(i) for i in self.n_bonds]
 
     @property
+    def coords(self):
+        return self.GetConformer().GetPositions()
+
+    @property
     def center(self):
         # return heavy atom centroid
-        mask = [a.GetAtomicNum() != 1 for a in self.GetAtoms()]
-        return self.GetConformer(0).GetPositions()[mask].mean(axis=0)
+        not_h = [a.GetAtomicNum() != 1 for a in self.atoms]
+        return self.coords[not_h].mean(axis=0)
 
     def translate(self, xyz):
         dx, dy, dz = xyz
@@ -103,7 +108,7 @@ class Molecule(Chem.RWMol):
 
     def aligned_rmsd(self, mol):
         # aligns self to mol
-        return get_rd_mol_rmsd(self, mol)
+        return get_rd_mol_rmsd(self, mol, align=True)
 
     def sanitize(self):
         return Chem.SanitizeMol(self)
@@ -127,6 +132,9 @@ class Molecule(Chem.RWMol):
         except Chem.KekulizeException:
             return False, 'Failed to kekulize'
 
+    def get_pocket(self, other):
+        return get_rd_mol_pocket(self, other)
+
     def uff_minimize(self, wrt=None):
         '''
         Minimize molecular geometry using UFF.
@@ -140,7 +148,7 @@ class Molecule(Chem.RWMol):
             min_mol,
             E_init=E_init,
             E_min=E_min,
-            min_rmsd=get_rd_mol_rmsd(min_mol, self),
+            min_rmsd=get_rd_mol_rmsd(self, min_mol, align=False),
             min_error=error,
             min_time=time.time() - t_start,
         )
@@ -475,6 +483,24 @@ def get_rd_mol_validity(rd_mol):
     return n_atoms, n_frags, error, valid
 
 
+def get_rd_mol_rmsd(rd_mol1, rd_mol2, align=False):
+
+    # NOTE rd_mol RMSD is undefined b/tw diff molecules
+    #   (even if they have the same type counts)
+
+    # GetBestRMS(mol1, mol2) aligns mol1 to mol2
+    #   if we don't want this, copy mol1 first
+    if not align:
+        rd_mol1 = Chem.RWMol(rd_mol1)
+
+    try:
+        return AllChem.GetBestRMS(rd_mol1, rd_mol2)
+    except RuntimeError:
+        #RuntimeError: No sub-structure match found 
+        #  between the reference and probe mol
+        return np.nan
+
+
 # molecular weight and logP are defined for invalid molecules
 # logP is log water-octanol partition coefficient
 #   where hydrophilic molecules have logP < 0
@@ -490,10 +516,6 @@ get_rd_mol_QED = catch_exception(
 get_rd_mol_SAS = catch_exception(
     sascorer.calculateScore, Chem.MolSanitizeException
 )
-
-# mol RMSD is undefined b/tw diff molecules (even if same type counts)
-# also note that GetBestRMS(mol1, mol2) aligns mol1 to mol2
-get_rd_mol_rmsd  = catch_exception(AllChem.GetBestRMS, RuntimeError)
 
 
 @lru_cache(maxsize=1)
@@ -537,6 +559,51 @@ def get_ob_smi_similarity(smi1, smi2):
     fgp1 = pybel.readstring('smi', smi1).calcfp()
     fgp2 = pybel.readstring('smi', smi2).calcfp()
     return fgp1 | fgp2
+
+
+def get_rd_mol_pocket(rd_mol, fixed_mol, max_dist=5):
+    '''
+    Return a molecule containing only
+    the atoms from fixed_mol that are
+    within max_dist of rd_mol.
+    '''
+    coords1 = rd_mol.coords
+    coords2 = fixed_mol.coords
+    dist = sp.spatial.distance.cdist(coords1, coords2)
+
+    # indexes of atoms in fixed_mol that are
+    #   within max_dist of any atom in rd_mol
+    pocket_atom_idxs = np.nonzero((dist < max_dist))[1]
+
+    # copy mol and determine pocket residues
+    pocket_res_ids = set()
+    for i in pocket_atom_idxs:
+        atom = fixed_mol.GetAtomWithIdx(int(i))
+        res_id = get_rd_atom_res_id(atom)
+        pocket_res_ids.add(res_id)
+
+    # copy mol and delete delete atoms
+    out_mol = Chem.RWMol(fixed_mol)
+    for atom in list(out_mol.GetAtoms()):
+        res_id = get_rd_atom_res_id(atom)
+        if res_id not in pocket_res_ids:
+            out_mol.RemoveAtom(atom.GetIdx())
+
+    Chem.SanitizeMol(out_mol)
+    return out_mol
+
+
+def get_rd_atom_res_id(rd_atom):
+    '''
+    Return an object that uniquely
+    identifies the residue that the
+    atom belongs to in a given PDB.
+    '''
+    res_info = rd_atom.GetPDBResidueInfo()
+    return (
+        res_info.GetChainId(),
+        res_info.GetResidueNumber()
+    )
 
 
 def uff_minimize_rd_mol(rd_mol, fixed_mol=None, n_iters=200, n_tries=1):

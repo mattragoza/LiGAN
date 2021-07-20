@@ -301,7 +301,9 @@ class MoleculeGenerator(object):
 
                 if minimize_real:
                     print('Minimizing real molecule', end='')
-                    lig_mol.info['min_mol'] = lig_mol.uff_minimize(wrt=rec_mol)
+                    pkt_mol = lig_mol.get_pocket(rec_mol)
+                    lig_mol.info['pkt_mol'] = pkt_mol
+                    lig_mol.info['min_mol'] = lig_mol.uff_minimize(wrt=pkt_mol)
 
                 if add_to_real:
                     print('Adding bonds to real atoms')
@@ -312,8 +314,10 @@ class MoleculeGenerator(object):
 
                     if uff_minimize:
                         print('Minimizing bond-added molecule', end='')
+                        pkt_mol = lig_add_mol.get_pocket(rec_mol)
+                        lig_add_mol.info['pkt_mol'] = pkt_mol
                         lig_add_mol.info['min_mol'] = \
-                            lig_add_mol.uff_minimize(wrt=rec_mol)
+                            lig_add_mol.uff_minimize(wrt=pkt_mol)
 
             else: # check that the ligand is the same
                 assert rec_struct.info['src_file'] == rec_src_file
@@ -392,16 +396,18 @@ class MoleculeGenerator(object):
                         transform.backward(fit_struct.coords, fit_struct.coords)
 
                     if add_bonds: # do bond adding
-                        print(f'Adding bond to atoms fit to {real_or_gen} grid')
+                        print(f'Adding bonds to atoms from {real_or_gen} grid')
                         fit_add_mol, fit_add_struct, visited_mols = \
                             self.bond_adder.make_mol(fit_struct)
                         fit_add_mol.info['type_struct'] = fit_add_struct
                         fit_struct.info['add_mol'] = fit_add_mol
 
                         if uff_minimize: # do minimization
-                            print(f'Minimizing molecule from {real_or_gen} fit atoms', end='')
+                            print(f'Minimizing molecule from {real_or_gen} grid', end='')
+                            pkt_mol = fit_add_mol.get_pocket(rec_mol)
+                            fit_add_mol.info['pkt_mol'] = pkt_mol
                             fit_add_mol.info['min_mol'] = \
-                                fit_add_mol.uff_minimize(wrt=rec_mol)
+                                fit_add_mol.uff_minimize(wrt=pkt_mol)
 
                     grid_type += '_fit'
                     self.out_writer.write(
@@ -643,6 +649,11 @@ class OutputWriter(object):
                 src_mol = struct.info['src_mol']
                 self.write_sdf(sdf_file, src_mol, sample_idx, is_real=True)
 
+                if 'pkt_mol' in src_mol.info:
+                    sdf_file = self.mol_dir / (grid_prefix+'_src_pkt.sdf.gz')
+                    pkt_mol = src_mol.info['pkt_mol']
+                    self.write_sdf(sdf_file, pkt_mol, sample_idx, is_real=True)
+
                 if 'min_mol' in src_mol.info:
                     sdf_file = self.mol_dir / (grid_prefix+'_src_uff.sdf.gz')
                     min_mol = src_mol.info['min_mol']
@@ -665,6 +676,11 @@ class OutputWriter(object):
                 sdf_file = self.mol_dir / (grid_prefix + '_add.sdf.gz')
                 add_mol = struct.info['add_mol']
                 self.write_sdf(sdf_file, add_mol, sample_idx, is_real_grid)
+
+                if 'pkt_mol' in add_mol.info:
+                    sdf_file = self.mol_dir / (grid_prefix+'_add_pkt.sdf.gz')
+                    pkt_mol = add_mol.info['pkt_mol']
+                    self.write_sdf(sdf_file, pkt_mol, sample_idx, is_real_grid)
 
                 if 'min_mol' in add_mol.info:
                     sdf_file = self.mol_dir / (grid_prefix + '_add_uff.sdf.gz')
