@@ -51,6 +51,7 @@ class AtomStruct(object):
         cls,
         coord_set,
         typer,
+        data_root,
         dtype=None,
         device=None,
         **info
@@ -68,7 +69,7 @@ class AtomStruct(object):
             typer=typer,
             dtype=dtype,
             device=typer.device if device is None else device,
-            src_file=coord_set.src,
+            src_file=os.path.join(data_root, coord_set.src),
             **info
         )
 

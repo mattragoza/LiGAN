@@ -192,30 +192,30 @@ class MoleculeGenerator(object):
 
         if self.gen_model:
             print(f'Calling generator forward (prior={prior}, stage2={stage2})')
-
-            if stage2: # insert prior model
-                lig_gen_grids, _, _, _, latents, _, _ = \
-                    self.gen_model.forward2(
-                        prior_model=self.prior_model,
+            with torch.no_grad():
+                if stage2: # insert prior model
+                    lig_gen_grids, _, _, _, latents, _, _ = \
+                        self.gen_model.forward2(
+                            prior_model=self.prior_model,
+                            inputs=gen_input_grids,
+                            conditions=rec_grids,
+                            batch_size=self.data.batch_size,
+                            **kwargs
+                        )
+                else:
+                    lig_gen_grids, latents, _, _ = self.gen_model(
                         inputs=gen_input_grids,
                         conditions=rec_grids,
                         batch_size=self.data.batch_size,
                         **kwargs
                     )
-            else:
-                lig_gen_grids, latents, _, _ = self.gen_model(
-                    inputs=gen_input_grids,
-                    conditions=rec_grids,
-                    batch_size=self.data.batch_size,
-                    **kwargs
-                )
         else:
             lig_gen_grids, latents = None, None
 
         return (
-            rec_structs, rec_grids,
-            lig_structs, lig_grids, 
-            latents, lig_gen_grids,
+            rec_structs, rec_grids.detach(),
+            lig_structs, lig_grids.detach(), 
+            latents, lig_gen_grids.detach(),
         )
 
     def generate(
@@ -231,10 +231,11 @@ class MoleculeGenerator(object):
         spherical=False,
         fit_atoms=True,
         add_bonds=True,
-        uff_minimize=False,
+        uff_minimize=True,
+        gnina_minimize=True,
         fit_to_real=False,
         add_to_real=False,
-        minimize_real=False,
+        minimize_real=True,
         verbose=True,
     ):
         '''
@@ -251,6 +252,7 @@ class MoleculeGenerator(object):
             # keep track of position in current batch
             full_idx = example_idx*n_samples + sample_idx
             batch_idx = full_idx % batch_size
+            print(example_idx, sample_idx, full_idx, batch_idx,)
 
             if interpolate:
                 # index of nearest interpolation endpoint in batch
@@ -260,6 +262,9 @@ class MoleculeGenerator(object):
             need_next_batch = (batch_idx == 0)
 
             if need_next_batch: # forward next batch
+
+                #if gnina_minimize: # copy to gpu
+                #    self.gen_model.to('cuda')
                 (
                     rec_structs, rec_grids,
                     lig_structs, lig_grids, 
@@ -269,6 +274,8 @@ class MoleculeGenerator(object):
                     z_score=z_score, truncate=truncate, var_factor=var_factor,
                     interpolate=interpolate, spherical=spherical
                 )
+                #if gnina_minimize: # copy to cpu
+                #    self.gen_model.to('cpu')
 
             rec_struct = rec_structs[batch_idx]
             lig_struct = lig_structs[batch_idx]
@@ -299,13 +306,21 @@ class MoleculeGenerator(object):
                     self.data.root_dir, lig_src_no_ext, use_ob=True
                 )
 
-                if minimize_real:
-                    print('Minimizing real molecule', end='')
-                    pkt_mol = lig_mol.get_pocket(rec_mol)
+                if uff_minimize:
+                    # real molecules don't need UFF minimization,
+                    #   but we need their UFF metrics for reference
+                    pkt_mol = rec_mol.get_pocket(lig_mol=lig_mol)
                     lig_mol.info['pkt_mol'] = pkt_mol
-                    lig_mol.info['min_mol'] = lig_mol.uff_minimize(wrt=pkt_mol)
+                    uff_mol = lig_mol.uff_minimize(rec_mol=pkt_mol)
+                    lig_mol.info['uff_mol'] = uff_mol
 
-                if add_to_real:
+                    if minimize_real:
+                        print('Minimizing real molecule with gnina')
+                        # NOTE that we are not using the UFF mol here
+                        lig_mol.info['gni_mol'] = \
+                            lig_mol.gnina_minimize(rec_mol=rec_mol)
+
+                if add_to_real: # evaluate bond adding in isolation
                     print('Adding bonds to real atoms')
                     lig_add_mol, lig_add_struct, _ = \
                         self.bond_adder.make_mol(lig_struct)
@@ -313,11 +328,21 @@ class MoleculeGenerator(object):
                     lig_struct.info['add_mol'] = lig_add_mol
 
                     if uff_minimize:
-                        print('Minimizing bond-added molecule', end='')
-                        pkt_mol = lig_add_mol.get_pocket(rec_mol)
+                        print(
+                            'Minimizing molecule from real atoms with UFF',
+                            end='' # show number of tries inline
+                        )
+                        pkt_mol = rec_mol.get_pocket(lig_mol=lig_add_mol)
                         lig_add_mol.info['pkt_mol'] = pkt_mol
-                        lig_add_mol.info['min_mol'] = \
-                            lig_add_mol.uff_minimize(wrt=pkt_mol)
+                        uff_mol = lig_add_mol.uff_minimize(rec_mol=pkt_mol)
+                        lig_add_mol.info['uff_mol'] = uff_mol
+
+                        if gnina_minimize:
+                            print(
+                                'Minimizing molecule from real atoms with gnina'
+                            )
+                            lig_add_mol.info['gni_mol'] = \
+                                uff_mol.gnina_minimize(rec_mol=rec_mol)
 
             else: # check that the ligand is the same
                 assert rec_struct.info['src_file'] == rec_src_file
@@ -348,7 +373,7 @@ class MoleculeGenerator(object):
                 real_or_gen = 'generated' if is_gen_grid else 'real'
 
                 grid = liGAN.atom_grids.AtomGrid(
-                    values=grids[batch_idx].detach(),
+                    values=grids[batch_idx],
                     typer=atom_typer,
                     center=lig_struct.center,
                     resolution=self.data.resolution
@@ -402,12 +427,17 @@ class MoleculeGenerator(object):
                         fit_add_mol.info['type_struct'] = fit_add_struct
                         fit_struct.info['add_mol'] = fit_add_mol
 
-                        if uff_minimize: # do minimization
-                            print(f'Minimizing molecule from {real_or_gen} grid', end='')
-                            pkt_mol = fit_add_mol.get_pocket(rec_mol)
+                        if uff_minimize: # do UFF minimization
+                            print(f'Minimizing molecule from {real_or_gen} grid with UFF', end='')
+                            pkt_mol = rec_mol.get_pocket(fit_add_mol)
                             fit_add_mol.info['pkt_mol'] = pkt_mol
-                            fit_add_mol.info['min_mol'] = \
-                                fit_add_mol.uff_minimize(wrt=pkt_mol)
+                            uff_mol = fit_add_mol.uff_minimize(rec_mol=pkt_mol)
+                            fit_add_mol.info['uff_mol'] = uff_mol
+
+                            if gnina_minimize: # do gnina minimization
+                                print(f'Minimizing molecule from {real_or_gen} grid with gnina',)
+                                fit_add_mol.info['gni_mol'] = \
+                                    uff_mol.gnina_minimize(rec_mol=rec_mol)
 
                     grid_type += '_fit'
                     self.out_writer.write(
@@ -640,7 +670,7 @@ class OutputWriter(object):
             #   between different samples, so only write them once
 
             # and we don't apply bond adding to the receptor struct,
-            #   so only ligand structs have add_mol and min_mol
+            #   so only ligand structs have add_mol and uff_mol
 
             # write real molecule
             if self.output_mols and is_first_real_grid:
@@ -654,10 +684,15 @@ class OutputWriter(object):
                     pkt_mol = src_mol.info['pkt_mol']
                     self.write_sdf(sdf_file, pkt_mol, sample_idx, is_real=True)
 
-                if 'min_mol' in src_mol.info:
+                if 'uff_mol' in src_mol.info:
                     sdf_file = self.mol_dir / (grid_prefix+'_src_uff.sdf.gz')
-                    min_mol = src_mol.info['min_mol']
-                    self.write_sdf(sdf_file, min_mol, sample_idx, is_real=True)
+                    uff_mol = src_mol.info['uff_mol']
+                    self.write_sdf(sdf_file, uff_mol, sample_idx, is_real=True)
+
+                if 'gni_mol' in src_mol.info:
+                    sdf_file = self.mol_dir / (grid_prefix+'_src_gna.sdf.gz')
+                    gni_mol = src_mol.info['gni_mol']
+                    self.write_sdf(sdf_file, gni_mol, sample_idx, is_real=True)
 
             # write typed atomic structure (real or fit)
             if self.output_structs and (is_first_real_grid or is_fit_grid):
@@ -682,10 +717,15 @@ class OutputWriter(object):
                     pkt_mol = add_mol.info['pkt_mol']
                     self.write_sdf(sdf_file, pkt_mol, sample_idx, is_real_grid)
 
-                if 'min_mol' in add_mol.info:
+                if 'uff_mol' in add_mol.info:
                     sdf_file = self.mol_dir / (grid_prefix + '_add_uff.sdf.gz')
-                    min_mol = add_mol.info['min_mol']
-                    self.write_sdf(sdf_file, min_mol, sample_idx, is_real_grid)
+                    uff_mol = add_mol.info['uff_mol']
+                    self.write_sdf(sdf_file, uff_mol, sample_idx, is_real_grid)
+
+                if 'gni_mol' in add_mol.info:
+                    sdf_file = self.mol_dir / (grid_prefix+'_add_gna.sdf.gz')
+                    gni_mol = add_mol.info['gni_mol']
+                    self.write_sdf(sdf_file, gni_mol, sample_idx, is_real_grid)
 
         # write atomic density grids
         if self.output_grids:
@@ -739,6 +779,7 @@ class OutputWriter(object):
                     self.dx_prefixes,
                     self.sdf_files,
                 )
+                print('Freeing memory')
                 del self.grids[lig_name] # free memory
 
         else:
@@ -768,6 +809,7 @@ class OutputWriter(object):
                     self.dx_prefixes,
                     self.sdf_files,
                 )
+                print('Freeing memory')
                 del self.grids[lig_name][sample_idx] # free memory
 
     def compute_metrics(self, lig_name, sample_idxs):
@@ -1132,36 +1174,58 @@ class OutputWriter(object):
                 m.loc[idx, mol_type+'_morgan_sim'] = np.nan
                 m.loc[idx, mol_type+'_maccs_sim'] = np.nan
 
-        if 'min_mol' not in mol.info:
+        if 'uff_mol' not in mol.info:
             return
 
         # UFF energy minimization
-        min_mol = mol.info['min_mol']
-        E_init = min_mol.info['E_init']
-        E_min = min_mol.info['E_min']
+        uff_mol = mol.info['uff_mol']
+        uff_init = uff_mol.info['E_init']
+        uff_min = uff_mol.info['E_min']
+        uff_rmsd = uff_mol.info['min_rmsd']
 
-        m.loc[idx, mol_type+'_E'] = E_init
-        m.loc[idx, mol_type+'_min_E'] = E_min
-        m.loc[idx, mol_type+'_dE_min'] = E_min - E_init
-        m.loc[idx, mol_type+'_min_error'] = min_mol.info['min_error']
-        m.loc[idx, mol_type+'_min_time'] = min_mol.info['min_time']
-        m.loc[idx, mol_type+'_RMSD_min'] = min_mol.aligned_rmsd(mol)
+        m.loc[idx, mol_type+'_UFF_init'] = uff_init
+        m.loc[idx, mol_type+'_UFF_min'] = uff_min
+        m.loc[idx, mol_type+'_UFF_rmsd'] = uff_rmsd
+        m.loc[idx, mol_type+'_UFF_error'] = uff_mol.info['min_error']
+        m.loc[idx, mol_type+'_UFF_time'] = uff_mol.info['min_time']
 
         # compare energy to ref mol, before and after minimizing
         if ref_mol:
+            ref_uff_mol = ref_mol.info['uff_mol']
+            ref_uff_init = ref_uff_mol.info['E_init']
+            ref_uff_min = ref_uff_mol.info['E_min']
+            ref_uff_rmsd = ref_uff_mol.info['min_rmsd']
+            m.loc[idx, mol_type+'_UFF_init_diff'] = uff_init - ref_uff_init
+            m.loc[idx, mol_type+'_UFF_min_diff'] = uff_min - ref_uff_min
+            m.loc[idx, mol_type+'_UFF_rmsd_diff'] = uff_rmsd - ref_uff_rmsd
 
-            min_ref_mol = ref_mol.info['min_mol']
-            E_init_ref = min_ref_mol.info['E_init']
-            E_min_ref = min_ref_mol.info['E_init']
+        if 'gni_mol' not in mol.info:
+            return
 
-            m.loc[idx, mol_type+'_dE_ref'] = E_init - E_init_ref
-            m.loc[idx, mol_type+'_min_dE_ref'] = E_min - E_min_ref
+        # gnina energy minimization
+        gni_mol = mol.info['gni_mol']
+        vina_aff = gni_mol.info['minimizedAffinity']
+        vina_rmsd = gni_mol.info['minimizedRMSD']
+        cnn_pose = gni_mol.info['CNNscore']
+        cnn_aff = gni_mol.info['CNNaffinity']
 
-            # get aligned RMSD to ref mol, pre-minimize
-            m.loc[idx, mol_type+'_RMSD_ref'] = ref_mol.aligned_rmsd(mol)
+        m.loc[idx, mol_type+'_vina_aff'] = vina_aff
+        m.loc[idx, mol_type+'_vina_rmsd'] = vina_rmsd
+        m.loc[idx, mol_type+'_cnn_pose'] = cnn_pose
+        m.loc[idx, mol_type+'_cnn_aff'] = cnn_aff
 
-            # get aligned RMSD to true mol, post-minimize
-            m.loc[idx, mol_type+'_min_RMSD_ref'] = min_ref_mol.aligned_rmsd(min_mol)
+        # compare gnina metrics to ref mol
+        if ref_mol:
+            ref_gni_mol = ref_mol.info['gni_mol']
+            ref_vina_aff = ref_gni_mol.info['minimizedAffinity']
+            ref_vina_rmsd = ref_gni_mol.info['minimizedRMSD']
+            ref_cnn_pose = ref_gni_mol.info['CNNscore']
+            ref_cnn_aff = ref_gni_mol.info['CNNaffinity']
+
+            m.loc[idx, mol_type+'_vina_aff_diff'] = vina_aff - ref_vina_aff
+            m.loc[idx, mol_type+'_vina_rmsd_diff'] = vina_rmsd - ref_vina_rmsd
+            m.loc[idx, mol_type+'_cnn_pose_diff'] = cnn_pose - ref_cnn_pose
+            m.loc[idx, mol_type+'_cnn_aff_diff'] = cnn_aff - ref_cnn_aff
 
 
 def find_real_rec_in_data_root(data_root, rec_src_no_ext):

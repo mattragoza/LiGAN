@@ -247,12 +247,14 @@ class AtomGridData(nn.Module):
 
             rec_struct = atom_structs.AtomStruct.from_coord_set(
                 rec_coord_set,
-                self.rec_typer,
+                typer=self.rec_typer,
+                data_root=self.root_dir,
                 device=self.grids.device
             )
             lig_struct = atom_structs.AtomStruct.from_coord_set(
                 lig_coord_set,
-                self.lig_typer,
+                typer=self.lig_typer,
+                data_root=self.root_dir,
                 device=self.grids.device
             )
             rec_structs.append(rec_struct)

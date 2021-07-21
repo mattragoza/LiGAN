@@ -1,4 +1,5 @@
-import sys, os, gzip, traceback, time
+import sys, os, gzip, traceback, time, tempfile, shlex
+from subprocess import Popen, PIPE
 from functools import lru_cache
 from collections import Counter
 import numpy as np
@@ -16,6 +17,8 @@ from SA_Score import sascorer
 from NP_Score import npscorer
 
 from .common import catch_exception
+
+GNINA_CMD = '/net/pulsar/home/koes/dkoes/local/bin/gnina'
 
 
 class Molecule(Chem.RWMol):
@@ -46,15 +49,21 @@ class Molecule(Chem.RWMol):
 
     @classmethod
     def from_sdf(cls, sdf_file, sanitize=True, idx=0):
-        return cls(
-            read_rd_mols_from_sdf_file(sdf_file, sanitize=sanitize)[idx]
-        )
+        mol = read_rd_mols_from_sdf_file(sdf_file, sanitize=sanitize)[idx]
+        return cls(mol, src_file=sdf_file, src_idx=idx, **mol.GetPropsAsDict())
+
+    @classmethod
+    def all_from_sdf(cls, sdf_file, sanitize=True):
+        mols = read_rd_mols_from_sdf_file(sdf_file, sanitize=sanitize)
+        return [
+            cls(mol, src_file=sdf_file, src_idx=idx, **mol.GetPropsAsDict())
+                for idx, mol in enumerate(mols)
+        ]
 
     @classmethod
     def from_pdb(cls, pdb_file, sanitize=True):
-        return cls(
-            read_rd_mol_from_pdb_file(pdb_file, sanitize=sanitize)
-        )
+        mol = read_rd_mol_from_pdb_file(pdb_file, sanitize=sanitize)
+        return cls(mol, src_file=pdb_file, **mol.GetPropsAsDict())
 
     def to_sdf(self, sdf_file, name='', kekulize=True):
         write_rd_mol_to_sdf_file(sdf_file, self, name, kekulize)
@@ -132,17 +141,18 @@ class Molecule(Chem.RWMol):
         except Chem.KekulizeException:
             return False, 'Failed to kekulize'
 
-    def get_pocket(self, other):
-        return get_rd_mol_pocket(self, other)
+    def get_pocket(self, *args, **kwargs):
+        return get_rd_mol_pocket(self, *args, **kwargs)
 
-    def uff_minimize(self, wrt=None):
+    def uff_minimize(self, *args, **kwargs):
         '''
         Minimize molecular geometry using UFF.
         The minimization results are stored in
         the info attribute of the returned mol.
         '''
         t_start = time.time()
-        min_mol, E_init, E_min, error = uff_minimize_rd_mol(self, fixed_mol=wrt)
+        min_mol, E_init, E_min, error = \
+            uff_minimize_rd_mol(self, *args, **kwargs)
         rmsd = min_mol
         return Molecule(
             min_mol,
@@ -152,6 +162,14 @@ class Molecule(Chem.RWMol):
             min_error=error,
             min_time=time.time() - t_start,
         )
+
+    def gnina_minimize(self, *args, **kwargs):
+        '''
+        Minimize receptor-ligand pose with gnina.
+        The minimization results are stored in 
+        the info attribute of the returned mol.
+        '''
+        return gnina_minimize_rd_mol(self, *args, **kwargs)
 
 
 def make_rd_mol(coords, types, bonds, typer):
@@ -211,6 +229,11 @@ def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
     Write a list of rdkit molecules to a file
     or io stream in sdf format.
     '''
+    use_gzip = (
+        isinstance(sdf_file, str) and sdf_file.endswith('.gz')
+    )
+    if use_gzip:
+        sdf_file = gzip.open(sdf_file, 'wt')
     writer = Chem.SDWriter(sdf_file)
     writer.SetKekulize(kekulize)
     for mol in mols:
@@ -218,6 +241,8 @@ def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
             mol.SetProp('_Name', name)
         writer.write(mol)
     writer.close()
+    if use_gzip:
+        sdf_file.close()
 
 
 def make_ob_mol(coords, types, bonds, typer):
@@ -561,36 +586,37 @@ def get_ob_smi_similarity(smi1, smi2):
     return fgp1 | fgp2
 
 
-def get_rd_mol_pocket(rd_mol, fixed_mol, max_dist=5):
+def get_rd_mol_pocket(rec_mol, lig_mol, max_dist=8):
     '''
     Return a molecule containing only
-    the atoms from fixed_mol that are
-    within max_dist of rd_mol.
+    the residues from rec_mol that are
+    within max_dist of lig_mol.
     '''
-    coords1 = rd_mol.coords
-    coords2 = fixed_mol.coords
-    dist = sp.spatial.distance.cdist(coords1, coords2)
+    # get distances b/tw rec and lig atoms
+    lig_coords = lig_mol.coords
+    rec_coords = rec_mol.coords
+    dist = sp.spatial.distance.cdist(lig_coords, rec_coords)
 
-    # indexes of atoms in fixed_mol that are
-    #   within max_dist of any atom in rd_mol
-    pocket_atom_idxs = np.nonzero((dist < max_dist))[1]
+    # indexes of atoms in rec_mol that are
+    #   within max_dist of an atom in lig_mol
+    pocket_atom_idxs = set(np.nonzero((dist < max_dist))[1])
 
-    # copy mol and determine pocket residues
+    # determine pocket residues
     pocket_res_ids = set()
     for i in pocket_atom_idxs:
-        atom = fixed_mol.GetAtomWithIdx(int(i))
+        atom = rec_mol.GetAtomWithIdx(int(i))
         res_id = get_rd_atom_res_id(atom)
         pocket_res_ids.add(res_id)
 
-    # copy mol and delete delete atoms
-    out_mol = Chem.RWMol(fixed_mol)
-    for atom in list(out_mol.GetAtoms()):
+    # copy mol and delete atoms
+    pkt_mol = Molecule(rec_mol, src_mol=rec_mol)
+    for atom in list(pkt_mol.GetAtoms()):
         res_id = get_rd_atom_res_id(atom)
         if res_id not in pocket_res_ids:
-            out_mol.RemoveAtom(atom.GetIdx())
+            pkt_mol.RemoveAtom(atom.GetIdx())
 
-    Chem.SanitizeMol(out_mol)
-    return out_mol
+    pkt_mol.sanitize()
+    return pkt_mol
 
 
 def get_rd_atom_res_id(rd_atom):
@@ -606,98 +632,145 @@ def get_rd_atom_res_id(rd_atom):
     )
 
 
-def uff_minimize_rd_mol(rd_mol, fixed_mol=None, n_iters=200, n_tries=1):
+def uff_minimize_rd_mol(lig_mol, rec_mol=None, n_iters=200, n_tries=2):
     '''
     Attempt to minimize rd_mol with UFF.
-    If fixed_mol is provided, minimize in
+    If rec_mol is provided, minimize in
     the context of the fixed receptor.
 
     Returns (min_mol, E_init, E_final, error).
     '''
-    rd_mol = Chem.RWMol(rd_mol)
-    if rd_mol.GetNumAtoms() == 0:
-        return rd_mol, np.nan, np.nan, 'No atoms'
+    lig_mol = Chem.RWMol(lig_mol)
+    if lig_mol.GetNumAtoms() == 0:
+        return lig_mol, np.nan, np.nan, 'No atoms'
 
     E_init = np.nan
     E_final = np.nan
     error = None
 
     # regenerate hydrogen coords with rdkit
-    rd_mol = Chem.AddHs(
-        Chem.RemoveHs(rd_mol, updateExplicitCount=True, sanitize=False),
+    lig_mol = Chem.AddHs(
+        Chem.RemoveHs(lig_mol, updateExplicitCount=True, sanitize=False),
         explicitOnly=True,
         addCoords=True
     )
 
-    if fixed_mol: # combine into complex
-        orig_mol = rd_mol # remember the ligand
-        rd_mol = Chem.CombineMols(fixed_mol, rd_mol)
+    if rec_mol: # combine into complex
+        uff_mol = Chem.CombineMols(rec_mol, lig_mol)
+    else: # just use the ligand
+        uff_mol = uff_mol
 
-    Chem.SanitizeMol(rd_mol, catchErrors=True)
-
-    # initialize molecule and force field
     try:
-        uff = AllChem.UFFGetMoleculeForceField(
-            rd_mol, confId=0, ignoreInterfragInteractions=False
-        )
-        uff.Initialize()
-        E_init = uff.CalcEnergy()
-
+        Chem.SanitizeMol(uff_mol)
     except Chem.rdchem.AtomValenceException:
         error = 'Invalid valence'
     except Chem.rdchem.KekulizeException:
         error = 'Failed to kekulize'
+
+    if error:
+        return orig_mol, E_init, E_final, error
+
+    try:
+        # initialize force field
+        uff = AllChem.UFFGetMoleculeForceField(
+            uff_mol, confId=0, ignoreInterfragInteractions=False
+        )
+        uff.Initialize()
+
+        # get the initial energy
+        E_init = uff.CalcEnergy()
+
     except Exception as e:
         if 'getNumImplicitHs' in str(e):
-            return rd_mol, E_init, E_final, 'No implicit valence'
+            return lig_mol, E_init, E_final, 'No implicit valence'
         if 'bad params pointer' in str(e):
-            return rd_mol, E_init, E_final, 'Invalid atom type'
+            return lig_mol, E_init, E_final, 'Invalid atom type'
         print('UFF1 exception')
-        write_rd_mol_to_sdf_file('badmol_uff1.sdf', rd_mol, kekulize=False)
+        write_rd_mol_to_sdf_file('badmol_uff1.sdf', uff_mol, kekulize=False)
         raise e
 
-    if not error: # do minimization
+    if not error and n_tries * n_iters > 0:
 
-        if fixed_mol: # fix receptor atoms
-            for i in range(fixed_mol.GetNumAtoms()):
+        if rec_mol: # fix receptor atoms
+            for i in range(rec_mol.GetNumAtoms()):
                 uff.AddFixedPoint(i)
-
-        try: # minimize molecule with force field
-
-            not_converged = True
-            while n_tries > 0 and not_converged:
+        try:
+            # minimize with force field
+            converged = False
+            while n_tries > 0 and not converged:
                 print('.', end='', flush=True)
-                not_converged = uff.Minimize(maxIts=n_iters)
+                converged = not uff.Minimize(maxIts=n_iters)
                 n_tries -= 1
             print(flush=True)
 
+            # get the final energy
             E_final = uff.CalcEnergy()
-            if not_converged:
+            if not converged:
                 error = 'Not converged'
 
         except RuntimeError as e:
             print('UFF2 exception')
             error = str(e)
             write_rd_mol_to_sdf_file(
-                'badmol_uff2.sdf', rd_mol, kekulize=True
+                'badmol_uff2.sdf', uff_mol, kekulize=True
             )
             traceback.print_exc(file=sys.stdout)
 
-    if fixed_mol:
-        # copy minimized conformation back to ligand
-        min_coords = rd_mol.GetConformer().GetPositions()
-        orig_conf = orig_mol.GetConformer()
-        for i, xyz in enumerate(min_coords[-orig_mol.GetNumAtoms():]):
-            orig_conf.SetAtomPosition(i, xyz)
+        if rec_mol:
+            # copy minimized coords back to ligand
+            coords = uff_mol.GetConformer().GetPositions()
+            lig_conf = lig_mol.GetConformer()
+            for i, xyz in enumerate(coords[-lig_mol.GetNumAtoms():]):
+                lig_conf.SetAtomPosition(i, xyz)
 
-        # only return the minimized ligand
-        rd_mol = orig_mol
-
-    return rd_mol, E_init, E_final, error
+    return lig_mol, E_init, E_final, error
 
 
-@catch_exception(exc_type=SyntaxError)
-def get_rd_mol_uff_energy(rd_mol): # TODO do we need to add H for true mol?
-    rd_mol = Chem.AddHs(rd_mol, addCoords=True)
-    uff = AllChem.UFFGetMoleculeForceField(rd_mol, confId=0)
-    return uff.CalcEnergy()
+def gnina_minimize_rd_mol(lig_mol, rec_mol):
+    '''
+    Minimize lig_mol wrt rec_mol using gnina.
+    gnina is run as a subprocess, which needs
+    the mols to be present on disk. Check for
+    src_file or out_file, else use temp_file.
+    '''
+    def get_temp_file():
+        with tempfile.NamedTemporaryFile() as f:
+            return f.name + '.sdf.gz'
+
+    def get_mol_as_file(mol):
+
+        if 'src_file' in mol.info:
+            return mol.info['src_file']
+        elif 'out_file' in mol.info:
+            return mol.info['out_file']
+        else:
+            tmp_file = get_temp_file()
+            mol.to_sdf(tmp_file)
+            return tmp_file
+
+    rec_file = get_mol_as_file(rec_mol)
+    lig_file = get_mol_as_file(lig_mol)
+    out_file = get_temp_file()
+    assert os.path.isfile(lig_file), 'lig file does not exist'
+
+    cmd = f'{GNINA_CMD} --minimize -r {rec_file} -l {lig_file} ' \
+        f'--autobox_ligand {lig_file} -o {out_file}'
+
+    proc = Popen(shlex.split(cmd), stdout=PIPE, stderr=PIPE)
+    for c in iter(lambda: proc.stdout.read(1), b''): 
+        sys.stdout.buffer.write(c)
+        if c == b'*' or c ==b'\n': # progress bar or new line
+            sys.stdout.flush()
+
+    stderr = str(proc.stderr.read())
+    for line in stderr.split('\n'):
+        print(repr(line))
+        if line.startswith('CUDNN Error'):
+            raise RuntimeError(line)                
+
+    try: # get top-ranked pose according to gnina
+        return Molecule.from_sdf(out_file, idx=0)
+    except IndexError:
+        print('STDERR')
+        print(stderr, file=sys.stderr)
+        raise
