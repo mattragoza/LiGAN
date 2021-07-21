@@ -935,7 +935,7 @@ class OutputWriter(object):
                 self.compute_struct_metrics(idx,
                     struct_type='lig_fit_add',
                     struct=lig_fit_add_struct,
-                    ref_struct=lig_struct,
+                    ref_struct=lig_fit_struct,
                 )
 
             if has_lig_gen_fit:
@@ -967,7 +967,7 @@ class OutputWriter(object):
                 self.compute_struct_metrics(idx,
                     struct_type='lig_gen_fit_add',
                     struct=lig_gen_fit_add_struct,
-                    ref_struct=lig_struct,
+                    ref_struct=lig_gen_fit_struct,
                 )
 
         self.print(self.metrics.loc[lig_name].loc[sample_idxs].transpose())

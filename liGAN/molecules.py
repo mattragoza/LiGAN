@@ -92,11 +92,11 @@ class Molecule(Chem.RWMol):
 
     @property
     def atoms(self):
-        return [self.GetAtomWithIdx(i) for i in self.n_atoms]
+        return [self.GetAtomWithIdx(i) for i in range(self.n_atoms)]
 
     @property
     def bonds(self):
-        return [self.GetBondWithIdx(i) for i in self.n_bonds]
+        return [self.GetBondWithIdx(i) for i in range(self.n_bonds)]
 
     @property
     def coords(self):
