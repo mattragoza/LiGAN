@@ -224,10 +224,10 @@ class MoleculeGenerator(object):
         n_samples,
         prior=False,
         stage2=False,
-        z_score=None,
-        truncate=None,
         var_factor=1.0,
         post_factor=1.0,
+        z_score=None,
+        truncate=None,
         interpolate=False,
         spherical=False,
         fit_atoms=True,
@@ -271,9 +271,14 @@ class MoleculeGenerator(object):
                     lig_structs, lig_grids, 
                     latents, lig_gen_grids,
                 ) = self.forward(
-                    prior=prior, stage2=stage2,
-                    z_score=z_score, truncate=truncate, var_factor=var_factor,
-                    interpolate=interpolate, spherical=spherical
+                    prior=prior,
+                    stage2=stage2,
+                    var_factor=var_factor,
+                    post_factor=post_factor,
+                    z_score=z_score,
+                    truncate=truncate,
+                    interpolate=interpolate,
+                    spherical=spherical,
                 )
                 #if gnina_minimize: # copy to cpu
                 #    self.gen_model.to('cpu')
