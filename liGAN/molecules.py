@@ -138,7 +138,7 @@ class Molecule(Chem.RWMol):
             return True, 'Valid molecule'
         except Chem.AtomValenceException:
             return False, 'Invalid valence'
-        except Chem.KekulizeException:
+        except (Chem.AtomKekulizeException, Chem.KekulizeException):
             return False, 'Failed to kekulize'
 
     def get_pocket(self, *args, **kwargs):
@@ -662,9 +662,9 @@ def uff_minimize_rd_mol(lig_mol, rec_mol=None, n_iters=200, n_tries=2):
 
     try:
         Chem.SanitizeMol(uff_mol)
-    except Chem.rdchem.AtomValenceException:
+    except Chem.AtomValenceException:
         error = 'Invalid valence'
-    except Chem.rdchem.KekulizeException:
+    except (Chem.AtomKekulizeException, Chem.KekulizeException):
         error = 'Failed to kekulize'
 
     if error:
@@ -756,21 +756,33 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
     cmd = f'{GNINA_CMD} --minimize -r {rec_file} -l {lig_file} ' \
         f'--autobox_ligand {lig_file} -o {out_file}'
 
+    error = None
+    last_stdout = ''
     proc = Popen(shlex.split(cmd), stdout=PIPE, stderr=PIPE)
     for c in iter(lambda: proc.stdout.read(1), b''): 
         sys.stdout.buffer.write(c)
-        if c == b'*' or c ==b'\n': # progress bar or new line
+        last_stdout += c.decode()
+        if c == b'*' or c == b'\n': # progress bar or new line
             sys.stdout.flush()
+            if last_stdout.startswith('WARNING'):
+                error = last_stdout
+            last_stdout = ''
 
-    stderr = str(proc.stderr.read())
-    for line in stderr.split('\n'):
-        if line.startswith('CUDNN Error'):
-            raise RuntimeError(line)                
+    stderr = proc.stderr.read().decode()
+    for stderr_line in stderr.split('\n'):
+        if stderr_line.startswith('CUDNN Error'):
+            error = stderr_line            
+
+    print('GNINA STDERR', file=sys.stderr)
+    print(stderr, file=sys.stderr)
+    print('END GNINA STDERR', file=sys.stderr)
 
     try: # get top-ranked pose according to gnina
-        return Molecule.from_sdf(out_file, idx=0, sanitize=False)
-    except:
-        print('<GNINA STDERR>', file=sys.stderr)
-        print(stderr, file=sys.stderr)
-        print('</GNINA STDERR>', file=sys.stderr)
-        raise
+        out_mol = Molecule.from_sdf(out_file, idx=0, sanitize=False)
+    except IndexError:
+        out_mol = Molecule(Chem.RWMol(lig_mol))
+        if not error:
+            error = stderr
+
+    out_mol.info['error'] = error
+    return out_mol
