@@ -227,6 +227,7 @@ class MoleculeGenerator(object):
         z_score=None,
         truncate=None,
         var_factor=1.0,
+        post_factor=1.0,
         interpolate=False,
         spherical=False,
         fit_atoms=True,
@@ -315,7 +316,7 @@ class MoleculeGenerator(object):
                     lig_mol.info['uff_mol'] = uff_mol
 
                     if minimize_real:
-                        print('Minimizing real molecule with gnina')
+                        print('Minimizing real molecule with gnina', flush=True)
                         # NOTE that we are not using the UFF mol here
                         lig_mol.info['gni_mol'] = \
                             lig_mol.gnina_minimize(rec_mol=rec_mol)
@@ -339,7 +340,7 @@ class MoleculeGenerator(object):
 
                         if gnina_minimize:
                             print(
-                                'Minimizing molecule from real atoms with gnina'
+                                'Minimizing molecule from real atoms with gnina', flush=True
                             )
                             lig_add_mol.info['gni_mol'] = \
                                 uff_mol.gnina_minimize(rec_mol=rec_mol)
@@ -435,7 +436,7 @@ class MoleculeGenerator(object):
                             fit_add_mol.info['uff_mol'] = uff_mol
 
                             if gnina_minimize: # do gnina minimization
-                                print(f'Minimizing molecule from {real_or_gen} grid with gnina',)
+                                print(f'Minimizing molecule from {real_or_gen} grid with gnina', flush=True)
                                 fit_add_mol.info['gni_mol'] = \
                                     uff_mol.gnina_minimize(rec_mol=rec_mol)
 

@@ -668,7 +668,7 @@ def uff_minimize_rd_mol(lig_mol, rec_mol=None, n_iters=200, n_tries=2):
         error = 'Failed to kekulize'
 
     if error:
-        return orig_mol, E_init, E_final, error
+        return lig_mol, E_init, E_final, error
 
     try:
         # initialize force field
@@ -764,7 +764,6 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
 
     stderr = str(proc.stderr.read())
     for line in stderr.split('\n'):
-        print(repr(line))
         if line.startswith('CUDNN Error'):
             raise RuntimeError(line)                
 

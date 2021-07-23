@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+from scipy import stats
 import torch
 from torch import nn
 
@@ -67,37 +68,84 @@ def sample_latents(
     n_latent,
     means=None,
     log_stds=None,
-    z_score=None,
-    truncate=None,
     var_factor=1.0,
+    post_factor=1.0,
+    truncate=None,
+    z_score=None,
     interpolate=False,
     spherical=False,
     device='cuda',
 ):
+    '''
+    Draw batch_size latent vectors of size n_latent
+    from a standard normal distribution (the prior)
+    and reparameterize them using the posterior pa-
+    rameters (means and log_stds), if provided.
+
+    The standard deviation of the latent distribution
+    is scaled by var_factor.
+
+    If posterior parameters are provided, they are
+    linearly interpolated with the prior parameters
+    according to post_factor, where post_factor=1.0
+    is purely posterior and 0.0 is purely prior.
+
+    If truncate is provided, samples are instead drawn
+    from a normal distribution truncated at that value.
+
+    If z_score is provided, the magnitude of each
+    vector is normalized and then scaled by z_score.
+    '''
     assert batch_size is not None, batch_size
 
     # draw samples from standard normal distribution
-    latents = torch.randn((batch_size, n_latent), device=device)
+    if not truncate:
+        print('Drawing latent samples from normal distribution')
+        latents = torch.randn((batch_size, n_latent), device=device)
+    else:
+        print('Drawing latent samples from truncated normal distribution')
+        latents = torch.as_tensor(stats.truncnorm.rvs(
+            a=-truncate,
+            b=truncate,
+            size=(batch_size, n_latent)
+        ))
 
-    if z_score is not None:
+    if z_score not in {None, False}:
         # normalize and scale by z_score
+        #  CAUTION: don't know how applicable this is in high-dims
+        print('Normalizing and scaling latent samples')
         latents = latents / latents.norm(dim=1, keepdim=True) * z_score
 
-    if truncate is not None:
-        # truncate at threshold
-        latents = torch.fmod(latents, truncate)
+    print(f'var_factor = {var_factor}, post_factor = {post_factor}')
 
-    if log_stds is not None:
+    if log_stds is not None: # posterior stds
+        stds = torch.exp(log_stds)
+
+        # interpolate b/tw posterior and prior
+        #   post_factor*stds + (1-post_factor)*1
+        stds = post_factor*stds + (1-post_factor)
+
         # scale by standard deviation
-        latents *= torch.exp(log_stds)
+        latents *= stds
 
-    if var_factor is not None:
-        # scale by variation factor
-        latents *= var_factor
+    latents *= var_factor
 
     if means is not None:
+
+        # interpolate b/tw posterior and prior
+        #   post_factor*means + (1-post_factor)*0
+        means = post_factor*means
+
         # shift by mean
         latents += means
+
+    if interpolate:
+        # interpolate b/tw first and last samples
+        t = torch.linspace(0, 1, batch_size)
+        if spherical:
+            latents = slerp(latents[0], latents[-1], t)
+        else:
+            latents = lerp(latents[0], latents[-1], t)
 
     return latents
 
