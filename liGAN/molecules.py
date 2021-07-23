@@ -745,7 +745,7 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
             return mol.info['out_file']
         else:
             tmp_file = get_temp_file()
-            mol.to_sdf(tmp_file)
+            mol.to_sdf(tmp_file, kekulize=False)
             return tmp_file
 
     rec_file = get_mol_as_file(rec_mol)
@@ -768,8 +768,9 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
             raise RuntimeError(line)                
 
     try: # get top-ranked pose according to gnina
-        return Molecule.from_sdf(out_file, idx=0)
-    except IndexError:
-        print('STDERR')
+        return Molecule.from_sdf(out_file, idx=0, sanitize=False)
+    except:
+        print('<GNINA STDERR>', file=sys.stderr)
         print(stderr, file=sys.stderr)
+        print('</GNINA STDERR>', file=sys.stderr)
         raise
