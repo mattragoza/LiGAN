@@ -733,6 +733,9 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
     the mols to be present on disk. Check for
     src_file or out_file, else use temp_file.
     '''
+    if lig_mol.n_atoms == 0:
+        return Molecule(Chem.RWMol(lig_mol), error='No atoms')
+
     def get_temp_file():
         with tempfile.NamedTemporaryFile() as f:
             return f.name + '.sdf.gz'

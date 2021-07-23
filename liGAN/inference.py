@@ -1205,20 +1205,25 @@ class OutputWriter(object):
 
         # gnina energy minimization
         gni_mol = mol.info['gni_mol']
-        vina_aff = gni_mol.info['minimizedAffinity']
-        vina_rmsd = gni_mol.info['minimizedRMSD']
-        cnn_pose = gni_mol.info['CNNscore']
-        cnn_aff = gni_mol.info['CNNaffinity']
+        vina_aff = gni_mol.info.get('minimizedAffinity', np.nan)
+        vina_rmsd = gni_mol.info.get('minimizedRMSD', np.nan)
+        cnn_pose = gni_mol.info.get('CNNscore', np.nan)
+        cnn_aff = gni_mol.info.get('CNNaffinity', np.nan)
 
         m.loc[idx, mol_type+'_vina_aff'] = vina_aff
         m.loc[idx, mol_type+'_vina_rmsd'] = vina_rmsd
         m.loc[idx, mol_type+'_cnn_pose'] = cnn_pose
         m.loc[idx, mol_type+'_cnn_aff'] = cnn_aff
+        m.loc[idx, mol_type+'_gnina_error'] = gni_mol.info['error']
 
         # compare gnina metrics to ref mol
         if ref_mol:
             ref_gni_mol = ref_mol.info['gni_mol']
-            ref_vina_aff = ref_gni_mol.info['minimizedAffinity']
+            try:
+                ref_vina_aff = ref_gni_mol.info['minimizedAffinity']
+            except KeyError:
+                print(ref_gni_mol.info)
+                raise
             ref_vina_rmsd = ref_gni_mol.info['minimizedRMSD']
             ref_cnn_pose = ref_gni_mol.info['CNNscore']
             ref_cnn_aff = ref_gni_mol.info['CNNaffinity']
