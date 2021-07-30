@@ -36,6 +36,10 @@ class Molecule(Chem.RWMol):
 
         super().__init__(rd_mol)
         self.info = info
+
+    @classmethod
+    def from_smi(cls, smi, sanitize=True):
+        return cls(Chem.MolFromSmiles(smi, sanitize=sanitize))
     
     @classmethod
     def from_struct(cls, struct):

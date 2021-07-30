@@ -204,6 +204,9 @@ class Atom(ob.OBAtom):
     def exp_h_count(self):
         return self.GetExplicitDegree() - self.GetHvyDegree()
 
+    def hybridization(self):
+        return self.GetHyb()
+
     @staticmethod
     def vdw_radius(atomic_num):
         return ob.GetVdwRad(atomic_num)
