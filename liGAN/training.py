@@ -449,8 +449,8 @@ class GenerativeSolver(nn.Module):
             csv_file, sep=' '
         ).set_index(self.index_cols)
 
-    def load_state_and_metrics(self):
-        self.load_state()
+    def load_state_and_metrics(self, cont_iter=None):
+        self.load_state(cont_iter)
         try:
             self.load_metrics()
         except FileNotFoundError:

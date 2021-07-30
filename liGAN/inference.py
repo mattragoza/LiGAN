@@ -209,13 +209,18 @@ class MoleculeGenerator(object):
                         batch_size=self.data.batch_size,
                         **kwargs
                     )
+            latents = latents.detach()
+            lig_gen_grids = lig_gen_grids.detach()
         else:
             lig_gen_grids, latents = None, None
 
+        rec_grids = rec_grids.detach()
+        lig_grids = lig_grids.detach()
+
         return (
-            rec_structs, rec_grids.detach(),
-            lig_structs, lig_grids.detach(), 
-            latents, lig_gen_grids.detach(),
+            rec_structs, rec_grids,
+            lig_structs, lig_grids, 
+            latents, lig_gen_grids,
         )
 
     def generate(
@@ -706,11 +711,10 @@ class OutputWriter(object):
                 sdf_file = self.struct_dir / (grid_prefix + '.sdf.gz')
                 self.write_sdf(sdf_file, struct, sample_idx, is_real_grid)
 
-                if self.output_types: # write atom type channels
-
-                    types_base = grid_prefix + '_' + i + '.atom_types'
-                    types_file = self.struct_dir / types_base
-                    self.write_atom_types(types_file, struct.atom_types)
+                # write atom type channels
+                types_base = grid_prefix + '_' + i + '.atom_types'
+                types_file = self.struct_dir / types_base
+                self.write_atom_types(types_file, struct.atom_types)
 
             # write bond-added molecule (real or fit ligand)
             if self.output_mols and 'add_mol' in struct.info:

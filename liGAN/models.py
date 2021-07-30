@@ -100,10 +100,10 @@ def sample_latents(
 
     # draw samples from standard normal distribution
     if not truncate:
-        print('Drawing latent samples from normal distribution')
+        #print('Drawing latent samples from normal distribution')
         latents = torch.randn((batch_size, n_latent), device=device)
     else:
-        print('Drawing latent samples from truncated normal distribution')
+        #print('Drawing latent samples from truncated normal distribution')
         latents = torch.as_tensor(stats.truncnorm.rvs(
             a=-truncate,
             b=truncate,
@@ -113,10 +113,10 @@ def sample_latents(
     if z_score not in {None, False}:
         # normalize and scale by z_score
         #  CAUTION: don't know how applicable this is in high-dims
-        print('Normalizing and scaling latent samples')
+        #print('Normalizing and scaling latent samples')
         latents = latents / latents.norm(dim=1, keepdim=True) * z_score
 
-    print(f'var_factor = {var_factor}, post_factor = {post_factor}')
+    #print(f'var_factor = {var_factor}, post_factor = {post_factor}')
 
     if log_stds is not None: # posterior stds
         stds = torch.exp(log_stds)

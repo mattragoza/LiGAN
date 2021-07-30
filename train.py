@@ -58,8 +58,12 @@ def main(argv):
     )
 
     if config['continue']:
+        if config['continue'] is True:
+            cont_iter = None
+        else:
+            cont_iter = config['continue']
         try:
-            solver.load_state_and_metrics()
+            solver.load_state_and_metrics(cont_iter)
         except FileNotFoundError:
             pass
 
