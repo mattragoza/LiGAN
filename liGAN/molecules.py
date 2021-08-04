@@ -72,6 +72,9 @@ class Molecule(Chem.RWMol):
     def to_sdf(self, sdf_file, name='', kekulize=True):
         write_rd_mol_to_sdf_file(sdf_file, self, name, kekulize)
 
+    def to_pdb(self, pdb_file, name=''):
+        write_rd_mol_to_pdb_file(pdb_file, self, name)
+
     def to_smi(self):
         return get_smiles_string(self)
 
@@ -247,6 +250,20 @@ def write_rd_mols_to_sdf_file(sdf_file, mols, name='', kekulize=True):
     writer.close()
     if use_gzip:
         sdf_file.close()
+
+
+def write_rd_mol_to_pdb_file(pdb_file, mol, name=''):
+    use_gzip = (
+        isinstance(pdb_file, str) and pdb_file.endswith('.gz')
+    )
+    if use_gzip:
+        pdb_file = gzip.open(pdb_file, 'wt')
+    writer = Chem.PDBWriter(pdb_file)
+    mol.SetProp('_Name', name)
+    writer.write(mol)
+    writer.close()
+    if use_gzip:
+        pdb_file.close()
 
 
 def make_ob_mol(coords, types, bonds, typer):
