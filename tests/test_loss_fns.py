@@ -39,7 +39,7 @@ class TestLossFunction(object):
         )
         assert loss.item() == 0
         print(losses)
-        assert losses == dict(loss=0, recon_loss=0, recon_loss_wt=1)
+        assert losses == dict(loss=0, recon_loss=0, recon_loss_wt=1, recon_log_var=0)
 
     def test_loss_recon1(self, loss_fn):
         lig_grids = torch.zeros(10, 10)
@@ -49,7 +49,7 @@ class TestLossFunction(object):
         )
         assert loss.item() == 5
         print(losses)
-        assert losses == dict(loss=5, recon_loss=5, recon_loss_wt=1)
+        assert losses == dict(loss=5, recon_loss=5, recon_loss_wt=1, recon_log_var=0)
 
     def test_loss_kldiv0(self, loss_fn):
         a = torch.zeros(10, 10)

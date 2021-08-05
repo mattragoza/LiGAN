@@ -150,8 +150,7 @@ class LossFunction(nn.Module):
             recon_loss = self.recon_loss_fn(
                 lig_gen_grids, lig_grids, gen_log_var
             )
-            recon_loss_wt = \
-                self.recon_loss_schedule(iteration) if use_loss_wt else 1
+            recon_loss_wt = self.recon_loss_schedule(iteration, use_loss_wt)
             loss += recon_loss_wt * recon_loss
             losses['recon_loss'] = recon_loss.item()
             losses['recon_loss_wt'] = recon_loss_wt.item()
@@ -159,32 +158,28 @@ class LossFunction(nn.Module):
 
         if has_both(latent_means, latent_log_stds):
             kldiv_loss = self.kldiv_loss_fn(latent_means, latent_log_stds)
-            kldiv_loss_wt = \
-                self.kldiv_loss_schedule(iteration) if use_loss_wt else 1
+            kldiv_loss_wt = self.kldiv_loss_schedule(iteration, use_loss_wt)
             loss += kldiv_loss_wt * kldiv_loss
             losses['kldiv_loss'] = kldiv_loss.item()
             losses['kldiv_loss_wt'] = kldiv_loss_wt.item()
 
         if has_both(disc_labels, disc_preds):
             gan_loss = self.gan_loss_fn(disc_preds, disc_labels)
-            gan_loss_wt = \
-                self.gan_loss_schedule(iteration) if use_loss_wt else 1
+            gan_loss_wt = self.gan_loss_schedule(iteration, use_loss_wt)
             loss += gan_loss_wt * gan_loss
             losses['gan_loss'] = gan_loss.item()
             losses['gan_loss_wt'] = gan_loss_wt.item()
 
         if has_both(rec_grids, rec_lig_grids):
             steric_loss = self.steric_loss_fn(rec_grids, rec_lig_grids)
-            steric_loss_wt = \
-                self.steric_loss_schedule(iteration) if use_loss_wt else 1
+            steric_loss_wt = self.steric_loss_schedule(iteration, use_loss_wt)
             loss += steric_loss_wt * steric_loss
             losses['steric_loss'] = steric_loss.item()
             losses['steric_loss_wt'] = steric_loss_wt.item()
 
         if has_both(latent2_means, latent2_log_stds):
             kldiv2_loss = self.kldiv2_loss_fn(latent2_means, latent2_log_stds)
-            kldiv2_loss_wt = \
-                self.kldiv2_loss_schedule(iteration) if use_loss_wt else 1
+            kldiv2_loss_wt = self.kldiv2_loss_schedule(iteration, use_loss_wt)
             loss += kldiv2_loss_wt * kldiv2_loss
             losses['kldiv2_loss'] = kldiv2_loss.item()
             losses['kldiv2_loss_wt'] = kldiv2_loss_wt.item()
@@ -193,8 +188,7 @@ class LossFunction(nn.Module):
             recon2_loss = self.recon2_loss_fn(
                 gen_latents, real_latents, prior_log_var
             )
-            recon2_loss_wt = \
-                self.recon2_loss_schedule(iteration) if use_loss_wt else 1
+            recon2_loss_wt = self.recon2_loss_schedule(iteration, use_loss_wt)
             loss += recon2_loss_wt * recon2_loss
             losses['recon2_loss'] = recon2_loss.item()
             losses['recon2_loss_wt'] = recon2_loss_wt.item()
@@ -227,7 +221,9 @@ def get_loss_schedule(
     restart = (type == 'r')
     end_iter = start_iter + period
 
-    def loss_schedule(iteration):
+    def loss_schedule(iteration, use_loss_wt):
+        if not use_loss_wt:
+            return torch.tensor(1)
         if no_schedule or iteration < start_iter:
             return torch.as_tensor(start_wt)
         if iteration >= end_iter and not periodic:

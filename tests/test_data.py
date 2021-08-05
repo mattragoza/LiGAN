@@ -30,7 +30,7 @@ class TestAtomGridData(object):
     @pytest.fixture
     def data2(self):
         return AtomGridData(
-            data_root='data',
+            data_root='tests/input',
             batch_size=2,
             rec_typer='oadc-1.0',
             lig_typer='oadc-1.0',
@@ -196,6 +196,7 @@ class TestMolDataset(object):
                 data_root=data_root,
                 cache_structs=True,
             )
+            data.root_dir = data_root
             data.populate(data_file)
             data.rec_typer = rec_typer
             data.lig_typer = lig_typer
@@ -212,10 +213,10 @@ class TestMolDataset(object):
                 for ex in examples:
                     rec_coord_set, lig_coord_set = ex.coord_sets
                     rec_struct = AtomStruct.from_coord_set(
-                        rec_coord_set, data.rec_typer
+                        rec_coord_set, data.rec_typer, data.root_dir
                     )
                     lig_struct = AtomStruct.from_coord_set(
-                        lig_coord_set, data.lig_typer
+                        lig_coord_set, data.lig_typer, data.root_dir
                     )
                 i += batch_size
 

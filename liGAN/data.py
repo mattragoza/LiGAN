@@ -30,7 +30,7 @@ class MolDataset(utils.data.IterableDataset):
         self.data = pd.read_csv(
             data_file, sep=' ', names=data_cols, index_col=False
         )
-        self.data_root = data_root
+        self.root_dir = data_root
 
         ob_conv = ob.OBConversion()
         ob_conv.SetInFormat('pdb')
@@ -48,7 +48,7 @@ class MolDataset(utils.data.IterableDataset):
 
     def read_mol(self, mol_src, pdb=False):
 
-        mol_file = os.path.join(self.data_root, mol_src)
+        mol_file = os.path.join(self.root_dir, mol_src)
         if self.verbose:
             print('Reading ' + mol_file)
 
