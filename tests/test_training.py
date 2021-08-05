@@ -52,8 +52,9 @@ def solver(request):
             resolution=1.0,
             grid_size=16,
             shuffle=False,
-            random_rotation=False,
+            random_rotation=True,
             random_translation=0,
+            diff_cond_transform=True,
             cache_structs=False,
         ),
         gen_model_kws=dict(

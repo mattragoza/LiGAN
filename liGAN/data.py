@@ -107,6 +107,7 @@ class AtomGridData(nn.Module):
         shuffle=False,
         random_rotation=False,
         random_translation=0.0,
+        diff_cond_transform=False,
         n_samples=1,
         rec_molcache=None,
         lig_molcache=None,
@@ -137,26 +138,42 @@ class AtomGridData(nn.Module):
             num_copies=n_samples,
         )
 
-        # create molgrid maker and output tensors
+        # create molgrid maker
         self.grid_maker = molgrid.GridMaker(
             resolution=resolution,
             dimension=dimension,
             gaussian_radius_multiple=-1.5,
         )
-        self.grids = torch.zeros(
+        self.batch_size = batch_size
+        self.labels = torch.zeros(batch_size, device=device)
+
+        # create output tensors for input grids
+        self.input_grids = torch.zeros(
             batch_size,
             self.n_rec_channels + self.n_lig_channels,
             *self.grid_maker.spatial_grid_dimensions(),
             dtype=torch.float32,
             device=device,
         )
-        self.labels = torch.zeros(batch_size, device=device)
-        self.transforms = [None for i in range(batch_size)]
-        self.batch_size = batch_size
+        self.input_transforms = [None for i in range(batch_size)]
 
+        # transformation settings
         self.random_rotation = random_rotation
         self.random_translation = random_translation
+        self.diff_cond_transform = diff_cond_transform
         self.debug = debug
+
+        if diff_cond_transform:
+
+            # create separate output tensors for conditional grids
+            self.cond_grids = torch.zeros(
+                batch_size,
+                self.n_rec_channels + self.n_lig_channels,
+                *self.grid_maker.spatial_grid_dimensions(),
+                dtype=torch.float32,
+                device=device,
+            )
+            self.cond_transforms = [None for i in range(batch_size)]
 
     @classmethod
     def from_param(cls, param):
@@ -179,7 +196,7 @@ class AtomGridData(nn.Module):
 
     @property
     def device(self):
-        return self.grids.device
+        return self.input_grids.device
 
     @property
     def root_dir(self):
@@ -215,7 +232,7 @@ class AtomGridData(nn.Module):
     def __len__(self):
         return self.ex_provider.size()
 
-    def forward(self, split_rec_lig=False):
+    def forward(self):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures
@@ -234,28 +251,44 @@ class AtomGridData(nn.Module):
 
             rec_coord_set, lig_coord_set = example.coord_sets
 
-            self.transforms[i] = molgrid.Transform(
+            # store input transforms
+            self.input_transforms[i] = molgrid.Transform(
                 center=lig_coord_set.center(),
                 random_translate=self.random_translation,
                 random_rotation=self.random_rotation,
-            ) # store transforms
-
-            self.grid_maker.forward(
-                example, self.transforms[i], self.grids[i]
             )
+            # create input density grids
+            self.grid_maker.forward(
+                example, self.input_transforms[i], self.input_grids[i]
+            )
+
+            if self.diff_cond_transform:
+
+                # store conditional transforms
+                self.cond_transforms[i] = molgrid.Transform(
+                    center=lig_coord_set.center(),
+                    random_translate=self.random_translation,
+                    random_rotation=self.random_rotation,
+                )
+                # create conditional density grids
+                self.grid_maker.forward(
+                    example, self.cond_transforms[i], self.cond_grids[i]
+                )
+
             t1 = time.time()
 
+            # convert coord sets to atom structs
             rec_struct = atom_structs.AtomStruct.from_coord_set(
                 rec_coord_set,
                 typer=self.rec_typer,
                 data_root=self.root_dir,
-                device=self.grids.device
+                device=self.device
             )
             lig_struct = atom_structs.AtomStruct.from_coord_set(
                 lig_coord_set,
                 typer=self.lig_typer,
                 data_root=self.root_dir,
-                device=self.grids.device
+                device=self.device
             )
             rec_structs.append(rec_struct)
             lig_structs.append(lig_struct)
@@ -265,16 +298,11 @@ class AtomGridData(nn.Module):
             t_struct += t2 - t1
 
         t0 = time.time()
-        grids = self.grids
         structs = (rec_structs, lig_structs)
 
-        if split_rec_lig:
-            grids = torch.split(
-                self.grids,
-                [self.n_rec_channels, self.n_lig_channels],
-                dim=1,
-            )
-        
+        input_grids = self.input_grids
+        cond_grids = self.cond_grids if self.diff_cond_transform else None
+
         t_split = time.time() - t0
         t_total = t_mol + t_grid + t_struct + t_split
 
@@ -287,8 +315,15 @@ class AtomGridData(nn.Module):
                 100*t_split/t_total,
             ))
 
-        return grids, structs, self.labels
+        return input_grids, cond_grids, structs, self.labels
 
+    def split_channels(self, grids):
+        '''
+        Split receptor and ligand grid channels.
+        '''
+        return torch.split(
+            grids, [self.n_rec_channels, self.n_lig_channels], dim=1
+        )
 
     def find_real_mol(self, mol_src, ext):
         return find_real_mol(mol_src, self.root_dir, ext)

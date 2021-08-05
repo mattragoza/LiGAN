@@ -582,21 +582,23 @@ class GenerativeSolver(nn.Module):
 
         t0 = time.time()
         if posterior or has_cond: # get real examples
-            grids, structs, _ = data.forward(split_rec_lig=True)
-            rec_grids, lig_grids = grids
-            rec_lig_grids = data.grids
+            input_grids, cond_grids, structs, _ = data.forward()
             rec_structs, lig_structs = structs
+            input_rec_grids, input_lig_grids = data.split_channels(input_grids)
+            if data.diff_cond_transform:
+                cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
+            else: # same as input grids
+                cond_grids = input_grids
+                cond_rec_grids = input_rec_grids
+                cond_lig_grids = input_lig_grids
 
         if self.sync_cuda:
             torch.cuda.synchronize()
         t1 = time.time()
 
-        # get generated ligand grids
-        if posterior:
-            if self.has_complex_input:
-                gen_input_grids = rec_lig_grids
-            else:
-                gen_input_grids = lig_grids
+        if posterior: # set generator input grids
+            gen_input_grids = \
+                input_grids if self.has_complex_input else input_lig_grids
 
         if decode_stage2_vecs: # should only do this in test phase
             lig_gen_grids, latent_vecs, latent_means, latent_log_stds, \
@@ -604,14 +606,14 @@ class GenerativeSolver(nn.Module):
                 self.gen_model.forward2(
                     prior_model=self.prior_model,
                     inputs=gen_input_grids if posterior else None,
-                    conditions=rec_grids if has_cond else None,
+                    conditions=cond_rec_grids if has_cond else None,
                     batch_size=data.batch_size,
                 )
         else:
             lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
                 self.gen_model(
                     inputs=gen_input_grids if posterior else None,
-                    conditions=rec_grids if has_cond else None,
+                    conditions=cond_rec_grids if has_cond else None,
                     batch_size=data.batch_size,
                 )
             if compute_stage2_loss:
@@ -627,7 +629,8 @@ class GenerativeSolver(nn.Module):
 
         if has_disc: # get discriminator predictions
             if has_cond:
-                disc_input_grids = torch.cat([rec_grids,lig_gen_grids], dim=1)
+                disc_input_grids = \
+                    torch.cat([cond_rec_grids, lig_gen_grids], dim=1)
             else:
                 disc_input_grids = lig_gen_grids
 
@@ -635,13 +638,13 @@ class GenerativeSolver(nn.Module):
             disc_preds, _ = self.disc_model(inputs=disc_input_grids)
 
         loss, metrics = self.loss_fn(
-            lig_grids=lig_grids if posterior else None,
+            lig_grids=cond_lig_grids if posterior else None,
             lig_gen_grids=lig_gen_grids if posterior else None,
             disc_labels=disc_labels if has_disc else None,
             disc_preds=disc_preds if has_disc else None,
             latent_means=latent_means if posterior else None,
             latent_log_stds=latent_log_stds if posterior else None,
-            rec_grids=rec_grids if has_cond else None,
+            rec_grids=cond_rec_grids if has_cond else None,
             rec_lig_grids=lig_gen_grids if has_cond else None,
             latent2_means=latent2_means if compute_stage2_loss else None,
             latent2_log_stds=latent2_log_stds if compute_stage2_loss else None,
@@ -674,7 +677,7 @@ class GenerativeSolver(nn.Module):
 
         if posterior:
             metrics.update(compute_paired_grid_metrics(
-                'lig_gen', lig_gen_grids, 'lig', lig_grids
+                'lig_gen', lig_gen_grids, 'lig', cond_lig_grids
             ))
         else:
             metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
@@ -728,34 +731,39 @@ class GenerativeSolver(nn.Module):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real or posterior or has_cond: # get real examples
-                grids, structs, _ = data.forward(split_rec_lig=True)
-                rec_grids, lig_grids = grids
-                rec_lig_grids = data.grids
+                input_grids, cond_grids, structs, _ = data.forward()
                 rec_structs, lig_structs = structs
+                input_rec_grids, input_lig_grids = \
+                    data.split_channels(input_grids)
+                if data.diff_cond_transform:
+                    cond_rec_grids, cond_lig_grids = \
+                        data.split_channels(cond_grids)
+                else: # same as input grids
+                    cond_grids = input_grids
+                    cond_rec_grids = input_rec_grids
+                    cond_lig_grids = input_lig_grids
 
             t1 = time.time()
 
             if not real: # get generated ligand grids
 
-                if posterior:
-                    if self.has_complex_input:
-                        gen_input_grids = rec_lig_grids
-                    else:
-                        gen_input_grids = lig_grids
+                if posterior: # set generator input grids
+                    gen_input_grids = \
+                        input_grids if self.has_complex_input else input_lig_grids
 
                 lig_gen_grids, latent_vecs, latent_means, latent_log_stds = \
                     self.gen_model(
                         inputs=gen_input_grids if posterior else None,
-                        conditions=rec_grids if has_cond else None,
+                        conditions=cond_rec_grids if has_cond else None,
                         batch_size=data.batch_size
                     )
             t2 = time.time()
 
         # get discriminator predictions
         if real:
-            disc_grids = rec_lig_grids if has_cond else lig_grids
+            disc_grids = cond_grids if has_cond else cond_lig_grids
         elif has_cond:
-            disc_grids = torch.cat([rec_grids, lig_gen_grids], dim=1)
+            disc_grids = torch.cat([cond_rec_grids, lig_gen_grids], dim=1)
         else:
             disc_grids = lig_gen_grids
 
@@ -770,7 +778,7 @@ class GenerativeSolver(nn.Module):
 
         metrics.update(compute_grid_metrics(
             'lig' if real else 'lig_gen',
-            lig_grids if real else lig_gen_grids
+            cond_lig_grids if real else lig_gen_grids
         ))
         metrics.update(compute_scalar_metrics('disc_pred', disc_preds))
         t4 = time.time()
