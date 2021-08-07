@@ -79,7 +79,7 @@ class MoleculeGenerator(object):
 
         # determine generated grid types
         grid_types = ['rec', 'lig']
-        if diff_cond_rec:
+        if diff_cond_rec or self.data.diff_cond_transform:
             grid_types += ['cond_rec', 'cond_lig']
 
         if self.gen_model:
@@ -443,9 +443,6 @@ class MoleculeGenerator(object):
                     self.data.root_dir, cond_lig_src_no_ext, use_ob=True
                 )
 
-                if fixed_input: # use whatever name is changing
-                    lig_name = cond_rec_name
-
                 if uff_minimize:
                     # real molecules don't need UFF minimization,
                     #   but we need their UFF metrics for reference
@@ -464,6 +461,9 @@ class MoleculeGenerator(object):
                 assert cond_rec_struct.info['src_file'] == cond_rec_src_file
                 assert cond_lig_struct.info['src_file'] == cond_lig_src_file
 
+            if fixed_input: # get the name of the receptor that's changing
+                rec_name = cond_rec_name
+
             rec_struct.info['src_mol'] = rec_mol
             lig_struct.info['src_mol'] = lig_mol
             if diff_cond_rec:
@@ -475,7 +475,7 @@ class MoleculeGenerator(object):
                 ('rec', input_rec_grids, self.data.rec_typer),
                 ('lig', input_lig_grids, self.data.lig_typer),  
             ]
-            if diff_cond_rec:
+            if diff_cond_rec or self.data.diff_cond_transform:
                 grid_types += [
                     ('cond_rec', cond_rec_grids, self.data.rec_typer),
                     ('cond_lig', cond_lig_grids, self.data.lig_typer)
@@ -516,7 +516,7 @@ class MoleculeGenerator(object):
 
                 # display progress
                 index_str = \
-                    f'[example_idx={example_idx} sample_idx={sample_idx} lig_name={lig_name} grid_type={grid_type}]'
+                    f'[example_idx={example_idx} sample_idx={sample_idx} rec_name={rec_name} lig_name={lig_name} grid_type={grid_type}]'
 
                 value_str = 'norm={:.4f} gpu={:.4f}'.format(
                     grid.values.norm(),
@@ -535,7 +535,7 @@ class MoleculeGenerator(object):
                     )
 
                 self.out_writer.write(
-                    lig_name, sample_idx, grid_type, grid
+                    rec_name, lig_name, sample_idx, grid_type, grid
                 )
 
                 if grid_needs_fit: # perform atom fitting
@@ -582,7 +582,7 @@ class MoleculeGenerator(object):
 
                     grid_type += '_fit'
                     self.out_writer.write(
-                        lig_name, sample_idx, grid_type, fit_grid
+                        rec_name, lig_name, sample_idx, grid_type, fit_grid
                     )
 
 
@@ -667,12 +667,12 @@ class OutputWriter(object):
         self.grid_types = grid_types
         self.batch_metrics = batch_metrics
 
-        # organize grids by lig_name, sample_idx, grid_type
+        # organize grids by (rec_name, lig_name), sample_idx, grid_type
         self.grids = defaultdict(lambda: defaultdict(dict))
 
         # accumulate metrics in dataframe
         self.metric_file = '{}.gen_metrics'.format(out_prefix)
-        columns = ['lig_name', 'sample_idx']
+        columns = ['rec_name', 'lig_name', 'sample_idx']
         self.metrics = pd.DataFrame(columns=columns).set_index(columns)
 
         # write a pymol script when finished
@@ -779,12 +779,13 @@ class OutputWriter(object):
         self.print('Writing ' + str(latent_file))
         write_latent_vec_to_file(latent_file, latent_vec)
 
-    def write(self, lig_name, sample_idx, grid_type, grid):
+    def write(self, rec_name, lig_name, sample_idx, grid_type, grid):
         '''
         Write output files for grid and compute metrics in
         data frame, if all necessary data is present.
         '''
-        grid_prefix = '{}_{}_{}'.format(self.out_prefix, lig_name, grid_type)
+        out_prefix = self.out_prefix
+        grid_prefix = f'{out_prefix}_{rec_name}_{lig_name}_{grid_type}'
         i = str(sample_idx)
 
         assert grid_type in {
@@ -905,8 +906,8 @@ class OutputWriter(object):
         # store grid until ready to compute output metrics
         #   if we're computing batch matrics, need all samples
         #   otherwise, just need all grids for this sample
-        self.grids[lig_name][sample_idx][grid_type] = grid
-        lig_grids = self.grids[lig_name]
+        self.grids[(rec_name, lig_name)][sample_idx][grid_type] = grid
+        lig_grids = self.grids[(rec_name, lig_name)]
 
         if self.batch_metrics:
 
@@ -918,10 +919,11 @@ class OutputWriter(object):
 
             # compute batch metrics
             if has_all_samples and has_all_grids:
-
-                self.print('Computing metrics for all '+lig_name+' samples')
+                self.print(
+                    f'Computing metrics for all {rec_name} {lig_name} samples'
+                )
                 try:
-                    self.compute_metrics(lig_name, range(self.n_samples))
+                    self.compute_metrics(rec_name, lig_name, range(self.n_samples))
                 except:
                     self.close_files()
                     raise
@@ -937,7 +939,7 @@ class OutputWriter(object):
                     self.sdf_files,
                 )
                 print('Freeing memory')
-                del self.grids[lig_name] # free memory
+                del self.grids[(rec_name, lig_name)] # free memory
 
         else:
             # only store until grids for this sample are ready
@@ -946,12 +948,11 @@ class OutputWriter(object):
             )
             # compute sample metrics
             if has_all_grids:
-
-                self.print('Computing metrics for {} sample {}'.format(
-                    lig_name, sample_idx
-                ))
+                self.print(
+                    f'Computing metrics for {rec_name} {lig_name} sample {sample_idx}'
+                )
                 try:
-                    self.compute_metrics(lig_name, [sample_idx])
+                    self.compute_metrics(rec_name, lig_name, [sample_idx])
                 except:
                     self.close_files()
                     raise
@@ -967,19 +968,21 @@ class OutputWriter(object):
                     self.sdf_files,
                 )
                 print('Freeing memory')
-                del self.grids[lig_name][sample_idx] # free memory
+                del self.grids[(rec_name, lig_name)][sample_idx] # free memory
 
-    def compute_metrics(self, lig_name, sample_idxs):
+    def compute_metrics(self, rec_name, lig_name, sample_idxs):
         '''
         Compute metrics for density grids, typed atomic structures,
         and molecules for a given ligand in metrics data frame.
         '''
-        lig_grids = self.grids[lig_name]
+        lig_grids = self.grids[(rec_name, lig_name)]
         has_rec = ('rec' in self.grid_types)
         has_cond_rec = ('cond_rec' in self.grid_types)
         has_lig_gen = ('lig_gen' in self.grid_types)
         has_lig_fit = ('lig_fit' in self.grid_types)
         has_lig_gen_fit = ('lig_gen_fit' in self.grid_types)
+        # TODO don't compute metrics twice w/ diff_cond_transform
+        #   the only thing we really need is the lig l2 loss
 
         if self.batch_metrics: # compute mean grids and type counts
 
@@ -1030,7 +1033,7 @@ class OutputWriter(object):
             lig_gen_fit_mean_counts = None
 
         for sample_idx in sample_idxs:
-            idx = (lig_name, sample_idx)
+            idx = (rec_name, lig_name, sample_idx)
 
             rec_grid = lig_grids[sample_idx]['rec'] if has_rec else None
             lig_grid = lig_grids[sample_idx]['lig']
@@ -1191,7 +1194,7 @@ class OutputWriter(object):
                         use_cond_min=True
                     )
 
-        self.print(self.metrics.loc[lig_name].loc[sample_idxs].transpose())
+        self.print(self.metrics.loc[rec_name,lig_name].loc[sample_idxs].transpose())
 
     def compute_grid_metrics(
         self,
