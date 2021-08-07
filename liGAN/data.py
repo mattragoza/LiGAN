@@ -21,11 +21,11 @@ class MolDataset(utils.data.IterableDataset):
         #  but otherwise same absolute distributions...
         data_cols = [
             'low_rmsd',
-            'unknown', # ?
-            'affinity',
+            'true_aff',
+            'xtal_rmsd',
             'rec_src',
             'lig_src',
-            'vina_score'
+            'vina_aff'
         ]
         self.data = pd.read_csv(
             data_file, sep=' ', names=data_cols, index_col=False

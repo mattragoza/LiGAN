@@ -1,4 +1,4 @@
-import sys, re, glob, fnmatch, shutil
+import sys, re, glob, fnmatch, shutil, time
 from collections import OrderedDict
 import pymol
 from pymol import cmd, stored
@@ -336,8 +336,75 @@ def my_rotate(name, axis, angle, states, **kwargs):
         cmd.rotate(axis, float(angle)*i/int(states), name, state=i+1, camera=0, **kwargs)
 
 
+def mutate(protein, resi, mode='ALA', chain='A'):
+    cmd.wizard('mutagenesis')
+    cmd.do("refresh_wizard")
+    cmd.get_wizard().set_mode(mode.upper())
+    selection = f'/{protein}//{chain}/{resi}'
+    cmd.get_wizard().do_select(selection)
+    cmd.frame(str(1))
+    cmd.get_wizard().apply()
+    cmd.set_wizard('done')
+    cmd.refresh()
+
+
+def my_mutate(rec_name, lig_name, dist):
+
+    # select residues in rec_name within dist of lig_name
+    #   and show them as lines, the rest as cartoon
+    rec_pocket = f'byres {rec_name} within {dist} of {lig_name}'
+
+    # get the names and indices of the pocket residues
+    space = dict(residues=set())
+    cmd.iterate(rec_pocket, 'residues.add((resv, resn))', space=space)
+    residues = sorted(space['residues'])
+    res_idxs = [str(i) for i, n in residues]
+    res_idxs = '(resi ' + '+'.join(res_idxs) + ')'
+
+    # create a mapping from charged residues to
+    #   oppositely charged residues of similar size
+    charge_map = {
+        'ARG': 'GLU',
+        'HIS': 'ASP',
+        'LYS': 'GLU',
+        'ASP': 'LYS',
+        'GLU': 'LYS',
+    }
+
+    # mutate each pocket residue individually
+    for res_idx, res_name in residues:
+
+        # make a mutant with the residue as alanine
+        mut_name = f'{rec_name}_mut_{res_idx}_{res_name}_ALA'
+        cmd.copy(mut_name, rec_name)
+        mutate(mut_name, res_idx, 'ALA')
+        cmd.save(mut_name + '.pdb', mut_name)
+
+        if res_name in charge_map:
+
+            # make another mutant with the charge flipped
+            inv_name = charge_map[res_name]
+            mut_name = f'{rec_name}_mut_{res_idx}_{res_name}_{inv_name}'
+            cmd.copy(mut_name, rec_name)
+            mutate(mut_name, res_idx, inv_name)
+            cmd.save(mut_name + '.pdb', mut_name)
+
+    # create one final mutant with ALL charges flipped
+    mut_name = f'{rec_name}_mut_all_charges'
+    cmd.copy(mut_name, rec_name)
+    for res_idx, res_name in residues:
+        if res_name in charge_map:
+            inv_name = charge_map[res_name]
+            mutate(mut_name, res_idx, inv_name)
+
+    cmd.save(mut_name + '.pdb', mut_name)
+    cmd.zoom(rec_pocket)
+    print(res_idxs)
+
 cmd.extend('set_atom_level', set_atom_level)
 cmd.extend('join_structs', join_structs)
 cmd.extend('draw_interp', draw_interp)
 cmd.extend('load_group', load_group)
 cmd.extend('my_rotate', my_rotate)
+cmd.extend('mutate', mutate)
+cmd.extend('my_mutate', my_mutate)
