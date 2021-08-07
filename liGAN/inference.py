@@ -179,79 +179,91 @@ class MoleculeGenerator(object):
 
     def forward(self, prior, stage2, fixed_input, fixed_condition, **kwargs):
 
-        need_fixed = (fixed_input or fixed_condition)
-        fixed_only = (fixed_input and fixed_condition)
+        print(f'Calling generator forward')
+        print(f'  prior = {prior}')
+        print(f'  stage2 = {stage2}')
+        print(f'  fixed_input = {fixed_input}')
+        print(f'  fixed_condition = {fixed_condition}')
+
+        need_fixed = fixed_input or fixed_condition
+        fixed_only = fixed_input and fixed_condition
         has_fixed = hasattr(self, 'fixed_rec_structs')
         set_fixed = need_fixed and not has_fixed
         need_data = set_fixed or not fixed_only
 
         if need_data:
             print('Getting next batch of data')
-            grids, structs, _ = self.data.forward(split_rec_lig=True)
-            rec_structs, lig_structs = structs
-            rec_grids, lig_grids = grids
+            data = self.data
+            input_grids, cond_grids, input_structs, cond_structs, transforms, _\
+                = data.forward()
+            rec_structs, lig_structs = input_structs
+            input_transforms, cond_transforms = transforms
+            input_rec_grids, input_lig_grids = data.split_channels(input_grids)
+            if data.diff_cond_transform:
+                cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
+            else: # same as input grids
+                cond_grids = input_grids
+                cond_rec_grids = input_rec_grids
+                cond_lig_grids = input_lig_grids
 
         if set_fixed:
             # store first data examples
             print('Setting fixed data batch')
             self.fixed_rec_structs = rec_structs
             self.fixed_lig_structs = lig_structs
-            self.fixed_rec_grids = rec_grids
-            self.fixed_lig_grids = lig_grids
+            self.fixed_rec_grids = \
+                input_rec_grids if fixed_input else cond_rec_grids
+            self.fixed_lig_grids = \
+                input_lig_grids if fixed_input else cond_lig_grids
+            self.fixed_transforms = \
+                input_transforms if fixed_input else cond_transforms
 
         if fixed_condition:
             cond_rec_structs = self.fixed_rec_structs
             cond_lig_structs = self.fixed_lig_structs
             cond_rec_grids = self.fixed_rec_grids
             cond_lig_grids = self.fixed_lig_grids
+            cond_transforms = self.fixed_transforms
         else:
             cond_rec_structs = rec_structs
             cond_lig_structs = lig_structs
-            cond_rec_grids = rec_grids
-            cond_lig_grids = lig_grids
 
         if fixed_input:
             input_rec_structs = self.fixed_rec_structs
             input_lig_structs = self.fixed_lig_structs
             input_rec_grids = self.fixed_rec_grids
             input_lig_grids = self.fixed_lig_grids
+            input_transforms = self.fixed_transforms
         else:
             input_rec_structs = rec_structs
             input_lig_structs = lig_structs
-            input_rec_grids = rec_grids
-            input_lig_grids = lig_grids
 
         posterior = not prior
         if posterior:
             if self.has_complex_input:
-                input_grids = torch.cat(
+                gen_input_grids = torch.cat(
                     [input_rec_grids, input_lig_grids], dim=1
                 )
             else:
-                input_grids = input_lig_grids
+                gen_input_grids = input_lig_grids
         else:
-            input_grids = None
+            gen_input_grids = None
 
         if self.gen_model:
-            print(f'Calling generator forward')
-            print(f'  prior = {prior}')
-            print(f'  stage2 = {stage2}')
-            print(f'  fixed_input = {fixed_input}')
-            print(f'  fixed_condition = {fixed_condition}')
 
             with torch.no_grad():
                 if stage2: # insert prior model
                     lig_gen_grids, _, _, _, latents, _, _ = \
                         self.gen_model.forward2(
                             prior_model=self.prior_model,
-                            inputs=input_grids,
+                            inputs=gen_input_grids,
                             conditions=cond_rec_grids,
                             batch_size=self.data.batch_size,
                             **kwargs
                         )
                 else:
                     lig_gen_grids, latents, _, _ = self.gen_model(
-                        inputs=input_grids,
+                        inputs=gen_input_grids,
                         conditions=cond_rec_grids,
                         batch_size=self.data.batch_size,
                         **kwargs
@@ -265,12 +277,16 @@ class MoleculeGenerator(object):
             except AttributeError:
                 return x
 
+        input_grids = try_detach(input_rec_grids), try_detach(input_lig_grids)
+        cond_grids = try_detach(cond_rec_grids), try_detach(cond_lig_grids)
+        input_structs = (input_rec_structs, input_lig_structs)
+        cond_structs = (cond_rec_structs, cond_lig_structs)
+        latents, lig_gen_grids = try_detach(latents), try_detach(lig_gen_grids)
+        transforms = (input_transforms, cond_transforms)
         return (
-            input_rec_structs, try_detach(input_rec_grids),
-            input_lig_structs, try_detach(input_lig_grids),
-            cond_rec_structs, try_detach(cond_rec_grids),
-            cond_lig_structs, try_detach(cond_lig_grids),
-            try_detach(latents), try_detach(lig_gen_grids),
+            input_grids, cond_grids,
+            input_structs, cond_structs,
+            latents, lig_gen_grids, transforms
         )
 
     def generate(
@@ -331,11 +347,9 @@ class MoleculeGenerator(object):
                 #if gnina_minimize: # copy to gpu
                 #    self.gen_model.to('cuda')
                 (
-                    input_rec_structs, input_rec_grids,
-                    input_lig_structs, input_lig_grids,
-                    cond_rec_structs, cond_rec_grids,
-                    cond_lig_structs, cond_lig_grids,
-                    latents, lig_gen_grids,
+                    input_grids, cond_grids,
+                    input_structs, cond_structs,
+                    latents, lig_gen_grids, transforms
                 ) = self.forward(
                     prior=prior,
                     stage2=stage2,
@@ -348,6 +362,11 @@ class MoleculeGenerator(object):
                     interpolate=interpolate,
                     spherical=spherical,
                 )
+                input_rec_grids, input_lig_grids = input_grids
+                cond_rec_grids, cond_lig_grids = cond_grids
+                input_rec_structs, input_lig_structs = input_structs
+                cond_rec_structs, cond_lig_structs = cond_structs
+                input_transforms, cond_transforms = transforms
                 #if gnina_minimize: # copy to cpu
                 #    self.gen_model.to('cpu')
 
@@ -360,8 +379,11 @@ class MoleculeGenerator(object):
 
             # in order to align fit structs with real structs,
             #   we need to apply the inverse of the transform
-            #   that was used to create the real density grids
-            transform = self.data.transforms[batch_idx]
+            #   that was used to create the true density grid
+            if self.data.diff_cond_transform:
+                transform = cond_transforms[batch_idx]
+            else:
+                transform = input_transforms[batch_idx]
 
             # only process real rec/lig once, since they're
             #   the same for all samples of a given ligand
@@ -645,16 +667,16 @@ class OutputWriter(object):
     def __init__(
         self,
         out_prefix,
-        output_grids,
-        output_structs,
-        output_mols,
-        output_latents,
-        output_visited,
-        output_conv,
         n_samples,
         grid_types,
-        batch_metrics,
-        verbose
+        output_mols=True,
+        output_structs=False,
+        output_grids=False,
+        output_latents=False,
+        output_visited=False,
+        output_conv=False,
+        batch_metrics=False,
+        verbose=False
     ):
         self.out_prefix = out_prefix
         self.output_grids = output_grids

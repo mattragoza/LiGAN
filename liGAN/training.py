@@ -582,8 +582,9 @@ class GenerativeSolver(nn.Module):
 
         t0 = time.time()
         if posterior or has_cond: # get real examples
-            input_grids, cond_grids, structs, _ = data.forward()
-            rec_structs, lig_structs = structs
+            input_grids, cond_grids, input_structs, cond_structs, _, _ = \
+                data.forward()
+            rec_structs, lig_structs = input_structs
             input_rec_grids, input_lig_grids = data.split_channels(input_grids)
             if data.diff_cond_transform:
                 cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
@@ -731,8 +732,9 @@ class GenerativeSolver(nn.Module):
         with torch.no_grad(): # do not backprop to generator or data
 
             if real or posterior or has_cond: # get real examples
-                input_grids, cond_grids, structs, _ = data.forward()
-                rec_structs, lig_structs = structs
+                input_grids, cond_grids, input_structs, cond_structs, _, _ = \
+                    data.forward()
+                rec_structs, lig_structs = input_structs
                 input_rec_grids, input_lig_grids = \
                     data.split_channels(input_grids)
                 if data.diff_cond_transform:

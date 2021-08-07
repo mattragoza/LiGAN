@@ -92,7 +92,7 @@ class MolDataset(utils.data.IterableDataset):
             yield rec_mol, lig_mol
 
 
-class AtomGridData(nn.Module):
+class AtomGridData(object):
 
     def __init__(
         self,
@@ -145,35 +145,13 @@ class AtomGridData(nn.Module):
             gaussian_radius_multiple=-1.5,
         )
         self.batch_size = batch_size
-        self.labels = torch.zeros(batch_size, device=device)
-
-        # create output tensors for input grids
-        self.input_grids = torch.zeros(
-            batch_size,
-            self.n_rec_channels + self.n_lig_channels,
-            *self.grid_maker.spatial_grid_dimensions(),
-            dtype=torch.float32,
-            device=device,
-        )
-        self.input_transforms = [None for i in range(batch_size)]
 
         # transformation settings
         self.random_rotation = random_rotation
         self.random_translation = random_translation
         self.diff_cond_transform = diff_cond_transform
         self.debug = debug
-
-        if diff_cond_transform:
-
-            # create separate output tensors for conditional grids
-            self.cond_grids = torch.zeros(
-                batch_size,
-                self.n_rec_channels + self.n_lig_channels,
-                *self.grid_maker.spatial_grid_dimensions(),
-                dtype=torch.float32,
-                device=device,
-            )
-            self.cond_transforms = [None for i in range(batch_size)]
+        self.device = device
 
     @classmethod
     def from_param(cls, param):
@@ -193,10 +171,6 @@ class AtomGridData(nn.Module):
             rec_molcache=param.recmolcache,
             lig_molcache=param.ligmolcache,
         )
-
-    @property
-    def device(self):
-        return self.input_grids.device
 
     @property
     def root_dir(self):
@@ -238,42 +212,72 @@ class AtomGridData(nn.Module):
         # get next batch of structures
         t0 = time.time()
         examples = self.ex_provider.next_batch(self.batch_size)
-        examples.extract_label(0, self.labels)
+        labels = torch.zeros(self.batch_size, device=self.device)
+        examples.extract_label(0, labels)
         t_mol = time.time() - t0
 
         t_grid = 0
         t_struct = 0
 
-        rec_structs = []
-        lig_structs = []
-        for i, example in enumerate(examples):
+        # create output tensors for input grids
+        input_grids = torch.zeros(
+            self.batch_size,
+            self.n_channels,
+            *self.grid_maker.spatial_grid_dimensions(),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        input_transforms = [None] * self.batch_size
+        input_rec_structs = [None] * self.batch_size
+        input_lig_structs = [None] * self.batch_size
+
+        if self.diff_cond_transform:
+
+            # create separate output tensors for conditional grids
+            cond_grids = torch.zeros(
+                self.batch_size,
+                self.n_channels,
+                *self.grid_maker.spatial_grid_dimensions(),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            cond_transforms = [None] * self.batch_size
+            cond_rec_structs = [None] * self.batch_size
+            cond_lig_structs = [None] * self.batch_size
+        else:
+            cond_grids = None
+            cond_transforms = None
+            cond_rec_structs = None
+            cond_lig_structs = None
+
+        for i, ex in enumerate(examples):
             t0 = time.time()
 
-            rec_coord_set, lig_coord_set = example.coord_sets
+            if len(ex.coord_sets) == 4:
+                input_rec_coord_set, input_lig_coord_set, \
+                    cond_rec_coord_set, cond_lig_coord_set = ex.coord_sets
+            else:
+                rec_coord_set, lig_coord_set = ex.coord_sets
 
-            # store input transforms
-            self.input_transforms[i] = molgrid.Transform(
+            # create input transforms
+            input_transforms[i] = molgrid.Transform(
                 center=lig_coord_set.center(),
                 random_translate=self.random_translation,
                 random_rotation=self.random_rotation,
             )
             # create input density grids
-            self.grid_maker.forward(
-                example, self.input_transforms[i], self.input_grids[i]
-            )
+            self.grid_maker.forward(ex, input_transforms[i], input_grids[i])
 
             if self.diff_cond_transform:
 
-                # store conditional transforms
-                self.cond_transforms[i] = molgrid.Transform(
+                # create conditional transforms
+                cond_transforms[i] = molgrid.Transform(
                     center=lig_coord_set.center(),
                     random_translate=self.random_translation,
                     random_rotation=self.random_rotation,
                 )
                 # create conditional density grids
-                self.grid_maker.forward(
-                    example, self.cond_transforms[i], self.cond_grids[i]
-                )
+                self.grid_maker.forward(ex, cond_transforms[i], cond_grids[i])
 
             t1 = time.time()
 
@@ -290,32 +294,33 @@ class AtomGridData(nn.Module):
                 data_root=self.root_dir,
                 device=self.device
             )
-            rec_structs.append(rec_struct)
-            lig_structs.append(lig_struct)
+            input_rec_structs[i] = rec_struct
+            input_lig_structs[i] = lig_struct
+            if self.diff_cond_transform:
+                cond_rec_structs[i] = rec_struct
+                cond_lig_structs[i] = lig_struct
 
             t2 = time.time()
             t_grid += t1 - t0
             t_struct += t2 - t1
 
-        t0 = time.time()
-        structs = (rec_structs, lig_structs)
-
-        input_grids = self.input_grids
-        cond_grids = self.cond_grids if self.diff_cond_transform else None
-
-        t_split = time.time() - t0
-        t_total = t_mol + t_grid + t_struct + t_split
-
         if self.debug:
-            print('{:.4f}s ({:.2f} {:.2f} {:.2f} {:.2f})'.format(
+            t_total = t_mol + t_grid + t_struct
+            print('{:.4f}s ({:.2f} {:.2f} {:.2f})'.format(
                 t_total,
                 100*t_mol/t_total,
                 100*t_grid/t_total,
-                100*t_struct/t_total,
-                100*t_split/t_total,
+                100*t_struct/t_total
             ))
 
-        return input_grids, cond_grids, structs, self.labels
+        input_structs = (input_rec_structs, input_lig_structs)
+        cond_structs = (cond_rec_structs, cond_lig_structs)
+        transforms = (input_transforms, cond_transforms)
+        return (
+            input_grids, cond_grids,
+            input_structs, cond_structs,
+            transforms, labels
+        )
 
     def split_channels(self, grids):
         '''

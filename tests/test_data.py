@@ -54,11 +54,6 @@ class TestAtomGridData(object):
         assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
         assert data.grid_maker
-        assert data.input_grids.shape == (batch_size, data.n_channels) + (data.grid_size,)*3
-        assert isclose(0, data.input_grids.norm().cpu())
-        if data.diff_cond_transform:
-            assert data.cond_grids.shape == (batch_size, data.n_channels) + (data.grid_size,)*3
-            assert isclose(0, data.cond_grids.norm().cpu())
         assert len(data) == 0
 
     def test_data_populate(self, data, data_file):
@@ -87,9 +82,10 @@ class TestAtomGridData(object):
 
     def test_data_forward_ok(self, data, data_file):
         data.populate(data_file)
-        input_grids, cond_grids, structs, labels = data.forward()
-        rec_structs, lig_structs = structs
-        assert input_grids.shape == (batch_size, data.n_channels) + (data.grid_size,)*3
+        input_grids, cond_grids, input_structs, cond_structs, transforms, labels = data.forward()
+        rec_structs, lig_structs = input_structs
+        assert input_grids.shape == \
+            (batch_size, data.n_channels) + (data.grid_size,)*3
         assert len(lig_structs) == batch_size
         assert labels.shape == (batch_size,)
         assert not isclose(0, input_grids.norm().cpu())
@@ -97,9 +93,9 @@ class TestAtomGridData(object):
 
     def test_data_forward_split(self, data, data_file):
         data.populate(data_file)
-        input_grids, cond_grids, structs, labels = data.forward()
+        input_grids, cond_grids, input_structs, cond_structs, transforms, labels = data.forward()
         rec_grids, lig_grids = data.split_channels(input_grids)
-        rec_structs, lig_structs = structs
+        rec_structs, lig_structs = input_structs
         assert rec_grids.shape == (batch_size, data.n_lig_channels) + (data.grid_size,)*3
         assert lig_grids.shape == (batch_size, data.n_rec_channels) + (data.grid_size,)*3
         assert len(lig_structs) == batch_size
@@ -116,7 +112,7 @@ class TestAtomGridData(object):
 
         diff = 0.0
         for i in range(n_trials):
-            input_grids, cond_grids, _, _ = data2.forward()
+            input_grids, cond_grids = data2.forward()[:2]
             assert input_grids.norm() > 0, 'initial grids are empty'
             diff += (input_grids[0] - input_grids[1]).abs().max()
 
@@ -132,7 +128,7 @@ class TestAtomGridData(object):
 
         diff = 0.0
         for i in range(n_trials):
-            input_grids, cond_grids, _, _ = data2.forward()
+            input_grids, cond_grids = data2.forward()[:2]
             assert input_grids.norm() > 0, 'rotated grids are empty'
             diff += (input_grids[0] - input_grids[1]).abs().max()
 
@@ -148,7 +144,7 @@ class TestAtomGridData(object):
 
         diff = 0.0
         for i in range(n_trials):
-            input_grids, cond_grids, _, _ = data2.forward()
+            input_grids, cond_grids = data2.forward()[:2]
             assert input_grids.norm() > 0, 'translated grids are empty'
             diff += (input_grids[0] - input_grids[1]).abs().max()
 
@@ -164,7 +160,7 @@ class TestAtomGridData(object):
 
         diff = 0.0
         for i in range(n_trials):
-            input_grids, cond_grids, _, _ = data2.forward()
+            input_grids, cond_grids = data2.forward()[:2]
             assert input_grids.norm() > 0, 'input grids are empty'
             assert cond_grids.norm() > 0, 'conditional grids are empty'
             diff += (input_grids[0] - cond_grids[0]).abs().max()
@@ -173,6 +169,25 @@ class TestAtomGridData(object):
         diff /= (2*n_trials)
         assert diff > 0.5, \
             'input and conditional grids are the same ({:.2f})'.format(diff)
+
+    def test_data_consecutive(self, data2, data2_file):
+        data2.populate(data2_file)
+        data2.random_rotation = True
+        data2.random_translation = 2.0
+        n_trials = 100
+
+        diff = 0.0
+        for i in range(n_trials):
+            input_grids = data2.forward()[0]
+            assert input_grids.norm() > 0, 'input grids are empty'
+            if i > 0:
+                diff += (input_grids[0] - last_input_grids[0]).abs().max()
+                diff += (input_grids[1] - last_input_grids[1]).abs().max()
+            last_input_grids = input_grids
+
+        diff /= (2*(n_trials-1))
+        assert diff > 0.5, \
+            'consecutive input grids are the same ({:.2f})'.format(diff)
 
     def test_data_benchmark(self, data, data_file):
         data.populate(data_file)
