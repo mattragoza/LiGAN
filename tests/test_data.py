@@ -13,23 +13,34 @@ batch_size = 10
 
 class TestAtomGridData(object):
 
-    @pytest.fixture
-    def data(self):
+    @pytest.fixture(params=[(0,0), (1,0), (0,1), (1,1)])
+    def data(self, request):
+        diff_cond_transform, diff_cond_structs = request.param
+        data_file = (
+            'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants.types',
+            'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants2.types'
+        )[diff_cond_structs]
         return AtomGridData(
-            data_root=os.environ['CROSSDOCK_ROOT'],
+            data_file=data_file,
+            data_root='data/crossdock2020',
             batch_size=batch_size,
             rec_typer='oadc-1.0',
             lig_typer='oadc-1.0',
             resolution=0.5,
             dimension=23.5,
             shuffle=True,
-            debug=True,
+            random_rotation=True,
+            random_translation=True,
+            diff_cond_transform=diff_cond_transform,
+            diff_cond_structs=diff_cond_structs,
             cache_structs=True,
+            debug=True,
         )
 
     @pytest.fixture
     def data2(self):
         return AtomGridData(
+            data_file='data/two_atoms.types',
             data_root='tests/input',
             batch_size=2,
             rec_typer='oadc-1.0',
@@ -41,32 +52,14 @@ class TestAtomGridData(object):
             diff_cond_transform=True,
         )
 
-    @pytest.fixture
-    def data_file(self):
-        return 'data/it2_tt_0_lowrmsd_valid_mols_test0_1000.types'
-
-    @pytest.fixture
-    def data2_file(self):
-        return 'data/two_atoms.types'
-
     def test_data_init(self, data):
         assert data.n_rec_channels == (data.rec_typer.n_types if data.rec_typer else 0)
         assert data.n_lig_channels == data.lig_typer.n_types
         assert data.ex_provider
         assert data.grid_maker
-        assert len(data) == 0
+        assert len(data) == 25
 
-    def test_data_populate(self, data, data_file):
-        data.populate(data_file)
-        assert len(data) == 1000
-
-    def test_data_populate2(self, data, data_file):
-        data.populate(data_file)
-        data.populate(data_file)
-        assert len(data) == 2000
-
-    def test_data_find_real_mol(self, data, data_file):
-        data.populate(data_file)
+    def test_data_find_real_mol(self, data):
         return
         for ex in data.ex_provider.next_batch(16):
             rec_src = ex.coord_sets[0].src
@@ -76,36 +69,52 @@ class TestAtomGridData(object):
             assert os.path.isfile(rec_file), rec_file
             assert os.path.isfile(lig_file), lig_file
 
-    def test_data_forward_empty(self, data):
-        with pytest.raises(AssertionError):
-            data.forward()
-
-    def test_data_forward_ok(self, data, data_file):
-        data.populate(data_file)
+    def test_data_forward(self, data):
         input_grids, cond_grids, input_structs, cond_structs, transforms, labels = data.forward()
-        rec_structs, lig_structs = input_structs
+        input_rec_structs, input_lig_structs = input_structs
+        cond_rec_structs, cond_lig_structs = cond_structs
+        input_transforms, cond_transforms = transforms
+
         assert input_grids.shape == \
             (batch_size, data.n_channels) + (data.grid_size,)*3
-        assert len(lig_structs) == batch_size
+        assert cond_grids.shape == \
+            (batch_size, data.n_channels) + (data.grid_size,)*3
+
+        assert len(input_rec_structs) == batch_size
+        assert len(input_lig_structs) == batch_size
+        assert len(cond_rec_structs) == batch_size
+        assert len(cond_lig_structs) == batch_size
         assert labels.shape == (batch_size,)
+
         assert not isclose(0, input_grids.norm().cpu())
-        assert all(labels == 1)
+        assert not isclose(0, cond_grids.norm().cpu())
 
-    def test_data_forward_split(self, data, data_file):
-        data.populate(data_file)
-        input_grids, cond_grids, input_structs, cond_structs, transforms, labels = data.forward()
+        if data.diff_cond_structs:
+            assert cond_rec_structs != input_rec_structs
+            assert cond_lig_structs != input_lig_structs
+        else:
+            assert cond_rec_structs == input_rec_structs
+            assert cond_lig_structs == input_lig_structs
+
+        if data.diff_cond_transform:
+            assert cond_transforms != input_transforms
+        else:
+            assert cond_transforms == input_transforms
+
+        if data.diff_cond_structs or data.diff_cond_transform:
+            assert (cond_grids != input_grids).any()
+        else:
+            assert (cond_grids == input_grids).all()
+
+    def test_data_split(self, data):
+        input_grids, cond_grids, _, _, _, _ = data.forward()
         rec_grids, lig_grids = data.split_channels(input_grids)
-        rec_structs, lig_structs = input_structs
-        assert rec_grids.shape == (batch_size, data.n_lig_channels) + (data.grid_size,)*3
-        assert lig_grids.shape == (batch_size, data.n_rec_channels) + (data.grid_size,)*3
-        assert len(lig_structs) == batch_size
-        assert labels.shape == (batch_size,)
-        assert not isclose(0, rec_grids.norm().cpu())
-        assert not isclose(0, lig_grids.norm().cpu())
-        assert all(labels == 1)
+        assert rec_grids.shape == \
+            (batch_size, data.n_lig_channels) + (data.grid_size,)*3
+        assert lig_grids.shape == \
+            (batch_size, data.n_rec_channels) + (data.grid_size,)*3
 
-    def test_data_no_transform(self, data2, data2_file):
-        data2.populate(data2_file)
+    def test_data_no_transform(self, data2):
         data2.random_rotation = False
         data2.random_translation = 0.0
         n_trials = 100
@@ -120,8 +129,7 @@ class TestAtomGridData(object):
         assert diff < 0.1, \
             'no-transform grids are different ({:.2f})'.format(diff)
 
-    def test_data_rand_rotate(self, data2, data2_file):
-        data2.populate(data2_file)
+    def test_data_rand_rotate(self, data2):
         data2.random_rotation = True
         data2.random_translation = 0.0
         n_trials = 100
@@ -136,8 +144,7 @@ class TestAtomGridData(object):
         assert diff > 0.5, \
             'rotated grids are the same ({:.2f})'.format(diff)
 
-    def test_data_rand_translate(self, data2, data2_file):
-        data2.populate(data2_file)
+    def test_data_rand_translate(self, data2):
         data2.random_rotation = False
         data2.random_translation = 2.0
         n_trials = 100
@@ -152,8 +159,7 @@ class TestAtomGridData(object):
         assert diff > 0.5, \
             'translated grids are the same ({:.2f})'.format(diff)
 
-    def test_data_diff_cond_transform(self, data2, data2_file):
-        data2.populate(data2_file)
+    def test_data_diff_cond_transform(self, data2):
         data2.random_rotation = True
         data2.random_translation = 2.0
         n_trials = 100
@@ -170,8 +176,7 @@ class TestAtomGridData(object):
         assert diff > 0.5, \
             'input and conditional grids are the same ({:.2f})'.format(diff)
 
-    def test_data_consecutive(self, data2, data2_file):
-        data2.populate(data2_file)
+    def test_data_consecutive(self, data2):
         data2.random_rotation = True
         data2.random_translation = 2.0
         n_trials = 100
@@ -189,8 +194,7 @@ class TestAtomGridData(object):
         assert diff > 0.5, \
             'consecutive input grids are the same ({:.2f})'.format(diff)
 
-    def test_data_benchmark(self, data, data_file):
-        data.populate(data_file)
+    def test_data_benchmark(self, data):
         n_trials = 100
 
         t0 = time.time()

@@ -96,6 +96,7 @@ class AtomGridData(object):
 
     def __init__(
         self,
+        data_file,
         data_root,
         batch_size,
         rec_typer,
@@ -108,6 +109,7 @@ class AtomGridData(object):
         random_rotation=False,
         random_translation=0.0,
         diff_cond_transform=False,
+        diff_cond_structs=False,
         n_samples=1,
         rec_molcache=None,
         lig_molcache=None,
@@ -124,12 +126,16 @@ class AtomGridData(object):
         
         # create receptor and ligand atom typers
         self.lig_typer = AtomTyper.get_typer(*lig_typer.split('-'), rec=False)
-        self.rec_typer = AtomTyper.get_typer(*rec_typer.split('-'), rec=use_rec_elems)
+        self.rec_typer = \
+            AtomTyper.get_typer(*rec_typer.split('-'), rec=use_rec_elems)
+
+        atom_typers = [self.rec_typer, self.lig_typer]
+        if diff_cond_structs: # duplicate atom typers
+            atom_typers *= 2
 
         # create example provider
         self.ex_provider = molgrid.ExampleProvider(
-            self.rec_typer,
-            self.lig_typer,
+            *atom_typers,
             data_root=data_root,
             recmolcache=rec_molcache or '',
             ligmolcache=lig_molcache or '',
@@ -150,8 +156,12 @@ class AtomGridData(object):
         self.random_rotation = random_rotation
         self.random_translation = random_translation
         self.diff_cond_transform = diff_cond_transform
+        self.diff_cond_structs = diff_cond_structs
         self.debug = debug
         self.device = device
+
+        # load data from file
+        self.ex_provider.populate(data_file)
 
     @classmethod
     def from_param(cls, param):
@@ -200,9 +210,6 @@ class AtomGridData(object):
     def grid_size(self):
         return atom_grids.dimension_to_size(self.dimension, self.resolution)
 
-    def populate(self, data_file):
-        self.ex_provider.populate(data_file)
-
     def __len__(self):
         return self.ex_provider.size()
 
@@ -231,74 +238,104 @@ class AtomGridData(object):
         input_rec_structs = [None] * self.batch_size
         input_lig_structs = [None] * self.batch_size
 
-        if self.diff_cond_transform:
-
-            # create separate output tensors for conditional grids
-            cond_grids = torch.zeros(
-                self.batch_size,
-                self.n_channels,
-                *self.grid_maker.spatial_grid_dimensions(),
-                dtype=torch.float32,
-                device=self.device,
-            )
-            cond_transforms = [None] * self.batch_size
-            cond_rec_structs = [None] * self.batch_size
-            cond_lig_structs = [None] * self.batch_size
-        else:
-            cond_grids = None
-            cond_transforms = None
-            cond_rec_structs = None
-            cond_lig_structs = None
+        # create separate output tensors for conditional grids
+        cond_grids = torch.zeros(
+            self.batch_size,
+            self.n_channels,
+            *self.grid_maker.spatial_grid_dimensions(),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        cond_transforms = [None] * self.batch_size
+        cond_rec_structs = [None] * self.batch_size
+        cond_lig_structs = [None] * self.batch_size
 
         for i, ex in enumerate(examples):
             t0 = time.time()
 
-            if len(ex.coord_sets) == 4:
+            if self.diff_cond_structs:
+
+                # different input and conditional molecules
                 input_rec_coord_set, input_lig_coord_set, \
                     cond_rec_coord_set, cond_lig_coord_set = ex.coord_sets
-            else:
-                rec_coord_set, lig_coord_set = ex.coord_sets
 
-            # create input transforms
+                # split example into inputs and conditions
+                input_ex = molgrid.Example()
+                input_ex.coord_sets.append(input_rec_coord_set)
+                input_ex.coord_sets.append(input_lig_coord_set)
+
+                cond_ex = molgrid.Example()
+                cond_ex.coord_sets.append(cond_rec_coord_set)
+                cond_ex.coord_sets.append(cond_lig_coord_set)
+
+            else: # same conditional molecules as input
+                input_rec_coord_set, input_lig_coord_set = ex.coord_sets
+                cond_rec_coord_set = input_rec_coord_set
+                cond_lig_coord_set = input_lig_coord_set
+                input_ex = cond_ex = ex
+
+            # create input transform
             input_transforms[i] = molgrid.Transform(
-                center=lig_coord_set.center(),
+                center=input_lig_coord_set.center(),
                 random_translate=self.random_translation,
                 random_rotation=self.random_rotation,
             )
-            # create input density grids
-            self.grid_maker.forward(ex, input_transforms[i], input_grids[i])
+            # create input density grid
+            self.grid_maker.forward(
+                input_ex, input_transforms[i], input_grids[i]
+            )
 
             if self.diff_cond_transform:
 
-                # create conditional transforms
+                # create conditional transform
                 cond_transforms[i] = molgrid.Transform(
-                    center=lig_coord_set.center(),
+                    center=cond_lig_coord_set.center(),
                     random_translate=self.random_translation,
                     random_rotation=self.random_rotation,
                 )
-                # create conditional density grids
-                self.grid_maker.forward(ex, cond_transforms[i], cond_grids[i])
+            else: # same transform as input
+                cond_transforms[i] = input_transforms[i]
+
+            if self.diff_cond_transform or self.diff_cond_structs:
+
+                # create conditional density grid
+                self.grid_maker.forward(
+                    cond_ex, cond_transforms[i], cond_grids[i]
+                )
+            else: # same density grid as input
+                cond_grids[i] = input_grids[i]
 
             t1 = time.time()
 
             # convert coord sets to atom structs
-            rec_struct = atom_structs.AtomStruct.from_coord_set(
-                rec_coord_set,
+            input_rec_structs[i] = atom_structs.AtomStruct.from_coord_set(
+                input_rec_coord_set,
                 typer=self.rec_typer,
                 data_root=self.root_dir,
                 device=self.device
             )
-            lig_struct = atom_structs.AtomStruct.from_coord_set(
-                lig_coord_set,
+            input_lig_structs[i] = atom_structs.AtomStruct.from_coord_set(
+                input_lig_coord_set,
                 typer=self.lig_typer,
                 data_root=self.root_dir,
                 device=self.device
             )
-            input_rec_structs[i] = rec_struct
-            input_lig_structs[i] = lig_struct
-            if self.diff_cond_transform:
-                cond_rec_structs[i] = rec_struct
-                cond_lig_structs[i] = lig_struct
+            if self.diff_cond_structs:
+                cond_rec_structs[i] = atom_structs.AtomStruct.from_coord_set(
+                    cond_rec_coord_set,
+                    typer=self.rec_typer,
+                    data_root=self.root_dir,
+                    device=self.device
+                )
+                cond_lig_structs[i] = atom_structs.AtomStruct.from_coord_set(
+                    cond_lig_coord_set,
+                    typer=self.lig_typer,
+                    data_root=self.root_dir,
+                    device=self.device
+                )
+            else: # same structs as input
+                cond_rec_structs[i] = input_rec_structs[i]
+                cond_lig_structs[i] = input_lig_structs[i]
 
             t2 = time.time()
             t_grid += t1 - t0

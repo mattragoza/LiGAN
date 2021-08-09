@@ -142,11 +142,10 @@ class GenerativeSolver(nn.Module):
         self.sync_cuda = sync_cuda
 
     def init_data(self, device, train_file, test_file, **data_kws):
-        self.train_data, self.test_data = (
-            data.AtomGridData(device=device, **data_kws) for i in range(2)
-        )
-        self.train_data.populate(train_file)
-        self.test_data.populate(test_file)
+        self.train_data = \
+            data.AtomGridData(device=device, data_file=train_file, **data_kws)
+        self.test_data = \
+            data.AtomGridData(device=device, data_file=test_file, **data_kws)
 
     def init_gen_model(
         self,
@@ -584,14 +583,10 @@ class GenerativeSolver(nn.Module):
         if posterior or has_cond: # get real examples
             input_grids, cond_grids, input_structs, cond_structs, _, _ = \
                 data.forward()
-            rec_structs, lig_structs = input_structs
+            input_rec_structs, input_lig_structs = input_structs
+            cond_rec_structs, cond_lig_structs = cond_structs
             input_rec_grids, input_lig_grids = data.split_channels(input_grids)
-            if data.diff_cond_transform:
-                cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
-            else: # same as input grids
-                cond_grids = input_grids
-                cond_rec_grids = input_rec_grids
-                cond_lig_grids = input_lig_grids
+            cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
 
         if self.sync_cuda:
             torch.cuda.synchronize()
@@ -676,25 +671,23 @@ class GenerativeSolver(nn.Module):
             torch.cuda.synchronize()
         t4 = time.time()
 
-        if posterior:
-            metrics.update(compute_paired_grid_metrics(
-                'lig_gen', lig_gen_grids, 'lig', cond_lig_grids
-            ))
-        else:
-            metrics.update(compute_grid_metrics('lig_gen', lig_gen_grids))
+        metrics.update(compute_paired_grid_metrics(
+            'lig_gen', lig_gen_grids, 'lig', input_lig_grids
+        ))
+        metrics.update(compute_paired_grid_metrics(
+            'lig_gen', lig_gen_grids, 'cond_lig', cond_lig_grids
+        ))
 
         if has_disc:
             metrics.update(compute_scalar_metrics('pred', disc_preds))
 
         if fit_atoms:
-            if posterior:
-                metrics.update(compute_paired_struct_metrics(
-                    'lig_gen_fit', lig_gen_fit_structs, 'lig', lig_structs
-                ))
-            else:
-                metrics.update(compute_struct_metrics(
-                    'lig_gen_fit', lig_gen_fit_structs
-                ))
+            metrics.update(compute_paired_struct_metrics(
+                'lig_gen_fit', lig_gen_fit_structs, 'lig', input_lig_structs
+            ))
+            metrics.update(compute_paired_struct_metrics(
+                'lig_gen_fit', lig_gen_fit_structs, 'cond_lig', cond_lig_structs
+            ))
 
         if self.sync_cuda:
             torch.cuda.synchronize()

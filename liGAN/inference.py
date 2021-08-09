@@ -1,5 +1,6 @@
-import os, re, time, gzip, itertools
+import sys, os, re, time, gzip, itertools
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -36,7 +37,6 @@ class MoleculeGenerator(object):
         out_prefix,
         n_samples,
         fit_atoms,
-        diff_cond_rec,
         data_kws={},
         gen_model_kws={},
         prior_model_kws={},
@@ -67,28 +67,26 @@ class MoleculeGenerator(object):
             self.gen_model = None
             self.prior_model = None
 
-        if fit_atoms:
-            print('Initializing atom fitter')
-            self.atom_fitter = liGAN.atom_fitting.AtomFitter(
-                device=device, **atom_fitting_kws
-            )
-            print('Initializing bond adder')
-            self.bond_adder = liGAN.bond_adding.BondAdder(
-                debug=debug, **bond_adding_kws
-            )
+        print('Initializing atom fitter')
+        self.atom_fitter = liGAN.atom_fitting.AtomFitter(
+            device=device, **atom_fitting_kws
+        )
+        print('Initializing bond adder')
+        self.bond_adder = liGAN.bond_adding.BondAdder(
+            debug=debug, **bond_adding_kws
+        )
 
-        # determine generated grid types
-        grid_types = ['rec', 'lig']
-        if diff_cond_rec or self.data.diff_cond_transform:
-            grid_types += ['cond_rec', 'cond_lig']
-
+        # determine expected grid types
+        grid_types = {'rec', 'lig'}
+        if self.data.diff_cond_structs or self.data.diff_cond_transform:
+            grid_types.add('cond_rec')
+            grid_types.add('cond_lig')
         if self.gen_model:
-            grid_types += ['lig_gen']
+            grid_types.add('lig_gen')
             if fit_atoms:
-                grid_types += ['lig_gen_fit']
-        else:
-            if fit_atoms:
-                grid_types += ['lig_fit']
+                grid_types.add('lig_gen_fit')
+        elif fit_atoms:
+            grid_types.add('lig_fit')
 
         print('Initializing output writer')
         self.out_writer = OutputWriter(
@@ -99,11 +97,10 @@ class MoleculeGenerator(object):
             **output_kws,
         )
 
-    def init_data(self, device, n_samples, data_file, **data_kws):
+    def init_data(self, device, n_samples, **data_kws):
         self.data = liGAN.data.AtomGridData(
             device=device, n_samples=n_samples, **data_kws
         )
-        self.data.populate(data_file)
 
     def init_gen_model(
         self,
@@ -177,66 +174,21 @@ class MoleculeGenerator(object):
             else:
                 return data.n_lig_channels
 
-    def forward(self, prior, stage2, fixed_input, fixed_condition, **kwargs):
+    def forward(self, prior, stage2, interpolate, **kwargs):
 
         print(f'Calling generator forward')
         print(f'  prior = {prior}')
         print(f'  stage2 = {stage2}')
-        print(f'  fixed_input = {fixed_input}')
-        print(f'  fixed_condition = {fixed_condition}')
 
-        need_fixed = fixed_input or fixed_condition
-        fixed_only = fixed_input and fixed_condition
-        has_fixed = hasattr(self, 'fixed_rec_structs')
-        set_fixed = need_fixed and not has_fixed
-        need_data = set_fixed or not fixed_only
-
-        if need_data:
-            print('Getting next batch of data')
-            data = self.data
-            input_grids, cond_grids, input_structs, cond_structs, transforms, _\
-                = data.forward()
-            rec_structs, lig_structs = input_structs
-            input_transforms, cond_transforms = transforms
-            input_rec_grids, input_lig_grids = data.split_channels(input_grids)
-            if data.diff_cond_transform:
-                cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
-            else: # same as input grids
-                cond_grids = input_grids
-                cond_rec_grids = input_rec_grids
-                cond_lig_grids = input_lig_grids
-
-        if set_fixed:
-            # store first data examples
-            print('Setting fixed data batch')
-            self.fixed_rec_structs = rec_structs
-            self.fixed_lig_structs = lig_structs
-            self.fixed_rec_grids = \
-                input_rec_grids if fixed_input else cond_rec_grids
-            self.fixed_lig_grids = \
-                input_lig_grids if fixed_input else cond_lig_grids
-            self.fixed_transforms = \
-                input_transforms if fixed_input else cond_transforms
-
-        if fixed_condition:
-            cond_rec_structs = self.fixed_rec_structs
-            cond_lig_structs = self.fixed_lig_structs
-            cond_rec_grids = self.fixed_rec_grids
-            cond_lig_grids = self.fixed_lig_grids
-            cond_transforms = self.fixed_transforms
-        else:
-            cond_rec_structs = rec_structs
-            cond_lig_structs = lig_structs
-
-        if fixed_input:
-            input_rec_structs = self.fixed_rec_structs
-            input_lig_structs = self.fixed_lig_structs
-            input_rec_grids = self.fixed_rec_grids
-            input_lig_grids = self.fixed_lig_grids
-            input_transforms = self.fixed_transforms
-        else:
-            input_rec_structs = rec_structs
-            input_lig_structs = lig_structs
+        print('Getting next batch of data')
+        data = self.data
+        input_grids, cond_grids, input_structs, cond_structs, transforms \
+            = data.forward()[:5]
+        input_rec_structs, input_lig_structs = input_structs
+        cond_rec_structs, cond_lig_structs = cond_structs
+        input_transforms, cond_transforms = transforms
+        input_rec_grids, input_lig_grids = data.split_channels(input_grids)
+        cond_rec_grids, cond_lig_grids = data.split_channels(cond_grids)
 
         posterior = not prior
         if posterior:
@@ -249,6 +201,8 @@ class MoleculeGenerator(object):
         else:
             gen_input_grids = None
 
+        gen_cond_grids = cond_rec_grids
+
         if self.gen_model:
 
             with torch.no_grad():
@@ -257,14 +211,14 @@ class MoleculeGenerator(object):
                         self.gen_model.forward2(
                             prior_model=self.prior_model,
                             inputs=gen_input_grids,
-                            conditions=cond_rec_grids,
+                            conditions=gen_cond_grids,
                             batch_size=self.data.batch_size,
                             **kwargs
                         )
                 else:
                     lig_gen_grids, latents, _, _ = self.gen_model(
                         inputs=gen_input_grids,
-                        conditions=cond_rec_grids,
+                        conditions=gen_cond_grids,
                         batch_size=self.data.batch_size,
                         **kwargs
                     )
@@ -279,10 +233,7 @@ class MoleculeGenerator(object):
 
         input_grids = try_detach(input_rec_grids), try_detach(input_lig_grids)
         cond_grids = try_detach(cond_rec_grids), try_detach(cond_lig_grids)
-        input_structs = (input_rec_structs, input_lig_structs)
-        cond_structs = (cond_rec_structs, cond_lig_structs)
         latents, lig_gen_grids = try_detach(latents), try_detach(lig_gen_grids)
-        transforms = (input_transforms, cond_transforms)
         return (
             input_grids, cond_grids,
             input_structs, cond_structs,
@@ -295,8 +246,6 @@ class MoleculeGenerator(object):
         n_samples,
         prior=False,
         stage2=False,
-        fixed_input=False,
-        fixed_condition=False,
         var_factor=1.0,
         post_factor=1.0,
         z_score=None,
@@ -319,10 +268,6 @@ class MoleculeGenerator(object):
         '''
         batch_size = self.data.batch_size
 
-        # whether the input encoder and conditional
-        #   encoder are receiving different structures
-        diff_cond_rec = (fixed_input ^ fixed_condition)
-
         print('Starting to generate grids')
         for example_idx, sample_idx in itertools.product(
             range(n_examples), range(n_samples)
@@ -336,10 +281,9 @@ class MoleculeGenerator(object):
                 # index of nearest interpolation endpoint in batch
                 endpoint_idx = 0 if batch_idx < batch_size//2 else -1
 
-            need_real_input_mol = \
-                (sample_idx == 0 and (example_idx == 0 or not fixed_input))
+            need_real_input_mol = (sample_idx == 0)
             need_real_cond_mol = \
-                (sample_idx == 0 and (example_idx == 0 or not fixed_condition))
+                (sample_idx == 0 and self.data.diff_cond_structs)
             need_next_batch = (batch_idx == 0)
 
             if need_next_batch: # forward next batch
@@ -353,8 +297,6 @@ class MoleculeGenerator(object):
                 ) = self.forward(
                     prior=prior,
                     stage2=stage2,
-                    fixed_input=fixed_input,
-                    fixed_condition=fixed_condition,
                     var_factor=var_factor,
                     post_factor=post_factor,
                     z_score=z_score,
@@ -370,107 +312,94 @@ class MoleculeGenerator(object):
                 #if gnina_minimize: # copy to cpu
                 #    self.gen_model.to('cpu')
 
-            rec_struct = input_rec_structs[batch_idx]
-            lig_struct = input_lig_structs[batch_idx]
+            input_rec_struct = input_rec_structs[batch_idx]
+            input_lig_struct = input_lig_structs[batch_idx]
+            cond_rec_struct = cond_rec_structs[batch_idx]
+            cond_lig_struct = cond_lig_structs[batch_idx]
 
-            if diff_cond_rec:
-                cond_rec_struct = cond_rec_structs[batch_idx]
-                cond_lig_struct = cond_lig_structs[batch_idx]
-
-            # in order to align fit structs with real structs,
+            # in order to align gen structs with real structs,
             #   we need to apply the inverse of the transform
-            #   that was used to create the true density grid
-            if self.data.diff_cond_transform:
-                transform = cond_transforms[batch_idx]
-            else:
-                transform = input_transforms[batch_idx]
+            #   that was used to create the density grid that
+            #   is the reconstruction target (assume conditional)
+            transform = cond_transforms[batch_idx]
 
             # only process real rec/lig once, since they're
             #   the same for all samples of a given ligand
             if need_real_input_mol:
                 print('Getting real input molecule from data root')
-                my_split_ext = \
-                    lambda f: f.rsplit('.', 1 + f.endswith('.gz'))
+                splitext = lambda x: x.rsplit('.', 1 + x.endswith('.gz'))
 
-                rec_src_file = rec_struct.info['src_file']
-                rec_src_no_ext = my_split_ext(rec_src_file)[0]
-                rec_name = os.path.basename(rec_src_no_ext)
-                rec_mol = find_real_rec_in_data_root(
-                    self.data.root_dir, rec_src_no_ext
-                )
+                input_rec_src_file = input_rec_struct.info['src_file']
+                input_rec_mol = read_rec_from_pdb_file(input_rec_src_file)
+                input_rec_name = \
+                    splitext(os.path.basename(input_rec_src_file))[0]
 
-                lig_src_file = lig_struct.info['src_file']
-                lig_src_no_ext = my_split_ext(lig_src_file)[0]
-                lig_name = os.path.basename(lig_src_no_ext)
-                lig_mol = find_real_lig_in_data_root(
-                    self.data.root_dir, lig_src_no_ext, use_ob=True
-                )
+                input_lig_src_file = input_lig_struct.info['src_file']
+                input_lig_mol = read_lig_from_sdf_file(input_lig_src_file)
+                input_lig_name = \
+                    splitext(os.path.basename(input_lig_src_file))[0]
 
                 if uff_minimize:
                     # real molecules don't need UFF minimization,
                     #   but we need their UFF metrics for reference
-                    pkt_mol = rec_mol.get_pocket(lig_mol=lig_mol)
-                    lig_mol.info['pkt_mol'] = pkt_mol
-                    uff_mol = lig_mol.uff_minimize(rec_mol=pkt_mol)
-                    lig_mol.info['uff_mol'] = uff_mol
+                    input_pkt_mol = \
+                        input_rec_mol.get_pocket(lig_mol=input_lig_mol)
+                    input_lig_mol.info['pkt_mol'] = input_pkt_mol
+                    input_uff_mol = \
+                        input_lig_mol.uff_minimize(rec_mol=input_pkt_mol)
+                    input_lig_mol.info['uff_mol'] = input_uff_mol
 
                     if minimize_real:
                         print('Minimizing real molecule with gnina', flush=True)
                         # NOTE that we are not using the UFF mol here
-                        lig_mol.info['gni_mol'] = \
-                            lig_mol.gnina_minimize(rec_mol=rec_mol)
+                        input_lig_mol.info['gni_mol'] = \
+                            input_lig_mol.gnina_minimize(rec_mol=input_rec_mol)
 
                 if add_to_real: # evaluate bond adding in isolation
                     print('Adding bonds to real atoms')
                     lig_add_mol, lig_add_struct, _ = \
-                        self.bond_adder.make_mol(lig_struct)
+                        self.bond_adder.make_mol(input_lig_struct)
                     lig_add_mol.info['type_struct'] = lig_add_struct
                     lig_struct.info['add_mol'] = lig_add_mol
 
                     if uff_minimize:
-                        print(
-                            'Minimizing molecule from real atoms with UFF',
-                            end='' # show number of tries inline
-                        )
-                        pkt_mol = rec_mol.get_pocket(lig_mol=lig_add_mol)
-                        lig_add_mol.info['pkt_mol'] = pkt_mol
-                        uff_mol = lig_add_mol.uff_minimize(rec_mol=pkt_mol)
-                        lig_add_mol.info['uff_mol'] = uff_mol
+                        print('Minimizing molecule from real atoms with UFF',
+                            end='') # show number of tries inline
+                        lig_add_pkt_mol = \
+                            input_rec_mol.get_pocket(lig_mol=lig_add_mol)
+                        lig_add_mol.info['pkt_mol'] = lig_add_pkt_mol
+                        lig_add_uff_mol = \
+                            lig_add_mol.uff_minimize(rec_mol=lig_add_pkt_mol)
+                        lig_add_mol.info['uff_mol'] = lig_add_uff_mol
 
                         if gnina_minimize:
-                            print(
-                                'Minimizing molecule from real atoms with gnina', flush=True
-                            )
+                            print('Minimizing molecule from real atoms with gnina', flush=True)
                             lig_add_mol.info['gni_mol'] = \
-                                uff_mol.gnina_minimize(rec_mol=rec_mol)
+                                lig_add_uff_mol.gnina_minimize(rec_mol=input_rec_mol)
 
             else: # check that the molecules are the same
-                assert rec_struct.info['src_file'] == rec_src_file
-                assert lig_struct.info['src_file'] == lig_src_file
+                assert input_rec_struct.info['src_file'] == input_rec_src_file
+                assert input_lig_struct.info['src_file'] == input_lig_src_file
 
             # if the conditional molecule is different,
             #   we need to process it separately from input
-            if diff_cond_rec and need_real_cond_mol:
+            if need_real_cond_mol:
+
                 cond_rec_src_file = cond_rec_struct.info['src_file']
-                cond_rec_src_no_ext = my_split_ext(cond_rec_src_file)[0]
-                cond_rec_name = os.path.basename(cond_rec_src_no_ext)
-                cond_rec_mol = find_real_rec_in_data_root(
-                    self.data.root_dir, cond_rec_src_no_ext
-                )
+                cond_rec_mol = read_rec_from_pdb_file(cond_rec_src_file)
+                cond_rec_name = splitext(os.path.basename(cond_rec_src_file))[0]
 
                 cond_lig_src_file = cond_lig_struct.info['src_file']
-                cond_lig_src_no_ext = my_split_ext(cond_lig_src_file)[0]
-                cond_lig_name = os.path.basename(cond_lig_src_no_ext)
-                cond_lig_mol = find_real_lig_in_data_root(
-                    self.data.root_dir, cond_lig_src_no_ext, use_ob=True
-                )
+                cond_lig_mol = read_lig_from_sdf_file(cond_lig_src_file)
+                cond_lig_name = splitext(os.path.basename(cond_lig_src_file))[0]
 
                 if uff_minimize:
                     # real molecules don't need UFF minimization,
                     #   but we need their UFF metrics for reference
                     cond_pkt_mol = cond_rec_mol.get_pocket(lig_mol=cond_lig_mol)
                     cond_lig_mol.info['pkt_mol'] = cond_pkt_mol
-                    cond_uff_mol = lig_mol.uff_minimize(rec_mol=cond_pkt_mol)
+                    cond_uff_mol = \
+                        cond_lig_mol.uff_minimize(rec_mol=cond_pkt_mol)
                     cond_lig_mol.info['uff_mol'] = cond_uff_mol
 
                     if minimize_real:
@@ -479,56 +408,78 @@ class MoleculeGenerator(object):
                         cond_lig_mol.info['gni_mol'] = \
                             cond_lig_mol.gnina_minimize(rec_mol=cond_rec_mol)
 
-            elif diff_cond_rec:
+            elif self.data.diff_cond_structs:
                 assert cond_rec_struct.info['src_file'] == cond_rec_src_file
                 assert cond_lig_struct.info['src_file'] == cond_lig_src_file
+            else:
+                cond_rec_name = input_rec_name
+                cond_lig_name = input_lig_name
 
-            if fixed_input: # get the name of the receptor that's changing
-                rec_name = cond_rec_name
+            # unique identifier for this data example
+            example_info = (
+                example_idx,
+                input_rec_name,
+                input_lig_name,
+                cond_rec_name,
+                cond_lig_name,
+            )
 
-            rec_struct.info['src_mol'] = rec_mol
-            lig_struct.info['src_mol'] = lig_mol
-            if diff_cond_rec:
+            # done processing real mols/structs, so attach them
+            input_rec_struct.info['src_mol'] = input_rec_mol
+            input_lig_struct.info['src_mol'] = input_lig_mol
+            if self.data.diff_cond_structs:
                 cond_rec_struct.info['src_mol'] = cond_rec_mol
                 cond_lig_struct.info['src_mol'] = cond_lig_mol
 
             # now process atomic density grids
             grid_types = [
-                ('rec', input_rec_grids, self.data.rec_typer),
-                ('lig', input_lig_grids, self.data.lig_typer),  
+                ('rec', input_rec_grids),
+                ('lig', input_lig_grids),  
             ]
-            if diff_cond_rec or self.data.diff_cond_transform:
+            if self.data.diff_cond_structs or self.data.diff_cond_transform:
                 grid_types += [
-                    ('cond_rec', cond_rec_grids, self.data.rec_typer),
-                    ('cond_lig', cond_lig_grids, self.data.lig_typer)
+                    ('cond_rec', cond_rec_grids),
+                    ('cond_lig', cond_lig_grids)
                 ]
             if self.gen_model:
                 grid_types += [
-                    ('lig_gen', lig_gen_grids, self.data.lig_typer)
+                    ('lig_gen', lig_gen_grids)
                 ]
 
-            for grid_type, grids, atom_typer in grid_types:
+            for grid_type, grids in grid_types:
                 torch.cuda.reset_max_memory_allocated()
 
-                is_lig_grid = (grid_type.startswith('lig'))
-                is_gen_grid = (grid_type.endswith('gen'))
+                is_cond_grid = grid_type.startswith('cond')
+                is_lig_grid = ('lig' in grid_type)
+                is_gen_grid = grid_type.endswith('gen')
+                real_or_gen = 'generated' if is_gen_grid else 'real'
+
                 if is_gen_grid:
                     grid_needs_fit = fit_atoms and is_lig_grid
+                    center = cond_lig_struct.center
+                elif is_cond_grid:
+                    grid_need_fit = False
+                    center = cond_lig_struct.center
                 else:
                     grid_needs_fit = fit_to_real and is_lig_grid
-                real_or_gen = 'generated' if is_gen_grid else 'real'
+                    center = input_lig_struct.center
+
+                if is_lig_grid:
+                    atom_typer = self.data.lig_typer
+                else:
+                    atom_typer = self.data.rec_typer
 
                 grid = liGAN.atom_grids.AtomGrid(
                     values=grids[batch_idx],
                     typer=atom_typer,
-                    center=lig_struct.center,
+                    center=center,
                     resolution=self.data.resolution
                 )
 
                 if grid_type == 'rec':
-                    grid.info['src_struct'] = rec_struct
+                    grid.info['src_struct'] = input_rec_struct
                 elif grid_type == 'lig':
-                    grid.info['src_struct'] = lig_struct
+                    grid.info['src_struct'] = input_lig_struct
                 elif grid_type == 'cond_rec':
                     grid.info['src_struct'] = cond_rec_struct
                 elif grid_type == 'cond_lig':
@@ -537,16 +488,14 @@ class MoleculeGenerator(object):
                     grid.info['src_latent'] = latents[batch_idx]
 
                 # display progress
-                index_str = \
-                    f'[example_idx={example_idx} sample_idx={sample_idx} rec_name={rec_name} lig_name={lig_name} grid_type={grid_type}]'
-
+                index_str = f'[example_idx={example_idx} sample_idx={sample_idx} grid_type={grid_type}]'
                 value_str = 'norm={:.4f} gpu={:.4f}'.format(
                     grid.values.norm(),
                     torch.cuda.max_memory_allocated() / MB,
                 )
                 print(index_str + ' ' + value_str, flush=True)
 
-                if self.out_writer.output_conv:
+                if is_lig_grid and self.out_writer.output_conv:
                     grid.info['conv_grid'] = grid.new_like(
                         values=torch.cat([
                             atom_fitter.convolve(
@@ -556,14 +505,12 @@ class MoleculeGenerator(object):
                         ], dim=0)
                     )
 
-                self.out_writer.write(
-                    rec_name, lig_name, sample_idx, grid_type, grid
-                )
+                self.out_writer.write(example_info, sample_idx, grid_type, grid)
 
                 if grid_needs_fit: # perform atom fitting
 
                     print(f'Fitting atoms to {real_or_gen} grid')
-                    fit_struct, fit_grid, visited_structs = self.atom_fitter.fit_struct(grid, lig_struct.type_counts)
+                    fit_struct, fit_grid, visited_structs = self.atom_fitter.fit_struct(grid, cond_lig_struct.type_counts)
                     fit_struct.info['visited_structs'] = visited_structs
                     fit_grid.info['src_struct'] = fit_struct
 
@@ -579,33 +526,36 @@ class MoleculeGenerator(object):
 
                         if uff_minimize: # do UFF minimization
                             print(f'Minimizing molecule from {real_or_gen} grid with UFF', end='')
-                            pkt_mol = rec_mol.get_pocket(fit_add_mol)
-                            fit_add_mol.info['pkt_mol'] = pkt_mol
-                            uff_mol = fit_add_mol.uff_minimize(rec_mol=pkt_mol)
-                            fit_add_mol.info['uff_mol'] = uff_mol
+                            fit_pkt_mol = input_rec_mol.get_pocket(fit_add_mol)
+                            fit_add_mol.info['pkt_mol'] = fit_pkt_mol
+                            fit_uff_mol = \
+                                fit_add_mol.uff_minimize(rec_mol=fit_pkt_mol)
+                            fit_add_mol.info['uff_mol'] = fit_uff_mol
 
                             if gnina_minimize: # do gnina minimization
                                 print(f'Minimizing molecule from {real_or_gen} grid with gnina', flush=True)
-                                fit_add_mol.info['gni_mol'] = \
-                                    uff_mol.gnina_minimize(rec_mol=rec_mol)
+                                fit_add_mol.info['gni_mol'] = fit_uff_mol.gnina_minimize(rec_mol=input_rec_mol)
 
                         # minimize and score wrt conditional receptor too
-                        if diff_cond_rec and uff_minimize:
+                        if self.data.diff_cond_structs and uff_minimize:
                             print(f'Minimizing molecule from {real_or_gen} grid with UFF wrt conditional receptor', end='')
-                            cond_pkt_mol = cond_rec_mol.get_pocket(fit_add_mol)
-                            fit_add_mol.info['cond_pkt_mol'] = cond_pkt_mol
-                            cond_uff_mol = fit_add_mol.uff_minimize(rec_mol=cond_pkt_mol)
-                            fit_add_mol.info['cond_uff_mol'] = uff_mol
+                            fit_pkt_mol = cond_rec_mol.get_pocket(fit_add_mol)
+                            fit_add_mol.info['cond_pkt_mol'] = fit_pkt_mol
+                            fit_uff_mol = \
+                                fit_add_mol.uff_minimize(rec_mol=fit_pkt_mol)
+                            fit_add_mol.info['cond_uff_mol'] = fit_uff_mol
 
                             if gnina_minimize: # do gnina minimization
                                 print(f'Minimizing molecule from {real_or_gen} grid with gnina wrt conditional receptor', flush=True)
                                 fit_add_mol.info['cond_gni_mol'] = \
-                                    cond_uff_mol.gnina_minimize(rec_mol=cond_rec_mol)
+                                    fit_uff_mol.gnina_minimize(rec_mol=cond_rec_mol)
 
                     grid_type += '_fit'
                     self.out_writer.write(
-                        rec_name, lig_name, sample_idx, grid_type, fit_grid
+                        example_info, sample_idx, grid_type, fit_grid
                     )
+
+        return self.out_writer.metrics
 
 
 class AEGenerator(MoleculeGenerator):
@@ -678,7 +628,9 @@ class OutputWriter(object):
         batch_metrics=False,
         verbose=False
     ):
+        out_dir, out_prefix = os.path.split(out_prefix)
         self.out_prefix = out_prefix
+
         self.output_grids = output_grids
         self.output_structs = output_structs
         self.output_mols = output_mols
@@ -693,12 +645,19 @@ class OutputWriter(object):
         self.grids = defaultdict(lambda: defaultdict(dict))
 
         # accumulate metrics in dataframe
-        self.metric_file = '{}.gen_metrics'.format(out_prefix)
-        columns = ['rec_name', 'lig_name', 'sample_idx']
+        self.metric_file = os.path.join(out_dir, f'{out_prefix}.gen_metrics')
+        columns = [
+            'example_idx',
+            'input_rec_name',
+            'input_lig_name',
+            'cond_rec_name',
+            'cond_lig_name',
+            'sample_idx'
+        ]
         self.metrics = pd.DataFrame(columns=columns).set_index(columns)
 
         # write a pymol script when finished
-        self.pymol_file = '{}.pymol'.format(out_prefix)
+        self.pymol_file = os.path.join(out_dir, f'{out_prefix}.pymol')
         self.dx_prefixes = []
         self.sdf_files = []
 
@@ -709,20 +668,23 @@ class OutputWriter(object):
         self.open_files = dict()
 
         # create directories for output files
+        out_dir = Path(out_dir)
+        out_dir.mkdir(exist_ok=True)
+
         if output_latents:
-            self.latent_dir = Path('latents')
+            self.latent_dir = out_dir / 'latents'
             self.latent_dir.mkdir(exist_ok=True)
 
         if output_grids:
-            self.grid_dir = Path('grids')
+            self.grid_dir = out_dir / 'grids'
             self.grid_dir.mkdir(exist_ok=True)
 
         if output_structs:
-            self.struct_dir = Path('structs')
+            self.struct_dir = out_dir / 'structs'
             self.struct_dir.mkdir(exist_ok=True)
 
         if output_mols:
-            self.mol_dir = Path('molecules')
+            self.mol_dir = out_dir / 'molecules'
             self.mol_dir.mkdir(exist_ok=True)
 
     def print(self, *args, **kwargs):
@@ -753,7 +715,7 @@ class OutputWriter(object):
         out = self.open_files[sdf_file]
 
         if sample_idx == 0 or not is_real:
-            self.print('Writing {} sample {}'.format(sdf_file, sample_idx))
+            self.print(f'Writing {sdf_file} sample {sample_idx}')
                 
             if isinstance(mol, AtomStruct):
                 struct = mol
@@ -791,8 +753,7 @@ class OutputWriter(object):
 
     def write_dx(self, dx_prefix, grid):
 
-        self.print('Writing {} .dx files'.format(dx_prefix))
-
+        self.print(f'Writing {dx_prefix} .dx files')
         grid.to_dx(dx_prefix)
         self.dx_prefixes.append(dx_prefix)
 
@@ -801,18 +762,18 @@ class OutputWriter(object):
         self.print('Writing ' + str(latent_file))
         write_latent_vec_to_file(latent_file, latent_vec)
 
-    def write(self, rec_name, lig_name, sample_idx, grid_type, grid):
+    def write(self, example_info, sample_idx, grid_type, grid):
         '''
         Write output files for grid and compute metrics in
         data frame, if all necessary data is present.
         '''
         out_prefix = self.out_prefix
-        grid_prefix = f'{out_prefix}_{rec_name}_{lig_name}_{grid_type}'
+        example_idx, input_rec_name, input_lig_name, cond_rec_name, cond_lig_name = example_info
+        grid_prefix = f'{out_prefix}_{example_idx}_{grid_type}'
         i = str(sample_idx)
 
         assert grid_type in {
-            'rec', 'lig',
-            'cond_rec', 'cond_lig',
+            'rec', 'lig', 'cond_rec', 'cond_lig',
             'lig_gen', 'lig_fit', 'lig_gen_fit'
         }
         is_lig_grid = grid_type.startswith('lig')
@@ -928,24 +889,24 @@ class OutputWriter(object):
         # store grid until ready to compute output metrics
         #   if we're computing batch matrics, need all samples
         #   otherwise, just need all grids for this sample
-        self.grids[(rec_name, lig_name)][sample_idx][grid_type] = grid
-        lig_grids = self.grids[(rec_name, lig_name)]
+        self.grids[example_info][sample_idx][grid_type] = grid
+        lig_grids = self.grids[example_info]
 
         if self.batch_metrics:
 
             # store until grids for all samples are ready
             has_all_samples = (len(lig_grids) == self.n_samples)
             has_all_grids = all(
-                set(lig_grids[i]) == set(self.grid_types) for i in lig_grids
+                set(lig_grids[i]) >= self.grid_types for i in lig_grids
             )
 
             # compute batch metrics
             if has_all_samples and has_all_grids:
                 self.print(
-                    f'Computing metrics for all {rec_name} {lig_name} samples'
+                    f'Computing metrics for all example {example_idx} samples'
                 )
                 try:
-                    self.compute_metrics(rec_name, lig_name, range(self.n_samples))
+                    self.compute_metrics(example_info)
                 except:
                     self.close_files()
                     raise
@@ -960,21 +921,22 @@ class OutputWriter(object):
                     self.dx_prefixes,
                     self.sdf_files,
                 )
-                print('Freeing memory')
-                del self.grids[(rec_name, lig_name)] # free memory
+                self.print('Freeing memory')
+                del self.grids[example_info] # free memory
 
         else:
+            print(lig_grids[sample_idx].keys())
             # only store until grids for this sample are ready
             has_all_grids = (
-                set(lig_grids[sample_idx]) == set(self.grid_types)
+                set(lig_grids[sample_idx]) >= self.grid_types
             )
             # compute sample metrics
             if has_all_grids:
                 self.print(
-                    f'Computing metrics for {rec_name} {lig_name} sample {sample_idx}'
+                    f'Computing metrics for example {example_idx} sample {sample_idx}'
                 )
                 try:
-                    self.compute_metrics(rec_name, lig_name, [sample_idx])
+                    self.compute_metrics(example_info, sample_idx)
                 except:
                     self.close_files()
                     raise
@@ -989,22 +951,29 @@ class OutputWriter(object):
                     self.dx_prefixes,
                     self.sdf_files,
                 )
-                print('Freeing memory')
-                del self.grids[(rec_name, lig_name)][sample_idx] # free memory
+                self.print('Freeing memory')
+                del self.grids[example_info][sample_idx] # free memory
 
-    def compute_metrics(self, rec_name, lig_name, sample_idxs):
+    def compute_metrics(self, example_info, sample_idx=None):
         '''
         Compute metrics for density grids, typed atomic structures,
         and molecules for a given ligand in metrics data frame.
         '''
-        lig_grids = self.grids[(rec_name, lig_name)]
         has_rec = ('rec' in self.grid_types)
         has_cond_rec = ('cond_rec' in self.grid_types)
         has_lig_gen = ('lig_gen' in self.grid_types)
         has_lig_fit = ('lig_fit' in self.grid_types)
         has_lig_gen_fit = ('lig_gen_fit' in self.grid_types)
+
+        if sample_idx is None:
+            sample_idxs = range(self.n_samples)
+        else:
+            sample_idxs = [sample_idx]
+
         # TODO don't compute metrics twice w/ diff_cond_transform
         #   the only thing we really need is the lig l2 loss
+        
+        lig_grids = self.grids[example_info]
 
         if self.batch_metrics: # compute mean grids and type counts
 
@@ -1055,7 +1024,7 @@ class OutputWriter(object):
             lig_gen_fit_mean_counts = None
 
         for sample_idx in sample_idxs:
-            idx = (rec_name, lig_name, sample_idx)
+            idx = example_info + (sample_idx,)
 
             rec_grid = lig_grids[sample_idx]['rec'] if has_rec else None
             lig_grid = lig_grids[sample_idx]['lig']
@@ -1125,15 +1094,15 @@ class OutputWriter(object):
                     mean_latent=lig_latent_mean
                 )
 
-            if has_cond_rec:
+                if has_cond_rec:
 
-                self.compute_grid_metrics(idx,
-                    grid_type='lig_gen_cond',
-                    grid=lig_gen_grid,
-                    ref_grid=cond_lig_grid,
-                    cond_grid=cond_rec_grid,
-                    ref_only=True
-                )
+                    self.compute_grid_metrics(idx,
+                        grid_type='lig_gen_cond',
+                        grid=lig_gen_grid,
+                        ref_grid=cond_lig_grid,
+                        cond_grid=cond_rec_grid,
+                        ref_only=True
+                    )
 
             if has_lig_fit:
 
@@ -1216,7 +1185,7 @@ class OutputWriter(object):
                         use_cond_min=True
                     )
 
-        self.print(self.metrics.loc[rec_name,lig_name].loc[sample_idxs].transpose())
+        self.print(self.metrics.loc[example_info].loc[sample_idxs].transpose())
 
     def compute_grid_metrics(
         self,
@@ -1413,7 +1382,8 @@ class OutputWriter(object):
 
         # convert to SMILES string
         smi = mol.to_smi()
-        m.loc[idx, mol_type+'_SMILES'] = smi
+        if not ref_only:
+            m.loc[idx, mol_type+'_SMILES'] = smi
 
         if ref_mol: # compare to ref_mol
 
@@ -1448,7 +1418,7 @@ class OutputWriter(object):
             return
 
         # UFF energy minimization
-        if use_cond_min:
+        if use_cond_min and 'cond_uff_mol' in mol.info: # handle diff_cond_transform with no diff_cond_structs
             uff_mol = mol.info['cond_uff_mol']
         else:
             uff_mol = mol.info['uff_mol']
@@ -1456,12 +1426,11 @@ class OutputWriter(object):
         uff_min = uff_mol.info['E_min']
         uff_rmsd = uff_mol.info['min_rmsd']
 
-        if not ref_only:
-            m.loc[idx, mol_type+'_UFF_init'] = uff_init
-            m.loc[idx, mol_type+'_UFF_min'] = uff_min
-            m.loc[idx, mol_type+'_UFF_rmsd'] = uff_rmsd
-            m.loc[idx, mol_type+'_UFF_error'] = uff_mol.info['min_error']
-            m.loc[idx, mol_type+'_UFF_time'] = uff_mol.info['min_time']
+        m.loc[idx, mol_type+'_UFF_init'] = uff_init
+        m.loc[idx, mol_type+'_UFF_min'] = uff_min
+        m.loc[idx, mol_type+'_UFF_rmsd'] = uff_rmsd
+        m.loc[idx, mol_type+'_UFF_error'] = uff_mol.info['min_error']
+        m.loc[idx, mol_type+'_UFF_time'] = uff_mol.info['min_time']
 
         # compare energy to ref mol, before and after minimizing
         if ref_mol:
@@ -1477,7 +1446,7 @@ class OutputWriter(object):
             return
 
         # gnina energy minimization
-        if use_cond_min:
+        if use_cond_min and 'cond_gni_mol' in mol.info:
             gni_mol = mol.info['cond_gni_mol']
         else:
             gni_mol = mol.info['gni_mol']
@@ -1486,12 +1455,11 @@ class OutputWriter(object):
         cnn_pose = gni_mol.info.get('CNNscore', np.nan)
         cnn_aff = gni_mol.info.get('CNNaffinity', np.nan)
 
-        if not ref_only:
-            m.loc[idx, mol_type+'_vina_aff'] = vina_aff
-            m.loc[idx, mol_type+'_vina_rmsd'] = vina_rmsd
-            m.loc[idx, mol_type+'_cnn_pose'] = cnn_pose
-            m.loc[idx, mol_type+'_cnn_aff'] = cnn_aff
-            m.loc[idx, mol_type+'_gnina_error'] = gni_mol.info['error']
+        m.loc[idx, mol_type+'_vina_aff'] = vina_aff
+        m.loc[idx, mol_type+'_vina_rmsd'] = vina_rmsd
+        m.loc[idx, mol_type+'_cnn_pose'] = cnn_pose
+        m.loc[idx, mol_type+'_cnn_aff'] = cnn_aff
+        m.loc[idx, mol_type+'_gnina_error'] = gni_mol.info['error']
 
         # compare gnina metrics to ref mol
         if ref_mol:
@@ -1511,13 +1479,10 @@ class OutputWriter(object):
             m.loc[idx, mol_type+'_cnn_aff_diff'] = cnn_aff - ref_cnn_aff
 
 
-def find_real_rec_in_data_root(data_root, rec_src_no_ext):
+@lru_cache(maxsize=16)
+def read_rec_from_pdb_file(pdb_file):
 
-    # cross-docked set
-    m = re.match(r'(.+)(_0)?', rec_src_no_ext)
-    rec_mol_base = m.group(1) + '.pdb'
-    rec_mol_file = os.path.join(data_root, rec_mol_base)
-    rec_mol = mols.Molecule.from_pdb(rec_mol_file, sanitize=False)
+    rec_mol = mols.Molecule.from_pdb(pdb_file, sanitize=False)
     try:
         Chem.SanitizeMol(rec_mol)
     except Chem.MolSanitizeException:
@@ -1525,37 +1490,19 @@ def find_real_rec_in_data_root(data_root, rec_src_no_ext):
     return rec_mol
 
 
-def find_real_lig_in_data_root(data_root, lig_src_no_ext, use_ob=False):
+@lru_cache(maxsize=16)
+def read_lig_from_sdf_file(sdf_file, use_ob=True):
     '''
     Try to find the real molecule in data_root using the
     source path in the data file, without file extension.
     '''
-    try: # PDBbind
-        m = re.match(r'(.+)_ligand_(\d+)', lig_src_no_ext)
-        lig_mol_base = m.group(1) + '_docked.sdf.gz'
-        idx = int(m.group(2))
-        lig_mol_file = os.path.join(data_root, lig_mol_base)
-
-    except AttributeError:
-        try: # cross-docked set
-            m = re.match(r'(.+)_(\d+)', lig_src_no_ext)
-            lig_mol_base = m.group(1) + '.sdf'
-            idx = int(m.group(2))
-            lig_mol_file = os.path.join(data_root, lig_mol_base)
-            os.stat(lig_mol_file)
-
-        except OSError:
-            lig_mol_base = lig_src_no_ext + '.sdf'
-            lig_mol_file = os.path.join(data_root, lig_mol_base)
-            idx = 0
-
     if use_ob: # read and add Hs with OpenBabel, then convert to RDkit
-        lig_mol = mols.read_ob_mols_from_file(lig_mol_file, 'sdf')[idx]
+        lig_mol = mols.read_ob_mols_from_file(sdf_file, 'sdf')[0]
         lig_mol.AddHydrogens()
         lig_mol = mols.Molecule.from_ob_mol(lig_mol)
 
     else: # read and add Hs with RDKit (need to sanitize before add Hs)
-        lig_mol = mols.Molecule.from_sdf(lig_mol_file, sanitize=False, idx=idx)
+        lig_mol = mols.Molecule.from_sdf(sdf_file, sanitize=False, idx=0)
 
     try: # need to do this to get ring info, etc.
         lig_mol.sanitize()
@@ -1606,7 +1553,7 @@ def write_pymol_script(
         for sdf_file in sdf_files: # load structs/molecules
             try:
                 m = re.match(
-                    r'^(molecules|structs)/({}_.*)\.sdf(\.gz)?$'.format(
+                    r'^.*(molecules|structs)/({}_.*)\.sdf(\.gz)?$'.format(
                         re.escape(out_prefix)
                     ),
                     str(sdf_file)

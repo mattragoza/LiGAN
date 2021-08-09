@@ -12,26 +12,32 @@ from liGAN import models, inference
 
 
 @pytest.fixture(params=[
-    'CVAE',
-    #'CVAE2',
-    #'AE', 'CE', 'VAE', 'CVAE', 'GAN', 'CGAN',
-    #'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
+    ('CVAE', 0, 0), 
+    ('CVAE', 1, 0),
+    ('CVAE', 0, 1),
+    ('CVAE', 1, 1),
 ])
 def generator(request):
-    generator_type = getattr(liGAN.inference, request.param + 'Generator')
+    generator_name, diff_cond_transform, diff_cond_structs = request.param
+    data_file = (
+        'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants.types',
+        'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants2.types'
+    )[diff_cond_structs]
+    generator_type = getattr(liGAN.inference, generator_name + 'Generator')
     return generator_type(
         data_kws=dict(
-            data_file='data/it2_tt_0_lowrmsd_valid_mols_head1.types',
+            data_file=data_file,
             data_root='data/crossdock2020',
             batch_size=1,
-            rec_typer='on-1',
-            lig_typer='on-1',
+            rec_typer='oadc-1.0',
+            lig_typer='oadc-1.0',
             resolution=1.0,
             grid_size=16,
             shuffle=False,
             random_rotation=True,
             random_translation=0,
-            diff_cond_transform=False,
+            diff_cond_transform=diff_cond_transform,
+            diff_cond_structs=diff_cond_structs,
             cache_structs=False,
         ),
         gen_model_kws=dict(
@@ -50,11 +56,10 @@ def generator(request):
         ),
         atom_fitting_kws=dict(),
         bond_adding_kws=dict(),
-        output_kws=dict(),
-        n_samples=1,
+        output_kws=dict(batch_metrics=False),
+        n_samples=5,
         fit_atoms=True,
-        diff_cond_rec=False,
-        out_prefix='tests/output/TEST_' + request.param,
+        out_prefix=f'tests/output/TEST_{generator_name}',
         device='cuda',
         debug=True
     )
@@ -75,53 +80,51 @@ class TestGenerator(object):
         assert isinstance(generator.out_writer, liGAN.inference.OutputWriter)
         assert isinstance(generator.out_writer.metrics, pd.DataFrame)
         assert len(generator.out_writer.metrics) == 0
+        if generator.data.diff_cond_structs or generator.data.diff_cond_transform:
+            assert generator.out_writer.grid_types > {'cond_rec', 'cond_lig'}
 
     ### TEST FORWARD
 
     def test_gen_forward(self, generator):
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=False,
-                fixed_condition=False,
-            )
+        (
+            input_grids, cond_grids, input_structs, cond_structs,
+            latents, lig_gen_grids, transforms
+        ) = generator.forward(prior=False, stage2=False)
         input_rec_grids, input_lig_grids = input_grids
         cond_rec_grids, cond_lig_grids = cond_grids
         input_rec_structs, input_lig_structs = input_structs
         cond_rec_structs, cond_lig_structs = cond_structs
+        input_transforms, cond_transforms = transforms
 
-        assert input_rec_grids.norm() > 0, 'rec grids are zero'
-        assert input_lig_grids.norm() > 0, 'lig grids are zero'
-        assert input_rec_structs == cond_rec_structs, \
-            'input and cond rec structs are different'
-        assert input_lig_structs == cond_lig_structs, \
-            'input and cond lig structs are different'
-        assert (input_rec_grids == cond_rec_grids).all(), \
-            'input and cond rec grids are different'
-        assert (input_lig_grids == cond_lig_grids).all(), \
-            'input and cond lig grids are different'
+        if generator.data.diff_cond_structs:
+            assert cond_rec_structs != input_rec_structs
+            assert cond_lig_structs != input_lig_structs
+        else:
+            assert cond_rec_structs == input_rec_structs
+            assert cond_lig_structs == input_lig_structs
 
-    def test_gen_forward_not_fixed(self, generator):
+        if generator.data.diff_cond_transform:
+            assert cond_transforms != input_transforms
+        else:
+            assert cond_transforms == input_transforms
+
+        assert input_rec_grids.norm() > 0, 'input rec grids are zero'
+        assert input_lig_grids.norm() > 0, 'input lig grids are zero'
+        assert cond_rec_grids.norm() > 0, 'cond rec grids are zero'
+        assert cond_lig_grids.norm() > 0, 'cond lig grids are zero'
+        assert latents.norm() > 0, 'latent vecs are zero'
+        assert lig_gen_grids.norm() > 0, 'lig gen grids are zero'
+
+    def test_gen_forward2(self, generator):
         input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=False,
-                fixed_condition=False,
-            )
+            generator.forward(prior=False, stage2=False)
         input_rec_grids0, input_lig_grids0 = input_grids
         cond_rec_grids0, cond_lig_grids0 = cond_grids
         input_rec_structs0, input_lig_structs0 = input_structs
         cond_rec_structs0, cond_lig_structs0 = cond_structs
 
         input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=False,
-                fixed_condition=False,
-            )
+            generator.forward(prior=False, stage2=False)
         input_rec_grids1, input_lig_grids1 = input_grids
         cond_rec_grids1, cond_lig_grids1 = cond_grids
         input_rec_structs1, input_lig_structs1 = input_structs
@@ -144,127 +147,14 @@ class TestGenerator(object):
         assert (cond_lig_grids1 != cond_lig_grids0).any(), \
             'cond lig grids are the same'
 
-    def test_gen_forward_fixed_input(self, generator):
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=True,
-                fixed_condition=False,
-            )
-        input_rec_grids0, input_lig_grids0 = input_grids
-        cond_rec_grids0, cond_lig_grids0 = cond_grids
-        input_rec_structs0, input_lig_structs0 = input_structs
-        cond_rec_structs0, cond_lig_structs0 = cond_structs
-
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=True,
-                fixed_condition=False,
-            )
-        input_rec_grids1, input_lig_grids1 = input_grids
-        cond_rec_grids1, cond_lig_grids1 = cond_grids
-        input_rec_structs1, input_lig_structs1 = input_structs
-        cond_rec_structs1, cond_lig_structs1 = cond_structs
-
-        assert input_rec_structs1 == input_rec_structs0, \
-            'input rec structs are different'
-        assert input_lig_structs1 == input_lig_structs0, \
-            'input lig structs are different'
-        assert cond_rec_structs1 != cond_rec_structs0, \
-            'cond rec structs are the same'
-        assert cond_lig_structs1 != cond_lig_structs0, \
-            'cond lig structs are the same'
-        assert (input_rec_grids1 == input_rec_grids0).all(), \
-            'input rec grids are different'
-        assert (input_lig_grids1 == input_lig_grids0).all(), \
-            'input lig grids are different'
-        assert (cond_rec_grids1 != cond_rec_grids0).any(), \
-            'cond rec grids are the same'
-        assert (cond_lig_grids1 != cond_lig_grids0).any(), \
-            'cond lig grids are the same'
-
-    def test_gen_forward_fixed_condition(self, generator):
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=False,
-                fixed_condition=True,
-            )
-        input_rec_grids0, input_lig_grids0 = input_grids
-        cond_rec_grids0, cond_lig_grids0 = cond_grids
-        input_rec_structs0, input_lig_structs0 = input_structs
-        cond_rec_structs0, cond_lig_structs0 = cond_structs
-
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=False,
-                fixed_condition=True,
-            )
-        input_rec_grids1, input_lig_grids1 = input_grids
-        cond_rec_grids1, cond_lig_grids1 = cond_grids
-        input_rec_structs1, input_lig_structs1 = input_structs
-        cond_rec_structs1, cond_lig_structs1 = cond_structs
-
-        assert input_rec_structs1 != input_rec_structs0, \
-            'input rec structs are the same'
-        assert input_lig_structs1 != input_lig_structs0, \
-            'input lig structs are the same'
-        assert cond_rec_structs1 == cond_rec_structs0, \
-            'cond rec structs are different'
-        assert cond_lig_structs1 == cond_lig_structs0, \
-            'cond lig structs are different'
-        assert (input_rec_grids1 != input_rec_grids0).any(), \
-            'input rec grids are the same'
-        assert (input_lig_grids1 != input_lig_grids0).any(), \
-            'input lig grids are different'
-        assert (cond_rec_grids1 == cond_rec_grids0).all(), \
-            'cond rec grids are different'
-        assert (cond_lig_grids1 == cond_lig_grids0).all
-
-    def test_gen_forward_fixed_both(self, generator):
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=True,
-                fixed_condition=True,
-            )
-        input_rec_grids0, input_lig_grids0 = input_grids
-        cond_rec_grids0, cond_lig_grids0 = cond_grids
-        input_rec_structs0, input_lig_structs0 = input_structs
-        cond_rec_structs0, cond_lig_structs0 = cond_structs
-
-        input_grids, cond_grids, input_structs, cond_structs, _, _, _ = \
-            generator.forward(
-                prior=False,
-                stage2=False,
-                fixed_input=True,
-                fixed_condition=True,
-            )
-        input_rec_grids1, input_lig_grids1 = input_grids
-        cond_rec_grids1, cond_lig_grids1 = cond_grids
-        input_rec_structs1, input_lig_structs1 = input_structs
-        cond_rec_structs1, cond_lig_structs1 = cond_structs
-
-        assert input_rec_structs1 == input_rec_structs0, \
-            'input rec structs are different'
-        assert input_lig_structs1 == input_lig_structs0, \
-            'input lig structs are different'
-        assert cond_rec_structs1 == cond_rec_structs0, \
-            'cond rec structs are different'
-        assert cond_lig_structs1 == cond_lig_structs0, \
-            'cond lig structs are different'
-        assert (input_rec_grids1 == input_rec_grids0).all(), \
-            'input rec grids are different'
-        assert (input_lig_grids1 == input_lig_grids0).all(), \
-            'input lig grids are different'
-        assert (cond_rec_grids1 == cond_rec_grids0).all(), \
-            'cond rec grids are different'
-        assert (cond_lig_grids1 == cond_lig_grids0).all(), \
-            'cond lig grids are different'
+    def test_generate(self, generator):
+        m = generator.generate(n_examples=1, n_samples=5)
+        print(generator.out_writer.grid_types)
+        assert len(m) > 0, 'empty metrics'
+        m = m.reset_index().set_index(['example_idx', 'sample_idx'])
+        print(m)
+        if generator.data.diff_cond_structs:
+            rec_prod = m['lig_gen_rec_prod']
+            cond_rec_prod = m['lig_gen_cond_rec_prod']
+            print((cond_rec_prod-rec_prod).describe())
+            assert False, 'OK'
