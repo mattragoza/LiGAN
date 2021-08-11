@@ -18,6 +18,50 @@ n_rec_channels = 16
 grid_size = 48
 
 
+
+def test_interpolate():
+
+    n_examples = 4
+    n_samples = 10
+    batch_size = 5
+    n_latent = 2
+
+    # total # interpolation steps so far
+    interp_step = 0
+    end_pts = torch.zeros((1, n_latent)) + 1e-6
+
+    for example_idx in range(n_examples):
+        for sample_idx in range(n_samples):
+            full_idx = example_idx*n_samples + sample_idx
+            batch_idx = full_idx % batch_size
+
+            if batch_idx == 0: # forward
+
+                latents = torch.randn((batch_size, 1))
+                batch_idxs = torch.arange(batch_size)
+                latents = (
+                    (full_idx + batch_idxs) % (n_samples*2) == 0
+                ).float().unsqueeze(1)
+                latents = torch.cat([latents, 1-latents], dim=1)
+
+                is_endpt = (interp_step + batch_idxs) % n_samples == 0
+                end_pts = torch.cat([end_pts, latents[is_endpt]])
+
+                start_idx = (interp_step + batch_idxs) // n_samples
+                stop_idx = start_idx + 1
+                start_pts = end_pts[start_idx]
+                stop_pts = end_pts[stop_idx]
+                k_interp = (
+                    (interp_step + batch_idxs) % n_samples + 1
+                ).unsqueeze(1) / n_samples
+
+                new_latents = models.slerp(start_pts, stop_pts, k_interp)
+                print(new_latents)
+
+                interp_step += batch_size
+    assert False, 'OK'
+
+
 class TestConv3DReLU(object):
 
     @pytest.fixture(params=[models.Conv3DReLU, models.TConv3DReLU])

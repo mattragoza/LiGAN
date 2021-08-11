@@ -55,7 +55,9 @@ class MoleculeGenerator(object):
 
         if self.gen_model_type:
             print('Initializing generative model')
-            self.init_gen_model(device=device, **gen_model_kws)
+            self.init_gen_model(
+                device=device, n_samples=n_samples, **gen_model_kws
+            )
 
             if self.gen_model_type.has_stage2:
                 print('Initializing prior model')
@@ -174,8 +176,14 @@ class MoleculeGenerator(object):
             else:
                 return data.n_lig_channels
 
-    def forward(self, prior, stage2, interpolate, **kwargs):
-
+    def forward(
+        self,
+        prior,
+        stage2,
+        interpolate=False,
+        spherical=False,
+        **kwargs
+    ):
         print(f'Calling generator forward')
         print(f'  prior = {prior}')
         print(f'  stage2 = {stage2}')
@@ -183,7 +191,7 @@ class MoleculeGenerator(object):
         print('Getting next batch of data')
         data = self.data
         input_grids, cond_grids, input_structs, cond_structs, transforms \
-            = data.forward()[:5]
+            = data.forward(interpolate=interpolate, spherical=spherical)[:5]
         input_rec_structs, input_lig_structs = input_structs
         cond_rec_structs, cond_lig_structs = cond_structs
         input_transforms, cond_transforms = transforms
@@ -212,6 +220,8 @@ class MoleculeGenerator(object):
                             prior_model=self.prior_model,
                             inputs=gen_input_grids,
                             conditions=gen_cond_grids,
+                            interpolate=interpolate,
+                            spherical=spherical,
                             batch_size=self.data.batch_size,
                             **kwargs
                         )
@@ -220,6 +230,8 @@ class MoleculeGenerator(object):
                         inputs=gen_input_grids,
                         conditions=gen_cond_grids,
                         batch_size=self.data.batch_size,
+                        interpolate=interpolate,
+                        spherical=spherical,
                         **kwargs
                     )
         else:
@@ -277,10 +289,6 @@ class MoleculeGenerator(object):
             batch_idx = full_idx % batch_size
             print(example_idx, sample_idx, full_idx, batch_idx,)
 
-            if interpolate:
-                # index of nearest interpolation endpoint in batch
-                endpoint_idx = 0 if batch_idx < batch_size//2 else -1
-
             need_real_input_mol = (sample_idx == 0)
             need_real_cond_mol = \
                 (sample_idx == 0 and self.data.diff_cond_structs)
@@ -321,7 +329,14 @@ class MoleculeGenerator(object):
             #   we need to apply the inverse of the transform
             #   that was used to create the density grid that
             #   is the reconstruction target (assume conditional)
-            transform = cond_transforms[batch_idx]
+            input_transform = input_transforms[batch_idx]
+            cond_transform = cond_transforms[batch_idx]
+            input_center = torch.as_tensor(tuple(
+                input_transform.get_rotation_center()
+            ))
+            cond_center = torch.as_tensor(tuple(
+                cond_transform.get_rotation_center()
+            ))
 
             # only process real rec/lig once, since they're
             #   the same for all samples of a given ligand
@@ -456,13 +471,13 @@ class MoleculeGenerator(object):
 
                 if is_gen_grid:
                     grid_needs_fit = fit_atoms and is_lig_grid
-                    center = cond_lig_struct.center
+                    center = cond_center
                 elif is_cond_grid:
                     grid_need_fit = False
-                    center = cond_lig_struct.center
+                    center = cond_center
                 else:
                     grid_needs_fit = fit_to_real and is_lig_grid
-                    center = input_lig_struct.center
+                    center = input_center
 
                 if is_lig_grid:
                     atom_typer = self.data.lig_typer
@@ -515,7 +530,7 @@ class MoleculeGenerator(object):
                     fit_grid.info['src_struct'] = fit_struct
 
                     if fit_struct.n_atoms > 0: # inverse transform
-                        transform.backward(fit_struct.coords, fit_struct.coords)
+                        cond_transform.backward(fit_struct.coords, fit_struct.coords)
 
                     if add_bonds: # do bond adding
                         print(f'Adding bonds to atoms from {real_or_gen} grid')
@@ -925,7 +940,6 @@ class OutputWriter(object):
                 del self.grids[example_info] # free memory
 
         else:
-            print(lig_grids[sample_idx].keys())
             # only store until grids for this sample are ready
             has_all_grids = (
                 set(lig_grids[sample_idx]) >= self.grid_types

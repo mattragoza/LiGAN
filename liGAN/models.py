@@ -3,6 +3,7 @@ import numpy as np
 from scipy import stats
 import torch
 from torch import nn
+from .interpolation import Interpolation
 
 
 # mapping of unpool_types to Upsample modes
@@ -63,7 +64,7 @@ def clip_grad_norm(model, max_norm):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
 
-def sample_latents(
+def sample_latent(
     batch_size,
     n_latent,
     means=None,
@@ -72,8 +73,6 @@ def sample_latents(
     post_factor=1.0,
     truncate=None,
     z_score=None,
-    interpolate=False,
-    spherical=False,
     device='cuda',
 ):
     '''
@@ -138,14 +137,6 @@ def sample_latents(
 
         # shift by mean
         latents += means
-
-    if interpolate:
-        # interpolate b/tw first and last samples
-        t = torch.linspace(0, 1, batch_size)
-        if spherical:
-            latents = slerp(latents[0], latents[-1], t)
-        else:
-            latents = lerp(latents[0], latents[-1], t)
 
     return latents
 
@@ -936,6 +927,7 @@ class GridGenerator(nn.Sequential):
         block_type='c',
         growth_rate=8,
         bottleneck_factor=0,
+        n_samples=0,
         device='cuda',
         debug=False,
     ):
@@ -1027,6 +1019,9 @@ class GridGenerator(nn.Sequential):
             debug=debug,
         )
 
+        # latent interpolation state
+        self.latent_interp = Interpolation(n_samples=n_samples)
+
         super().to(device)
         self.device = device
 
@@ -1050,10 +1045,10 @@ class GridGenerator(nn.Sequential):
             n += self.n_latent
         return n
 
-    def sample_latents(
-        self, batch_size, means=None, log_stds=None, **kwargs
+    def sample_latent(
+        self, batch_size, means=None, log_stds=None, interpolate=False, spherical=False, **kwargs
     ):
-        return sample_latents(
+        latent_vecs = sample_latent(
             batch_size=batch_size,
             n_latent=self.n_latent,
             means=means,
@@ -1061,6 +1056,18 @@ class GridGenerator(nn.Sequential):
             device=self.device,
             **kwargs
         )
+
+        if interpolate:
+            if not self.latent_interp.is_initialized:
+                self.latent_interp.initialize(sample_latent(
+                    batch_size=1,
+                    n_latent=self.n_latent,
+                    device=self.device,
+                    **kwargs
+                )[0])
+            latent_vecs = self.latent_interp(latent_vecs, spherical=spherical)
+
+        return latent_vecs
 
 
 class AE(GridGenerator):
@@ -1071,7 +1078,7 @@ class AE(GridGenerator):
     def forward(self, inputs=None, conditions=None, batch_size=None):
 
         if inputs is None: # "prior", not expected to work
-            in_latents = self.sample_latents(batch_size)
+            in_latents = self.sample_latent(batch_size)
         else: # posterior
             in_latents, _ = self.input_encoder(inputs)
 
@@ -1091,7 +1098,7 @@ class VAE(GridGenerator):
         else: # posterior
             (means, log_stds), _ = self.input_encoder(inputs)
 
-        var_latents = self.sample_latents(batch_size, means, log_stds)
+        var_latents = self.sample_latent(batch_size, means, log_stds)
         outputs = self.decoder(inputs=var_latents)
         return outputs, var_latents, means, log_stds
 
@@ -1122,7 +1129,7 @@ class CVAE(GridGenerator):
         else: # posterior
             (means, log_stds), _ = self.input_encoder(inputs)
 
-        in_latents = self.sample_latents(batch_size, means, log_stds, **kwargs)
+        in_latents = self.sample_latent(batch_size, means, log_stds, **kwargs)
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([in_latents, cond_latents], dim=1)
 
@@ -1138,7 +1145,7 @@ class GAN(GridGenerator):
     has_conditional_encoder = False
 
     def forward(self, inputs=None, conditions=None, batch_size=None):
-        var_latents = self.sample_latents(batch_size)
+        var_latents = self.sample_latent(batch_size)
         outputs = self.decoder(inputs=var_latents)
         return outputs, var_latents, None, None
 
@@ -1149,7 +1156,7 @@ class CGAN(GridGenerator):
     has_conditional_encoder = True
 
     def forward(self, inputs=None, conditions=None, batch_size=None):
-        var_latents = self.sample_latents(batch_size)
+        var_latents = self.sample_latent(batch_size)
         cond_latents, cond_features = self.conditional_encoder(conditions)
         cat_latents = torch.cat([var_latents, cond_latents], dim=1)
         outputs = self.decoder(
@@ -1183,7 +1190,7 @@ class VAE2(VAE):
 
         else: # stage-1 posterior
             (means, log_stds), _ = self.input_encoder(inputs)
-            var_latents = self.sample_latents(
+            var_latents = self.sample_latent(
                 batch_size, means, log_stds, **kwargs
             )
 
@@ -1217,7 +1224,7 @@ class CVAE2(CVAE):
 
         else: # stage-1 posterior
             (means, log_stds), _ = self.input_encoder(inputs)
-            in_latents = self.sample_latents(
+            in_latents = self.sample_latent(
                 batch_size, means, log_stds, **kwargs
             )
 
@@ -1292,14 +1299,14 @@ class Stage2VAE(nn.Module):
             means = self.fc_mean(enc_outputs)
             log_stds = self.fc_log_std(enc_outputs)
 
-        var_latents = self.sample_latents(batch_size, means, log_stds)
+        var_latents = self.sample_latent(batch_size, means, log_stds)
         outputs = self.decoder(var_latents)
         return outputs, var_latents, means, log_stds
 
-    def sample_latents(
+    def sample_latent(
         self, batch_size, means=None, log_stds=None, **kwargs
     ):
-        return sample_latents(
+        return sample_latent(
             batch_size=batch_size,
             n_latent=self.n_latent,
             means=means,

@@ -7,6 +7,7 @@ from torch import nn, utils
 import molgrid
 from . import atom_types, atom_structs, atom_grids
 from .atom_types import AtomTyper
+from .interpolation import TransformInterpolation
 
 
 class MolDataset(utils.data.IterableDataset):
@@ -160,6 +161,9 @@ class AtomGridData(object):
         self.debug = debug
         self.device = device
 
+        # transform interpolation state
+        self.cond_interp = TransformInterpolation(n_samples=n_samples)
+
         # load data from file
         self.ex_provider.populate(data_file)
 
@@ -213,20 +217,28 @@ class AtomGridData(object):
     def __len__(self):
         return self.ex_provider.size()
 
-    def forward(self):
+    def forward(self, interpolate=False, spherical=False):
         assert len(self) > 0, 'data is empty'
 
         # get next batch of structures
-        t0 = time.time()
         examples = self.ex_provider.next_batch(self.batch_size)
         labels = torch.zeros(self.batch_size, device=self.device)
         examples.extract_label(0, labels)
-        t_mol = time.time() - t0
 
-        t_grid = 0
-        t_struct = 0
+        # create lists for examples, structs and transforms
+        batch_list = lambda: [None] * self.batch_size
 
-        # create output tensors for input grids
+        input_examples = batch_list()
+        input_rec_structs = batch_list()
+        input_lig_structs = batch_list()
+        input_transforms = batch_list()
+
+        cond_examples = batch_list()
+        cond_rec_structs = batch_list()
+        cond_lig_structs = batch_list()
+        cond_transforms = batch_list()
+
+        # create output tensors for atomic density grids
         input_grids = torch.zeros(
             self.batch_size,
             self.n_channels,
@@ -234,11 +246,6 @@ class AtomGridData(object):
             dtype=torch.float32,
             device=self.device,
         )
-        input_transforms = [None] * self.batch_size
-        input_rec_structs = [None] * self.batch_size
-        input_lig_structs = [None] * self.batch_size
-
-        # create separate output tensors for conditional grids
         cond_grids = torch.zeros(
             self.batch_size,
             self.n_channels,
@@ -246,12 +253,9 @@ class AtomGridData(object):
             dtype=torch.float32,
             device=self.device,
         )
-        cond_transforms = [None] * self.batch_size
-        cond_rec_structs = [None] * self.batch_size
-        cond_lig_structs = [None] * self.batch_size
 
+        # split examples, create structs and transforms
         for i, ex in enumerate(examples):
-            t0 = time.time()
 
             if self.diff_cond_structs:
 
@@ -270,42 +274,12 @@ class AtomGridData(object):
 
             else: # same conditional molecules as input
                 input_rec_coord_set, input_lig_coord_set = ex.coord_sets
-                cond_rec_coord_set = input_rec_coord_set
-                cond_lig_coord_set = input_lig_coord_set
+                cond_rec_coord_set, cond_lig_coord_set = ex.coord_sets
                 input_ex = cond_ex = ex
 
-            # create input transform
-            input_transforms[i] = molgrid.Transform(
-                center=input_lig_coord_set.center(),
-                random_translate=self.random_translation,
-                random_rotation=self.random_rotation,
-            )
-            # create input density grid
-            self.grid_maker.forward(
-                input_ex, input_transforms[i], input_grids[i]
-            )
-
-            if self.diff_cond_transform:
-
-                # create conditional transform
-                cond_transforms[i] = molgrid.Transform(
-                    center=cond_lig_coord_set.center(),
-                    random_translate=self.random_translation,
-                    random_rotation=self.random_rotation,
-                )
-            else: # same transform as input
-                cond_transforms[i] = input_transforms[i]
-
-            if self.diff_cond_transform or self.diff_cond_structs:
-
-                # create conditional density grid
-                self.grid_maker.forward(
-                    cond_ex, cond_transforms[i], cond_grids[i]
-                )
-            else: # same density grid as input
-                cond_grids[i] = input_grids[i]
-
-            t1 = time.time()
+            # store split examples for gridding
+            input_examples[i] = input_ex
+            cond_examples[i] = cond_ex
 
             # convert coord sets to atom structs
             input_rec_structs[i] = atom_structs.AtomStruct.from_coord_set(
@@ -337,18 +311,52 @@ class AtomGridData(object):
                 cond_rec_structs[i] = input_rec_structs[i]
                 cond_lig_structs[i] = input_lig_structs[i]
 
-            t2 = time.time()
-            t_grid += t1 - t0
-            t_struct += t2 - t1
+            # create input transform
+            input_transforms[i] = molgrid.Transform(
+                center=input_lig_coord_set.center(),
+                random_translate=self.random_translation,
+                random_rotation=self.random_rotation,
+            )
+            if self.diff_cond_transform:
 
-        if self.debug:
-            t_total = t_mol + t_grid + t_struct
-            print('{:.4f}s ({:.2f} {:.2f} {:.2f})'.format(
-                t_total,
-                100*t_mol/t_total,
-                100*t_grid/t_total,
-                100*t_struct/t_total
-            ))
+                # create conditional transform
+                cond_transforms[i] = molgrid.Transform(
+                    center=cond_lig_coord_set.center(),
+                    random_translate=self.random_translation,
+                    random_rotation=self.random_rotation,
+                )
+            else: # same transform as input
+                cond_transforms[i] = input_transforms[i]
+        
+        if interpolate: # interpolate conditional transforms
+            # i.e. location and orientation of conditional grid
+            if not self.cond_interp.is_initialized:
+                self.cond_interp.initialize(cond_examples[0])
+            cond_transforms = self.cond_interp(
+                transforms=cond_transforms,
+                spherical=spherical,
+            )
+
+        # create density grids
+        for i in range(self.batch_size):
+
+            # create input density grid
+            self.grid_maker.forward(
+                input_examples[i],
+                input_transforms[i],
+                input_grids[i]
+            )
+            if (
+                self.diff_cond_transform or self.diff_cond_structs or interpolate
+            ):
+                # create conditional density grid
+                self.grid_maker.forward(
+                    cond_examples[i],
+                    cond_transforms[i],
+                    cond_grids[i]
+                )
+            else: # same density grid as input
+                cond_grids[i] = input_grids[i]
 
         input_structs = (input_rec_structs, input_lig_structs)
         cond_structs = (cond_rec_structs, cond_lig_structs)
