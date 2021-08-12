@@ -1,6 +1,5 @@
 import sys, os, re, time, gzip, itertools
 from collections import defaultdict
-from functools import lru_cache
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -287,7 +286,7 @@ class MoleculeGenerator(object):
             # keep track of position in current batch
             full_idx = example_idx*n_samples + sample_idx
             batch_idx = full_idx % batch_size
-            print(example_idx, sample_idx, full_idx, batch_idx,)
+            print(example_idx, sample_idx, full_idx, batch_idx)
 
             need_real_input_mol = (sample_idx == 0)
             need_real_cond_mol = \
@@ -1493,7 +1492,6 @@ class OutputWriter(object):
             m.loc[idx, mol_type+'_cnn_aff_diff'] = cnn_aff - ref_cnn_aff
 
 
-@lru_cache(maxsize=16)
 def read_rec_from_pdb_file(pdb_file):
 
     rec_mol = mols.Molecule.from_pdb(pdb_file, sanitize=False)
@@ -1504,7 +1502,6 @@ def read_rec_from_pdb_file(pdb_file):
     return rec_mol
 
 
-@lru_cache(maxsize=16)
 def read_lig_from_sdf_file(sdf_file, use_ob=True):
     '''
     Try to find the real molecule in data_root using the
