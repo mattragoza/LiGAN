@@ -13,13 +13,13 @@ from liGAN.metrics import compute_struct_rmsd
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf',
-    'data/N_2_0_0.sdf',
-    'data/C_2_0_0.sdf',
-    'data/benzene.sdf',
-    'data/neopentane.sdf',
-    'data/sulfone.sdf',
-    'data/ATP.sdf',
+    'tests/input/O_2_0_0.sdf',
+    'tests/input/N_2_0_0.sdf',
+    'tests/input/C_2_0_0.sdf',
+    'tests/input/benzene.sdf',
+    'tests/input/neopentane.sdf',
+    'tests/input/sulfone.sdf',
+    'tests/input/ATP.sdf',
 ]
 
 
