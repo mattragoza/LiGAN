@@ -98,10 +98,10 @@ def write_ob_mols_to_sdf_file(sdf_file, mols):
     conv.CloseOutFile()
 
 
-def rd_mol_to_ob_mol(rd_mol):
+def rd_mol_to_ob_mol(rd_mol, confId=0):
 
     ob_mol = ob.OBMol()
-    rd_conf = rd_mol.GetConformer(0)
+    rd_conf = rd_mol.GetConformer(confId)
 
     for i, rd_atom in enumerate(rd_mol.GetAtoms()):
         atomic_num = rd_atom.GetAtomicNum()
