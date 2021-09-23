@@ -147,7 +147,7 @@ class GenerativeSolver(nn.Module):
         self.debug = debug
         self.sync_cuda = sync_cuda
 
-
+        self.wandb_kws = wandb_kws
         self.use_wandb: bool = self.wandb_kws['use_wandb']
         if self.use_wandb:
             try:
