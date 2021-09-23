@@ -77,6 +77,7 @@ class GenerativeSolver(nn.Module):
         self,
         out_prefix,
         data_kws={},
+        wandb_kws: dict = {},
         gen_model_kws={},
         disc_model_kws={},
         prior_model_kws={},
@@ -88,8 +89,7 @@ class GenerativeSolver(nn.Module):
         bond_adding_kws={},
         device='cuda',
         debug=False,
-        sync_cuda=False,
-        use_wandb: bool = False
+        sync_cuda=False
     ):
         super().__init__()
         self.device = device
@@ -147,7 +147,8 @@ class GenerativeSolver(nn.Module):
         self.debug = debug
         self.sync_cuda = sync_cuda
 
-        self.use_wandb: bool = use_wandb
+
+        self.use_wandb: bool = self.wandb_kws['use_wandb']
         if self.use_wandb:
             try:
                 wandb
@@ -1023,10 +1024,10 @@ class GenerativeSolver(nn.Module):
             self.insert_metrics(idx, metrics)
 
             # log metrics to wandb
-            wandb_metrics = metrics.copy()
-            wandb_metrics.update(dict(zip(self.index_cols, idx)))
-            wandb.log(wandb_metrics)
-
+            if self.use_wandb:
+                wandb_metrics = metrics.copy()
+                wandb_metrics.update(dict(zip(self.index_cols, idx)))
+                wandb.log(wandb_metrics)
 
         idx = idx[:-1]
         metrics = self.metrics.loc[idx].mean()
