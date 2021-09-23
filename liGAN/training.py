@@ -7,6 +7,11 @@ import torch
 from torch import nn, optim
 torch.backends.cudnn.benchmark = True
 
+try:
+    import wandb
+except ImportError:
+    pass
+
 import molgrid
 from . import data, models, atom_types, atom_fitting, bond_adding, molecules
 from . import loss_fns
@@ -84,6 +89,7 @@ class GenerativeSolver(nn.Module):
         device='cuda',
         debug=False,
         sync_cuda=False,
+        use_wandb: bool = False
     ):
         super().__init__()
         self.device = device
@@ -140,6 +146,14 @@ class GenerativeSolver(nn.Module):
         self.out_prefix = out_prefix
         self.debug = debug
         self.sync_cuda = sync_cuda
+
+        self.use_wandb: bool = use_wandb
+        if self.use_wandb:
+            try:
+                wandb
+            except NameError:
+                raise ImportError('wandb is not installed')
+        
 
     def init_data(self, device, train_file, test_file, **data_kws):
         self.train_data = \
@@ -1007,6 +1021,12 @@ class GenerativeSolver(nn.Module):
                 'test', model_type, grid_type, i
             )
             self.insert_metrics(idx, metrics)
+
+            # log metrics to wandb
+            wandb_metrics = metrics.copy()
+            wandb_metrics.update(dict(zip(self.index_cols, idx)))
+            wandb.log(wandb_metrics)
+
 
         idx = idx[:-1]
         metrics = self.metrics.loc[idx].mean()

@@ -55,6 +55,7 @@ def main(argv):
         device=device,
         debug=args.debug,
         sync_cuda=config.get('sync_cuda', False),
+        use_wandb=args.wandb
     )
 
     if config['continue']:
