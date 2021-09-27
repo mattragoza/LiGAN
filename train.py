@@ -25,9 +25,9 @@ def main(argv):
     if 'wandb' in config and config['wandb']['use_wandb']:
         import wandb
         if 'init_kwargs' in config['wandb']:
-            wandb.init(**config['wandb']['init_kwargs'])
+            wandb.init(config=config, **config['wandb']['init_kwargs'])
         else:
-            wandb.init()
+            wandb.init(config=config)
         if 'out_prefix' not in config:
             try:
                 os.mkdir('wandb_output')
