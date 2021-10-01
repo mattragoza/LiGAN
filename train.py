@@ -22,6 +22,9 @@ def main(argv):
     with open(args.config_file) as f:
         config = yaml.safe_load(f)
 
+    if 'wandb' in config and 'use_wandb' not in config['wandb']:
+        raise Exception('use_wandb must be included in wandb configs')
+
     if 'wandb' in config and config['wandb']['use_wandb']:
         import wandb
         if 'init_kwargs' in config['wandb']:
