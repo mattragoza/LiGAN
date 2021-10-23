@@ -13,13 +13,13 @@ from liGAN.metrics import compute_struct_rmsd
 
 
 test_sdf_files = [
-    'data/O_2_0_0.sdf',
-    'data/N_2_0_0.sdf',
-    'data/C_2_0_0.sdf',
-    'data/benzene.sdf',
-    'data/neopentane.sdf',
-    'data/sulfone.sdf',
-    'data/ATP.sdf',
+    'tests/input/O_2_0_0.sdf',
+    'tests/input/N_2_0_0.sdf',
+    'tests/input/C_2_0_0.sdf',
+    'tests/input/benzene.sdf',
+    'tests/input/neopentane.sdf',
+    'tests/input/sulfone.sdf',
+    'tests/input/ATP.sdf',
 ]
 
 
@@ -101,9 +101,15 @@ class TestAtomFitter(object):
         #'on-c',   'on-v',
         #'oh-c', # different num atoms (missing Hs on all tests)
         #'oh-v', # different property counts (not all carbons aromatic, or aromatic Hs if using convolution)
-        'oadc-0.50', 'oadc-1.00', 'oadc-1.50',
-        'on-0.50',   'on-1.00',   'on-1.50',
-        'oh-0.50',   'oh-1.00',   'oh-1.50',
+        #'oadc-0.50',
+        'oadc-1.00',
+        #'oadc-1.50',
+        #'on-0.50',
+        'on-1.00',
+        #'on-1.50',
+        #'oh-0.50',
+        'oh-1.00',
+        #'oh-1.50',
     ])
     def typer(self, request):
         prop_funcs, radius_func = request.param.split('-')

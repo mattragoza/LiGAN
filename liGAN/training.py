@@ -148,7 +148,7 @@ class GenerativeSolver(nn.Module):
         self.sync_cuda = sync_cuda
 
         self.wandb_kws = wandb_kws
-        self.use_wandb: bool = self.wandb_kws['use_wandb']
+        self.use_wandb: bool = self.wandb_kws.get('use_wandb', False)
         if self.use_wandb:
             try:
                 wandb
@@ -686,23 +686,35 @@ class GenerativeSolver(nn.Module):
             torch.cuda.synchronize()
         t4 = time.time()
 
-        metrics.update(compute_paired_grid_metrics(
-            'lig_gen', lig_gen_grids, 'lig', input_lig_grids
-        ))
-        metrics.update(compute_paired_grid_metrics(
-            'lig_gen', lig_gen_grids, 'cond_lig', cond_lig_grids
-        ))
+        if posterior:
+            metrics.update(compute_paired_grid_metrics(
+                'lig_gen', lig_gen_grids, 'lig', input_lig_grids
+            ))
+        else:
+            metrics.update(compute_grid_metrics(
+                'lig_gen', lig_gen_grids
+            ))
+        if has_cond:
+            metrics.update(compute_paired_grid_metrics(
+                'lig_gen', lig_gen_grids, 'cond_lig', cond_lig_grids
+            ))
 
         if has_disc:
             metrics.update(compute_scalar_metrics('pred', disc_preds))
 
         if fit_atoms:
-            metrics.update(compute_paired_struct_metrics(
-                'lig_gen_fit', lig_gen_fit_structs, 'lig', input_lig_structs
-            ))
-            metrics.update(compute_paired_struct_metrics(
-                'lig_gen_fit', lig_gen_fit_structs, 'cond_lig', cond_lig_structs
-            ))
+            if posterior:
+                metrics.update(compute_paired_struct_metrics(
+                    'lig_gen_fit', lig_gen_fit_structs, 'lig', input_lig_structs
+                ))
+            else:
+                metrics.update(compute_struct_metrics(
+                    'lig_gen_fit', lig_gen_fit_structs
+                ))
+            if has_cond:
+                metrics.update(compute_paired_struct_metrics(
+                    'lig_gen_fit', lig_gen_fit_structs, 'cond_lig', cond_lig_structs
+                ))
 
         if self.sync_cuda:
             torch.cuda.synchronize()

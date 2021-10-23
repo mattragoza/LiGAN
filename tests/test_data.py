@@ -13,13 +13,14 @@ batch_size = 10
 
 class TestAtomGridData(object):
 
-    @pytest.fixture(params=[(0,0), (1,0), (0,1), (1,1)])
+    @pytest.fixture(params=[
+        'data/test_pockets/AROK_MYCTU_1_176_0/fixed_input_1zyu_A_rec_mutants.types',
+        'data/test_pockets/AROK_MYCTU_1_176_0/fixed_cond_1zyu_A_rec_mutants.types'
+    ])
     def data(self, request):
-        diff_cond_transform, diff_cond_structs = request.param
-        data_file = (
-            'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants.types',
-            'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants2.types'
-        )[diff_cond_structs]
+        data_file = request.param
+        diff_cond_transform = False
+        diff_cond_structs = True
         return AtomGridData(
             data_file=data_file,
             data_root='data/crossdock2020',
@@ -282,4 +283,4 @@ class TestMolDataset(object):
 
         t_delta = time.time() - t_start
         t_delta /= n_rows
-        assert t_delta < 0.001, 'too slow ({:.4f}s / row)'.format(t_delta)
+        assert t_delta < 0.05, 'too slow ({:.4f}s / row)'.format(t_delta)

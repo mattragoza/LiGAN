@@ -8,22 +8,19 @@ pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
 import liGAN
-from liGAN import models, inference
+from liGAN import models, generating
 
 
 @pytest.fixture(params=[
-    ('CVAE', 0, 0), 
-    ('CVAE', 1, 0),
-    ('CVAE', 0, 1),
-    ('CVAE', 1, 1),
+    'data/test_pockets/AROK_MYCTU_1_176_0/fixed_input_1zyu_A_rec_mutants.types',
+    'data/test_pockets/AROK_MYCTU_1_176_0/fixed_cond_1zyu_A_rec_mutants.types',
+    #'data/test_pockets/AROK_MYCTU_1_176_0/fixed_input_no_rec_mutants.types',
+    #'data/test_pockets/AROK_MYCTU_1_176_0/fixed_cond_no_rec_mutants.types',
 ])
 def generator(request):
-    generator_name, diff_cond_transform, diff_cond_structs = request.param
-    data_file = (
-        'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants.types',
-        'data/test_pockets/AROK_MYCTU_1_176_0/1zyu_A_rec_mutants2.types'
-    )[diff_cond_structs]
-    generator_type = getattr(liGAN.inference, generator_name + 'Generator')
+    data_file = request.param
+    generator_name, diff_cond_transform, diff_cond_structs = 'CVAE', 0, 1
+    generator_type = getattr(liGAN.generating, generator_name + 'Generator')
     return generator_type(
         data_kws=dict(
             data_file=data_file,
@@ -77,7 +74,7 @@ class TestGenerator(object):
         assert isinstance(generator.data, liGAN.data.AtomGridData)
         assert isinstance(generator.atom_fitter, liGAN.atom_fitting.AtomFitter)
         assert isinstance(generator.bond_adder, liGAN.bond_adding.BondAdder)
-        assert isinstance(generator.out_writer, liGAN.inference.OutputWriter)
+        assert isinstance(generator.out_writer, liGAN.generating.OutputWriter)
         assert isinstance(generator.out_writer.metrics, pd.DataFrame)
         assert len(generator.out_writer.metrics) == 0
         if generator.data.diff_cond_structs or generator.data.diff_cond_transform:

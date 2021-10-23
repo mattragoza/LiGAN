@@ -6,7 +6,7 @@ from numpy.linalg import norm
 import torch
 
 sys.path.insert(0, '.')
-import liGAN.models as models
+from liGAN import models, interpolation
 from liGAN.models import AE, VAE, CE, CVAE, GAN, CGAN, VAE2, CVAE2
 from liGAN.models import compute_grad_norm as param_grad_norm
 from liGAN.models import get_n_params
@@ -55,11 +55,10 @@ def test_interpolate():
                     (interp_step + batch_idxs) % n_samples + 1
                 ).unsqueeze(1) / n_samples
 
-                new_latents = models.slerp(start_pts, stop_pts, k_interp)
+                new_latents = interpolation.slerp(start_pts, stop_pts, k_interp)
                 print(new_latents)
 
                 interp_step += batch_size
-    assert False, 'OK'
 
 
 class TestConv3DReLU(object):
@@ -459,7 +458,7 @@ class TestGridGenerator(object):
         t_delta = time.time() - t0
         t_delta /= n_trials
         n_params = models.get_n_params(gen)
-        assert t_delta < 0, \
+        assert t_delta < 1, \
             '{:.1f}M params\t{:.2f}s / batch'.format(
                 n_params / 1e6, t_delta
             )

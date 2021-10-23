@@ -679,7 +679,7 @@ def uff_minimize_rd_mol(lig_mol, rec_mol=None, n_iters=200, n_tries=2):
     if rec_mol: # combine into complex
         uff_mol = Chem.CombineMols(rec_mol, lig_mol)
     else: # just use the ligand
-        uff_mol = uff_mol
+        uff_mol = lig_mol
 
     try:
         Chem.SanitizeMol(uff_mol)
