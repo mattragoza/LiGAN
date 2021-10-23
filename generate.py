@@ -24,7 +24,7 @@ def main(argv):
 
     generator_type = config.get('model_type', None) or 'Molecule'
     generator_type = getattr(
-        liGAN.inference, generator_type + 'Generator'
+        liGAN.generating, generator_type + 'Generator'
     )
     generator = generator_type(
         out_prefix=config['out_prefix'],

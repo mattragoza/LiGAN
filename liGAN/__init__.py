@@ -8,7 +8,7 @@ from . import (
 	models,
 	loss_fns,
 	training,
-	inference,
+	generating,
 	interpolation,
 	atom_fitting,
 	bond_adding,
