@@ -1,5 +1,0 @@
-type: "Adam"
-base_lr: 0.00001
-momentum: 0.9
-momentum2: 0.995
-lr_policy: "fixed"
