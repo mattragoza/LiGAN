@@ -1,6 +1,0 @@
-gen_name = ['ae_disc_x_0_10000_r', 'ae_disc_x_0_20000_r', 'ae_disc_x_0_30000_r', 'ae_disc_x_0_40000_r', 'ae_disc_x_0_50000_r', 'ae_disc_x_0_60000_r', 'ae_disc_x_0_70000_r', 'ae_disc_x_0_80000_r', 'ae_disc_x_0_90000_r', 'ae_disc_x_0_100000_r', 'gen_e_0.1_1_disc_x_10_0_10000_r', 'gen_e_0.1_1_disc_x_10_0_20000_r', 'gen_e_0.1_1_disc_x_10_0_30000_r', 'gen_e_0.1_1_disc_x_10_0_40000_r', 'gen_e_0.1_1_disc_x_10_0_50000_r', 'gen_e_0.1_1_disc_x_10_0_60000_r', 'gen_e_0.1_1_disc_x_10_0_70000_r', 'gen_e_0.1_1_disc_x_10_0_80000_r', 'gen_e_0.1_1_disc_x_10_0_90000_r', 'gen_e_0.1_1_disc_x_10_0_100000_r', 'gen_e_0.1_1_disc_x_10_0_10000_pr', 'gen_e_0.1_1_disc_x_10_0_20000_pr', 'gen_e_0.1_1_disc_x_10_0_30000_pr', 'gen_e_0.1_1_disc_x_10_0_40000_pr', 'gen_e_0.1_1_disc_x_10_0_50000_pr', 'gen_e_0.1_1_disc_x_10_0_60000_pr', 'gen_e_0.1_1_disc_x_10_0_70000_pr', 'gen_e_0.1_1_disc_x_10_0_80000_pr', 'gen_e_0.1_1_disc_x_10_0_90000_pr', 'gen_e_0.1_1_disc_x_10_0_100000_pr']
-data_dir = '../../../data'
-data_name = ['molportFULL_rand_test0']
-data_root = '/net/pulsar/home/koes/mtr22/molport'
-val_options = ['', 'D', 'o']
-n_samples = 10
