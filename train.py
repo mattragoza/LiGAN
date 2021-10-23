@@ -10,7 +10,8 @@ def parse_args(argv):
     parser.add_argument('--debug', default=False, action='store_true')
     # TODO reimplement the following arguments
     parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
-    parser.add_argument('--wandb', action='store_true', help='enable weights and biases')
+    # removing wandb option in place of putting wandb configs in the config file
+    # parser.add_argument('--wandb', action='store_true', help='enable weights and biases')
     parser.add_argument('--lr_policy', type=str, help='learning rate policy')
     return parser.parse_args(argv)
 
@@ -21,9 +22,16 @@ def main(argv):
     with open(args.config_file) as f:
         config = yaml.safe_load(f)
 
-    if args.wandb:
+    if 'wandb' in config and 'use_wandb' not in config['wandb']:
+        raise Exception('use_wandb must be included in wandb configs')
+
+    if 'wandb' in config and config['wandb']['use_wandb']:
         import wandb
-        wandb.init(project='gentrain', config=config)
+        if 'init_kwargs' in config['wandb']:
+            wandb.init(settings=wandb.Settings(start_method="fork"),
+            config=config, **config['wandb']['init_kwargs'])
+        else:
+            wandb.init(settings=wandb.Settings(start_method="fork"), config=config)
         if 'out_prefix' not in config:
             try:
                 os.mkdir('wandb_output')
@@ -42,6 +50,7 @@ def main(argv):
     )
     solver = solver_type(
         data_kws=config['data'],
+        wandb_kws=config.get('wandb', {'use_wandb': False}),
         gen_model_kws=config['gen_model'],
         disc_model_kws=config.get('disc_model', {}),
         prior_model_kws=config.get('prior_model', {}),
@@ -54,7 +63,7 @@ def main(argv):
         out_prefix=config['out_prefix'],
         device=device,
         debug=args.debug,
-        sync_cuda=config.get('sync_cuda', False),
+        sync_cuda=config.get('sync_cuda', False)
     )
 
     if config['continue']:
