@@ -1,0 +1,82 @@
+copy 1zyu_A_rec_mut_11_PRO_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_11_PRO_ALA, 11, ALA;
+save 1zyu_A_rec_mut_11_PRO_ALA.pdb, 1zyu_A_rec_mut_11_PRO_ALA;
+
+copy 1zyu_A_rec_mut_132_LEU_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_132_LEU_ALA, 132, ALA;
+save 1zyu_A_rec_mut_132_LEU_ALA.pdb, 1zyu_A_rec_mut_132_LEU_ALA;
+
+copy 1zyu_A_rec_mut_120_LEU_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_120_LEU_ALA, 120, ALA;
+save 1zyu_A_rec_mut_120_LEU_ALA.pdb, 1zyu_A_rec_mut_120_LEU_ALA;
+
+copy 1zyu_A_rec_mut_119_LEU_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_119_LEU_ALA, 119, ALA;
+save 1zyu_A_rec_mut_119_LEU_ALA.pdb, 1zyu_A_rec_mut_119_LEU_ALA;
+
+copy 1zyu_A_rec_mut_118_PRO_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_118_PRO_ALA, 118, ALA;
+save 1zyu_A_rec_mut_118_PRO_ALA.pdb, 1zyu_A_rec_mut_118_PRO_ALA;
+
+copy 1zyu_A_rec_mut_49_PHE_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_49_PHE_ALA, 49, ALA;
+save 1zyu_A_rec_mut_49_PHE_ALA.pdb, 1zyu_A_rec_mut_49_PHE_ALA;
+
+copy 1zyu_A_rec_mut_45_ILE_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_45_ILE_ALA, 45, ALA;
+save 1zyu_A_rec_mut_45_ILE_ALA.pdb, 1zyu_A_rec_mut_45_ILE_ALA;
+
+copy 1zyu_A_rec_mut_57_PHE_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_57_PHE_ALA, 57, ALA;
+save 1zyu_A_rec_mut_57_PHE_ALA.pdb, 1zyu_A_rec_mut_57_PHE_ALA;
+
+copy 1zyu_A_rec_mut_34_ASP_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_34_ASP_ALA, 34, ALA;
+save 1zyu_A_rec_mut_34_ASP_ALA.pdb, 1zyu_A_rec_mut_34_ASP_ALA;
+
+copy 1zyu_A_rec_mut_34_ASP_LYS, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_34_ASP_LYS, 34, LYS;
+save 1zyu_A_rec_mut_34_ASP_LYS.pdb, 1zyu_A_rec_mut_34_ASP_LYS;
+
+copy 1zyu_A_rec_mut_58_ARG_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_58_ARG_ALA, 58, ALA;
+save 1zyu_A_rec_mut_58_ARG_ALA.pdb, 1zyu_A_rec_mut_58_ARG_ALA;
+
+copy 1zyu_A_rec_mut_58_ARG_GLU, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_58_ARG_GLU, 58, GLU;
+save 1zyu_A_rec_mut_58_ARG_GLU.pdb, 1zyu_A_rec_mut_58_ARG_GLU;
+
+copy 1zyu_A_rec_mut_61_GLU_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_61_GLU_ALA, 61, ALA;
+save 1zyu_A_rec_mut_61_GLU_ALA.pdb, 1zyu_A_rec_mut_61_GLU_ALA;
+
+copy 1zyu_A_rec_mut_61_GLU_LYS, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_61_GLU_LYS, 61, LYS;
+save 1zyu_A_rec_mut_61_GLU_LYS.pdb, 1zyu_A_rec_mut_61_GLU_LYS;
+
+copy 1zyu_A_rec_mut_79_GLY_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_79_GLY_ALA, 79, ALA;
+save 1zyu_A_rec_mut_79_GLY_ALA.pdb, 1zyu_A_rec_mut_79_GLY_ALA;
+
+copy 1zyu_A_rec_mut_80_GLY_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_80_GLY_ALA, 80, ALA;
+save 1zyu_A_rec_mut_80_GLY_ALA.pdb, 1zyu_A_rec_mut_80_GLY_ALA;
+
+copy 1zyu_A_rec_mut_81_GLY_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_81_GLY_ALA, 81, ALA;
+save 1zyu_A_rec_mut_81_GLY_ALA.pdb, 1zyu_A_rec_mut_81_GLY_ALA;
+
+copy 1zyu_A_rec_mut_136_ARG_ALA, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_136_ARG_ALA, 136, ALA;
+save 1zyu_A_rec_mut_136_ARG_ALA.pdb, 1zyu_A_rec_mut_136_ARG_ALA;
+
+copy 1zyu_A_rec_mut_136_ARG_GLU, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_136_ARG_GLU, 136, GLU;
+save 1zyu_A_rec_mut_136_ARG_GLU.pdb, 1zyu_A_rec_mut_136_ARG_GLU;
+
+copy 1zyu_A_rec_mut_all_charges, 1zyu_A_rec;
+mutate 1zyu_A_rec_mut_all_charges, 34, LYS;
+mutate 1zyu_A_rec_mut_all_charges, 58, GLU;
+mutate 1zyu_A_rec_mut_all_charges, 61, LYS;
+mutate 1zyu_A_rec_mut_all_charges, 136, GLU;
+save 1zyu_A_rec_mut_all_charges.pdb, 1zyu_A_rec_mut_all_charges;
