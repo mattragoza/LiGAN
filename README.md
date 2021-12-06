@@ -1,6 +1,12 @@
 # liGAN
 
-liGAN is a Python codebase for structure-based drug discovery with deep generative models of atomic density grids.
+liGAN is a PyTorch project for structure-based drug discovery with deep generative models of atomic density grids.
+
+- [CVAE journal paper](https://arxiv.org/abs/2110.15200) (under review)
+
+- [CVAE NeurIPS 2020 workshop paper](https://arxiv.org/abs/2010.14442) ([15 minute talk](https://youtu.be/zru1FqCd8Ks))
+
+- [VAE NeurIPS 2020 workshop paper](https://arxiv.org/abs/2010.08687) ([2 minute talk](https://youtu.be/Pyc6xwtGaUM))
 
 ## Dependencies
 
