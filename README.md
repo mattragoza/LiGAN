@@ -15,8 +15,12 @@ liGAN is a Python codebase for structure-based drug discovery with deep generati
 
 ## Usage
 
-Learn how to get started with liGAN using this [Colab notebook](https://colab.research.google.com/drive/1XsYukgf0YgzWr2Z66sI3cmCpXidae_tp?usp=sharing).
+To start generating molecules, just run the `generate.py` scripts with a configuration file:
+
+```
+python3 generate.py config/generate.config
+```
 
 ## Citation
 
-TODO
+Coming soon!
