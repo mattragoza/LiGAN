@@ -28,7 +28,7 @@ liGAN is a PyTorch project for structure-based drug discovery with deep generati
 To generate molecules, you must first download the pretrained model weights:
 
 ```
-wget https://bits.csb.pitt.edu/files/train6_CVAE2_0_p0_4.0_4.0_k200_d_1.6_r0_n_4.0_65_iter_1000000.gen_model_state -P weights/
+sh download_weights.sh
 ```
 
 Then just run the `generate.py` script with the default configuration file:
@@ -42,8 +42,7 @@ python3 generate.py config/generate.config
 To train a model from scratch, you must first download the full Crossdocked2020 data set:
 
 ```
-wget https://bits.csb.pitt.edu/files/crossdock2020/CrossDocked2020_v1.1.tgz -P data/
-wget https://bits.csb.pitt.edu/files/
+sh download_data.sh
 ```
 
 More info about this data set can be found [here](https://github.com/gnina/models/tree/master/data/CrossDocked2020).
