@@ -342,7 +342,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_radius(self, ob_atom):
         return self.radius_func(ob_atom.GetAtomicNum())
 
-    def make_struct(self, ob_mol, dtype=None, device=None, **info):
+    def make_struct(self, ob_mol, dtype=torch.float32, device='cuda', **info):
         '''
         Convert an OBMol to an AtomStruct
         by assigning each atom a type vector
@@ -387,7 +387,15 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         return self.atom_type(*values)
 
     @classmethod
-    def get_typer(cls, prop_funcs, radius_func, rec=False, device='cuda'):
+    def get_default_rec_typer(cls, device='cuda'):
+        return cls.get_typer(prop_funcs='oadc', radius_func=1.0, rec=True, device=device)
+
+    @classmethod
+    def get_default_lig_typer(cls, device='cuda'):
+        return cls.get_typer(prop_funcs='oadc', radius_func=1.0, rec=False, device=device)
+
+    @classmethod
+    def get_typer(cls, prop_funcs='oadc', radius_func=1.0, rec=False, device='cuda'):
         '''
         Factory method for creating AtomTypers
         using simple string codes that specify
@@ -398,7 +406,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
         set automatically, and were selected
         for the Crossdock2020 dataset.
 
-        prop_funcs
+        prop_funcs (default: 'oadc')
           o -> aromatic [False, True]
           a -> h bond acceptor [True]
           d -> h bond donor [True]
@@ -406,12 +414,12 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
           n -> hydrogen count [0, 1, 2, 3, 4]
           h -> use explicit hydrogens
 
-        radius_func
+        radius_func (default: 1.0)
           v -> van der Waals radius
           c -> covalent radius
           # -> fixed radius size (in angstroms)
 
-        rec
+        rec (default: False)
           False -> use ligand elements
             [B, C, N, O, F, P, S, Cl, Br, I, Fe]
           True -> use receptor elements
@@ -469,6 +477,9 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
 
         return cls(prop_funcs, prop_ranges, radius_func, explicit_h, device)
 
+
+DefaultRecTyper = AtomTyper.get_default_rec_typer
+DefaultLigTyper = AtomTyper.get_default_lig_typer
 
 
 def make_one_hot(value, range_):

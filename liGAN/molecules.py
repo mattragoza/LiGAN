@@ -319,7 +319,7 @@ def copy_ob_mol(ob_mol):
 
 
 
-def read_ob_mols_from_file(mol_file, in_format=None, n_mols=None):
+def read_ob_mols_from_file(mol_file, in_format=None, n_mols=None, add_h=False):
     assert os.path.isfile(mol_file), mol_file + ' does not exist'
     if in_format is None:
         in_format = mol_file.split('.', 1)[1]
@@ -331,6 +331,8 @@ def read_ob_mols_from_file(mol_file, in_format=None, n_mols=None):
     while not_at_end and (n_mols is None or len(ob_mols) < n_mols):
         ob_mol = ob.OBMol()
         not_at_end = ob_conv.Read(ob_mol)
+        if add_h:
+            ob_mol.AddHydrogens()
         ob_mols.append(ob_mol)
     return ob_mols
 
