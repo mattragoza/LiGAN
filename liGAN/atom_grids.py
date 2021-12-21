@@ -1,11 +1,33 @@
 import numpy as np
+import molgrid
 import torch
+
+
+class AtomGridder(molgrid.Coords2Grid):
+    '''
+    A class for converting atomic structures
+    to atomic density grids.
+    '''
+    def __init__(self, resolution=0.5, dimension=23.5):
+        gmaker = molgrid.GridMaker(resolution, dimension, gaussian_radius_multiple=-1.5)
+        super().__init__(gmaker)
+
+    @property
+    def resolution(self):
+        return self.gmaker.get_resolution()
+
+    def forward(self, struct):
+        self.center = tuple(float(v) for v in struct.center)
+        values = super().forward(
+            struct.coords, struct.types, struct.atomic_radii
+        )
+        return AtomGrid(values, struct.center, self.resolution, struct.typer)
 
 
 class AtomGrid(object):
     '''
     A 3D grid representation of a molecular structure.
-    
+
     Each atom is represented as a Gaussian-like density,
     and the grid values are computed by summing across
     these densities in separate channels per atom type.
