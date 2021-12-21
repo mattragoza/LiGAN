@@ -21,7 +21,7 @@ def split_sdf(sdf_file):
         out_base = '{}_{}.sdf.gz'.format(mol_name, pose_index)
         out_file = os.path.join(in_dir, out_base)
         m.write_rd_mol_to_sdf_file(out_file, mol, name=mol_name, kekulize=True)
-        print('  Writing', out_file)
+        print('\tWriting', out_file)
         pose_count[mol_name] += 1
 
 
@@ -38,13 +38,18 @@ def find_and_split_sdf(sdf_file):
     in_prefix = in_prefix.rsplit('_', 1)[0] # strip pose index
     multi_sdf_file = in_prefix + '.sdf.gz'
     split_sdf(multi_sdf_file)
-    assert os.path.isfile(sdf_file)
+    assert os.path.isfile(sdf_file), sdf_file + ' was not created'
 
 
 if __name__ == '__main__':
     _, data_file, data_root = sys.argv
     with open(data_file) as f:
-        for line in f:
-            sdf_file = os.path.join(data_root, line.split()[4])
-            find_and_split_sdf(sdf_file)
+        lines = f.readlines()
+    n_lines = len(lines)
+    for i, line in enumerate(lines):
+        pct = 100*(i+1)/n_lines
+        print(f'[{pct:.2f}%] ', end='')
+        sdf_file = os.path.join(data_root, line.split()[4])
+        find_and_split_sdf(sdf_file)
+    print('[100.00%] Done')
 
