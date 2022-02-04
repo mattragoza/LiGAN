@@ -21,6 +21,10 @@ liGAN is a PyTorch project for structure-based drug discovery with deep generati
 - [molgrid](https://github.com/gnina/libmolgrid)
 - [gnina](https://github.com/gnina/gnina)
 
+**NOTE**: Please be aware that the current version of molgrid provided through pip/conda is incompatible with conda openbabel, and you will likely get segmentation faults if you install them both through conda.
+
+A molgrid conda build recipe is in the works (see https://github.com/mattragoza/conda-molgrid), but for now you can use [this environment](https://github.com/mattragoza/conda-molgrid/blob/master/environment.yaml) to build libmolgrid from source.
+
 ## Usage
 
 ### Generating molecules
