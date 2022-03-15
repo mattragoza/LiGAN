@@ -2,6 +2,7 @@
 import sys, os, argparse, yaml
 
 import liGAN
+from openbabel import openbabel as ob
 
 
 def parse_args(argv):
@@ -17,6 +18,7 @@ def parse_args(argv):
 
 
 def main(argv):
+    ob.obErrorLog.SetOutputLevel(0)
     args = parse_args(argv)
 
     with open(args.config_file) as f:
