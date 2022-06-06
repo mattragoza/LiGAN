@@ -33,12 +33,22 @@ A molgrid conda build recipe is in the works (see https://github.com/mattragoza/
 
 The two main scripts for using this package are `train.py` and `generate.py`, which both take a config file as the only command line argument. The config files for each script use YAML format to specify settings like what data and model architecture to use.
 
-You can change the input data used by `generate.py` by editting the following config fields in `config/generate.config`:
+You can change the input data used by `generate.py` and the number of type of generated molecules by editting the following config fields in `config/generate.config`:
 
 ```yaml
 data:
   data_root: <path to directory containing structure files>
   data_file: <path to file that references structure files>
+  ...
+
+generate:
+  n_examples: <number of receptor-ligand pairs in data file>
+  n_samples: <number of generated samples per input example>
+  prior: <false for posterior, true for prior>
+  var_factor: <variability factor; default=1.0>
+  post_factor: <interpolation factor; default=1.0>
+  ...
+
 ```
 
 The data file should be a CSV-like file where each row is a receptor-ligand pair of structure files formatted like so:
