@@ -10,7 +10,7 @@ liGAN is a PyTorch project for structure-based drug discovery with deep generati
 
 - [VAE NeurIPS 2020 workshop paper](https://arxiv.org/abs/2010.08687) ([2 minute talk](https://youtu.be/Pyc6xwtGaUM))
 
-**NOTE**: You can access the Caffe code that was used for the NeurIPS 2020 workshop by visiting the `caffe` branch of this repo.
+**NOTE**: You can access the Caffe code that was used for the NeurIPS 2020 workshop by visiting the `caffe` branch.
 
 ## Dependencies
 
