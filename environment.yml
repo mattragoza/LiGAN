@@ -1,4 +1,4 @@
-name: ligan
+name: LiGAN
 channels:
   - pytorch
   - conda-forge
