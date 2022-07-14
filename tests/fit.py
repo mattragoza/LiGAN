@@ -2,7 +2,7 @@ import sys, torch
 assert torch.cuda.is_available()
 
 sys.path.insert(0, '.')
-import liGAN
+import ligan
 
 
 use_gen = bool(int(sys.argv[1]))
@@ -11,7 +11,7 @@ print(use_gen)
 torch.cuda.reset_max_memory_allocated()
 
 print('creating data loader')
-data = liGAN.data.AtomGridData(
+data = ligan.data.AtomGridData(
     data_root='data/molport',
     batch_size=10,
     rec_map_file='data/my_rec_map',
@@ -27,7 +27,7 @@ data.populate('data/molportFULL_rand_test0_1000.types')
 if use_gen:
 
     print('creating gen model')
-    model = liGAN.models.GAN(
+    model = ligan.models.GAN(
         n_channels_out=19,
         grid_size=48,
         n_filters=32,
@@ -48,7 +48,7 @@ if use_gen:
     )['gen_model_state'])
 
 print('creating atom fitter')
-atom_fitter = liGAN.atom_fitting.AtomFitter(debug=True)
+atom_fitter = ligan.atom_fitting.AtomFitter(debug=True)
 
 gpu = torch.cuda.max_memory_allocated() // int(1024**2)
 print('GPU', gpu)

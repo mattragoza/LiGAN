@@ -2,8 +2,8 @@ import sys, os, pytest
 from numpy import isclose
 
 sys.path.insert(0, '.')
-from liGAN import molecules as mols
-from liGAN.molecules import ob
+from ligan import molecules as mols
+from ligan.molecules import ob
 
 
 class TestOBMol(object):

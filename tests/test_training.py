@@ -7,9 +7,9 @@ pd.set_option('display.max_rows', 100)
 pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
-import liGAN
-from liGAN import models, training
-from liGAN.models import compute_grad_norm as param_grad_norm
+import ligan
+from ligan import models, training
+from ligan.models import compute_grad_norm as param_grad_norm
 
 
 def param_norm(model):
@@ -40,7 +40,7 @@ def train_params():
     'VAEGAN', 'CVAEGAN', 'VAE2', 'CVAE2'
 ])
 def solver(request):
-    solver_type = getattr(liGAN.training, request.param + 'Solver')
+    solver_type = getattr(ligan.training, request.param + 'Solver')
     return solver_type(
         data_kws=dict(
             train_file='data/it2_tt_0_lowrmsd_valid_mols_test0_1.types',
@@ -167,11 +167,11 @@ class TestGenerativeSolver(object):
             assert type(solver.disc_model) == models.Discriminator
             assert solver.disc_iter == 0
 
-        assert isinstance(solver.train_data, liGAN.data.AtomGridData)
-        assert isinstance(solver.test_data, liGAN.data.AtomGridData)
-        assert isinstance(solver.loss_fn, liGAN.loss_fns.LossFunction)
-        assert isinstance(solver.atom_fitter, liGAN.atom_fitting.AtomFitter)
-        assert isinstance(solver.bond_adder, liGAN.bond_adding.BondAdder)
+        assert isinstance(solver.train_data, ligan.data.AtomGridData)
+        assert isinstance(solver.test_data, ligan.data.AtomGridData)
+        assert isinstance(solver.loss_fn, ligan.loss_fns.LossFunction)
+        assert isinstance(solver.atom_fitter, ligan.atom_fitting.AtomFitter)
+        assert isinstance(solver.bond_adder, ligan.bond_adding.BondAdder)
         assert isinstance(solver.metrics, pd.DataFrame)
         assert len(solver.metrics) == 0
 
@@ -351,7 +351,7 @@ class TestGenerativeSolver(object):
     def test_solver_gen_step_poster(self, solver):
         if solver.has_posterior_phase:
             data = solver.train_data
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
 
             if solver.learn_recon_var:
                 gen_log_var0 = solver.gen_model.log_recon_var.item()
@@ -359,7 +359,7 @@ class TestGenerativeSolver(object):
                     prior_log_var0 = solver.prior_model.log_recon_var.item()
 
             metrics0 = solver.gen_step(grid_type='poster')
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             _, metrics1 = solver.gen_forward(data, grid_type='poster')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
@@ -381,36 +381,36 @@ class TestGenerativeSolver(object):
     def test_solver_gen_step_prior(self, solver):
         if solver.has_prior_phase and solver.loss_fn.has_prior_loss:
             data = solver.train_data
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             metrics0 = solver.gen_step(grid_type='prior')
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             _, metrics1 = solver.gen_forward(data, grid_type='prior')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_disc_step_real(self, solver):
         if solver.has_disc_model:
             data = solver.train_data
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             metrics0 = solver.disc_step(grid_type='real')
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             _, metrics1 = solver.disc_forward(data, grid_type='real')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_disc_step_poster(self, solver):
         if solver.has_disc_model and solver.has_posterior_phase:
             data = solver.train_data
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             metrics0 = solver.disc_step(grid_type='poster')
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             _, metrics1 = solver.disc_forward(data, grid_type='poster')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 
     def test_solver_disc_step_prior(self, solver):
         if solver.has_disc_model and solver.has_prior_phase:
             data = solver.train_data
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             metrics0 = solver.disc_step(grid_type='prior')
-            liGAN.set_random_seed(0)
+            ligan.set_random_seed(0)
             _, metrics1 = solver.disc_forward(data, grid_type='prior')
             assert metrics1['loss'] < metrics0['loss'], 'loss did not decrease'
 

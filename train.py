@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, argparse, yaml
 
-import liGAN
+import ligan
 from openbabel import openbabel as ob
 
 
@@ -17,12 +17,7 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def main(argv):
-    ob.obErrorLog.SetOutputLevel(0)
-    args = parse_args(argv)
-
-    with open(args.config_file) as f:
-        config = yaml.safe_load(f)
+def configure_wandb(config):
 
     if 'wandb' in config and 'use_wandb' not in config['wandb']:
         raise Exception('use_wandb must be included in wandb configs')
@@ -30,26 +25,35 @@ def main(argv):
     if 'wandb' in config and config['wandb']['use_wandb']:
         import wandb
         if 'init_kwargs' in config['wandb']:
-            wandb.init(settings=wandb.Settings(start_method="fork"),
-            config=config, **config['wandb']['init_kwargs'])
+            wandb.init(
+                settings=wandb.Settings(start_method="fork"),
+                config=config,
+                **config['wandb']['init_kwargs']
+            )
         else:
             wandb.init(settings=wandb.Settings(start_method="fork"), config=config)
         if 'out_prefix' not in config:
-            try:
-                os.mkdir('wandb_output')
-            except FileExistsError:
-                pass
+            os.makedirs('wandb_output', exist_ok=True)
             config['out_prefix'] = 'wandb_output/' + wandb.run.id
             sys.stderr.write(
                 'Setting output prefix to {}\n'.format(config['out_prefix'])
             )
 
-    device = 'cuda'
-    liGAN.set_random_seed(config.get('random_seed', None))
 
-    solver_type = getattr(
-        liGAN.training, config['model_type'] + 'Solver'
-    )
+def main(argv):
+    ob.obErrorLog.SetOutputLevel(0)
+    args = parse_args(argv)
+
+    with open(args.config_file) as f:
+        config = yaml.safe_load(f)
+
+    configure_wandb(config)
+
+    device = 'cuda'
+    ligan.set_random_seed(config.get('random_seed'))
+
+    solver_type = config['model_type'] + 'Solver'
+    solver_type = getattr(ligan.training, solver_type)
     solver = solver_type(
         data_kws=config['data'],
         wandb_kws=config.get('wandb', {'use_wandb': False}),

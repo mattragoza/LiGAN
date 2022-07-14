@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys, os, argparse, yaml
 
-import liGAN
+import ligan
 
 
 def parse_args(argv=None):
@@ -20,12 +20,11 @@ def main(argv):
         config = yaml.safe_load(f)
 
     device = 'cuda'
-    liGAN.set_random_seed(config.get('random_seed', None))
+    ligan.set_random_seed(config.get('random_seed'))
 
-    generator_type = config.get('model_type', None) or 'Molecule'
-    generator_type = getattr(
-        liGAN.generating, generator_type + 'Generator'
-    )
+    generator_type = config.get('model_type') or 'Molecule'
+    generator_type = generator_type + 'Generator'
+    generator_type = getattr(ligan.generating, generator_type)
     generator = generator_type(
         out_prefix=config['out_prefix'],
         n_samples=config['generate']['n_samples'],

@@ -3,9 +3,9 @@ from numpy import isclose
 os.environ['GLOG_minloglevel'] = '1'
 
 sys.path.insert(0, '.')
-from liGAN.data import molgrid, MolDataset, AtomGridData
-from liGAN.atom_types import AtomTyper
-from liGAN.atom_structs import AtomStruct
+from ligan.data import molgrid, MolDataset, AtomGridData
+from ligan.atom_types import AtomTyper
+from ligan.atom_structs import AtomStruct
 
 
 batch_size = 10

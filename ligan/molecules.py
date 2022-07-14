@@ -18,11 +18,13 @@ from NP_Score import npscorer
 
 from .common import catch_exception
 
+
 try:
     GNINA_CMD = os.environ["GNINA_CMD"]
 except KeyError:
     # Default path to gnina
     GNINA_CMD = '/net/pulsar/home/koes/dkoes/local/bin/gnina'
+
 
 class Molecule(Chem.RWMol):
     '''

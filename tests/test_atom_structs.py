@@ -3,8 +3,8 @@ from numpy import isclose, allclose
 import torch
 
 sys.path.insert(0, '.')
-from liGAN.atom_types import AtomTyper
-from liGAN.atom_structs import AtomStruct
+from ligan.atom_types import AtomTyper
+from ligan.atom_structs import AtomStruct
 
 
 class TestAtomStruct(object):

@@ -3,8 +3,8 @@ from numpy import isclose, isnan
 from torch import optim
 
 sys.path.insert(0, '.')
-import liGAN
-from liGAN.loss_fns import LossFunction
+import ligan
+from ligan.loss_fns import LossFunction
 
 
 class TestLossFunction(object):
@@ -115,6 +115,6 @@ class TestLossSchedule(object):
 
     def test_schedule_0(self, iters):
 
-        f = liGAN.loss_fns.get_loss_schedule(
+        f = ligan.loss_fns.get_loss_schedule(
             start_wt=1, end_wt=1
         )

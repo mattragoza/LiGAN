@@ -4,12 +4,12 @@ import torch
 
 sys.path.insert(0, '.')
 from molgrid import GridMaker, Coords2Grid
-from liGAN import molecules as mols
-from liGAN.atom_types import Atom, AtomTyper
-from liGAN.atom_grids import AtomGrid, size_to_dimension, round_dimension
-from liGAN.atom_structs import AtomStruct
-from liGAN.atom_fitting import AtomFitter
-from liGAN.metrics import compute_struct_rmsd
+from ligan import molecules as mols
+from ligan.atom_types import Atom, AtomTyper
+from ligan.atom_grids import AtomGrid, size_to_dimension, round_dimension
+from ligan.atom_structs import AtomStruct
+from ligan.atom_fitting import AtomFitter
+from ligan.metrics import compute_struct_rmsd
 
 
 test_sdf_files = [

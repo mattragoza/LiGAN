@@ -1,6 +1,6 @@
 import sys, os, yaml, torch, copy
 sys.path.append(os.environ['LIGAN_ROOT'])
-import liGAN
+import ligan
 
 GB = 1024**3
 
@@ -11,7 +11,7 @@ def get_cuda_memory(config, batch_size):
     torch.cuda.reset_max_memory_allocated()
 
     solver_type = getattr(
-        liGAN.training, config['model_type'] + 'Solver'
+        ligan.training, config['model_type'] + 'Solver'
     )
     solver = solver_type(
         train_file=config['data'].pop('train_file'),

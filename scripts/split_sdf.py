@@ -2,7 +2,7 @@ import sys, os
 from collections import defaultdict
 
 sys.path.append('..')
-from liGAN import molecules as m
+from ligan import molecules as m
 
 
 def split_sdf(sdf_file):

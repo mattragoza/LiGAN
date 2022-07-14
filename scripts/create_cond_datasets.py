@@ -26,7 +26,7 @@ min_data = data.loc[data.groupby('rec_lig')['xtal_rmsd'].idxmin()]
 min_data = min_data[min_data['low_rmsd'].astype(bool)]
 
 #min_data['valid'] = min_data['lig_src'].map(
-#    lambda x: liGAN.molecules.Molecule.from_sdf(data_root + '/' + x, sanitize=False).validate()[0]
+#    lambda x: ligan.molecules.Molecule.from_sdf(data_root + '/' + x, sanitize=False).validate()[0]
 #)
 #min_data = min_data[min_data['valid']]
 

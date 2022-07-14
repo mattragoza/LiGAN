@@ -4,9 +4,9 @@ import torch
 import molgrid
 
 sys.path.insert(0, '.')
-import liGAN.molecules as mols
-from liGAN.atom_structs import AtomStruct
-from liGAN.atom_types import (
+import ligan.molecules as mols
+from ligan.atom_structs import AtomStruct
+from ligan.atom_types import (
     make_one_hot, AtomTyper, Atom, ob
 )
 

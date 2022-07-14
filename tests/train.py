@@ -2,10 +2,10 @@ import sys
 from torch import optim
 
 sys.path.insert(0, '.')
-import liGAN
+import ligan
 
 print('creating data loader')
-data = liGAN.data.AtomGridData(
+data = ligan.data.AtomGridData(
     data_root='data/molport',
     batch_size=10,
     rec_map_file='data/my_rec_map',
@@ -20,7 +20,7 @@ print('loading data')
 data.populate('data/molportFULL_rand_test0_1000.types')
 
 print('creating model')
-model = liGAN.models.Generator(
+model = ligan.models.Generator(
     n_channels_in=19,
     n_channels_out=19,
     grid_dim=48,
@@ -41,7 +41,7 @@ def loss_fn(y_pred, y_true):
     return ((y_true - y_pred)**2).sum() / 2 / y_true.shape[0]
 
 print('creating solver')
-solver = liGAN.training.VAESolver(
+solver = ligan.training.VAESolver(
     train_data=data,
     test_data=data,
     model=model,

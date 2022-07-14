@@ -77,7 +77,7 @@ class GenerativeSolver(nn.Module):
         self,
         out_prefix,
         data_kws={},
-        wandb_kws: dict = {},
+        wandb_kws={},
         gen_model_kws={},
         disc_model_kws={},
         prior_model_kws={},
@@ -148,7 +148,7 @@ class GenerativeSolver(nn.Module):
         self.sync_cuda = sync_cuda
 
         self.wandb_kws = wandb_kws
-        self.use_wandb: bool = self.wandb_kws.get('use_wandb', False)
+        self.use_wandb = self.wandb_kws.get('use_wandb', False)
         if self.use_wandb:
             try:
                 wandb
