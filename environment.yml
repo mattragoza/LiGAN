@@ -1,4 +1,4 @@
-name: liGAN
+name: ligan
 channels:
   - pytorch
   - conda-forge
@@ -19,3 +19,4 @@ dependencies:
   - pytest
   - psutil
   - pynvml
+  - yaml

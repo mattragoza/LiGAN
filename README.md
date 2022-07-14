@@ -1,4 +1,4 @@
-# LiGAN
+# LiGAN: Generative models of molecular grids
 
 ![LiGAN methods diagram](ligan_methods.png)
 
@@ -27,19 +27,19 @@ Mamba is a drop-in replacement for conda that is:
 - Better at resolving conflicts
 - More informative when something goes wrong.
 
-### Step 1. Create liGAN conda environment
+### Step 1. Create `LiGAN` conda environment
 
-Run the following to create a `liGAN` conda environment containing all the dependencies needed to build molgrid and use liGAN:
+Run the following to create a conda environment containing all the dependencies needed to build molgrid and use LiGAN:
 
 ```bash
-git clone git@github.com:mattragoza/liGAN.git
-mamba env create --file liGAN/environment.yml
-mamba activate liGAN
+git clone git@github.com:mattragoza/LiGAN.git
+mamba env create --file LiGAN/environment.yml
+mamba activate LiGAN
 ```
 
 ### Step 2. Build libmolgrid from source
 
-Make sure you run the following from within the `liGAN` conda environment.
+Make sure you run the following from within the `LiGAN` conda environment.
 
 ```bash
 git clone git@github.com:gnina/libmolgrid.git
@@ -57,10 +57,10 @@ And that's it!
 
 **NOTE:** The current version of molgrid provided through pip/conda is incompatible with conda openbabel, and you will likely get segmentation faults or indefinite hangs if you install them both through conda. There may also be version conflicts with RDKit. This is why you should use mamba and build molgrid from source.
 
-### Step 3. Run liGAN unit tests (optional)
+### Step 3. Run LiGAN unit tests (optional)
 
 ```
-cd ../../liGAN
+cd ../../LiGAN
 pytest tests
 ```
 
