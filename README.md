@@ -20,7 +20,7 @@ LiGAN is a python package, but it depends on molgrid, which is written in C++/CU
 
 To ensure compatibility with openbabel and rdkit, you should use the provided `environment.yml` to create a conda environment, then build molgrid from source within that environment.
 
-**NOTE**: I *highly* recommend using mamba instead of vanilla conda for managing your conda environments.
+**NOTE**: I *highly* recommend using [mamba](https://mamba.readthedocs.io/en/latest/index.html) instead of vanilla conda for managing your conda environments.
 Mamba is a drop-in replacement for conda that is:
 
 - Faster at solving environments (>10x in my experience)
