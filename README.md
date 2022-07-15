@@ -53,16 +53,28 @@ cmake .. \
 make -j8
 make install
 ```
-And that's it!
 
 **NOTE:** The current version of molgrid provided through pip/conda is incompatible with conda openbabel, and you will likely get segmentation faults or indefinite hangs if you install them both through conda. There may also be version conflicts with RDKit. This is why you should use mamba and build molgrid from source.
 
-### Step 3. Run LiGAN unit tests (optional)
+### Step 3. Download gnina executable
+
+If you want to perform minimization and affinity prediction of the generated molecules in the receptor pocket, you need [gnina](https://github.com/gnina/gnina) as well. The following commands will install the gnina standalone executable into your conda environment:
+
+```bash
+wget https://github.com/gnina/gnina/releases/download/v1.0/gnina -P $CONDA_PREFIX/bin
+chmod +x $CONDA_PREFIX/bin/gnina
+```
+
+gnina is also available as a Docker image, or you can build it from source by following the instructions [here](https://github.com/gnina/gnina#Installation).
+
+### Optional: Run LiGAN unit tests
 
 ```
 cd ../../LiGAN
 pytest tests
 ```
+
+And that's it!
 
 ## Usage
 
