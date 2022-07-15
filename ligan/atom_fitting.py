@@ -228,10 +228,10 @@ class AtomFitter(object):
         values, idx = torch.sort(grid_values.flatten(), descending=True)
 
         # convert flattened grid index to channel and spatial index
-        idx_z, idx = idx % n_z, idx // n_z
-        idx_y, idx = idx % n_y, idx // n_y
-        idx_x, idx = idx % n_x, idx // n_x
-        idx_c, idx = idx % n_c, idx // n_c
+        idx_z, idx = idx % n_z, torch.div(idx, n_z, rounding_mode='floor')
+        idx_y, idx = idx % n_y, torch.div(idx, n_y, rounding_mode='floor')
+        idx_x, idx = idx % n_x, torch.div(idx, n_x, rounding_mode='floor')
+        idx_c, idx = idx % n_c, torch.div(idx, n_c, rounding_mode='floor')
         idx_xyz = torch.stack((idx_x, idx_y, idx_z), dim=1)
 
         return values, idx_xyz, idx_c
