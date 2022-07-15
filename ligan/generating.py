@@ -183,9 +183,7 @@ class MoleculeGenerator(object):
         spherical=False,
         **kwargs
     ):
-        print(f'Calling generator forward')
-        print(f'  prior = {prior}')
-        print(f'  stage2 = {stage2}')
+        print(f'Calling generator (prior={prior}, stage2={stage2})')
 
         print('Getting next batch of data')
         data = self.data
@@ -286,7 +284,7 @@ class MoleculeGenerator(object):
             # keep track of position in current batch
             full_idx = example_idx*n_samples + sample_idx
             batch_idx = full_idx % batch_size
-            print(example_idx, sample_idx, full_idx, batch_idx)
+            #print(example_idx, sample_idx, full_idx, batch_idx)
 
             need_real_input_mol = (sample_idx == 0)
             need_real_cond_mol = \
@@ -363,7 +361,7 @@ class MoleculeGenerator(object):
                         input_lig_mol.uff_minimize(rec_mol=input_pkt_mol)
                     input_lig_mol.info['uff_mol'] = input_uff_mol
 
-                    if minimize_real:
+                    if gnina_minimize and minimize_real:
                         print('Minimizing real molecule with gnina', flush=True)
                         # NOTE that we are not using the UFF mol here
                         input_lig_mol.info['gni_mol'] = \

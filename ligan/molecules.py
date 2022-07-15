@@ -19,13 +19,6 @@ from NP_Score import npscorer
 from .common import catch_exception
 
 
-try:
-    GNINA_CMD = os.environ["GNINA_CMD"]
-except KeyError:
-    # Default path to gnina
-    GNINA_CMD = '/net/pulsar/home/koes/dkoes/local/bin/gnina'
-
-
 class Molecule(Chem.RWMol):
     '''
     A 3D molecular structure.
@@ -784,9 +777,24 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
     out_file = get_temp_file()
     assert os.path.isfile(lig_file), 'lig file does not exist'
 
-    cmd = f'{GNINA_CMD} --minimize -r {rec_file} -l {lig_file} ' \
-        f'--autobox_ligand {lig_file} -o {out_file}'
+    error, stderr = run_gnina(rec_file, lig_file, out_file)
 
+    try: # get top-ranked pose according to gnina
+        out_mol = Molecule.from_sdf(out_file, idx=0, sanitize=False)
+    except IndexError:
+        out_mol = Molecule(Chem.RWMol(lig_mol))
+        if not error:
+            error = stderr
+
+    out_mol.info['error'] = error
+    return out_mol
+
+
+def run_gnina(rec_file, lig_file, out_file):
+    cmd = (
+        f'gnina --minimize -r {rec_file} -l {lig_file} '
+        f'--autobox_ligand {lig_file} -o {out_file}'
+    )
     error = None
     last_stdout = ''
     proc = Popen(shlex.split(cmd), stdout=PIPE, stderr=PIPE)
@@ -808,12 +816,4 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
     print(stderr, file=sys.stderr)
     print('END GNINA STDERR', file=sys.stderr)
 
-    try: # get top-ranked pose according to gnina
-        out_mol = Molecule.from_sdf(out_file, idx=0, sanitize=False)
-    except IndexError:
-        out_mol = Molecule(Chem.RWMol(lig_mol))
-        if not error:
-            error = stderr
-
-    out_mol.info['error'] = error
-    return out_mol
+    return error, stderr
