@@ -791,8 +791,9 @@ def gnina_minimize_rd_mol(lig_mol, rec_mol):
 
 
 def run_gnina(rec_file, lig_file, out_file):
+    gnina = os.environ.get('GNINA_CMD', 'gnina')
     cmd = (
-        f'gnina --minimize -r {rec_file} -l {lig_file} '
+        f'{gnina} --minimize -r {rec_file} -l {lig_file} '
         f'--autobox_ligand {lig_file} -o {out_file}'
     )
     error = None
