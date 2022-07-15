@@ -65,7 +65,7 @@ wget https://github.com/gnina/gnina/releases/download/v1.0/gnina -P $CONDA_PREFI
 chmod +x $CONDA_PREFIX/bin/gnina
 ```
 
-gnina is also available as a Docker image, or you can build it from source by following the instructions [here](https://github.com/gnina/gnina#Installation).
+gnina is also available as a [Docker image](https://github.com/gnina/gnina#Docker), or you can [build it from source](https://github.com/gnina/gnina#Installation).
 
 ### Optional: Run LiGAN unit tests
 
