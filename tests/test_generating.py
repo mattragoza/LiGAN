@@ -154,4 +154,4 @@ class TestGenerator(object):
             rec_prod = m['lig_gen_rec_prod']
             cond_rec_prod = m['lig_gen_cond_rec_prod']
             print((cond_rec_prod-rec_prod).describe())
-            assert False, 'OK'
+

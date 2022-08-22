@@ -360,9 +360,13 @@ class TestBondAdding(object):
         struct = typer.make_struct(in_mol)
         out_mol, _ = struct.to_ob_mol()
 
+        get_coord = lambda a: np.array([a.x(), a.y(), a.z()])
+
         for i, o in iter_atom_pairs(in_mol, out_mol, typer.explicit_h):
-            assert o.GetAtomicNum() == i.GetAtomicNum(), 'different elements'
-            assert o.GetVector() == i.GetVector(), 'different coordinates'
+            i_num, i_coord = i.GetAtomicNum(), get_coord(i)
+            o_num, o_coord = o.GetAtomicNum(), get_coord(o)
+            assert o_num == i_num, f'different elements ({o_num} vs. {i_num})'
+            assert np.isclose(o_coord, i_coord).all(), f'different coordinates ({o_coord} vs. {i_coord})'
 
     def test_add_within_distance(self, adder, typer, in_mol):
         struct = typer.make_struct(in_mol)

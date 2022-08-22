@@ -1247,7 +1247,7 @@ class OutputWriter(object):
             shape = (grid.values.sum(dim=0) > 0)
             m.loc[idx, grid_type+'_shape_sim'] = (
                 (ref_shape & shape).sum() / (ref_shape | shape).sum()
-            )
+            ).item()
 
         if cond_grid is not None:
 
