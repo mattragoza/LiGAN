@@ -1,6 +1,6 @@
 import sys, os, time, torch
 from contextlib import redirect_stderr
-import liGAN
+import ligan
 
 
 if __name__ == '__main__':
@@ -19,7 +19,7 @@ if __name__ == '__main__':
     n_lig_channels = 16
     grid_size = 48
 
-    model_type = getattr(liGAN.models, model_type)
+    model_type = getattr(ligan.models, model_type)
     model = model_type(
         n_channels_in=n_lig_channels if model_type.has_input_encoder else None,
         n_channels_cond=n_rec_channels if model_type.has_conditional_encoder else None,
@@ -79,7 +79,7 @@ if __name__ == '__main__':
     batch_days = int(24*60*60 / t_delta / 1000)
     gpu = torch.cuda.max_memory_allocated()
 
-    n_params = liGAN.models.get_n_params(model)
+    n_params = ligan.models.get_n_params(model)
     print('{}\t{:.1f}M params\t{:.2f}s / example\t{:d}k examples / day\t{:.1f} gb'.format(
         model_name, n_params / 1e6, t_delta, batch_days, gpu / 1024**3
     ))

@@ -7,8 +7,8 @@ pd.set_option('display.max_rows', 100)
 pd.set_option('display.max_columns', 100)
 
 sys.path.insert(0, '.')
-import liGAN
-from liGAN import models, generating
+import ligan
+from ligan import models, generating
 
 
 @pytest.fixture(params=[
@@ -20,7 +20,7 @@ from liGAN import models, generating
 def generator(request):
     data_file = request.param
     generator_name, diff_cond_transform, diff_cond_structs = 'CVAE', 0, 1
-    generator_type = getattr(liGAN.generating, generator_name + 'Generator')
+    generator_type = getattr(ligan.generating, generator_name + 'Generator')
     return generator_type(
         data_kws=dict(
             data_file=data_file,
@@ -71,10 +71,10 @@ class TestGenerator(object):
         generator_name = type(generator).__name__
         assert generator.has_complex_input == ('CVAE' in generator_name)
 
-        assert isinstance(generator.data, liGAN.data.AtomGridData)
-        assert isinstance(generator.atom_fitter, liGAN.atom_fitting.AtomFitter)
-        assert isinstance(generator.bond_adder, liGAN.bond_adding.BondAdder)
-        assert isinstance(generator.out_writer, liGAN.generating.OutputWriter)
+        assert isinstance(generator.data, ligan.data.AtomGridData)
+        assert isinstance(generator.atom_fitter, ligan.atom_fitting.AtomFitter)
+        assert isinstance(generator.bond_adder, ligan.bond_adding.BondAdder)
+        assert isinstance(generator.out_writer, ligan.generating.OutputWriter)
         assert isinstance(generator.out_writer.metrics, pd.DataFrame)
         assert len(generator.out_writer.metrics) == 0
         if generator.data.diff_cond_structs or generator.data.diff_cond_transform:

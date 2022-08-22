@@ -4,8 +4,8 @@ from numpy import isclose, allclose
 import torch
 
 sys.path.insert(0, '.')
-from liGAN.atom_types import Atom, AtomTyper
-from liGAN.atom_grids import AtomGrid, unravel_index
+from ligan.atom_types import Atom, AtomTyper
+from ligan.atom_grids import AtomGrid, unravel_index
 
 
 class TestAtomGrid(object):

@@ -1,7 +1,7 @@
 import sys, os
 from rdkit import Chem
 sys.path.append('.')
-from liGAN.molecules import Molecule
+from ligan.molecules import Molecule
 
 _, data_file, data_root = sys.argv
 

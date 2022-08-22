@@ -2,8 +2,8 @@ import sys, os, pytest
 from numpy import isclose
 
 sys.path.insert(0, '.')
-from liGAN import molecules as mols
-from liGAN.molecules import ob
+from ligan import molecules as mols
+from ligan.molecules import ob
 
 
 class TestOBMol(object):
@@ -112,3 +112,19 @@ class TestOBMol(object):
     def test_benzene_to_smi(self, benzene):
         smi = mols.ob_mol_to_smi(benzene, 'cnh').rstrip()
         assert smi == '[H]c1c([H])c([H])c(c(c1[H])[H])[H]'
+
+
+class TestMolecule(object):
+
+    @pytest.fixture
+    def rec_mol(self):
+        rec_file = 'data/crossdock2020/AROK_MYCTU_1_176_0/1zyu_A_rec.pdb'
+        return mols.Molecule.from_pdb(rec_file)
+
+    @pytest.fixture
+    def lig_mol(self):
+        lig_file = 'data/crossdock2020/AROK_MYCTU_1_176_0/1zyu_A_rec_1we2_dhk_lig_tt_docked_8.sdf'
+        return mols.Molecule.from_sdf(lig_file)
+
+    def test_gnina(self, rec_mol, lig_mol):
+        mols.gnina_minimize_rd_mol(lig_mol, rec_mol)

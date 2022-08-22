@@ -6,10 +6,10 @@ from numpy.linalg import norm
 import torch
 
 sys.path.insert(0, '.')
-from liGAN import models, interpolation
-from liGAN.models import AE, VAE, CE, CVAE, GAN, CGAN, VAE2, CVAE2
-from liGAN.models import compute_grad_norm as param_grad_norm
-from liGAN.models import get_n_params
+from ligan import models, interpolation
+from ligan.models import AE, VAE, CE, CVAE, GAN, CGAN, VAE2, CVAE2
+from ligan.models import compute_grad_norm as param_grad_norm
+from ligan.models import get_n_params
 
 
 batch_size = 10

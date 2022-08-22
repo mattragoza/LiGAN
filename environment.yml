@@ -1,0 +1,22 @@
+name: LiGAN
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - gxx=10
+  - zlib
+  - cmake>=3.18
+  - cudatoolkit-dev=11.3
+  - python
+  - boost
+  - numpy
+  - scipy
+  - scikit-image
+  - pandas
+  - openbabel=3
+  - rdkit
+  - pytorch::pytorch
+  - pytest
+  - psutil
+  - pynvml
+  - yaml

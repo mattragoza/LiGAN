@@ -1,11 +1,11 @@
 import sys, molgrid
 import numpy as np
 sys.path.insert(0, '.')
-import liGAN
+import ligan
 
 rec_typer = molgrid.FileMappedGninaTyper('data/my_rec_map')
 lig_typer = molgrid.FileMappedGninaTyper('data/my_lig_map')
-lig_channels = liGAN.atom_types.get_channels_from_map(lig_typer)
+lig_channels = ligan.atom_types.get_channels_from_map(lig_typer)
 
 print('loading data')
 ex_provider = molgrid.ExampleProvider(
@@ -27,7 +27,7 @@ mol_count = 0
 
 for i in range(n_batches):
 	for ex in ex_provider.next_batch(batch_size):
-		struct = liGAN.atom_structs.AtomStruct.from_coord_set(
+		struct = ligan.atom_structs.AtomStruct.from_coord_set(
 			ex.coord_sets[1], lig_channels
 		)
 		type_counts += struct.type_counts

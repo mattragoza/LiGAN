@@ -3,9 +3,9 @@ from numpy import isclose
 os.environ['GLOG_minloglevel'] = '1'
 
 sys.path.insert(0, '.')
-from liGAN.data import molgrid, MolDataset, AtomGridData
-from liGAN.atom_types import AtomTyper
-from liGAN.atom_structs import AtomStruct
+from ligan.data import molgrid, MolDataset, AtomGridData
+from ligan.atom_types import AtomTyper
+from ligan.atom_structs import AtomStruct
 
 
 batch_size = 10
@@ -213,7 +213,7 @@ class TestMolDataset(object):
     def data(self, request):
         use_dataset = request.param
 
-        data_root = os.environ['CROSSDOCK_ROOT']
+        data_root = os.environ.get('CROSSDOCK_ROOT', 'data/crossdock2020')
         data_file = 'data/it2_tt_0_lowrmsd_valid_mols_test0_100.types'
 
         lig_typer = AtomTyper.get_typer('oadc', 1.0, rec=False)

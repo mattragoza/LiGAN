@@ -10,11 +10,11 @@ pd.set_option('display.max_rows', 120)
 import torch
 from rdkit import Chem
 
-import liGAN
-from liGAN import models
-from liGAN.atom_grids import AtomGrid
-from liGAN.atom_structs import AtomStruct
-from liGAN import molecules as mols
+import ligan
+from ligan import models
+from ligan.atom_grids import AtomGrid
+from ligan.atom_structs import AtomStruct
+from ligan import molecules as mols
 
 MB = 1024 ** 2
 
@@ -69,11 +69,11 @@ class MoleculeGenerator(object):
             self.prior_model = None
 
         print('Initializing atom fitter')
-        self.atom_fitter = liGAN.atom_fitting.AtomFitter(
+        self.atom_fitter = ligan.atom_fitting.AtomFitter(
             device=device, **atom_fitting_kws
         )
         print('Initializing bond adder')
-        self.bond_adder = liGAN.bond_adding.BondAdder(
+        self.bond_adder = ligan.bond_adding.BondAdder(
             debug=debug, **bond_adding_kws
         )
 
@@ -99,7 +99,7 @@ class MoleculeGenerator(object):
         )
 
     def init_data(self, device, n_samples, **data_kws):
-        self.data = liGAN.data.AtomGridData(
+        self.data = ligan.data.AtomGridData(
             device=device, n_samples=n_samples, **data_kws
         )
 
@@ -119,7 +119,7 @@ class MoleculeGenerator(object):
             **gen_model_kws
         )
         if caffe_init:
-            self.gen_model.apply(liGAN.models.caffe_init_weights)
+            self.gen_model.apply(ligan.models.caffe_init_weights)
 
         if state:
             print('Loading generative model state')
@@ -134,13 +134,13 @@ class MoleculeGenerator(object):
         state=None,
         **prior_model_kws
     ):
-        self.prior_model = liGAN.models.Stage2VAE(
+        self.prior_model = ligan.models.Stage2VAE(
             n_input=self.gen_model.n_latent,
             **prior_model_kws
         ).to(device)
 
         if caffe_init:
-            self.prior_model.apply(liGAN.models.caffe_init_weights)
+            self.prior_model.apply(ligan.models.caffe_init_weights)
 
         if state:
             print('Loading prior model state')
@@ -183,9 +183,7 @@ class MoleculeGenerator(object):
         spherical=False,
         **kwargs
     ):
-        print(f'Calling generator forward')
-        print(f'  prior = {prior}')
-        print(f'  stage2 = {stage2}')
+        print(f'Calling generator (prior={prior}, stage2={stage2})')
 
         print('Getting next batch of data')
         data = self.data
@@ -286,7 +284,7 @@ class MoleculeGenerator(object):
             # keep track of position in current batch
             full_idx = example_idx*n_samples + sample_idx
             batch_idx = full_idx % batch_size
-            print(example_idx, sample_idx, full_idx, batch_idx)
+            #print(example_idx, sample_idx, full_idx, batch_idx)
 
             need_real_input_mol = (sample_idx == 0)
             need_real_cond_mol = \
@@ -363,7 +361,7 @@ class MoleculeGenerator(object):
                         input_lig_mol.uff_minimize(rec_mol=input_pkt_mol)
                     input_lig_mol.info['uff_mol'] = input_uff_mol
 
-                    if minimize_real:
+                    if gnina_minimize and minimize_real:
                         print('Minimizing real molecule with gnina', flush=True)
                         # NOTE that we are not using the UFF mol here
                         input_lig_mol.info['gni_mol'] = \
@@ -483,7 +481,7 @@ class MoleculeGenerator(object):
                 else:
                     atom_typer = self.data.rec_typer
 
-                grid = liGAN.atom_grids.AtomGrid(
+                grid = ligan.atom_grids.AtomGrid(
                     values=grids[batch_idx],
                     typer=atom_typer,
                     center=center,
@@ -573,50 +571,50 @@ class MoleculeGenerator(object):
 
 
 class AEGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.AE
+    gen_model_type = ligan.models.AE
 
 
 class VAEGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.VAE
+    gen_model_type = ligan.models.VAE
 
 
 class CEGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.CE
+    gen_model_type = ligan.models.CE
 
 
 class CVAEGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.CVAE
+    gen_model_type = ligan.models.CVAE
     has_complex_input = True
 
 
 class GANGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.GAN
+    gen_model_type = ligan.models.GAN
     has_disc_model = True
 
 
 class CGANGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.CGAN
+    gen_model_type = ligan.models.CGAN
     has_disc_model = True
 
 
 class VAEGANGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.VAE
+    gen_model_type = ligan.models.VAE
     has_disc_model = True
 
 
 class CVAEGANGenerator(MoleculeGenerator):
-    gen_model_type = liGAN.models.CVAE
+    gen_model_type = ligan.models.CVAE
     has_complex_input = True
     has_disc_model = True
 
 
 class VAE2Generator(MoleculeGenerator):
-    gen_model_type = liGAN.models.VAE2
+    gen_model_type = ligan.models.VAE2
     has_prior_model = True
 
 
 class CVAE2Generator(MoleculeGenerator):
-    gen_model_type = liGAN.models.CVAE2
+    gen_model_type = ligan.models.CVAE2
     has_complex_input = True
     has_prior_model = True
 
@@ -1347,7 +1345,7 @@ class OutputWriter(object):
             ).norm(p=1).item()
 
             # minimum atom-only RMSD (ignores properties)
-            rmsd = liGAN.metrics.compute_struct_rmsd(ref_struct, struct)
+            rmsd = ligan.metrics.compute_struct_rmsd(ref_struct, struct)
             m.loc[idx, struct_type+'_RMSD'] = rmsd
 
         if not ref_only:

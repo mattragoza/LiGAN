@@ -3,10 +3,10 @@ import numpy as np
 from numpy import isclose
 
 sys.path.insert(0, '.')
-import liGAN.molecules as mols
-from liGAN.molecules import ob, Molecule
-from liGAN.atom_types import Atom, AtomTyper
-from liGAN.bond_adding import BondAdder, get_max_valences, reachable, compare_bonds
+import ligan.molecules as mols
+from ligan.molecules import ob, Molecule
+from ligan.atom_types import Atom, AtomTyper
+from ligan.bond_adding import BondAdder, get_max_valences, reachable, compare_bonds
 
 
 test_sdf_files = [
