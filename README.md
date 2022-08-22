@@ -61,7 +61,7 @@ make install
 If you want to perform minimization and affinity prediction of the generated molecules in the receptor pocket, you need [gnina](https://github.com/gnina/gnina) as well. The following commands will install the gnina standalone executable into your conda environment:
 
 ```bash
-wget https://github.com/gnina/gnina/releases/download/v1.0/gnina -P $CONDA_PREFIX/bin
+wget https://github.com/gnina/gnina/releases/download/v1.0.2/gnina -P $CONDA_PREFIX/bin
 chmod +x $CONDA_PREFIX/bin/gnina
 ```
 
