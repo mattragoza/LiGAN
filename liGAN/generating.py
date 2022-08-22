@@ -1244,6 +1244,13 @@ class OutputWriter(object):
                 (ref_grid.prop_values - grid.prop_values)**2
             ).sum().item() / 2
 
+            # shape similarity
+            ref_shape = (ref_grid.values.sum(dim=0) > 0)
+            shape = (grid.values.sum(dim=0) > 0)
+            m.loc[idx, grid_type+'_shape_sim'] = (
+                (ref_shape & shape).sum() / (ref_shape | shape).sum()
+            )
+
         if cond_grid is not None:
 
             # density product
