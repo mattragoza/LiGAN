@@ -9,11 +9,6 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description='train a deep neural network to generate atomic density grids')
     parser.add_argument('config_file')
     parser.add_argument('--debug', default=False, action='store_true')
-    # TODO reimplement the following arguments
-    parser.add_argument('--instance_noise', type=float, default=0.0, help='standard deviation of disc instance noise (default 0.0)')
-    # removing wandb option in place of putting wandb configs in the config file
-    # parser.add_argument('--wandb', action='store_true', help='enable weights and biases')
-    parser.add_argument('--lr_policy', type=str, help='learning rate policy')
     return parser.parse_args(argv)
 
 
@@ -49,7 +44,6 @@ def main(argv):
 
     configure_wandb(config)
 
-    device = 'cuda'
     ligan.set_random_seed(config.get('random_seed'))
 
     solver_type = config['model_type'] + 'Solver'
@@ -67,7 +61,7 @@ def main(argv):
         atom_fitting_kws=config['atom_fitting'],
         bond_adding_kws=config.get('bond_adding', {}),
         out_prefix=config['out_prefix'],
-        device=device,
+        device=config.get('device', 'cuda'),
         debug=args.debug,
         sync_cuda=config.get('sync_cuda', False)
     )

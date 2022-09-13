@@ -126,9 +126,12 @@ class AtomGridData(object):
             dimension = atom_grids.size_to_dimension(grid_size, resolution)
         
         # create receptor and ligand atom typers
-        self.lig_typer = AtomTyper.get_typer(*lig_typer.split('-'), rec=False)
-        self.rec_typer = \
-            AtomTyper.get_typer(*rec_typer.split('-'), rec=use_rec_elems)
+        self.lig_typer = AtomTyper.get_typer(
+            *lig_typer.split('-'), rec=False, device=device
+        )
+        self.rec_typer = AtomTyper.get_typer(
+            *rec_typer.split('-'), rec=use_rec_elems, device=device
+        )
 
         atom_typers = [self.rec_typer, self.lig_typer]
         if diff_cond_structs: # duplicate atom typers

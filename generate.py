@@ -19,10 +19,9 @@ def main(argv):
     with open(args.config_file) as f:
         config = yaml.safe_load(f)
 
-    device = 'cuda'
     ligan.set_random_seed(config.get('random_seed'))
 
-    generator_type = config.get('model_type') or 'Molecule'
+    generator_type = config.get('model_type', 'Molecule')
     generator_type = generator_type + 'Generator'
     generator_type = getattr(ligan.generating, generator_type)
     generator = generator_type(
@@ -32,11 +31,10 @@ def main(argv):
         data_kws=config['data'],
         gen_model_kws=config.get('gen_model', {}),
         prior_model_kws=config.get('prior_model', {}),
-        atom_fitting_kws=config.get('atom_fitting', {}),
         bond_adding_kws=config.get('bond_adding', {}),
         output_kws=config['output'],
-        device='cuda',
-        verbose=config['verbose'],
+        device=config.get('device', 'cuda'),
+        verbose=config.get('verbose', False),
         debug=args.debug,
     )
     generator.generate(**config['generate'])

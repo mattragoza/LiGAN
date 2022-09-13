@@ -342,7 +342,7 @@ class AtomTyper(molgrid.PythonCallbackVectorTyper):
     def get_radius(self, ob_atom):
         return self.radius_func(ob_atom.GetAtomicNum())
 
-    def make_struct(self, ob_mol, dtype=torch.float32, device='cuda', **info):
+    def make_struct(self, ob_mol, dtype=torch.float32, device=None, **info):
         '''
         Convert an OBMol to an AtomStruct
         by assigning each atom a type vector
